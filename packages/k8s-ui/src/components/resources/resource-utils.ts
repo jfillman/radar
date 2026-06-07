@@ -14,6 +14,17 @@ import { getArgoApplicationStatus, getArgoApplicationSetStatus, getArgoApplicati
 import { getPolicyReportStatus as _getPolicyReportStatus, getKyvernoPolicyStatus as _getKyvernoPolicyStatus } from './resource-utils-kyverno'
 import { getResourceClaimStatus as _getResourceClaimStatus, getResourceClaimDeviceClasses as _getResourceClaimDeviceClasses, getResourceClaimTemplateDeviceClasses as _getResourceClaimTemplateDeviceClasses, getResourceClaimAllocation as _getResourceClaimAllocation, getResourceClaimReservedFor as _getResourceClaimReservedFor } from './resource-utils-dra'
 import { getNvidiaClusterPolicyStatus as _getNvidiaClusterPolicyStatus, getNvidiaClusterPolicyEnabledComponents as _getNvidiaClusterPolicyEnabledComponents, getNvidiaDriverStatus as _getNvidiaDriverStatus } from './resource-utils-nvidia'
+import { getClusterQueueStatus as _getClusterQueueStatus, getLocalQueueStatus as _getLocalQueueStatus, getKueueWorkloadStatus as _getKueueWorkloadStatus, getResourceFlavorStatus as _getResourceFlavorStatus, getAdmissionCheckStatus as _getAdmissionCheckStatus, getProvisioningRequestStatus as _getProvisioningRequestStatus } from './resource-utils-kueue'
+import { getRayClusterStatus as _getRayClusterStatus, getRayJobStatus as _getRayJobStatus, getRayServiceStatus as _getRayServiceStatus, getRayCronJobStatus as _getRayCronJobStatus } from './resource-utils-ray'
+import { getLeaderWorkerSetStatus as _getLeaderWorkerSetStatus, getJobSetStatus as _getJobSetStatus } from './resource-utils-jobset-lws'
+import { getInferenceServiceStatus as _getInferenceServiceStatus, getServingRuntimeStatus as _getServingRuntimeStatus, getInferenceGraphStatus as _getInferenceGraphStatus, getTrainedModelStatus as _getTrainedModelStatus, getLLMInferenceServiceStatus as _getLLMInferenceServiceStatus } from './resource-utils-kserve'
+import { getInferencePoolStatus as _getInferencePoolStatus, getInferenceObjectiveStatus as _getInferenceObjectiveStatus } from './resource-utils-inference-gateway'
+import { getVolcanoJobStatus as _getVolcanoJobStatus, getVolcanoQueueStatus as _getVolcanoQueueStatus, getVolcanoPodGroupStatus as _getVolcanoPodGroupStatus, getJobFlowStatus as _getJobFlowStatus, getJobTemplateStatus as _getJobTemplateStatus } from './resource-utils-volcano'
+import { getKaiQueueStatus as _getKaiQueueStatus, getKaiPodGroupStatus as _getKaiPodGroupStatus } from './resource-utils-kai'
+import { getKaitoWorkspaceStatus as _getKaitoWorkspaceStatus, getRAGEngineStatus as _getRAGEngineStatus } from './resource-utils-kaito'
+import { getNIMServiceStatus as _getNIMServiceStatus, getNIMCacheStatus as _getNIMCacheStatus, getNIMPipelineStatus as _getNIMPipelineStatus } from './resource-utils-nim'
+import { getAMDDeviceConfigStatus as _getAMDDeviceConfigStatus } from './resource-utils-amd-gpu'
+import { getPyTorchJobStatus as _getPyTorchJobStatus, getTFJobStatus as _getTFJobStatus, getMPIJobStatus as _getMPIJobStatus, getTrainJobStatus as _getTrainJobStatus } from './resource-utils-kubeflow-training'
 import { getBackupStatus as _getBackupStatus, getRestoreStatus as _getRestoreStatus, getScheduleStatus as _getScheduleStatus, getBSLStatus as _getBSLStatus, getBackupRepositoryStatus as _getBackupRepositoryStatus } from './resource-utils-velero'
 import { getExternalSecretStatus as _getExternalSecretStatus, getClusterExternalSecretStatus as _getClusterExternalSecretStatus, getSecretStoreStatus as _getSecretStoreStatus, getClusterSecretStoreStatus as _getClusterSecretStoreStatus, getSecretStoreProviderType as _getSecretStoreProviderType } from './resource-utils-eso'
 import { getHPATableState, hpaStatusFromState } from './resource-utils-hpa'
@@ -2218,6 +2229,42 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
       if (kindLower === 'nvidiaclusterpolicies') return _getNvidiaClusterPolicyStatus(resource).text
       if (kindLower === 'nvidiadrivers') return _getNvidiaDriverStatus(resource).text
       if (kindLower === 'resourceclaims') return _getResourceClaimStatus(resource).text
+      if (kindLower === 'clusterqueues') return _getClusterQueueStatus(resource).text
+      if (kindLower === 'localqueues') return _getLocalQueueStatus(resource).text
+      if (kindLower === 'workloads') return _getKueueWorkloadStatus(resource).text
+      if (kindLower === 'resourceflavors') return _getResourceFlavorStatus(resource).text
+      if (kindLower === 'admissionchecks') return _getAdmissionCheckStatus(resource).text
+      if (kindLower === 'provisioningrequests') return _getProvisioningRequestStatus(resource).text
+      if (kindLower === 'rayclusters') return _getRayClusterStatus(resource).text
+      if (kindLower === 'rayjobs') return _getRayJobStatus(resource).text
+      if (kindLower === 'rayservices') return _getRayServiceStatus(resource).text
+      if (kindLower === 'raycronjobs') return _getRayCronJobStatus(resource).text
+      if (kindLower === 'leaderworkersets') return _getLeaderWorkerSetStatus(resource).text
+      if (kindLower === 'jobsets') return _getJobSetStatus(resource).text
+      if (kindLower === 'inferenceservices') return _getInferenceServiceStatus(resource).text
+      if (kindLower === 'servingruntimes' || kindLower === 'clusterservingruntimes') return _getServingRuntimeStatus(resource).text
+      if (kindLower === 'inferencegraphs') return _getInferenceGraphStatus(resource).text
+      if (kindLower === 'trainedmodels') return _getTrainedModelStatus(resource).text
+      if (kindLower === 'llminferenceservices') return _getLLMInferenceServiceStatus(resource).text
+      if (kindLower === 'inferencepools') return _getInferencePoolStatus(resource).text
+      if (kindLower === 'inferenceobjectives') return _getInferenceObjectiveStatus(resource).text
+      if (kindLower === 'volcanojobs') return _getVolcanoJobStatus(resource).text
+      if (kindLower === 'volcanoqueues') return _getVolcanoQueueStatus(resource).text
+      if (kindLower === 'volcanopodgroups') return _getVolcanoPodGroupStatus(resource).text
+      if (kindLower === 'jobflows') return _getJobFlowStatus(resource).text
+      if (kindLower === 'jobtemplates') return _getJobTemplateStatus(resource).text
+      if (kindLower === 'kaiqueues') return _getKaiQueueStatus(resource).text
+      if (kindLower === 'kaipodgroups') return _getKaiPodGroupStatus(resource).text
+      if (kindLower === 'kaitoworkspaces') return _getKaitoWorkspaceStatus(resource).text
+      if (kindLower === 'ragengines') return _getRAGEngineStatus(resource).text
+      if (kindLower === 'nimservices') return _getNIMServiceStatus(resource).text
+      if (kindLower === 'nimcaches') return _getNIMCacheStatus(resource).text
+      if (kindLower === 'nimpipelines') return _getNIMPipelineStatus(resource).text
+      if (kindLower === 'deviceconfigs') return _getAMDDeviceConfigStatus(resource).text
+      if (kindLower === 'pytorchjobs') return _getPyTorchJobStatus(resource).text
+      if (kindLower === 'tfjobs') return _getTFJobStatus(resource).text
+      if (kindLower === 'mpijobs') return _getMPIJobStatus(resource).text
+      if (kindLower === 'trainjobs') return _getTrainJobStatus(resource).text
       // Positively gated, matching the cell dispatch: `backups` is reached here
       // only when the group is unknown to normalizeKindToPlural, and a third
       // vendor's Backup renders through the generic path — so the sort key has

@@ -19,6 +19,7 @@ import (
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/cloud"
 	"github.com/skyhook-io/radar/internal/config"
+	"github.com/skyhook-io/radar/internal/cloud/discovery"
 	"github.com/skyhook-io/radar/internal/k8s"
 	mcppkg "github.com/skyhook-io/radar/internal/mcp"
 	"github.com/skyhook-io/radar/internal/server"
@@ -108,6 +109,16 @@ func main() {
 	cloudURL := flag.String("cloud-url", os.Getenv("RADAR_CLOUD_URL"), "Radar Cloud WebSocket URL (e.g. wss://api.radarhq.io/agent) — empty = local-only. Env: RADAR_CLOUD_URL")
 	cloudToken := flag.String("cloud-token", os.Getenv("RADAR_CLOUD_TOKEN"), "Cluster token from the Radar Cloud install wizard (rhc_<random>). Env: RADAR_CLOUD_TOKEN")
 	cloudClusterName := flag.String("cluster-name", os.Getenv("RADAR_CLOUD_CLUSTER_NAME"), "Human-readable cluster name for Radar Cloud (required with --cloud-url). Env: RADAR_CLOUD_CLUSTER_NAME")
+	// Cloud-discovery flags. When --cloud-discovery-url is set radar scans
+	// the cluster for observability vendor signatures (Datadog operator
+	// CR, Sentry env vars, etc) and pushes the report to the configured
+	// cloud upstream. Empty disables the loop entirely — OSS users see
+	// no behavior. The naming + env shape mirror --cloud-url / --cloud-
+	// token so all "talks to a cloud upstream" knobs share the prefix;
+	// nothing about Skyhook's hub specifically lives in the OSS binary.
+	cloudDiscoveryURL := flag.String("cloud-discovery-url", os.Getenv("RADAR_CLOUD_DISCOVERY_URL"), "Cloud discovery ingest URL (e.g. https://api.example.com/api/internal/discovery). Empty = disabled. Env: RADAR_CLOUD_DISCOVERY_URL")
+	cloudDiscoveryToken := flag.String("cloud-discovery-token", os.Getenv("RADAR_CLOUD_DISCOVERY_TOKEN"), "Bearer token authenticating discovery push to the cloud upstream. Env: RADAR_CLOUD_DISCOVERY_TOKEN")
+	cloudDiscoveryInterval := flag.Duration("cloud-discovery-interval", 60*time.Second, "How often radar re-runs the cluster discovery sweep and re-pushes to the cloud upstream.")
 	// Tunable deadlines for slow / high-latency / SSH-tunneled clusters.
 	// Defaults preserve the original behavior. Each flag falls back to an
 	// environment variable so Kubernetes deployments can source values from
@@ -348,6 +359,28 @@ func main() {
 				log.Printf("[cloud] tunnel exited: %v", runErr)
 			}
 		}()
+	}
+
+	// Cloud-discovery loop. Disabled when --cloud-discovery-url is empty
+	// — OSS users see no behavior. Cluster id falls back to the
+	// kubeconfig context's cluster name so the user doesn't have to set
+	// --cluster-name in local-dev.
+	if *cloudDiscoveryURL != "" {
+		discovery.Start(rootCtx, discovery.RunnerConfig{
+			UpstreamURL: *cloudDiscoveryURL,
+			Token:       *cloudDiscoveryToken,
+			Interval:    *cloudDiscoveryInterval,
+		},
+			// Resolved each sweep so a kubeconfig context switch is picked up.
+			func() discovery.KubeReader { return discovery.LiveKube{C: k8s.GetClient()} },
+			func() discovery.DynReader { return discovery.LiveDyn{C: k8s.GetDynamicClient()} },
+			func() (string, string) {
+				cid := *cloudClusterName
+				if cid == "" {
+					cid = k8s.GetClusterName()
+				}
+				return cid, cid
+			})
 	}
 
 	// Track opens and maybe prompt to star the repo on GitHub (non-blocking)

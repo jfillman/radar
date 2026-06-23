@@ -99,14 +99,6 @@ export function WorkloadViewRoute({ onNavigateToResource }: WorkloadViewRoutePro
   const name = parts.slice(3).map(decode).join('/')
   const group = searchParams.get('apiGroup') || ''
 
-  if (!kind || !namespace || !name) {
-    return (
-      <div className="flex items-center justify-center h-full text-theme-text-tertiary">
-        Invalid workload URL
-      </div>
-    )
-  }
-
   const handleBack = useCallback(() => {
     if (window.history.length > 1) {
       navigate(-1)
@@ -118,6 +110,15 @@ export function WorkloadViewRoute({ onNavigateToResource }: WorkloadViewRoutePro
   const handleNavigate = useCallback((resource: SelectedResource) => {
     navigate(buildWorkloadPath(resource))
   }, [navigate])
+
+  // Hooks must run unconditionally — the invalid-URL guard comes after them.
+  if (!kind || !namespace || !name) {
+    return (
+      <div className="flex items-center justify-center h-full text-theme-text-tertiary">
+        Invalid workload URL
+      </div>
+    )
+  }
 
   return (
     <WorkloadView

@@ -1348,7 +1348,7 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
       }
 
       // Build final edges list
-      let finalEdges = [...rawEdges]
+      const finalEdges = [...rawEdges]
 
       // Add edge from addon-internet to addon-group if we have one
       if (addonMode === 'group' && groupEdgeInfo) {

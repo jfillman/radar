@@ -44,7 +44,7 @@ export function IssuesPane({ namespaces, onNavigateToResource }: IssuesPaneProps
   const toggleSeverity = (s: IssueSeverity) =>
     setSeverityFilter((prev) => {
       const next = new Set(prev)
-      next.has(s) ? next.delete(s) : next.add(s)
+      if (next.has(s)) next.delete(s); else next.add(s)
       return next
     })
 

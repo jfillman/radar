@@ -1509,7 +1509,7 @@ export function useAutoPromConnect(): void {
     if (attemptedRef.current === context) return
     let cached: string | null = null
     try { cached = window.localStorage.getItem(promAutoConnectKey(context)) } catch {
-      cached = null
+      // keep the null fallback
     }
 
     attemptedRef.current = context

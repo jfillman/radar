@@ -620,13 +620,13 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
 
   // Toggle L7 filter helpers
   const toggleL7Method = useCallback((method: string) => {
-    setL7Methods(prev => { const next = new Set(prev); next.has(method) ? next.delete(method) : next.add(method); return next })
+    setL7Methods(prev => { const next = new Set(prev); if (next.has(method)) next.delete(method); else next.add(method); return next })
   }, [])
   const toggleL7StatusRange = useCallback((range: string) => {
-    setL7StatusRanges(prev => { const next = new Set(prev); next.has(range) ? next.delete(range) : next.add(range); return next })
+    setL7StatusRanges(prev => { const next = new Set(prev); if (next.has(range)) next.delete(range); else next.add(range); return next })
   }, [])
   const toggleL7Verdict = useCallback((verdict: string) => {
-    setL7Verdicts(prev => { const next = new Set(prev); next.has(verdict) ? next.delete(verdict) : next.add(verdict); return next })
+    setL7Verdicts(prev => { const next = new Set(prev); if (next.has(verdict)) next.delete(verdict); else next.add(verdict); return next })
   }, [])
 
   // Toggle namespace visibility

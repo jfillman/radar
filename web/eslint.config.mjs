@@ -22,8 +22,14 @@ export default tseslint.config(
       // ✅ Cleaned — keep blocking.
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'error',
+      '@typescript-eslint/no-unused-vars': 'error',
+      '@typescript-eslint/no-unused-expressions': 'error',
+      'no-useless-assignment': 'error',
 
       // ⏳ Ratchet queue (real signal; promote to error as each is cleaned).
+      // preserve-caught-error needs `new Error(msg, { cause })` — deferred until
+      // the tsconfig lib is bumped to ES2022 (its own PR).
+      'preserve-caught-error': 'warn',
       'react-hooks/set-state-in-effect': 'warn',
       'react-hooks/refs': 'warn',
       'react-hooks/static-components': 'warn',
@@ -31,10 +37,6 @@ export default tseslint.config(
       'react-hooks/preserve-manual-memoization': 'warn',
       'react-hooks/immutability': 'warn',
       '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/no-unused-vars': 'warn',
-      '@typescript-eslint/no-unused-expressions': 'warn',
-      'no-useless-assignment': 'warn',
-      'preserve-caught-error': 'warn',
 
       // DX/HMR nicety only — not worth churning 138 existing files. Disabled.
       'react-refresh/only-export-components': 'off',

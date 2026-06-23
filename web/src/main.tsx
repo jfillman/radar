@@ -130,7 +130,7 @@ document.execCommand = function (command: string, showUI?: boolean, value?: stri
         dt.setData('text/plain', text)
         const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })
         if (!el.dispatchEvent(ev)) return
-      } catch (_e) { /* ClipboardEvent dispatch failed, fall back to insertText */ }
+      } catch { /* ClipboardEvent dispatch failed, fall back to insertText */ }
       _origExecCommand('insertText', false, text)
     }).catch((err) => { console.warn('[Radar] Paste failed:', err) })
     return true

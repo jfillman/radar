@@ -33,7 +33,7 @@ export function IssuesPane({ namespaces, onNavigateToResource }: IssuesPaneProps
   const { data, isLoading, error } = useIssues(namespaces)
   const [severityFilter, setSeverityFilter] = useState<Set<IssueSeverity>>(new Set())
 
-  const allIssues = data?.issues ?? []
+  const allIssues = useMemo(() => data?.issues ?? [], [data])
   const totals = useMemo(() => {
     const t: Record<IssueSeverity, number> = { critical: 0, warning: 0 }
     for (const i of allIssues) t[i.severity] = (t[i.severity] ?? 0) + 1

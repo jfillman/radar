@@ -164,7 +164,7 @@ function StackedAreaChart({ series }: { series: OpenCostTrendSeries[] }) {
     })
 
     return { timestamps, stacked, minTs, maxTs, yMax, seriesLookups, toX, toY, yTicks, xTicks, paths }
-  }, [series])
+  }, [series, plotHeight, plotWidth])
 
   // Hover data — depends on hoverX + chartData, must be a separate hook (called unconditionally)
   const hoverData = useMemo(() => {
@@ -193,7 +193,7 @@ function StackedAreaChart({ series }: { series: OpenCostTrendSeries[] }) {
     })
 
     return { ts: closestTs, x: toX(closestTs), total, points }
-  }, [hoverX, chartData, series])
+  }, [hoverX, chartData, series, plotWidth])
 
   const handleMouseMove = useCallback((e: React.MouseEvent<SVGRectElement>) => {
     const svg = svgRef.current

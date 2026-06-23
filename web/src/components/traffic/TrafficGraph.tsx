@@ -1505,6 +1505,9 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
         }, 50)
         return () => clearTimeout(timer)
       }
+      // layoutedNodes is outer-scope state read here to re-fit once nodes land;
+      // keeping it as a dep preserves that trigger.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fitView, layoutedNodes])
 
     return null

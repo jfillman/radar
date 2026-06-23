@@ -897,7 +897,7 @@ function AppInner() {
       name: node.name,
       group: apiVersionToGroup(node.data.apiVersion as string | undefined),
     })
-  }, [navigate])
+  }, [navigate, navigateToResource])
 
   // Serialize namespaces for stable dependency tracking
   const namespacesKey = namespaces.join(',')
@@ -1113,6 +1113,11 @@ function AppInner() {
       // Switching to specific namespaces - disable namespace grouping
       setGroupingMode('none')
     }
+    // Intentionally runs ONLY when the namespace selection changes. It reads the
+    // current groupingMode but must not re-run when grouping changes, or it would
+    // immediately revert a manual/fleet grouping choice. namespacesKey is the
+    // manual dependency standing in for the namespaces array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [namespacesKey])
 
   // Clear resource selection when changing views or namespaces

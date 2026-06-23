@@ -21,9 +21,9 @@ export default tseslint.config(
     rules: {
       // ✅ Cleaned — keep blocking.
       'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'error',
 
       // ⏳ Ratchet queue (real signal; promote to error as each is cleaned).
-      'react-hooks/exhaustive-deps': 'warn',
       'react-hooks/set-state-in-effect': 'warn',
       'react-hooks/refs': 'warn',
       'react-hooks/static-components': 'warn',

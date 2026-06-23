@@ -191,7 +191,7 @@ export function InstallWizard({ repo, chartName, version, source, repoUrl, defau
     } finally {
       setIsInstalling(false)
     }
-  }, [releaseName, namespace, chartName, version, repo, valuesYaml, createNamespace, onSuccess, isLocal, artifactHubDetail, queryClient])
+  }, [releaseName, namespace, chartName, version, repo, repoUrl, valuesYaml, createNamespace, onSuccess, isLocal, artifactHubDetail, queryClient])
 
   // Validate release name + namespace before letting the user
   // advance. Without this, a name like "Invalid Name With Spaces!"

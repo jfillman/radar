@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   ResourceCompareView,
@@ -23,13 +23,21 @@ export function CompareViewRoute() {
   // reserved for topology grouping mode and gets stripped by App.tsx's URL
   // sync on every non-topology view.
   const group = searchParams.get('apiGroup') ?? undefined
-  const aParsed = parseRef(searchParams.get('a'))
-  const bParsed = parseRef(searchParams.get('b'))
+  const aRaw = searchParams.get('a')
+  const bRaw = searchParams.get('b')
 
   const [pickerOpen, setPickerOpen] = useState<CompareSide | null>(null)
 
-  const a: CompareResourceRef | null = aParsed ? { kind, namespace: aParsed.namespace, name: aParsed.name, group } : null
-  const b: CompareResourceRef | null = bParsed ? { kind, namespace: bParsed.namespace, name: bParsed.name, group } : null
+  // Memoized so the refs keep a stable identity across renders — otherwise the
+  // useCallbacks below (which depend on a/b) would be rebuilt every render.
+  const a: CompareResourceRef | null = useMemo(() => {
+    const p = parseRef(aRaw)
+    return p ? { kind, namespace: p.namespace, name: p.name, group } : null
+  }, [aRaw, kind, group])
+  const b: CompareResourceRef | null = useMemo(() => {
+    const p = parseRef(bRaw)
+    return p ? { kind, namespace: p.namespace, name: p.name, group } : null
+  }, [bRaw, kind, group])
 
   const aQuery = useResource<unknown>(a?.kind ?? '', a?.namespace ?? '', a?.name ?? '', a?.group)
   const bQuery = useResource<unknown>(b?.kind ?? '', b?.namespace ?? '', b?.name ?? '', b?.group)

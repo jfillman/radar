@@ -238,7 +238,17 @@
             "viewer": { "type": "boolean" },
             "ownerClusterRole": { "type": "string" },
             "memberClusterRole": { "type": "string" },
-            "viewerClusterRole": { "type": "string" }
+            "viewerClusterRole": { "type": "string" },
+            "clusterScopedRead": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "viewer": { "type": "boolean" },
+                "member": { "type": "boolean" },
+                "owner": { "type": "boolean" }
+              }
+            },
+            "nodeOps": { "type": "boolean" }
           }
         },
         "insecureSkipVerify": { "type": "boolean" }

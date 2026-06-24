@@ -1,10 +1,21 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import react, { reactCompilerPreset } from '@vitejs/plugin-react'
+import babel from '@rolldown/plugin-babel'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
 export default defineConfig({
-  plugins: [tailwindcss(), react()],
+  plugins: [
+    tailwindcss(),
+    // React Compiler (eval). v6 dropped internal Babel (oxc now), so the
+    // compiler runs via @rolldown/plugin-babel and MUST come before react().
+    // React 19 ⇒ runtime is built-in; babel-plugin-react-compiler pinned 1.0.0.
+    babel({
+      include: /\.[jt]sx?$/,
+      presets: [reactCompilerPreset()],
+    }),
+    react(),
+  ],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

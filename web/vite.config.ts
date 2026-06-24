@@ -4,16 +4,19 @@ import babel from '@rolldown/plugin-babel'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
+// React Compiler (eval). On by default on this branch; build with RC=0 to
+// produce a baseline (no-compiler) bundle for A/B comparison.
+const reactCompiler = process.env.RC !== '0'
+
 export default defineConfig({
   plugins: [
     tailwindcss(),
-    // React Compiler (eval). v6 dropped internal Babel (oxc now), so the
-    // compiler runs via @rolldown/plugin-babel and MUST come before react().
+    // v6 dropped internal Babel (oxc now), so the compiler runs via
+    // @rolldown/plugin-babel and MUST come before react().
     // React 19 ⇒ runtime is built-in; babel-plugin-react-compiler pinned 1.0.0.
-    babel({
-      include: /\.[jt]sx?$/,
-      presets: [reactCompilerPreset()],
-    }),
+    ...(reactCompiler
+      ? [babel({ include: /\.[jt]sx?$/, presets: [reactCompilerPreset()] })]
+      : []),
     react(),
   ],
   resolve: {

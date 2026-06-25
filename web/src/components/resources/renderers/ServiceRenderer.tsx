@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { ServiceRenderer as BaseServiceRenderer } from '@skyhook-io/k8s-ui/components/resources/renderers/ServiceRenderer'
 import { PortForwardInlineButton } from '../../portforward/PortForwardButton'
 import { useResources } from '../../../api/client'
+import { useNamespacedCapabilities } from '../../../contexts/CapabilitiesContext'
 import type { ResourceRef } from '../../../types'
 
 interface ServiceRendererProps {
@@ -14,6 +15,7 @@ interface ServiceRendererProps {
 export function ServiceRenderer({ data, onCopy, copied, onNavigate }: ServiceRendererProps) {
   const namespace = data.metadata?.namespace
   const serviceName = data.metadata?.name
+  const { canPortForward } = useNamespacedCapabilities(namespace)
   const spec = data.spec || {}
   const shouldLoadEndpointSlices = Boolean(
     namespace &&
@@ -40,14 +42,14 @@ export function ServiceRenderer({ data, onCopy, copied, onNavigate }: ServiceRen
       endpointSlices={matchingEndpointSlices}
       endpointSlicesLoading={endpointSlicesLoading}
       onNavigate={onNavigate}
-      renderPortAction={({ namespace, serviceName, port, protocol }) => (
+      renderPortAction={canPortForward ? (({ namespace, serviceName, port, protocol }) => (
         <PortForwardInlineButton
           namespace={namespace}
           serviceName={serviceName}
           port={port}
           protocol={protocol}
         />
-      )}
+      )) : undefined}
     />
   )
 }

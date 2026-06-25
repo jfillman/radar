@@ -284,6 +284,14 @@ func CheckCapabilities(ctx context.Context) (*Capabilities, error) {
 	// Local terminal is not RBAC-gated — it depends on runtime mode only
 	caps.LocalTerminal = !IsInCluster() && !ForceDisableLocalTerminal
 
+	// Port-forward binds a local TCP listener on the radar host; like the local
+	// terminal it's meaningless in-cluster (the listener would be on the radar
+	// pod, not the user's machine), so force it off regardless of RBAC. The HTTP
+	// capabilities handler re-applies this after its namespace merge.
+	if IsInCluster() {
+		caps.PortForward = false
+	}
+
 	if ForceDisableHelmWrite {
 		caps.HelmWrite = false
 	}

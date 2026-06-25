@@ -31,7 +31,7 @@ import { Tooltip } from '../ui/Tooltip'
 import { useToast } from '../ui/Toast'
 import { openExternal } from '../../utils/navigation'
 import { apiUrl } from '../../api/config'
-import { apiFetch } from '../../api/client'
+import { apiFetch, useCapabilities } from '../../api/client'
 import { pluralize } from '@skyhook-io/k8s-ui'
 
 // --- Types -------------------------------------------------------------------
@@ -84,7 +84,7 @@ function buildRecreateBody(session: PortForwardSession, overrides: { localPort: 
 
 // --- Shared query ------------------------------------------------------------
 
-function usePortForwardQuery() {
+function usePortForwardQuery(enabled: boolean) {
   return useQuery<PortForwardSession[]>({
     queryKey: ['portforwards'],
     queryFn: async () => {
@@ -92,6 +92,10 @@ function usePortForwardQuery() {
       if (!res.ok) throw new Error('Failed to fetch port forwards')
       return res.json()
     },
+    // Port-forward is a local-binary feature; in-cluster (Radar Cloud) the
+    // capability is false, so don't poll an endpoint that can never return a
+    // usable session. Also covers RBAC-denied users.
+    enabled,
     // 30s fallback poll — user mutations invalidate immediately, but out-of-band
     // session death (pod restart, OOM kill, server-side cleanup) only surfaces on
     // the next tick.
@@ -144,12 +148,21 @@ interface PortForwardContextValue {
 const PortForwardContext = createContext<PortForwardContextValue | null>(null)
 
 export function PortForwardProvider({ children }: { children: ReactNode }) {
+  // Gate the session-list poll on runtime mode, not the RBAC capability: port-forward
+  // only works when radar runs as a local binary, so in-cluster (Radar Cloud) we never
+  // poll /portforwards. We deliberately do NOT gate on `portForward` (RBAC) — a local
+  // user with portforward rights in only some namespaces must still see/stop the
+  // sessions they start (the start buttons gate per-namespace separately). Using the
+  // resolved value (undefined while capabilities load → no poll) keeps Cloud silent on
+  // first paint.
+  const { data: caps } = useCapabilities()
+  const canPortForward = caps?.deployment?.mode === 'local'
   const {
     data: sessions = [],
     isLoading,
     isError: isQueryError,
     error: queryError,
-  } = usePortForwardQuery()
+  } = usePortForwardQuery(canPortForward)
   const activeSessions = sessions.filter((s) => s.status !== 'stopped')
   const errorSessions = sessions.filter((s) => s.status === 'error')
   const count = activeSessions.length
@@ -970,6 +983,7 @@ export function useStartPortForward() {
 
 // Backwards-compat: existing consumers that just want a count number.
 export function usePortForwardCount() {
-  const { data: sessions = [] } = usePortForwardQuery()
+  const { data: caps } = useCapabilities()
+  const { data: sessions = [] } = usePortForwardQuery(caps?.deployment?.mode === 'local')
   return sessions.filter((s) => s.status !== 'stopped').length
 }

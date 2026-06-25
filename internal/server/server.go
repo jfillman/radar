@@ -368,6 +368,10 @@ func (s *Server) setupRoutes() {
 			r.Delete("/portforwards/{id}", s.handleStopPortForward)
 			r.Get("/portforwards/available/{type}/{namespace}/{name}", s.handleGetAvailablePorts)
 
+			// Probe a Service's HTTP endpoint server-side (via apiserver
+			// services/proxy). Works in-cluster/Cloud where port-forward can't.
+			r.Post("/probe/service", s.handleProbeService)
+
 			// Active sessions (for context switch confirmation)
 			r.Get("/sessions", s.handleGetSessions)
 

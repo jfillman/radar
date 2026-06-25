@@ -10,7 +10,11 @@ interface ServiceRendererProps {
   endpointSlices?: any[]
   endpointSlicesLoading?: boolean
   onNavigate?: (ref: ResourceRef) => void
-  renderPortAction?: (props: { namespace: string; serviceName: string; port: number; protocol: string }) => ReactNode
+  renderPortAction?: (props: { namespace: string; serviceName: string; port: number; protocol: string; name?: string; appProtocol?: string }) => ReactNode
+  /** Optional full-width content rendered inside a port's card, below its header
+   *  (e.g. an inline probe panel). Lets a host attach a port-scoped panel in the
+   *  drawer flow rather than as a separate overlay. */
+  renderPortPanel?: (props: { namespace: string; serviceName: string; port: number; protocol: string; name?: string; appProtocol?: string }) => ReactNode
 }
 
 function endpointSliceAddressCount(slice: any): number {
@@ -28,7 +32,7 @@ function endpointSliceReadyClass(ready: number, total: number): string {
   return 'status-unhealthy'
 }
 
-export function ServiceRenderer({ data, onCopy, copied, endpointSlices, endpointSlicesLoading, onNavigate, renderPortAction }: ServiceRendererProps) {
+export function ServiceRenderer({ data, onCopy, copied, endpointSlices, endpointSlicesLoading, onNavigate, renderPortAction, renderPortPanel }: ServiceRendererProps) {
   const spec = data.spec || {}
   const ports = spec.ports || []
   const lbIngress = data.status?.loadBalancer?.ingress || []
@@ -106,6 +110,8 @@ export function ServiceRenderer({ data, onCopy, copied, endpointSlices, endpoint
                       serviceName,
                       port: port.port,
                       protocol: port.protocol || 'TCP',
+                      name: port.name,
+                      appProtocol: port.appProtocol,
                     })}
                   </div>
                 </div>
@@ -113,6 +119,14 @@ export function ServiceRenderer({ data, onCopy, copied, endpointSlices, endpoint
                   {port.port}{port.targetPort != null && port.targetPort !== port.port ? ` → ${port.targetPort}` : ''}
                   {port.nodePort ? ` (NodePort: ${port.nodePort})` : ''}
                 </div>
+                {renderPortPanel?.({
+                  namespace,
+                  serviceName,
+                  port: port.port,
+                  protocol: port.protocol || 'TCP',
+                  name: port.name,
+                  appProtocol: port.appProtocol,
+                })}
               </div>
             ))}
           </div>

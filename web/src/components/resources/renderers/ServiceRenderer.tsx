@@ -1,6 +1,7 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { ServiceRenderer as BaseServiceRenderer } from '@skyhook-io/k8s-ui/components/resources/renderers/ServiceRenderer'
 import { PortForwardInlineButton } from '../../portforward/PortForwardButton'
+import { ProbeButton, ProbePanel, isHttpishPort, defaultScheme } from '../../probe/ServiceProbeButton'
 import { useResources } from '../../../api/client'
 import { useNamespacedCapabilities } from '../../../contexts/CapabilitiesContext'
 import type { ResourceRef } from '../../../types'
@@ -16,6 +17,8 @@ export function ServiceRenderer({ data, onCopy, copied, onNavigate }: ServiceRen
   const namespace = data.metadata?.namespace
   const serviceName = data.metadata?.name
   const { canPortForward } = useNamespacedCapabilities(namespace)
+  // Which port's inline probe panel is open (one at a time). Keyed by port number.
+  const [activeProbePort, setActiveProbePort] = useState<number | null>(null)
   const spec = data.spec || {}
   const shouldLoadEndpointSlices = Boolean(
     namespace &&
@@ -42,14 +45,35 @@ export function ServiceRenderer({ data, onCopy, copied, onNavigate }: ServiceRen
       endpointSlices={matchingEndpointSlices}
       endpointSlicesLoading={endpointSlicesLoading}
       onNavigate={onNavigate}
-      renderPortAction={canPortForward ? (({ namespace, serviceName, port, protocol }) => (
-        <PortForwardInlineButton
-          namespace={namespace}
-          serviceName={serviceName}
-          port={port}
-          protocol={protocol}
-        />
-      )) : undefined}
+      renderPortAction={({ port, name, appProtocol, protocol }) => (
+        <>
+          {isHttpishPort(port, name, appProtocol, protocol) && (
+            <ProbeButton
+              active={activeProbePort === port}
+              onClick={() => setActiveProbePort((cur) => (cur === port ? null : port))}
+            />
+          )}
+          {canPortForward && (
+            <PortForwardInlineButton
+              namespace={namespace}
+              serviceName={serviceName}
+              port={port}
+              protocol={protocol}
+            />
+          )}
+        </>
+      )}
+      renderPortPanel={({ port, name, appProtocol }) =>
+        activeProbePort === port ? (
+          <ProbePanel
+            namespace={namespace}
+            serviceName={serviceName}
+            port={port}
+            initialScheme={defaultScheme(port, name, appProtocol)}
+            onClose={() => setActiveProbePort(null)}
+          />
+        ) : null
+      }
     />
   )
 }

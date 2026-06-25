@@ -497,17 +497,6 @@ func podCondition(pod *corev1.Pod, condType corev1.PodConditionType) *corev1.Pod
 	return nil
 }
 
-// IsPodUnschedulable reports whether the scheduler tried and failed to place
-// the pod (PodScheduled=False). Such pods are owned by SourceScheduling,
-// which explains WHY — the generic problem detector skips them to avoid a
-// duplicate bare "Pending" row.
-func IsPodUnschedulable(pod *corev1.Pod) bool {
-	c := podScheduledCondition(pod)
-	// Only reason=Unschedulable counts; reason=SchedulingGated is an
-	// intentional not-yet-scheduled state, not a placement failure.
-	return c != nil && c.Status == corev1.ConditionFalse && c.Reason == corev1.PodReasonUnschedulable
-}
-
 // schedulingSeverity ramps with how long the pod has been unschedulable: a
 // momentary miss right after creation is usually transient; one stuck for
 // many minutes is a real, operator-actionable failure.

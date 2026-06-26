@@ -91,6 +91,14 @@ export function useCanPortForward(): boolean {
   return useContext(CapabilitiesContext).portForward
 }
 
+// True when Radar runs as a local binary (live port-forward is possible). When
+// false (in-cluster / Radar Cloud) a live forward can't bind a usable local
+// listener, so the UI offers a copy-paste `kubectl port-forward` command instead.
+// Defaults to local during the capabilities-loading window (see defaultCapabilities).
+export function useIsLocalDeployment(): boolean {
+  return useContext(CapabilitiesContext).deployment?.mode === 'local'
+}
+
 export function useCanViewSecrets(): boolean {
   return useContext(CapabilitiesContext).secrets
 }

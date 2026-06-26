@@ -3,7 +3,7 @@ import { ServiceRenderer as BaseServiceRenderer } from '@skyhook-io/k8s-ui/compo
 import { PortForwardInlineButton } from '../../portforward/PortForwardButton'
 import { ProbeButton, ProbePanel, isHttpishPort, defaultScheme } from '../../probe/ServiceProbeButton'
 import { useResources } from '../../../api/client'
-import { useNamespacedCapabilities } from '../../../contexts/CapabilitiesContext'
+import { useNamespacedCapabilities, useIsLocalDeployment } from '../../../contexts/CapabilitiesContext'
 import type { ResourceRef } from '../../../types'
 
 interface ServiceRendererProps {
@@ -17,6 +17,10 @@ export function ServiceRenderer({ data, onCopy, copied, onNavigate }: ServiceRen
   const namespace = data.metadata?.namespace
   const serviceName = data.metadata?.name
   const { canPortForward } = useNamespacedCapabilities(namespace)
+  // Offer the port-forward affordance when a live forward is possible (local +
+  // RBAC) OR when we're not local — in-cluster/Cloud can't bind a local listener,
+  // but we still surface a copy-paste `kubectl port-forward` command.
+  const showPortForward = canPortForward || !useIsLocalDeployment()
   // Which port's inline probe panel is open (one at a time). Keyed by port number.
   const [activeProbePort, setActiveProbePort] = useState<number | null>(null)
   const spec = data.spec || {}
@@ -53,7 +57,7 @@ export function ServiceRenderer({ data, onCopy, copied, onNavigate }: ServiceRen
               onClick={() => setActiveProbePort((cur) => (cur === port ? null : port))}
             />
           )}
-          {canPortForward && (
+          {showPortForward && (
             <PortForwardInlineButton
               namespace={namespace}
               serviceName={serviceName}

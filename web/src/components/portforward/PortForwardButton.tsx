@@ -103,7 +103,7 @@ function KubectlCommandDialog({
 
         <div className="p-4 space-y-3">
           <p className="text-sm text-theme-text-secondary">
-            Radar is running in-cluster, so port forwarding must be run from your local terminal.
+            Live port-forwarding isn&apos;t available here — run it from your own machine instead:
           </p>
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2 text-sm text-theme-text-secondary">
@@ -147,8 +147,8 @@ function KubectlCommandDialog({
               {copied ? 'Copied' : copyFallback ? 'Press Ctrl+C' : 'Copy'}
             </button>
           </div>
-          <p className="text-xs text-theme-text-secondary">
-            Requires kubectl and authentication to this cluster.
+          <p className="text-xs text-theme-text-tertiary">
+            You&apos;ll need <code className="inline-code">kubectl</code> and your own credentials for this cluster to run it.
           </p>
         </div>
       </div>

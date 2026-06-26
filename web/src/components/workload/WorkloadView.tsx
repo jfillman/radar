@@ -39,7 +39,7 @@ import { useResourceAudit, useResources } from '../../api/client'
 import { AuditAlerts } from '@skyhook-io/k8s-ui'
 import { WorkloadLogsViewer } from '../logs/WorkloadLogsViewer'
 import { LogsViewer } from '../logs/LogsViewer'
-import { useCanUpdateSecrets, useCanNodeWrite, useNamespacedCapabilities } from '../../contexts/CapabilitiesContext'
+import { useCanUpdateSecrets, useCanNodeWrite, useNamespacedCapabilities, useIsLocalDeployment } from '../../contexts/CapabilitiesContext'
 import { useOpenTerminal, useOpenLogs, useOpenWorkloadLogs, useOpenNodeTerminal } from '../dock'
 import { PortForwardButton } from '../portforward/PortForwardButton'
 import { useToast } from '../ui/Toast'
@@ -159,6 +159,9 @@ function useActionsBarProps(kind: string, namespace: string, name: string) {
   const openWorkloadLogs = useOpenWorkloadLogs()
   const openNodeTerminal = useOpenNodeTerminal()
   const { canExec, canViewLogs, canPortForward } = useNamespacedCapabilities(namespace)
+  // Live forward when local+RBAC; otherwise (in-cluster/Cloud) still surface the
+  // copy-paste kubectl command. The button picks live vs. copy by deployment mode.
+  const showPortForward = canPortForward || !useIsLocalDeployment()
 
   const deleteMutation = useDeleteResource()
   const restartWorkloadMutation = useRestartWorkload()
@@ -190,7 +193,7 @@ function useActionsBarProps(kind: string, namespace: string, name: string) {
   return {
     canExec,
     canViewLogs,
-    canPortForward,
+    canPortForward: showPortForward,
     onOpenTerminal: openTerminal,
     onOpenLogs: openLogs,
     onOpenWorkloadLogs: openWorkloadLogs,

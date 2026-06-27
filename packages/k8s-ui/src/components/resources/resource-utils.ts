@@ -646,7 +646,9 @@ export function getWorkloadStatus(resource: any, kind: string): StatusBadge {
     const ready = status.numberReady || 0
     const updated = status.updatedNumberScheduled || 0
 
-    if (desired === 0) return { text: '0 nodes', color: healthColors.unknown, level: 'unknown' }
+    // 0 desired = the node selector matches no nodes — intentional/idle, not a
+    // fault and not "unknown" (matches pkg/health.Workload). Sky.
+    if (desired === 0) return { text: '0 nodes', color: healthColors.neutral, level: 'neutral' }
     if (ready === desired && updated === desired) {
       return { text: `${ready}/${desired}`, color: healthColors.healthy, level: 'healthy' }
     }
@@ -1008,7 +1010,9 @@ export function getJobStatus(job: any): StatusBadge {
 
   const completeCond = conditions.find((c: any) => c.type === 'Complete' && c.status === 'True')
   if (completeCond) {
-    return { text: 'Complete', color: healthColors.healthy, level: 'healthy' }
+    // A completed Job is done by design — neutral/idle (sky), not the green of a
+    // serving workload (matches pkg/health.Workload).
+    return { text: 'Complete', color: healthColors.neutral, level: 'neutral' }
   }
 
   if (job.spec?.suspend) {

@@ -573,6 +573,7 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
           <HealthBarLegendItem color="bg-blue-500/60 dark:bg-blue-500/60" label="rolling" description="Expected degradation during deployment rollout" />
           <HealthBarLegendItem color="bg-amber-500/60 dark:bg-[#b8861e]" label="degraded" description="Unexpected partial availability" />
           <HealthBarLegendItem color="bg-red-500/60 dark:bg-red-500/60" label="unhealthy" description="Resource is failing or not ready" />
+          <HealthBarLegendItem color="bg-sky-500/60 dark:bg-sky-500/60" label="idle" description="Intentionally off/resting (completed, suspended, scaled to zero)" />
         </div>
       </div>
 

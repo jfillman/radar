@@ -825,6 +825,42 @@ func TestEnrichHookDiagnosticsPrefersReadErrorOverDeletePolicyHint(t *testing.T)
 	}
 }
 
+func TestEnrichHookDiagnosticsDoesNotTreatEventsOnlyErrorAsPrimaryRBAC(t *testing.T) {
+	hooks := []HelmHook{{
+		Name:      "hooks-pre-upgrade",
+		Namespace: "demo-hooks",
+		Kind:      "Job",
+		Events:    []string{"pre-upgrade"},
+		Status:    "Failed",
+	}}
+	detail := &HelmReleaseDetail{
+		Name:            "hooks",
+		Namespace:       "demo-hooks",
+		Hooks:           hooks,
+		HookDiagnostics: extractHookDiagnostics(hooks),
+	}
+	client := fake.NewSimpleClientset()
+	client.Fake.PrependReactor("list", "events", func(action ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "events"}, "", fmt.Errorf("denied"))
+	})
+
+	EnrichHookDiagnosticsWithClusterEvidence(context.Background(), detail, client)
+
+	if len(detail.HookDiagnostics) != 1 {
+		t.Fatalf("len(HookDiagnostics) = %d, want 1", len(detail.HookDiagnostics))
+	}
+	diag := detail.HookDiagnostics[0]
+	if !diag.EvidenceUnavailable {
+		t.Fatal("EvidenceUnavailable = false, want true")
+	}
+	if !strings.Contains(diag.EvidenceUnavailableReason, "No live Job/Pod evidence") {
+		t.Fatalf("EvidenceUnavailableReason = %q, want no-live-evidence reason", diag.EvidenceUnavailableReason)
+	}
+	if diag.Evidence == nil || len(diag.Evidence.Errors) == 0 || !strings.HasPrefix(diag.Evidence.Errors[0], "events:") {
+		t.Fatalf("Evidence errors = %#v, want event read error retained", diag.Evidence)
+	}
+}
+
 func TestEnrichHookDiagnosticsMarksUnavailableWhenClientMissing(t *testing.T) {
 	hooks := []HelmHook{{
 		Name:           "hooks-pre-upgrade",

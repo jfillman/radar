@@ -87,7 +87,7 @@ func EnrichHookDiagnosticsWithClusterEvidence(ctx context.Context, detail *HelmR
 			diag.EvidenceUnavailableReason = ""
 			continue
 		}
-		if len(evidence.Errors) > 0 {
+		if hasPrimaryHookEvidenceError(evidence.Errors) {
 			diag.EvidenceUnavailable = true
 			diag.EvidenceUnavailableReason = "Radar could not read live hook evidence with the current Kubernetes identity."
 			continue
@@ -452,6 +452,15 @@ func (e HookEvidence) hasLiveEvidence() bool {
 	}
 	for _, log := range e.Logs {
 		if len(log.Lines) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPrimaryHookEvidenceError(errors []string) bool {
+	for _, err := range errors {
+		if strings.HasPrefix(err, "job:") || strings.HasPrefix(err, "pod:") || strings.HasPrefix(err, "pods:") {
 			return true
 		}
 	}

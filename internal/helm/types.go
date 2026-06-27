@@ -77,6 +77,7 @@ type HelmReleaseDetail struct {
 // HelmHook represents a Helm hook (pre/post install, upgrade, etc.)
 type HelmHook struct {
 	Name              string     `json:"name"`
+	Namespace         string     `json:"namespace,omitempty"`
 	Kind              string     `json:"kind"`
 	Path              string     `json:"path,omitempty"`
 	Events            []string   `json:"events"`
@@ -90,13 +91,66 @@ type HelmHook struct {
 
 // HookDiagnostic summarizes failed or suspicious hook state for release forensics.
 type HookDiagnostic struct {
-	Name                      string   `json:"name"`
-	Kind                      string   `json:"kind"`
-	Events                    []string `json:"events,omitempty"`
-	Phase                     string   `json:"phase"`
-	Message                   string   `json:"message"`
-	EvidenceUnavailable       bool     `json:"evidenceUnavailable,omitempty"`
-	EvidenceUnavailableReason string   `json:"evidenceUnavailableReason,omitempty"`
+	Name                      string        `json:"name"`
+	Namespace                 string        `json:"namespace,omitempty"`
+	Kind                      string        `json:"kind"`
+	Events                    []string      `json:"events,omitempty"`
+	Phase                     string        `json:"phase"`
+	Message                   string        `json:"message"`
+	Evidence                  *HookEvidence `json:"evidence,omitempty"`
+	EvidenceUnavailable       bool          `json:"evidenceUnavailable,omitempty"`
+	EvidenceUnavailableReason string        `json:"evidenceUnavailableReason,omitempty"`
+}
+
+// HookEvidence is best-effort live evidence for a failed or running hook.
+type HookEvidence struct {
+	Summary string              `json:"summary,omitempty"`
+	Jobs    []HookJobEvidence   `json:"jobs,omitempty"`
+	Pods    []HookPodEvidence   `json:"pods,omitempty"`
+	Events  []HookEventEvidence `json:"events,omitempty"`
+	Logs    []HookLogEvidence   `json:"logs,omitempty"`
+	Errors  []string            `json:"errors,omitempty"`
+}
+
+type HookJobEvidence struct {
+	Name       string   `json:"name"`
+	Namespace  string   `json:"namespace,omitempty"`
+	Status     string   `json:"status,omitempty"`
+	Active     int32    `json:"active,omitempty"`
+	Succeeded  int32    `json:"succeeded,omitempty"`
+	Failed     int32    `json:"failed,omitempty"`
+	Conditions []string `json:"conditions,omitempty"`
+}
+
+type HookPodEvidence struct {
+	Name         string `json:"name"`
+	Namespace    string `json:"namespace,omitempty"`
+	Phase        string `json:"phase,omitempty"`
+	Ready        string `json:"ready,omitempty"`
+	RestartCount int32  `json:"restartCount,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Message      string `json:"message,omitempty"`
+}
+
+type HookEventEvidence struct {
+	InvolvedKind string `json:"involvedKind"`
+	InvolvedName string `json:"involvedName"`
+	Type         string `json:"type,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Message      string `json:"message,omitempty"`
+	Count        int32  `json:"count,omitempty"`
+	LastSeen     string `json:"lastSeen,omitempty"`
+}
+
+type HookLogEvidence struct {
+	Pod          string   `json:"pod"`
+	Container    string   `json:"container"`
+	Previous     bool     `json:"previous,omitempty"`
+	Lines        []string `json:"lines,omitempty"`
+	TotalLines   int      `json:"totalLines,omitempty"`
+	MatchedLines int      `json:"matchedLines,omitempty"`
+	Fallback     bool     `json:"fallback,omitempty"`
+	Error        string   `json:"error,omitempty"`
 }
 
 // ChartDependency represents a chart dependency

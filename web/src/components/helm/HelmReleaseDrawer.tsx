@@ -12,7 +12,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ConfirmDialog } from '../ui/ConfirmDialog'
 import { Tooltip } from '../ui/Tooltip'
 import { Markdown } from '../ui/Markdown'
-import type { SelectedHelmRelease, HelmHook, ChartDependency, HelmOperation, HelmRevision, ResourceDiff, HookDiagnostic } from '../../types'
+import type { SelectedHelmRelease, HelmHook, ChartDependency, HelmOperation, HelmRevision, ResourceDiff, HookDiagnostic, HookLogEvidence } from '../../types'
 import type { NavigateToResource } from '../../utils/navigation'
 import { formatDate } from './helm-utils'
 import { getHelmStatusColor, SEVERITY_BADGE, SEVERITY_TEXT } from '../../utils/badge-colors'
@@ -45,6 +45,7 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
   const [activeTab, setActiveTab] = useState<TabId>('overview')
   const [copied, setCopied] = useState<string | null>(null)
   const [drawerWidth, setDrawerWidth] = useState(DEFAULT_WIDTH)
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? DEFAULT_WIDTH : window.innerWidth))
   const [isResizing, setIsResizing] = useState(false)
   const [selectedRevision, setSelectedRevision] = useState<number | undefined>(undefined)
   const [showAllValues, setShowAllValues] = useState(false)
@@ -154,13 +155,24 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [onClose])
 
+  useEffect(() => {
+    const handleWindowResize = () => setViewportWidth(window.innerWidth)
+    handleWindowResize()
+    window.addEventListener('resize', handleWindowResize)
+    return () => window.removeEventListener('resize', handleWindowResize)
+  }, [])
+
+  const minDrawerWidth = Math.min(MIN_WIDTH, viewportWidth)
+  const maxDrawerWidth = viewportWidth < MIN_WIDTH ? viewportWidth : Math.max(MIN_WIDTH, viewportWidth * MAX_WIDTH_PERCENT)
+  const renderedDrawerWidth = Math.max(minDrawerWidth, Math.min(drawerWidth, maxDrawerWidth))
+
   // Resize handlers
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     setIsResizing(true)
     resizeStartX.current = e.clientX
-    resizeStartWidth.current = drawerWidth
-  }, [drawerWidth])
+    resizeStartWidth.current = renderedDrawerWidth
+  }, [renderedDrawerWidth])
 
   useEffect(() => {
     if (!isResizing) return
@@ -168,11 +180,13 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
     document.body.style.cursor = 'ew-resize'
     document.body.style.userSelect = 'none'
 
-    const maxWidth = window.innerWidth * MAX_WIDTH_PERCENT
     const handleMouseMove = (e: MouseEvent) => {
       const deltaX = resizeStartX.current - e.clientX
       const newWidth = resizeStartWidth.current + deltaX
-      setDrawerWidth(Math.max(MIN_WIDTH, Math.min(newWidth, maxWidth)))
+      const viewport = window.innerWidth
+      const minWidth = Math.min(MIN_WIDTH, viewport)
+      const maxWidth = viewport < MIN_WIDTH ? viewport : Math.max(MIN_WIDTH, viewport * MAX_WIDTH_PERCENT)
+      setDrawerWidth(Math.max(minWidth, Math.min(newWidth, maxWidth)))
     }
     const handleMouseUp = () => setIsResizing(false)
     document.addEventListener('mousemove', handleMouseMove)
@@ -345,7 +359,7 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
         TRANSITION_DRAWER,
         isOpen ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'
       )}
-      style={{ width: drawerWidth, top: headerHeight, height: `calc(100vh - ${headerHeight}px - ${dockInset}px)` }}
+      style={{ width: renderedDrawerWidth, top: headerHeight, height: `calc(100vh - ${headerHeight}px - ${dockInset}px)` }}
     >
       {/* Resize handle */}
       <div
@@ -589,7 +603,7 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
               />
             )}
             {activeTab === 'hooks' && (
-              <HooksTab hooks={releaseDetail.hooks || []} />
+              <HooksTab hooks={releaseDetail.hooks || []} hookDiagnostics={releaseDetail.hookDiagnostics || []} />
             )}
             {activeTab === 'diff' && diffRevisions && (
               <RoleGatedPanel min="member" feature="release revision comparison">
@@ -1092,9 +1106,12 @@ function HelmOperationBanner({
           {hookDiagnostics && hookDiagnostics.length > 0 && (
             <div className="mt-2 rounded-md bg-theme-base/50 p-2 text-xs">
               <div className="font-medium text-theme-text-secondary">
-                Hook signal: {hookDiagnostics[0].name} ({hookDiagnostics[0].kind}) is {hookDiagnostics[0].phase}
+                Hook signal: {formatHookRef(hookDiagnostics[0])} is {hookDiagnostics[0].phase}
               </div>
               <div className="mt-1 text-theme-text-tertiary">{hookDiagnostics[0].message}</div>
+              {hookDiagnostics[0].evidence?.summary && (
+                <div className="mt-1 text-theme-text-secondary">{hookDiagnostics[0].evidence.summary}</div>
+              )}
               {hookDiagnostics[0].evidenceUnavailableReason && (
                 <div className="mt-1 text-theme-text-tertiary">{hookDiagnostics[0].evidenceUnavailableReason}</div>
               )}
@@ -1293,9 +1310,10 @@ function OverviewTab({ release, onCopy, copied }: OverviewTabProps) {
 // Hooks tab content
 interface HooksTabProps {
   hooks: HelmHook[]
+  hookDiagnostics: HookDiagnostic[]
 }
 
-function HooksTab({ hooks }: HooksTabProps) {
+function HooksTab({ hooks, hookDiagnostics }: HooksTabProps) {
   if (hooks.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-48 text-theme-text-tertiary">
@@ -1327,24 +1345,31 @@ function HooksTab({ hooks }: HooksTabProps) {
     return SEVERITY_BADGE.neutral
   }
 
+  const diagnostics = new Map<string, HookDiagnostic>()
+  for (const diagnostic of hookDiagnostics) {
+    diagnostics.set(hookDiagnosticKey(diagnostic.namespace, diagnostic.kind, diagnostic.name), diagnostic)
+    diagnostics.set(hookDiagnosticKey(undefined, diagnostic.kind, diagnostic.name), diagnostic)
+  }
+
   return (
     <div className="p-4 space-y-3">
-      <p className="text-sm text-theme-text-secondary mb-4">
-        Helm hooks are executed at specific points during the release lifecycle.
-      </p>
-      {hooks.map((hook) => (
-        <div key={hook.name} className="bg-theme-elevated/30 rounded-lg p-4">
-          <div className="flex items-start justify-between mb-2">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-theme-text-primary font-medium">{hook.name}</span>
-                <span className="badge-sm bg-theme-hover/50 text-theme-text-secondary">
+      {hooks.map((hook) => {
+        const diagnostic = diagnostics.get(hookDiagnosticKey(hook.namespace, hook.kind, hook.name))
+          || diagnostics.get(hookDiagnosticKey(undefined, hook.kind, hook.name))
+        return (
+        <div key={`${hook.namespace || '_'}:${hook.kind}:${hook.name}`} className="bg-theme-elevated/30 rounded-lg p-4">
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="break-all text-theme-text-primary font-medium">{hook.name}</span>
+                <span className="badge-sm shrink-0 bg-theme-hover/50 text-theme-text-secondary">
                   {hook.kind}
                 </span>
               </div>
-              <div className="flex items-center gap-2 mt-1 text-xs text-theme-text-tertiary">
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-theme-text-tertiary">
+                {hook.namespace && <span className="break-all">Namespace: {hook.namespace}</span>}
                 <span>Weight: {hook.weight}</span>
-                {hook.path && <span className="truncate">Path: {hook.path}</span>}
+                {hook.path && <span className="break-all">Path: {hook.path}</span>}
               </div>
             </div>
             {hook.status && (
@@ -1391,8 +1416,144 @@ function HooksTab({ hooks }: HooksTabProps) {
               )}
             </div>
           )}
+          {diagnostic && <HookDiagnosticEvidence diagnostic={diagnostic} />}
         </div>
-      ))}
+        )
+      })}
+    </div>
+  )
+}
+
+function hookDiagnosticKey(namespace: string | undefined, kind: string | undefined, name: string | undefined): string {
+  return `${namespace || ''}/${(kind || '').toLowerCase()}/${name || ''}`
+}
+
+function formatHookRef(hook: Pick<HookDiagnostic, 'namespace' | 'kind' | 'name'>): string {
+  return `${hook.namespace ? `${hook.namespace}/` : ''}${hook.name} (${hook.kind})`
+}
+
+function HookDiagnosticEvidence({ diagnostic }: { diagnostic: HookDiagnostic }) {
+  const evidence = diagnostic.evidence
+
+  return (
+    <div className="mt-3 border-t border-theme-border/60 pt-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-theme-text-secondary">Diagnostic evidence</span>
+        <span className={clsx('badge-sm', diagnostic.phase.toLowerCase() === 'failed' ? SEVERITY_BADGE.error : SEVERITY_BADGE.warning)}>
+          {diagnostic.phase}
+        </span>
+        {evidence?.summary && <span className="text-theme-text-tertiary">{evidence.summary}</span>}
+      </div>
+      <div className="mt-1 text-theme-text-tertiary">{diagnostic.message}</div>
+      {diagnostic.evidenceUnavailableReason && (
+        <div className="mt-1 text-theme-text-tertiary">{diagnostic.evidenceUnavailableReason}</div>
+      )}
+      {evidence && (
+        <div className="mt-3 space-y-3">
+          {evidence.jobs && evidence.jobs.length > 0 && (
+            <div className="space-y-1">
+              {evidence.jobs.map((job) => (
+                <div key={`${job.namespace || ''}/${job.name}`} className="grid grid-cols-[80px_1fr] gap-2 rounded bg-theme-base/40 px-2 py-1">
+                  <span className="text-theme-text-tertiary">Job</span>
+                  <span className="min-w-0 text-theme-text-primary">
+                    <span className="break-all font-medium">{job.namespace ? `${job.namespace}/` : ''}{job.name}</span>
+                    {job.status && <span className="ml-2 text-theme-text-secondary">{job.status}</span>}
+                    <span className="ml-2 text-theme-text-tertiary">
+                      active {job.active || 0} · succeeded {job.succeeded || 0} · failed {job.failed || 0}
+                    </span>
+                  </span>
+                  {job.conditions?.map((condition) => (
+                    <span key={condition} className="col-start-2 text-theme-text-tertiary">{condition}</span>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {evidence.pods && evidence.pods.length > 0 && (
+            <div className="space-y-1">
+              {evidence.pods.map((pod) => (
+                <div key={`${pod.namespace || ''}/${pod.name}`} className="grid grid-cols-[80px_1fr] gap-2 rounded bg-theme-base/40 px-2 py-1">
+                  <span className="text-theme-text-tertiary">Pod</span>
+                  <span className="min-w-0 text-theme-text-primary">
+                    <span className="break-all font-medium">{pod.namespace ? `${pod.namespace}/` : ''}{pod.name}</span>
+                    {pod.phase && <span className="ml-2 text-theme-text-secondary">{pod.phase}</span>}
+                    {pod.ready && <span className="ml-2 text-theme-text-tertiary">{pod.ready} ready</span>}
+                    {Boolean(pod.restartCount) && <span className="ml-2 text-theme-text-tertiary">{pod.restartCount} restarts</span>}
+                  </span>
+                  {(pod.reason || pod.message) && (
+                    <span className="col-start-2 text-theme-text-tertiary">
+                      {pod.reason && <span className="font-medium">{pod.reason}: </span>}
+                      {pod.message}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {evidence.events && evidence.events.length > 0 && (
+            <div className="space-y-1">
+              {evidence.events.map((event, index) => (
+                <div key={`${event.involvedKind}/${event.involvedName}/${event.reason || index}`} className="grid grid-cols-[80px_1fr] gap-2 rounded bg-theme-base/40 px-2 py-1">
+                  <span className="text-theme-text-tertiary">Event</span>
+                  <span className="min-w-0 text-theme-text-primary">
+                    <span className={clsx('badge-sm mr-2', event.type === 'Warning' ? SEVERITY_BADGE.warning : SEVERITY_BADGE.neutral)}>
+                      {event.type || 'Event'}
+                    </span>
+                    <span className="font-medium">{event.reason || 'Unknown'}</span>
+                    <span className="ml-2 break-all text-theme-text-tertiary">{event.involvedKind}/{event.involvedName}</span>
+                  </span>
+                  {event.message && <span className="col-start-2 text-theme-text-tertiary">{event.message}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {evidence.logs && evidence.logs.length > 0 && (
+            <div className="space-y-2">
+              {evidence.logs.map((log, index) => (
+                <HookLogEvidenceBlock key={`${log.pod}/${log.container}/${log.previous ? 'previous' : 'current'}/${index}`} log={log} />
+              ))}
+            </div>
+          )}
+
+          {evidence.errors && evidence.errors.length > 0 && (
+            <div className="space-y-1 text-theme-text-tertiary">
+              {evidence.errors.map((error) => (
+                <div key={error}>Evidence read error: {error}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function HookLogEvidenceBlock({ log }: { log: HookLogEvidence }) {
+  const visibleLines = (log.lines || []).slice(0, 8)
+
+  return (
+    <div className="rounded bg-theme-base/40 px-2 py-2">
+      <div className="mb-1 flex flex-wrap items-center gap-2 text-theme-text-secondary">
+        <span className="font-medium">Logs</span>
+        <span className="break-all">{log.pod}/{log.container}</span>
+        {log.previous && <span className="badge-sm bg-theme-hover/50 text-theme-text-secondary">previous</span>}
+        {log.fallback && <span className="text-theme-text-tertiary">fallback tail</span>}
+      </div>
+      {log.error ? (
+        <div className="text-theme-text-tertiary">{log.error}</div>
+      ) : (
+        <>
+          <pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded bg-theme-base px-2 py-1 font-mono text-[11px] leading-5 text-theme-text-secondary">
+            {visibleLines.join('\n')}
+          </pre>
+          {log.lines && log.lines.length > visibleLines.length && (
+            <div className="mt-1 text-theme-text-tertiary">+{log.lines.length - visibleLines.length} more lines in API response</div>
+          )}
+        </>
+      )}
     </div>
   )
 }

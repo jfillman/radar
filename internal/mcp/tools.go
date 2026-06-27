@@ -253,9 +253,11 @@ func registerTools(server *mcp.Server) {
 			"and their status. The namespace parameter is the Helm storage namespace: use storageNamespace " +
 			"from list_helm_releases when present, otherwise use namespace. The default response includes " +
 			"storageNamespace, managedByFluxHelmRelease, resource health, and lastOperation when Helm history " +
-			"indicates a current failed upgrade, rollback-after-failure, rollback, or stuck pending operation. " +
+			"indicates a current failed upgrade, rollback-after-failure, rollback, or stuck pending operation, " +
+			"plus hooks and failed/running hookDiagnostics with live Job/Pod/Event/redacted-log evidence when available. " +
 			"Optionally include values, revision history, operation history, manifest diff, values diff, " +
-			"notes diff, or rendered-resource set diff between revisions using the 'include' parameter " +
+			"notes diff, or rendered-resource set diff between revisions using the 'include' parameter. " +
+			"Values returned through MCP are key-aware redacted. " +
 			"(comma-separated: values, history, operations, diff, values_diff, notes_diff, resource_diff). " +
 			"diff_revision_1 and diff_revision_2 are used when include contains any *_diff or diff token.",
 		Annotations: readOnly,

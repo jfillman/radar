@@ -265,15 +265,17 @@ Unified timeline of Kubernetes events and resource changes.
 
 ### Helm
 
-Manage Helm releases deployed in your cluster — inspect values and rendered manifests, diff revisions, upgrade, rollback, and uninstall. Radar tracks available chart upgrades (from your configured repos or your own OCI registries) and lets you pick a specific target version.
+Manage Helm releases deployed in your cluster — inspect values and rendered manifests, diff revisions, identify failed upgrades and rollback-after-failure patterns, diagnose failed hooks, upgrade, rollback, and uninstall. Radar tracks available chart upgrades (from your configured repos or your own OCI registries) and lets you pick a specific target version. See [Helm Support](docs/helm.md) for the detailed behavior and limits.
 
 <p align="center">
   <img src="docs/screenshots/helm-view.png" alt="Helm View" width="800">
   <br><em>Helm View — Manage your Helm deployments</em>
 </p>
 
-- View all releases across namespaces with status, chart version, and app version
-- Inspect values, compare revisions, view release history
+- View all releases across namespaces with status, chart version, app version, resource health, storage namespace, and Flux ownership
+- Inspect values, compare revisions across values/manifests/notes/resources, and view release history
+- Surface failed upgrades, stuck pending operations, rollback history, and inferred atomic-style rollbacks
+- Correlate failed/running hooks with remaining Job, Pod, Event, and redacted log evidence
 - Upgrade, rollback, or uninstall releases directly from the UI
 
 ### Compare Resources

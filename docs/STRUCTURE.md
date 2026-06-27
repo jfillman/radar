@@ -15,6 +15,7 @@ radar/
 │   ├── helm/                  # Helm client integration
 │   │   ├── client.go          # Helm SDK wrapper
 │   │   ├── handlers.go        # HTTP handlers for Helm operations
+│   │   ├── hook_evidence.go   # Live Job/Pod/Event/log evidence for failed hooks
 │   │   └── types.go           # Helm release types
 │   ├── images/                # Container image analysis
 │   │   ├── auth.go            # Registry authentication (pull secrets, ECR, GCR, ACR)

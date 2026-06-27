@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/skyhook-io/radar/internal/helm"
+	"github.com/skyhook-io/radar/internal/k8s"
 	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 )
@@ -33,7 +34,7 @@ type listHelmReleasesInput struct {
 type getHelmReleaseInput struct {
 	Namespace string `json:"namespace" jsonschema:"Helm release storage namespace; use storageNamespace from list_helm_releases when present, otherwise namespace"`
 	Name      string `json:"name" jsonschema:"release name"`
-	Include   string `json:"include,omitempty" jsonschema:"comma-separated extras to include: values, history, operations, diff, values_diff, notes_diff, resource_diff. Example: values,history"`
+	Include   string `json:"include,omitempty" jsonschema:"comma-separated extras to include: values (key-aware redacted), history, operations, diff, values_diff, notes_diff, resource_diff. Hook diagnostics are included by default when present. Example: values,history"`
 	DiffRev1  int    `json:"diff_revision_1,omitempty" jsonschema:"first revision for revision diffs; used when include contains diff, values_diff, notes_diff, or resource_diff"`
 	DiffRev2  int    `json:"diff_revision_2,omitempty" jsonschema:"second revision for revision diffs; used when include contains diff, values_diff, notes_diff, or resource_diff; defaults to current"`
 }
@@ -83,6 +84,7 @@ func handleGetHelmRelease(ctx context.Context, req *mcp.CallToolRequest, input g
 	if err != nil {
 		return nil, nil, fmt.Errorf("release %s/%s not found: %w", input.Namespace, input.Name, err)
 	}
+	helm.EnrichHookDiagnosticsWithClusterEvidence(ctx, detail, k8s.ClientFromContext(ctx))
 
 	// Build a response map starting with the core detail
 	result := map[string]any{
@@ -145,7 +147,8 @@ func handleGetHelmRelease(ctx context.Context, req *mcp.CallToolRequest, input g
 				log.Printf("[mcp] Failed to get values for %s/%s: %v", input.Namespace, input.Name, err)
 				result["valuesError"] = err.Error()
 			} else {
-				result["values"] = values.UserSupplied
+				result["values"] = redactedHelmValues(values.UserSupplied)
+				result["valuesRedacted"] = true
 			}
 		}
 	}
@@ -278,6 +281,43 @@ func helmOperationKey(operation helm.HelmOperation) string {
 		operation.RollbackRevision,
 		operation.TargetRevision,
 	)
+}
+
+func redactedHelmValues(values map[string]any) map[string]any {
+	if values == nil {
+		return map[string]any{}
+	}
+	cloned, ok := cloneHelmValue(values).(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	aicontext.RedactInlineSecrets(cloned)
+	return cloned
+}
+
+func cloneHelmValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = cloneHelmValue(item)
+		}
+		return out
+	case map[any]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[fmt.Sprint(key)] = cloneHelmValue(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = cloneHelmValue(item)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 // parseIncludes parses a comma-separated include string into a set.

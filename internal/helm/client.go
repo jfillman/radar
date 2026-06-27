@@ -1393,6 +1393,14 @@ func extractHooks(rel *release.Release) []HelmHook {
 
 	hooks := make([]HelmHook, 0, len(rel.Hooks))
 	for _, h := range rel.Hooks {
+		namespace := rel.Namespace
+		for _, ref := range parseManifestResources(h.Manifest, rel.Namespace) {
+			if ref.Name == h.Name && strings.EqualFold(ref.Kind, h.Kind) {
+				namespace = ref.Namespace
+				break
+			}
+		}
+
 		events := make([]string, 0, len(h.Events))
 		for _, e := range h.Events {
 			events = append(events, string(e))
@@ -1408,6 +1416,7 @@ func extractHooks(rel *release.Release) []HelmHook {
 
 		hook := HelmHook{
 			Name:              h.Name,
+			Namespace:         namespace,
 			Kind:              h.Kind,
 			Path:              h.Path,
 			Events:            events,
@@ -1443,11 +1452,12 @@ func extractHookDiagnostics(hooks []HelmHook) []HookDiagnostic {
 			continue
 		}
 		diag := HookDiagnostic{
-			Name:    h.Name,
-			Kind:    h.Kind,
-			Events:  h.Events,
-			Phase:   h.Status,
-			Message: fmt.Sprintf("Helm hook %q last ran with phase %q.", h.Name, h.Status),
+			Name:      h.Name,
+			Namespace: h.Namespace,
+			Kind:      h.Kind,
+			Events:    h.Events,
+			Phase:     h.Status,
+			Message:   fmt.Sprintf("Helm hook %q last ran with phase %q.", h.Name, h.Status),
 		}
 		if len(h.DeletePolicies) > 0 {
 			diag.EvidenceUnavailable = true

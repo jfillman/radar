@@ -49,3 +49,38 @@ func TestMergeHelmOperationsDeduplicatesLastOperation(t *testing.T) {
 		t.Fatalf("len(operations) = %d, want 1: %#v", len(got), got)
 	}
 }
+
+func TestRedactedHelmValuesRedactsSecretsAndKeepsReferences(t *testing.T) {
+	input := map[string]any{
+		"image": map[string]any{
+			"repository": "ghcr.io/acme/cart",
+			"tag":        "1.2.3",
+		},
+		"password":   "supersecret",
+		"secretName": "cart-db-secret",
+		"nested": []any{
+			map[string]any{"token": "short-token"},
+			"Bearer abcdefghijklmnopqrstuvwxyz123456",
+		},
+	}
+
+	got := redactedHelmValues(input)
+
+	if got["password"] != "[REDACTED]" {
+		t.Fatalf("password = %#v, want redacted", got["password"])
+	}
+	if got["secretName"] != "cart-db-secret" {
+		t.Fatalf("secretName = %#v, want reference preserved", got["secretName"])
+	}
+	nested := got["nested"].([]any)
+	nestedMap := nested[0].(map[string]any)
+	if nestedMap["token"] != "[REDACTED]" {
+		t.Fatalf("nested token = %#v, want redacted", nestedMap["token"])
+	}
+	if nested[1] != "Bearer [REDACTED]" {
+		t.Fatalf("bearer token = %#v, want redacted", nested[1])
+	}
+	if input["password"] != "supersecret" {
+		t.Fatalf("input mutated: %#v", input["password"])
+	}
+}

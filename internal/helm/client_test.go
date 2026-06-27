@@ -3,6 +3,7 @@ package helm
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/skyhook-io/radar/pkg/helmhistory"
 
@@ -17,6 +19,7 @@ import (
 	"helm.sh/helm/v3/pkg/cli"
 	"helm.sh/helm/v3/pkg/release"
 	helmtime "helm.sh/helm/v3/pkg/time"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -576,6 +579,118 @@ func TestExtractHooksOmitsZeroTimes(t *testing.T) {
 	}
 	if hooks[0].StartedAt != nil || hooks[0].CompletedAt != nil {
 		t.Fatalf("hook times = started %v completed %v, want nil zero times", hooks[0].StartedAt, hooks[0].CompletedAt)
+	}
+}
+
+func TestEnrichHookDiagnosticsWithClusterEvidenceCorrelatesJobPodsEvents(t *testing.T) {
+	rel := helmTestRelease("hooks", "demo", 2, release.StatusFailed, `Upgrade "hooks" failed: hook failed`)
+	rel.Hooks = []*release.Hook{
+		{
+			Name:   "hooks-pre-upgrade",
+			Kind:   "Job",
+			Events: []release.HookEvent{release.HookPreUpgrade},
+			Manifest: `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hooks-pre-upgrade
+  namespace: demo-hooks
+`,
+			LastRun: release.HookExecution{
+				Phase:       release.HookPhaseFailed,
+				StartedAt:   helmtime.Unix(10, 0),
+				CompletedAt: helmtime.Unix(11, 0),
+			},
+		},
+	}
+	hooks := extractHooks(rel)
+	detail := &HelmReleaseDetail{
+		Name:            rel.Name,
+		Namespace:       rel.Namespace,
+		Hooks:           hooks,
+		HookDiagnostics: extractHookDiagnostics(hooks),
+	}
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "hooks-pre-upgrade", Namespace: "demo-hooks"},
+		Status: batchv1.JobStatus{
+			Failed: 1,
+			Conditions: []batchv1.JobCondition{{
+				Type:    batchv1.JobFailed,
+				Status:  corev1.ConditionTrue,
+				Reason:  "BackoffLimitExceeded",
+				Message: "migration failed password=supersecret",
+			}},
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "hooks-pre-upgrade-abcde",
+			Namespace: "demo-hooks",
+			Labels:    map[string]string{"job-name": "hooks-pre-upgrade"},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "migrate"}}},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodFailed,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:  "migrate",
+				Ready: false,
+				State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{
+						ExitCode: 1,
+						Reason:   "Error",
+						Message:  "migration failed password=supersecret",
+					},
+				},
+			}},
+		},
+	}
+	event := &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{Name: "hook-event", Namespace: "demo-hooks"},
+		InvolvedObject: corev1.ObjectReference{
+			Kind:      "Pod",
+			Namespace: "demo-hooks",
+			Name:      "hooks-pre-upgrade-abcde",
+		},
+		Type:          corev1.EventTypeWarning,
+		Reason:        "BackOff",
+		Message:       "Back-off restarting failed container password=supersecret",
+		Count:         2,
+		LastTimestamp: metav1.NewTime(time.Unix(20, 0)),
+	}
+	client := fake.NewSimpleClientset(job, pod, event)
+
+	EnrichHookDiagnosticsWithClusterEvidence(context.Background(), detail, client)
+
+	if len(detail.HookDiagnostics) != 1 {
+		t.Fatalf("len(HookDiagnostics) = %d, want 1", len(detail.HookDiagnostics))
+	}
+	diag := detail.HookDiagnostics[0]
+	if diag.Namespace != "demo-hooks" {
+		t.Fatalf("diagnostic namespace = %q, want demo-hooks", diag.Namespace)
+	}
+	if diag.EvidenceUnavailable {
+		t.Fatalf("EvidenceUnavailable = true, reason %q", diag.EvidenceUnavailableReason)
+	}
+	if diag.Evidence == nil {
+		t.Fatal("Evidence = nil")
+	}
+	if len(diag.Evidence.Jobs) != 1 || diag.Evidence.Jobs[0].Status != "failed" {
+		t.Fatalf("jobs = %#v, want failed job evidence", diag.Evidence.Jobs)
+	}
+	if len(diag.Evidence.Pods) != 1 || diag.Evidence.Pods[0].Reason != "Error" {
+		t.Fatalf("pods = %#v, want pod error evidence", diag.Evidence.Pods)
+	}
+	if strings.Contains(diag.Evidence.Pods[0].Message, "supersecret") {
+		t.Fatalf("pod message was not redacted: %q", diag.Evidence.Pods[0].Message)
+	}
+	if len(diag.Evidence.Events) != 1 || diag.Evidence.Events[0].Reason != "BackOff" {
+		t.Fatalf("events = %#v, want BackOff evidence", diag.Evidence.Events)
+	}
+	if strings.Contains(diag.Evidence.Events[0].Message, "supersecret") {
+		t.Fatalf("event message was not redacted: %q", diag.Evidence.Events[0].Message)
+	}
+	if diag.Evidence.Summary == "" {
+		t.Fatal("Evidence summary is empty")
 	}
 }
 

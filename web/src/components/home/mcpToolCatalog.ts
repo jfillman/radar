@@ -152,13 +152,13 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
   },
   {
     name: 'get_helm_release',
-    desc: 'Detailed Helm release info with owned resources, health, Flux ownership, and current lastOperation; include history and operations for the full revision trail.',
+    desc: 'Detailed Helm release info with owned resources, health, Flux ownership, current lastOperation, hooks, and failed/running hook diagnostics with live Job/Pod/Event/redacted-log evidence when available.',
     params: [
       { arg: 'namespace', required: true, desc: 'Helm storage namespace; use storageNamespace from list_helm_releases when present' },
       { arg: 'name', required: true, desc: 'release name' },
-      { arg: 'include', desc: 'values, history, operations, diff' },
-      { arg: 'diff_revision_1', desc: 'first revision for diff' },
-      { arg: 'diff_revision_2', desc: 'second revision for diff (defaults to current)' },
+      { arg: 'include', desc: 'values, history, operations, diff, values_diff, notes_diff, resource_diff' },
+      { arg: 'diff_revision_1', desc: 'first revision for any diff include' },
+      { arg: 'diff_revision_2', desc: 'second revision for any diff include (defaults to current)' },
     ],
   },
   {

@@ -628,6 +628,7 @@ export interface HelmReleaseDetail {
 
 export interface HelmHook {
   name: string
+  namespace?: string
   kind: string
   path?: string
   events: string[]
@@ -641,12 +642,64 @@ export interface HelmHook {
 
 export interface HookDiagnostic {
   name: string
+  namespace?: string
   kind: string
   events?: string[]
   phase: string
   message: string
+  evidence?: HookEvidence
   evidenceUnavailable?: boolean
   evidenceUnavailableReason?: string
+}
+
+export interface HookEvidence {
+  summary?: string
+  jobs?: HookJobEvidence[]
+  pods?: HookPodEvidence[]
+  events?: HookEventEvidence[]
+  logs?: HookLogEvidence[]
+  errors?: string[]
+}
+
+export interface HookJobEvidence {
+  name: string
+  namespace?: string
+  status?: string
+  active?: number
+  succeeded?: number
+  failed?: number
+  conditions?: string[]
+}
+
+export interface HookPodEvidence {
+  name: string
+  namespace?: string
+  phase?: string
+  ready?: string
+  restartCount?: number
+  reason?: string
+  message?: string
+}
+
+export interface HookEventEvidence {
+  involvedKind: string
+  involvedName: string
+  type?: string
+  reason?: string
+  message?: string
+  count?: number
+  lastSeen?: string
+}
+
+export interface HookLogEvidence {
+  pod: string
+  container: string
+  previous?: boolean
+  lines?: string[]
+  totalLines?: number
+  matchedLines?: number
+  fallback?: boolean
+  error?: string
 }
 
 export interface ChartDependency {

@@ -449,7 +449,7 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
                   )}
                 >
                   <Link2 className="w-3 h-3" />
-                  source not tracked
+                  upgrade source not tracked
                 </button>
                 </Tooltip>
               ) : (

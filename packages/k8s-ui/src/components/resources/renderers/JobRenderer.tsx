@@ -25,8 +25,12 @@ function getJobProblems(data: any): string[] {
     }
   }
 
-  // Check for pod failures without terminal condition yet
-  if (!failedCondition && status.failed > 0) {
+  // Check for pod failures without terminal condition yet. A Job that already
+  // completed successfully (Complete condition) keeps its earlier failed pod
+  // attempts in status.failed — those are retries, not a problem — so don't flag
+  // them, or the drawer would read red while the table badge is calm neutral.
+  const completeCondition = conditions.find((c: any) => c.type === 'Complete' && c.status === 'True')
+  if (!failedCondition && !completeCondition && status.failed > 0) {
     const remaining = (spec.backoffLimit ?? 6) - status.failed
     if (remaining > 0) {
       problems.push(`${status.failed} pod(s) failed — ${remaining} retries remaining`)

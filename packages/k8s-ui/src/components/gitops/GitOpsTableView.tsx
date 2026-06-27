@@ -1704,7 +1704,9 @@ function compareRows(a: GitOpsRow, b: GitOpsRow, sortKey: SortKey) {
 // row sorting above a Synced-Progressing one. A sync-aware triage ordering is a
 // reasonable separate default, but not what "sort by Health" should mean.)
 const HEALTH_RANK: Record<string, number> = {
-  Degraded: 0, Missing: 0, Suspended: 1, Unknown: 2, Progressing: 3, Healthy: 4,
+  // Suspended is intentional/benign (neutral), so it sorts at the healthy end —
+  // not near Degraded/Missing — matching its sky tone across the other surfaces.
+  Degraded: 0, Missing: 0, Unknown: 2, Progressing: 3, Healthy: 4, Suspended: 4,
 }
 function healthRank(row: GitOpsRow): number {
   return HEALTH_RANK[row.health] ?? 2

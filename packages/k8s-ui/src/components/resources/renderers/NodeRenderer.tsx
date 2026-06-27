@@ -90,10 +90,13 @@ export function NodeRenderer({ data, relationships, onViewPods, metrics, metrics
         <AlertBanner variant="error" title="Issues Detected" items={problems} />
       )}
 
-      {/* Cordoned is intentional (cordon/drain) — calm sky advisory, not an error */}
+      {/* Cordoned is intentional but consequential — it removes scheduling
+          capacity and a forgotten cordon strands a node. So it's a warning (amber),
+          matching the node table badge + the Cordoned audit check — NOT the calm
+          sky of a no-op intentional state (suspended/idle), and not a red error. */}
       {isCordoned && (
         <AlertBanner
-          variant="info"
+          variant="warning"
           title="Cordoned (unschedulable)"
           message="New pods won't be scheduled here. Uncordon to resume scheduling."
         />

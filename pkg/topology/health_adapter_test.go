@@ -144,3 +144,22 @@ func TestGetJobStatusViaCanonical(t *testing.T) {
 		t.Errorf("completed job = %q, want neutral", got)
 	}
 }
+
+// TestExtractNodeStatusCordoned pins that a Ready-but-cordoned node reads degraded
+// in topology — matching the node table badge + drawer + Cordoned audit — instead
+// of green, which would contradict every other surface for the same node.
+func TestExtractNodeStatusCordoned(t *testing.T) {
+	ready := corev1.Node{Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
+	if got := extractNodeStatus(ready); got != StatusHealthy {
+		t.Errorf("ready node = %q, want healthy", got)
+	}
+	cordoned := ready
+	cordoned.Spec.Unschedulable = true
+	if got := extractNodeStatus(cordoned); got != StatusDegraded {
+		t.Errorf("ready+cordoned node = %q, want degraded", got)
+	}
+	notReady := corev1.Node{Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}}}
+	if got := extractNodeStatus(notReady); got != StatusUnhealthy {
+		t.Errorf("not-ready node = %q, want unhealthy", got)
+	}
+}

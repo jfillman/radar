@@ -22,7 +22,11 @@ export function getArgoApplicationStatus(app: any): StatusBadge {
   const annotations = app.metadata?.annotations
   const suspendedByRadar = annotations?.['radarhq.io/suspended-prune'] || annotations?.['skyhook.io/suspended-prune']
   if (health === 'Suspended' || (!hasAutomatedSync && suspendedByRadar)) {
-    return { text: 'Suspended', color: healthColors.degraded, level: 'degraded' }
+    // Suspended = an operator deliberately paused this app — intentional, not a
+    // degradation. Neutral (sky), matching the backend rollup (mapArgoHealth) so a
+    // suspended app reads the same Idle tone in Applications, the resource table,
+    // and GitOps instead of amber in some surfaces and sky in others.
+    return { text: 'Suspended', color: healthColors.neutral, level: 'neutral' }
   }
 
   // Operation in progress

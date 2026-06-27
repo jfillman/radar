@@ -124,4 +124,22 @@ describe('getPodProblems', () => {
       }),
     ).not.toContainEqual(expect.objectContaining({ message: 'Sandbox Startup Stalled' }))
   })
+
+  it('does not flag a completing Job pod (Running, container exited 0, Ready=false) as Not Ready', () => {
+    expect(
+      getPodProblems({
+        status: {
+          phase: 'Running',
+          containerStatuses: [
+            {
+              name: 'job',
+              ready: false,
+              restartCount: 0,
+              state: { terminated: { reason: 'Completed', exitCode: 0 } },
+            },
+          ],
+        },
+      }),
+    ).not.toContainEqual(expect.objectContaining({ message: 'Not Ready' }))
+  })
 })

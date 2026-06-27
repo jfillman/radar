@@ -112,7 +112,9 @@ function getHealthInfo(health: GitOpsHealthStatus) {
     case 'Degraded':
       return { icon: XCircle, color: SEVERITY_BADGE.error, label: 'Degraded' }
     case 'Suspended':
-      return { icon: Pause, color: SEVERITY_BADGE.warning, label: 'Suspended' }
+      // Intentional pause, not a degradation — sky (info), matching the resource
+      // table + app rollup. The Pause icon already signals it's deliberate.
+      return { icon: Pause, color: SEVERITY_BADGE.info, label: 'Suspended' }
     case 'Missing':
       return { icon: AlertCircle, color: SEVERITY_BADGE.warning, label: 'Missing' }
     default:

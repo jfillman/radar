@@ -484,11 +484,14 @@ export function getPodProblems(pod: any): PodProblem[] {
     }
   }
 
-  // Not ready (Running but containers not ready)
+  // Not ready (Running but containers not ready). Use the same containerSettledOk
+  // gate as getPodStatus so a completing Job pod (Running, container terminated
+  // exit 0, Ready=false) doesn't raise a drawer problem while the table badge
+  // stays calm — a settled/completed container is not "Not Ready".
   if (phase === 'Running') {
-    const readyContainers = containerStatuses.filter((c: any) => c.ready).length
+    const unsettled = containerStatuses.filter((c: any) => !containerSettledOk(c)).length
     const totalContainers = containerStatuses.length
-    if (totalContainers > 0 && readyContainers < totalContainers) {
+    if (totalContainers > 0 && unsettled > 0) {
       // Only add if we haven't already flagged a more specific issue
       const hasSpecificIssue = problems.some(p =>
         p.message.includes('Probe') || p.message.includes('CrashLoop') || p.message.includes('OOM')

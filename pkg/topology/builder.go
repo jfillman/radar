@@ -7429,10 +7429,16 @@ func extractKarpenterNodeClaimStatus(nc unstructured.Unstructured) HealthStatus 
 func extractNodeStatus(node corev1.Node) HealthStatus {
 	for _, cond := range node.Status.Conditions {
 		if cond.Type == corev1.NodeReady {
-			if cond.Status == corev1.ConditionTrue {
-				return StatusHealthy
+			if cond.Status != corev1.ConditionTrue {
+				return StatusUnhealthy
 			}
-			return StatusUnhealthy
+			// Ready but cordoned = lost scheduling capacity — degraded (amber),
+			// matching the node table badge + drawer + Cordoned audit, so the same
+			// node doesn't read green here while it's flagged elsewhere.
+			if node.Spec.Unschedulable {
+				return StatusDegraded
+			}
+			return StatusHealthy
 		}
 	}
 	return StatusUnknown

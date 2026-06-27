@@ -65,6 +65,7 @@ type HelmReleaseDetail struct {
 	HealthIssue      string            `json:"healthIssue,omitempty"`
 	HealthSummary    string            `json:"healthSummary,omitempty"`
 	Hooks            []HelmHook        `json:"hooks,omitempty"`
+	HookDiagnostics  []HookDiagnostic  `json:"hookDiagnostics,omitempty"`
 	Readme           string            `json:"readme,omitempty"`
 	Dependencies     []ChartDependency `json:"dependencies,omitempty"`
 	LastOperation    *HelmOperation    `json:"lastOperation,omitempty"`
@@ -75,11 +76,27 @@ type HelmReleaseDetail struct {
 
 // HelmHook represents a Helm hook (pre/post install, upgrade, etc.)
 type HelmHook struct {
-	Name   string   `json:"name"`
-	Kind   string   `json:"kind"`
-	Events []string `json:"events"`
-	Weight int      `json:"weight"`
-	Status string   `json:"status,omitempty"`
+	Name              string     `json:"name"`
+	Kind              string     `json:"kind"`
+	Path              string     `json:"path,omitempty"`
+	Events            []string   `json:"events"`
+	Weight            int        `json:"weight"`
+	Status            string     `json:"status,omitempty"`
+	StartedAt         *time.Time `json:"startedAt,omitempty"`
+	CompletedAt       *time.Time `json:"completedAt,omitempty"`
+	DeletePolicies    []string   `json:"deletePolicies,omitempty"`
+	OutputLogPolicies []string   `json:"outputLogPolicies,omitempty"`
+}
+
+// HookDiagnostic summarizes failed or suspicious hook state for release forensics.
+type HookDiagnostic struct {
+	Name                      string   `json:"name"`
+	Kind                      string   `json:"kind"`
+	Events                    []string `json:"events,omitempty"`
+	Phase                     string   `json:"phase"`
+	Message                   string   `json:"message"`
+	EvidenceUnavailable       bool     `json:"evidenceUnavailable,omitempty"`
+	EvidenceUnavailableReason string   `json:"evidenceUnavailableReason,omitempty"`
 }
 
 // ChartDependency represents a chart dependency
@@ -110,11 +127,43 @@ type HelmValues struct {
 	Computed     map[string]any `json:"computed,omitempty"`
 }
 
+// ValuesDiff represents a values diff between two revisions.
+type ValuesDiff struct {
+	Revision1 int    `json:"revision1"`
+	Revision2 int    `json:"revision2"`
+	AllValues bool   `json:"allValues"`
+	Diff      string `json:"diff"`
+}
+
 // ManifestDiff represents a diff between two revisions
 type ManifestDiff struct {
 	Revision1 int    `json:"revision1"`
 	Revision2 int    `json:"revision2"`
 	Diff      string `json:"diff"`
+}
+
+// NotesDiff represents a release notes diff between two revisions.
+type NotesDiff struct {
+	Revision1 int    `json:"revision1"`
+	Revision2 int    `json:"revision2"`
+	Diff      string `json:"diff"`
+}
+
+// ResourceRef identifies a rendered resource in a Helm revision.
+type ResourceRef struct {
+	Kind       string `json:"kind"`
+	APIVersion string `json:"apiVersion,omitempty"`
+	Name       string `json:"name"`
+	Namespace  string `json:"namespace"`
+}
+
+// ResourceDiff represents added/removed resource identities between revisions.
+type ResourceDiff struct {
+	Revision1 int           `json:"revision1"`
+	Revision2 int           `json:"revision2"`
+	Added     []ResourceRef `json:"added"`
+	Removed   []ResourceRef `json:"removed"`
+	Unchanged []ResourceRef `json:"unchanged"`
 }
 
 // UpgradeInfo contains information about available upgrades

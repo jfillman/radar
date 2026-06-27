@@ -254,9 +254,10 @@ func registerTools(server *mcp.Server) {
 			"from list_helm_releases when present, otherwise use namespace. The default response includes " +
 			"storageNamespace, managedByFluxHelmRelease, resource health, and lastOperation when Helm history " +
 			"indicates a current failed upgrade, rollback-after-failure, rollback, or stuck pending operation. " +
-			"Optionally include values, revision history, operation history, or manifest diff between revisions " +
-			"using the 'include' parameter (comma-separated: values, history, operations, diff). " +
-			"diff_revision_1 and diff_revision_2 are only used when include contains diff.",
+			"Optionally include values, revision history, operation history, manifest diff, values diff, " +
+			"notes diff, or rendered-resource set diff between revisions using the 'include' parameter " +
+			"(comma-separated: values, history, operations, diff, values_diff, notes_diff, resource_diff). " +
+			"diff_revision_1 and diff_revision_2 are used when include contains any *_diff or diff token.",
 		Annotations: readOnly,
 	}, logToolCall("get_helm_release", handleGetHelmRelease))
 

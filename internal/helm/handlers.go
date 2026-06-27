@@ -68,8 +68,11 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		r.Post("/releases/install-stream", h.handleInstallStream)
 		r.Get("/releases/{namespace}/{name}", h.handleGetRelease)
 		r.Get("/releases/{namespace}/{name}/manifest", h.handleGetManifest)
+		r.Get("/releases/{namespace}/{name}/values/diff", h.handleGetValuesDiff)
 		r.Get("/releases/{namespace}/{name}/values", h.handleGetValues)
 		r.Get("/releases/{namespace}/{name}/diff", h.handleGetDiff)
+		r.Get("/releases/{namespace}/{name}/notes/diff", h.handleGetNotesDiff)
+		r.Get("/releases/{namespace}/{name}/resources/diff", h.handleGetResourceDiff)
 		r.Get("/releases/{namespace}/{name}/upgrade-info", h.handleCheckUpgrade)
 		r.Get("/releases/{namespace}/{name}/versions", h.handleAvailableVersions)
 		r.Get("/upgrade-check", h.handleBatchUpgradeCheck)
@@ -211,15 +214,53 @@ func (h *Handlers) handleGetValues(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	allValues := r.URL.Query().Get("all") == "true"
+	revision := 0
+	if revStr := r.URL.Query().Get("revision"); revStr != "" {
+		rev, err := strconv.Atoi(revStr)
+		if err != nil || rev <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid revision parameter")
+			return
+		}
+		revision = rev
+	}
 
 	username, groups := userCreds(r)
-	values, err := client.GetValuesAsUser(namespace, name, allValues, username, groups)
+	values, err := client.GetValuesRevisionAsUser(namespace, name, allValues, revision, username, groups)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	writeJSON(w, values)
+}
+
+// handleGetValuesDiff returns a values diff between two release revisions.
+// Member+ only — values often contain credentials.
+func (h *Handlers) handleGetValuesDiff(w http.ResponseWriter, r *http.Request) {
+	if !requireCloudRole(w, r, auth.RoleMember, "diff Helm release values") {
+		return
+	}
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")
+		return
+	}
+
+	rev1, rev2, ok := parseRevisionPair(w, r)
+	if !ok {
+		return
+	}
+
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	allValues := r.URL.Query().Get("all") == "true"
+	username, groups := userCreds(r)
+	diff, err := client.GetValuesDiffAsUser(namespace, name, rev1, rev2, allValues, username, groups)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, diff)
 }
 
 // handleGetDiff returns the diff between two revisions. Member+ only
@@ -237,23 +278,8 @@ func (h *Handlers) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	rev1Str := r.URL.Query().Get("revision1")
-	rev2Str := r.URL.Query().Get("revision2")
-
-	if rev1Str == "" || rev2Str == "" {
-		writeError(w, http.StatusBadRequest, "revision1 and revision2 parameters are required")
-		return
-	}
-
-	rev1, err := strconv.Atoi(rev1Str)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid revision1 parameter")
-		return
-	}
-
-	rev2, err := strconv.Atoi(rev2Str)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid revision2 parameter")
+	rev1, rev2, ok := parseRevisionPair(w, r)
+	if !ok {
 		return
 	}
 
@@ -265,6 +291,80 @@ func (h *Handlers) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, diff)
+}
+
+// handleGetNotesDiff returns a release notes diff between two revisions.
+func (h *Handlers) handleGetNotesDiff(w http.ResponseWriter, r *http.Request) {
+	if !requireCloudRole(w, r, auth.RoleMember, "diff Helm release notes") {
+		return
+	}
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")
+		return
+	}
+	rev1, rev2, ok := parseRevisionPair(w, r)
+	if !ok {
+		return
+	}
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	username, groups := userCreds(r)
+	diff, err := client.GetNotesDiffAsUser(namespace, name, rev1, rev2, username, groups)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, diff)
+}
+
+// handleGetResourceDiff returns added/removed rendered resources between revisions.
+func (h *Handlers) handleGetResourceDiff(w http.ResponseWriter, r *http.Request) {
+	if !requireCloudRole(w, r, auth.RoleMember, "diff Helm release resources") {
+		return
+	}
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")
+		return
+	}
+	rev1, rev2, ok := parseRevisionPair(w, r)
+	if !ok {
+		return
+	}
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	username, groups := userCreds(r)
+	diff, err := client.GetResourceDiffAsUser(namespace, name, rev1, rev2, username, groups)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, diff)
+}
+
+func parseRevisionPair(w http.ResponseWriter, r *http.Request) (int, int, bool) {
+	rev1Str := r.URL.Query().Get("revision1")
+	rev2Str := r.URL.Query().Get("revision2")
+	if rev1Str == "" || rev2Str == "" {
+		writeError(w, http.StatusBadRequest, "revision1 and revision2 parameters are required")
+		return 0, 0, false
+	}
+	rev1, err := strconv.Atoi(rev1Str)
+	if err != nil || rev1 <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid revision1 parameter")
+		return 0, 0, false
+	}
+	rev2, err := strconv.Atoi(rev2Str)
+	if err != nil || rev2 <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid revision2 parameter")
+		return 0, 0, false
+	}
+	if rev1 == rev2 {
+		writeError(w, http.StatusBadRequest, "revision1 and revision2 must differ")
+		return 0, 0, false
+	}
+	return rev1, rev2, true
 }
 
 // handleCheckUpgrade checks if a newer version is available

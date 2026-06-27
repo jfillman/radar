@@ -36,6 +36,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -443,6 +444,7 @@ func getReleaseWith(actionConfig *action.Configuration, namespace, name string) 
 
 	// Extract hooks
 	hooks := extractHooks(rel)
+	hookDiagnostics := extractHookDiagnostics(hooks)
 
 	// Extract README from chart files
 	readme := extractReadme(rel)
@@ -468,6 +470,7 @@ func getReleaseWith(actionConfig *action.Configuration, namespace, name string) 
 		HealthIssue:      issue,
 		HealthSummary:    summary,
 		Hooks:            hooks,
+		HookDiagnostics:  hookDiagnostics,
 		Readme:           readme,
 		Dependencies:     dependencies,
 		LastOperation:    analysis.LastOperation,
@@ -522,28 +525,39 @@ func getManifestWith(actionConfig *action.Configuration, name string, revision i
 
 // GetValues returns the values for a release
 func (c *Client) GetValues(namespace, name string, allValues bool) (*HelmValues, error) {
+	return c.GetValuesRevision(namespace, name, allValues, 0)
+}
+
+// GetValuesRevision returns the values for a release revision. revision=0 uses the latest.
+func (c *Client) GetValuesRevision(namespace, name string, allValues bool, revision int) (*HelmValues, error) {
 	actionConfig, err := c.getActionConfig(namespace)
 	if err != nil {
 		return nil, err
 	}
-	return getValuesWith(actionConfig, name, allValues)
+	return getValuesWith(actionConfig, name, allValues, revision)
 }
 
 // GetValuesAsUser is GetValues with K8s impersonation.
 func (c *Client) GetValuesAsUser(namespace, name string, allValues bool, username string, groups []string) (*HelmValues, error) {
+	return c.GetValuesRevisionAsUser(namespace, name, allValues, 0, username, groups)
+}
+
+// GetValuesRevisionAsUser is GetValuesRevision with K8s impersonation.
+func (c *Client) GetValuesRevisionAsUser(namespace, name string, allValues bool, revision int, username string, groups []string) (*HelmValues, error) {
 	if username == "" {
-		return c.GetValues(namespace, name, allValues)
+		return c.GetValuesRevision(namespace, name, allValues, revision)
 	}
 	actionConfig, err := c.getActionConfigForUser(namespace, username, groups)
 	if err != nil {
 		return nil, err
 	}
-	return getValuesWith(actionConfig, name, allValues)
+	return getValuesWith(actionConfig, name, allValues, revision)
 }
 
-func getValuesWith(actionConfig *action.Configuration, name string, allValues bool) (*HelmValues, error) {
+func getValuesWith(actionConfig *action.Configuration, name string, allValues bool, revision int) (*HelmValues, error) {
 	getValuesAction := action.NewGetValues(actionConfig)
 	getValuesAction.AllValues = allValues
+	getValuesAction.Version = revision
 
 	values, err := getValuesAction.Run(name)
 	if err != nil {
@@ -557,6 +571,7 @@ func getValuesWith(actionConfig *action.Configuration, name string, allValues bo
 	// If allValues requested, also get just user-supplied for comparison
 	if allValues {
 		getValuesAction.AllValues = false
+		getValuesAction.Version = revision
 		userValues, err := getValuesAction.Run(name)
 		if err == nil {
 			result.UserSupplied = userValues
@@ -565,6 +580,32 @@ func getValuesWith(actionConfig *action.Configuration, name string, allValues bo
 	}
 
 	return result, nil
+}
+
+// GetValuesDiff returns a values diff between two revisions.
+func (c *Client) GetValuesDiff(namespace, name string, revision1, revision2 int, allValues bool) (*ValuesDiff, error) {
+	return c.getValuesDiff(namespace, name, revision1, revision2, allValues, "", nil)
+}
+
+// GetValuesDiffAsUser is GetValuesDiff with K8s impersonation.
+func (c *Client) GetValuesDiffAsUser(namespace, name string, revision1, revision2 int, allValues bool, username string, groups []string) (*ValuesDiff, error) {
+	return c.getValuesDiff(namespace, name, revision1, revision2, allValues, username, groups)
+}
+
+func (c *Client) getValuesDiff(namespace, name string, revision1, revision2 int, allValues bool, username string, groups []string) (*ValuesDiff, error) {
+	values1, err := c.GetValuesRevisionAsUser(namespace, name, allValues, revision1, username, groups)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get values for revision %d: %w", revision1, err)
+	}
+	values2, err := c.GetValuesRevisionAsUser(namespace, name, allValues, revision2, username, groups)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get values for revision %d: %w", revision2, err)
+	}
+	diff, err := computeValuesDiff(values1, values2, revision1, revision2, allValues)
+	if err != nil {
+		return nil, err
+	}
+	return &ValuesDiff{Revision1: revision1, Revision2: revision2, AllValues: allValues, Diff: diff}, nil
 }
 
 // GetManifestDiff returns the diff between two revisions
@@ -596,6 +637,185 @@ func (c *Client) getManifestDiff(namespace, name string, revision1, revision2 in
 		Revision2: revision2,
 		Diff:      diff,
 	}, nil
+}
+
+// GetNotesDiff returns a release notes diff between two revisions.
+func (c *Client) GetNotesDiff(namespace, name string, revision1, revision2 int) (*NotesDiff, error) {
+	return c.getNotesDiff(namespace, name, revision1, revision2, "", nil)
+}
+
+// GetNotesDiffAsUser is GetNotesDiff with K8s impersonation.
+func (c *Client) GetNotesDiffAsUser(namespace, name string, revision1, revision2 int, username string, groups []string) (*NotesDiff, error) {
+	return c.getNotesDiff(namespace, name, revision1, revision2, username, groups)
+}
+
+func (c *Client) getNotesDiff(namespace, name string, revision1, revision2 int, username string, groups []string) (*NotesDiff, error) {
+	rel1, err := c.getReleaseRevisionAsUser(namespace, name, revision1, username, groups)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get release revision %d: %w", revision1, err)
+	}
+	rel2, err := c.getReleaseRevisionAsUser(namespace, name, revision2, username, groups)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get release revision %d: %w", revision2, err)
+	}
+	return &NotesDiff{
+		Revision1: revision1,
+		Revision2: revision2,
+		Diff:      computeDiff(releaseNotes(rel1), releaseNotes(rel2), revision1, revision2),
+	}, nil
+}
+
+func releaseNotes(rel *release.Release) string {
+	if rel == nil || rel.Info == nil {
+		return ""
+	}
+	return rel.Info.Notes
+}
+
+// GetResourceDiff returns added/removed rendered resources between two revisions.
+func (c *Client) GetResourceDiff(namespace, name string, revision1, revision2 int) (*ResourceDiff, error) {
+	return c.getResourceDiff(namespace, name, revision1, revision2, "", nil)
+}
+
+// GetResourceDiffAsUser is GetResourceDiff with K8s impersonation.
+func (c *Client) GetResourceDiffAsUser(namespace, name string, revision1, revision2 int, username string, groups []string) (*ResourceDiff, error) {
+	return c.getResourceDiff(namespace, name, revision1, revision2, username, groups)
+}
+
+func (c *Client) getResourceDiff(namespace, name string, revision1, revision2 int, username string, groups []string) (*ResourceDiff, error) {
+	rel1, err := c.getReleaseRevisionAsUser(namespace, name, revision1, username, groups)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get release revision %d: %w", revision1, err)
+	}
+	rel2, err := c.getReleaseRevisionAsUser(namespace, name, revision2, username, groups)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get release revision %d: %w", revision2, err)
+	}
+	removed, added, unchanged := diffResourceRefs(
+		resourceRefs(parseManifestResources(rel1.Manifest, rel1.Namespace)),
+		resourceRefs(parseManifestResources(rel2.Manifest, rel2.Namespace)),
+	)
+	return &ResourceDiff{
+		Revision1: revision1,
+		Revision2: revision2,
+		Added:     nonNilResourceRefs(added),
+		Removed:   nonNilResourceRefs(removed),
+		Unchanged: nonNilResourceRefs(unchanged),
+	}, nil
+}
+
+func nonNilResourceRefs(refs []ResourceRef) []ResourceRef {
+	if refs == nil {
+		return []ResourceRef{}
+	}
+	return refs
+}
+
+func (c *Client) getReleaseRevisionAsUser(namespace, name string, revision int, username string, groups []string) (*release.Release, error) {
+	var (
+		actionConfig *action.Configuration
+		err          error
+	)
+	if username == "" {
+		actionConfig, err = c.getActionConfig(namespace)
+	} else {
+		actionConfig, err = c.getActionConfigForUser(namespace, username, groups)
+	}
+	if err != nil {
+		return nil, err
+	}
+	getAction := action.NewGet(actionConfig)
+	if revision > 0 {
+		getAction.Version = revision
+	}
+	rel, err := getAction.Run(name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get helm release: %w", err)
+	}
+	return rel, nil
+}
+
+func computeValuesDiff(values1, values2 *HelmValues, rev1, rev2 int, allValues bool) (string, error) {
+	var left, right map[string]any
+	if allValues {
+		left = values1.Computed
+		right = values2.Computed
+	} else {
+		left = values1.UserSupplied
+		right = values2.UserSupplied
+	}
+	leftYAML, err := valuesMapYAML(left)
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize values for revision %d: %w", rev1, err)
+	}
+	rightYAML, err := valuesMapYAML(right)
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize values for revision %d: %w", rev2, err)
+	}
+	return computeDiff(leftYAML, rightYAML, rev1, rev2), nil
+}
+
+func valuesMapYAML(values map[string]any) (string, error) {
+	if len(values) == 0 {
+		return "", nil
+	}
+	b, err := yaml.Marshal(values)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(string(b), "\n"), nil
+}
+
+func resourceRefs(resources []OwnedResource) []ResourceRef {
+	refs := make([]ResourceRef, 0, len(resources))
+	for _, r := range resources {
+		refs = append(refs, ResourceRef{
+			Kind:       r.Kind,
+			APIVersion: r.APIVersion,
+			Name:       r.Name,
+			Namespace:  r.Namespace,
+		})
+	}
+	sortResourceRefs(refs)
+	return refs
+}
+
+func diffResourceRefs(left, right []ResourceRef) (removed, added, unchanged []ResourceRef) {
+	leftMap := make(map[string]ResourceRef, len(left))
+	rightMap := make(map[string]ResourceRef, len(right))
+	for _, ref := range left {
+		leftMap[resourceRefKey(ref)] = ref
+	}
+	for _, ref := range right {
+		rightMap[resourceRefKey(ref)] = ref
+	}
+	for key, ref := range leftMap {
+		if _, ok := rightMap[key]; ok {
+			unchanged = append(unchanged, ref)
+			continue
+		}
+		removed = append(removed, ref)
+	}
+	for key, ref := range rightMap {
+		if _, ok := leftMap[key]; ok {
+			continue
+		}
+		added = append(added, ref)
+	}
+	sortResourceRefs(removed)
+	sortResourceRefs(added)
+	sortResourceRefs(unchanged)
+	return removed, added, unchanged
+}
+
+func sortResourceRefs(refs []ResourceRef) {
+	sort.Slice(refs, func(i, j int) bool {
+		return resourceRefKey(refs[i]) < resourceRefKey(refs[j])
+	})
+}
+
+func resourceRefKey(ref ResourceRef) string {
+	return ref.APIVersion + "/" + ref.Kind + "/" + ref.Namespace + "/" + ref.Name
 }
 
 // releaseStorageKey identifies a release independent of where Helm stored the
@@ -1177,23 +1397,65 @@ func extractHooks(rel *release.Release) []HelmHook {
 		for _, e := range h.Events {
 			events = append(events, string(e))
 		}
+		deletePolicies := make([]string, 0, len(h.DeletePolicies))
+		for _, p := range h.DeletePolicies {
+			deletePolicies = append(deletePolicies, string(p))
+		}
+		outputLogPolicies := make([]string, 0, len(h.OutputLogPolicies))
+		for _, p := range h.OutputLogPolicies {
+			outputLogPolicies = append(outputLogPolicies, string(p))
+		}
 
 		hook := HelmHook{
-			Name:   h.Name,
-			Kind:   h.Kind,
-			Events: events,
-			Weight: h.Weight,
+			Name:              h.Name,
+			Kind:              h.Kind,
+			Path:              h.Path,
+			Events:            events,
+			Weight:            h.Weight,
+			DeletePolicies:    deletePolicies,
+			OutputLogPolicies: outputLogPolicies,
 		}
 
 		// Add status if available
 		if h.LastRun.Phase != "" {
 			hook.Status = string(h.LastRun.Phase)
+			if !h.LastRun.StartedAt.Time.IsZero() {
+				startedAt := h.LastRun.StartedAt.Time
+				hook.StartedAt = &startedAt
+			}
+			if !h.LastRun.CompletedAt.Time.IsZero() {
+				completedAt := h.LastRun.CompletedAt.Time
+				hook.CompletedAt = &completedAt
+			}
 		}
 
 		hooks = append(hooks, hook)
 	}
 
 	return hooks
+}
+
+func extractHookDiagnostics(hooks []HelmHook) []HookDiagnostic {
+	var out []HookDiagnostic
+	for _, h := range hooks {
+		phase := strings.ToLower(h.Status)
+		if phase != "failed" && phase != "running" {
+			continue
+		}
+		diag := HookDiagnostic{
+			Name:    h.Name,
+			Kind:    h.Kind,
+			Events:  h.Events,
+			Phase:   h.Status,
+			Message: fmt.Sprintf("Helm hook %q last ran with phase %q.", h.Name, h.Status),
+		}
+		if len(h.DeletePolicies) > 0 {
+			diag.EvidenceUnavailable = true
+			diag.EvidenceUnavailableReason = fmt.Sprintf("Hook delete policies may remove the Job/Pod evidence: %s.", strings.Join(h.DeletePolicies, ", "))
+		}
+		out = append(out, diag)
+	}
+	return out
 }
 
 // extractReadme extracts the README content from chart files

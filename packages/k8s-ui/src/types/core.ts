@@ -616,6 +616,7 @@ export interface HelmReleaseDetail {
   healthIssue?: string
   healthSummary?: string
   hooks?: HelmHook[]
+  hookDiagnostics?: HookDiagnostic[]
   readme?: string
   dependencies?: ChartDependency[]
   lastOperation?: HelmOperation
@@ -628,9 +629,24 @@ export interface HelmReleaseDetail {
 export interface HelmHook {
   name: string
   kind: string
+  path?: string
   events: string[]
   weight: number
   status?: string
+  startedAt?: string
+  completedAt?: string
+  deletePolicies?: string[]
+  outputLogPolicies?: string[]
+}
+
+export interface HookDiagnostic {
+  name: string
+  kind: string
+  events?: string[]
+  phase: string
+  message: string
+  evidenceUnavailable?: boolean
+  evidenceUnavailableReason?: string
 }
 
 export interface ChartDependency {
@@ -658,10 +674,38 @@ export interface HelmValues {
   computed?: Record<string, unknown>
 }
 
+export interface ValuesDiff {
+  revision1: number
+  revision2: number
+  allValues: boolean
+  diff: string
+}
+
 export interface ManifestDiff {
   revision1: number
   revision2: number
   diff: string
+}
+
+export interface NotesDiff {
+  revision1: number
+  revision2: number
+  diff: string
+}
+
+export interface HelmResourceRef {
+  kind: string
+  apiVersion?: string
+  name: string
+  namespace: string
+}
+
+export interface ResourceDiff {
+  revision1: number
+  revision2: number
+  added: HelmResourceRef[]
+  removed: HelmResourceRef[]
+  unchanged: HelmResourceRef[]
 }
 
 // Selected Helm release (for drawer state)

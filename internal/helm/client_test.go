@@ -465,6 +465,132 @@ func TestHelmReleaseRowsFromStorageSnapshot_UsesDetailHistoryWindow(t *testing.T
 	}
 }
 
+func TestComputeValuesDiffIsStableForReorderedMaps(t *testing.T) {
+	left := &HelmValues{UserSupplied: map[string]any{
+		"image": map[string]any{
+			"tag":        "1.0.0",
+			"repository": "example/cart",
+		},
+		"replicaCount": 2,
+	}}
+	right := &HelmValues{UserSupplied: map[string]any{
+		"replicaCount": 2,
+		"image": map[string]any{
+			"repository": "example/cart",
+			"tag":        "1.0.0",
+		},
+	}}
+
+	diff, err := computeValuesDiff(left, right, 1, 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diffHasBodyChange(diff) {
+		t.Fatalf("diff has body changes for reordered equal maps:\n%s", diff)
+	}
+}
+
+func TestDiffResourceRefs(t *testing.T) {
+	left := []ResourceRef{
+		{APIVersion: "apps/v1", Kind: "Deployment", Namespace: "demo", Name: "cart"},
+		{APIVersion: "v1", Kind: "Service", Namespace: "demo", Name: "cart"},
+	}
+	right := []ResourceRef{
+		{APIVersion: "apps/v1", Kind: "Deployment", Namespace: "demo", Name: "cart"},
+		{APIVersion: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "cart-config"},
+	}
+
+	removed, added, unchanged := diffResourceRefs(left, right)
+
+	if len(removed) != 1 || removed[0].Kind != "Service" {
+		t.Fatalf("removed = %#v, want Service", removed)
+	}
+	if len(added) != 1 || added[0].Kind != "ConfigMap" {
+		t.Fatalf("added = %#v, want ConfigMap", added)
+	}
+	if len(unchanged) != 1 || unchanged[0].Kind != "Deployment" {
+		t.Fatalf("unchanged = %#v, want Deployment", unchanged)
+	}
+}
+
+func TestNonNilResourceRefs(t *testing.T) {
+	refs := nonNilResourceRefs(nil)
+	if refs == nil {
+		t.Fatal("nonNilResourceRefs(nil) returned nil")
+	}
+}
+
+func TestExtractHookDiagnosticsSurfacesFailedHookDeletePolicy(t *testing.T) {
+	rel := helmTestRelease("hooks", "demo", 2, release.StatusFailed, `Upgrade "hooks" failed: hook failed`)
+	rel.Hooks = []*release.Hook{
+		{
+			Name:           "hooks-pre-upgrade",
+			Kind:           "Job",
+			Path:           "templates/hook.yaml",
+			Events:         []release.HookEvent{release.HookPreUpgrade},
+			DeletePolicies: []release.HookDeletePolicy{release.HookFailed},
+			LastRun: release.HookExecution{
+				Phase:       release.HookPhaseFailed,
+				StartedAt:   helmtime.Unix(10, 0),
+				CompletedAt: helmtime.Unix(11, 0),
+			},
+		},
+	}
+
+	hooks := extractHooks(rel)
+	diagnostics := extractHookDiagnostics(hooks)
+
+	if len(hooks) != 1 {
+		t.Fatalf("len(hooks) = %d, want 1", len(hooks))
+	}
+	if hooks[0].Path != "templates/hook.yaml" || hooks[0].Status != "Failed" {
+		t.Fatalf("hook metadata = %#v", hooks[0])
+	}
+	if hooks[0].StartedAt == nil || hooks[0].CompletedAt == nil {
+		t.Fatalf("hook times = started %v completed %v, want non-nil", hooks[0].StartedAt, hooks[0].CompletedAt)
+	}
+	if len(diagnostics) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1", len(diagnostics))
+	}
+	if !diagnostics[0].EvidenceUnavailable || !strings.Contains(diagnostics[0].EvidenceUnavailableReason, "hook-failed") {
+		t.Fatalf("diagnostic = %#v, want delete-policy evidence warning", diagnostics[0])
+	}
+}
+
+func TestExtractHooksOmitsZeroTimes(t *testing.T) {
+	rel := helmTestRelease("hooks", "demo", 2, release.StatusPendingUpgrade, "Running hook")
+	rel.Hooks = []*release.Hook{
+		{
+			Name:   "hooks-pre-upgrade",
+			Kind:   "Job",
+			Events: []release.HookEvent{release.HookPreUpgrade},
+			LastRun: release.HookExecution{
+				Phase: release.HookPhaseRunning,
+			},
+		},
+	}
+
+	hooks := extractHooks(rel)
+	if len(hooks) != 1 {
+		t.Fatalf("len(hooks) = %d, want 1", len(hooks))
+	}
+	if hooks[0].StartedAt != nil || hooks[0].CompletedAt != nil {
+		t.Fatalf("hook times = started %v completed %v, want nil zero times", hooks[0].StartedAt, hooks[0].CompletedAt)
+	}
+}
+
+func diffHasBodyChange(diff string) bool {
+	for _, line := range strings.Split(diff, "\n") {
+		if line == "" || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "@@") {
+			continue
+		}
+		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
+			return true
+		}
+	}
+	return false
+}
+
 func assertStorageNamespaceFromSecret(t *testing.T, gzipped bool) {
 	t.Helper()
 	rel := helmTestRelease("podinfo", "demo-flux-helm", 1, release.StatusDeployed, "Install complete")

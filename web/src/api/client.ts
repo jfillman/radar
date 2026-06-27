@@ -16,8 +16,11 @@ import type {
   HelmReleaseDetail,
   HelmValues,
   ManifestDiff,
+  NotesDiff,
+  ResourceDiff,
   UpgradeInfo,
   BatchUpgradeInfo,
+  ValuesDiff,
   ValuesPreviewResponse,
   HelmRepository,
   ChartSearchResult,
@@ -2358,11 +2361,14 @@ export function useHelmManifest(namespace: string, name: string, revision?: numb
 }
 
 // Get values for a Helm release. `enabled` see useHelmManifest.
-export function useHelmValues(namespace: string, name: string, allValues?: boolean, enabled = true) {
-  const params = allValues ? '?all=true' : ''
+export function useHelmValues(namespace: string, name: string, allValues?: boolean, enabled = true, revision?: number) {
+  const params = new URLSearchParams()
+  if (allValues) params.set('all', 'true')
+  if (revision && revision > 0) params.set('revision', String(revision))
+  const query = params.toString() ? `?${params.toString()}` : ''
   return useQuery<HelmValues>({
-    queryKey: ['helm-values', namespace, name, allValues],
-    queryFn: () => fetchJSON(`/helm/releases/${namespace}/${name}/values${params}`),
+    queryKey: ['helm-values', namespace, name, allValues, revision],
+    queryFn: () => fetchJSON(`/helm/releases/${namespace}/${name}/values${query}`),
     enabled: Boolean(namespace && name && enabled),
     staleTime: 60000,
   })
@@ -2380,6 +2386,61 @@ export function useHelmManifestDiff(
     queryKey: ['helm-diff', namespace, name, revision1, revision2],
     queryFn: () =>
       fetchJSON(`/helm/releases/${namespace}/${name}/diff?revision1=${revision1}&revision2=${revision2}`),
+    enabled: Boolean(namespace && name && revision1 > 0 && revision2 > 0 && revision1 !== revision2 && enabled),
+    staleTime: 60000,
+  })
+}
+
+export function useHelmValuesDiff(
+  namespace: string,
+  name: string,
+  revision1: number,
+  revision2: number,
+  allValues = false,
+  enabled = true,
+) {
+  return useQuery<ValuesDiff>({
+    queryKey: ['helm-values-diff', namespace, name, revision1, revision2, allValues],
+    queryFn: () => {
+      const params = new URLSearchParams({
+        revision1: String(revision1),
+        revision2: String(revision2),
+      })
+      if (allValues) params.set('all', 'true')
+      return fetchJSON(`/helm/releases/${namespace}/${name}/values/diff?${params.toString()}`)
+    },
+    enabled: Boolean(namespace && name && revision1 > 0 && revision2 > 0 && revision1 !== revision2 && enabled),
+    staleTime: 60000,
+  })
+}
+
+export function useHelmNotesDiff(
+  namespace: string,
+  name: string,
+  revision1: number,
+  revision2: number,
+  enabled = true,
+) {
+  return useQuery<NotesDiff>({
+    queryKey: ['helm-notes-diff', namespace, name, revision1, revision2],
+    queryFn: () =>
+      fetchJSON(`/helm/releases/${namespace}/${name}/notes/diff?revision1=${revision1}&revision2=${revision2}`),
+    enabled: Boolean(namespace && name && revision1 > 0 && revision2 > 0 && revision1 !== revision2 && enabled),
+    staleTime: 60000,
+  })
+}
+
+export function useHelmResourceDiff(
+  namespace: string,
+  name: string,
+  revision1: number,
+  revision2: number,
+  enabled = true,
+) {
+  return useQuery<ResourceDiff>({
+    queryKey: ['helm-resource-diff', namespace, name, revision1, revision2],
+    queryFn: () =>
+      fetchJSON(`/helm/releases/${namespace}/${name}/resources/diff?revision1=${revision1}&revision2=${revision2}`),
     enabled: Boolean(namespace && name && revision1 > 0 && revision2 > 0 && revision1 !== revision2 && enabled),
     staleTime: 60000,
   })

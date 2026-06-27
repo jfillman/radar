@@ -582,7 +582,9 @@ export function foldAppGroups<T extends AppGroupFoldEntry>(
     const compMap = new Map<AppWorkloadClass, number>()
     let ready = 0
     let desired = 0
-    let health: AppHealth = 'unknown'
+    // Seed with the most-benign tier (rank 0) so the max-fold below has a valid
+    // identity now that `unknown` ranks above healthy — see worstHealth.
+    let health: AppHealth = 'neutral'
     for (const m of members) {
       const v = newest(m)
       // A fleet member spans several per-cluster envs; the host supplies them so
@@ -740,9 +742,14 @@ export function workloadClassOf(value?: AppWorkloadClass): AppWorkloadClass {
   }
 }
 
-/** Worst health across a set of raw health strings. */
+/** Worst health across a set of raw health strings. Seeds with `neutral` — the
+ *  most-benign tier (rank 0) — so it acts as the max-fold identity: any real
+ *  value out-ranks it, an all-neutral set stays neutral, and healthy+neutral
+ *  resolves to healthy. (Seeding with `unknown` would be wrong now that `unknown`
+ *  ranks ABOVE healthy — an all-healthy set would never beat it and return
+ *  `unknown`. Mirrors pkg/health.WorseOf.) */
 export function worstHealth(hs: string[]): AppHealth {
-  let w: AppHealth = 'unknown'
+  let w: AppHealth = 'neutral'
   for (const h of hs) if ((HEALTH_RANK[h] ?? 0) > (HEALTH_RANK[w] ?? 0)) w = h as AppHealth
   return w
 }

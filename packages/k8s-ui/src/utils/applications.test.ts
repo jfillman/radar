@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { compareVersions, appGroupingExplainer, APP_IDENTITY_ANNOTATION, appGroupLagMessage, matchWorkloadAcrossInstances, foldAppGroups, identityEnvInferred, type AppGroupFoldEntry } from './applications'
+import { compareVersions, appGroupingExplainer, APP_IDENTITY_ANNOTATION, appGroupLagMessage, matchWorkloadAcrossInstances, foldAppGroups, identityEnvInferred, worstHealth, type AppGroupFoldEntry } from './applications'
 
 describe('compareVersions', () => {
   it('orders semver', () => {
@@ -203,6 +203,60 @@ describe('foldAppGroups', () => {
       localScope: (e) => e.row.key,
     })
     expect(grouped.map((r) => r.kind)).toEqual(['group'])
+  })
+})
+
+describe('worstHealth', () => {
+  // Mirrors pkg/health.WorseOf: unhealthy > degraded > unknown > healthy > neutral,
+  // with neutral as the most-benign identity. Regression for the rank-inversion
+  // fix — seeding the fold with `unknown` (now rank 2) made all-healthy/all-idle
+  // sets wrongly return `unknown`.
+  it('all-healthy stays healthy (not unknown)', () => {
+    expect(worstHealth(['healthy', 'healthy'])).toBe('healthy')
+  })
+  it('all-neutral stays neutral', () => {
+    expect(worstHealth(['neutral', 'neutral'])).toBe('neutral')
+  })
+  it('healthy + neutral resolves to healthy (healthy out-ranks idle)', () => {
+    expect(worstHealth(['healthy', 'neutral'])).toBe('healthy')
+    expect(worstHealth(['neutral', 'healthy'])).toBe('healthy')
+  })
+  it('unknown out-ranks healthy (a node-lost workload is worse than a running one)', () => {
+    expect(worstHealth(['unknown', 'healthy'])).toBe('unknown')
+  })
+  it('unhealthy dominates everything', () => {
+    expect(worstHealth(['unhealthy', 'degraded', 'unknown', 'healthy', 'neutral'])).toBe('unhealthy')
+  })
+  it('empty set is the most-benign identity', () => {
+    expect(worstHealth([])).toBe('neutral')
+  })
+})
+
+describe('foldAppGroups health rollup', () => {
+  const grp = (env: string, health: string): AppGroupFoldEntry => ({
+    row: { key: `k-${env}`, name: `billing-${env}`, identity: { key: 'billing', env, confidence: 'medium', evidence: 'e' } },
+    health: health as AppGroupFoldEntry['health'],
+    versions: [],
+    ready: 1,
+    desired: 1,
+    kinds: { Deployment: 1 },
+    classComposition: [{ cls: 'service', count: 1 }],
+  })
+  const rollup = (...hs: string[]) => {
+    const rows = foldAppGroups(hs.map((h, i) => grp(`env${i}`, h)), new Set(), false)
+    return (rows[0] as Extract<(typeof rows)[0], { kind: 'group' }>).health
+  }
+  it('all-healthy group rolls up healthy (regression: was unknown)', () => {
+    expect(rollup('healthy', 'healthy')).toBe('healthy')
+  })
+  it('all-idle group rolls up neutral (Idle), not green', () => {
+    expect(rollup('neutral', 'neutral')).toBe('neutral')
+  })
+  it('mixed healthy + idle reads healthy', () => {
+    expect(rollup('healthy', 'neutral')).toBe('healthy')
+  })
+  it('healthy + unknown reads unknown (node-lost dominates)', () => {
+    expect(rollup('healthy', 'unknown')).toBe('unknown')
   })
 })
 

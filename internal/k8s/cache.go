@@ -696,12 +696,21 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 					job.Status.StartTime.Time, "started", "", timeline.HealthDegraded, owner, labels))
 			}
 			if job.Status.CompletionTime != nil && !job.Status.CompletionTime.IsZero() {
-				health := timeline.HealthHealthy
-				if job.Status.Failed > 0 {
-					health = timeline.HealthUnhealthy
-				}
+				// CompletionTime is set only on SUCCESS — a completed Job is
+				// neutral/idle (done by design), even if earlier attempts failed
+				// (Status.Failed > 0 counts retries, not a terminal failure).
 				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
-					job.Status.CompletionTime.Time, "completed", "", health, owner, labels))
+					job.Status.CompletionTime.Time, "completed", "", timeline.HealthNeutral, owner, labels))
+			} else {
+				// Terminal failure (backoffLimit exceeded) has no CompletionTime —
+				// surface the JobFailed condition as unhealthy at its transition time.
+				for _, cond := range job.Status.Conditions {
+					if cond.Type == batchv1.JobFailed && cond.Status == corev1.ConditionTrue {
+						events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+							cond.LastTransitionTime.Time, "failed", cond.Message, timeline.HealthUnhealthy, owner, labels))
+						break
+					}
+				}
 			}
 		}
 

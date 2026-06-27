@@ -807,8 +807,11 @@ function computeWorkloadCards(
     })
     const primary = sorted[0]
 
-    // Compute worst health
-    let worstPriority = 3
+    // Compute worst health. Seed with Infinity (not 3) so an all-neutral
+    // component can surface neutral — `neutral` is priority 4 (most benign), so a
+    // `< 3` seed would never accept it and the card would stay green. Matches
+    // computeGroupHealth.
+    let worstPriority = Infinity
     let worstStatus: HealthStatus = 'healthy'
     for (const node of comp) {
       const p = HEALTH_PRIORITY[node.status] ?? 2

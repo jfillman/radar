@@ -37,7 +37,15 @@ type hookObjectRef struct {
 // for failed or running Helm hooks. It uses the caller's Kubernetes client so
 // auth-enabled deployments keep Kubernetes RBAC as the source of truth.
 func EnrichHookDiagnosticsWithClusterEvidence(ctx context.Context, detail *HelmReleaseDetail, client kubernetes.Interface) {
-	if detail == nil || len(detail.HookDiagnostics) == 0 || client == nil {
+	if detail == nil || len(detail.HookDiagnostics) == 0 {
+		return
+	}
+	if client == nil {
+		for i := range detail.HookDiagnostics {
+			diag := &detail.HookDiagnostics[i]
+			diag.EvidenceUnavailable = true
+			diag.EvidenceUnavailableReason = "Radar could not read live hook evidence because no Kubernetes client was available for this request."
+		}
 		return
 	}
 

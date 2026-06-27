@@ -825,6 +825,36 @@ func TestEnrichHookDiagnosticsPrefersReadErrorOverDeletePolicyHint(t *testing.T)
 	}
 }
 
+func TestEnrichHookDiagnosticsMarksUnavailableWhenClientMissing(t *testing.T) {
+	hooks := []HelmHook{{
+		Name:           "hooks-pre-upgrade",
+		Namespace:      "demo-hooks",
+		Kind:           "Job",
+		Events:         []string{"pre-upgrade"},
+		Status:         "Failed",
+		DeletePolicies: []string{"before-hook-creation"},
+	}}
+	detail := &HelmReleaseDetail{
+		Name:            "hooks",
+		Namespace:       "demo-hooks",
+		Hooks:           hooks,
+		HookDiagnostics: extractHookDiagnostics(hooks),
+	}
+
+	EnrichHookDiagnosticsWithClusterEvidence(context.Background(), detail, nil)
+
+	if len(detail.HookDiagnostics) != 1 {
+		t.Fatalf("len(HookDiagnostics) = %d, want 1", len(detail.HookDiagnostics))
+	}
+	diag := detail.HookDiagnostics[0]
+	if !diag.EvidenceUnavailable {
+		t.Fatal("EvidenceUnavailable = false, want true")
+	}
+	if !strings.Contains(diag.EvidenceUnavailableReason, "no Kubernetes client") {
+		t.Fatalf("EvidenceUnavailableReason = %q, want missing client reason", diag.EvidenceUnavailableReason)
+	}
+}
+
 func diffHasBodyChange(diff string) bool {
 	for _, line := range strings.Split(diff, "\n") {
 		if line == "" || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "@@") {

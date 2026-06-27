@@ -593,6 +593,8 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
                   copied={copied === 'values'}
                   namespace={helmNamespace}
                   name={release.name}
+                  revision={selectedRevision}
+                  currentRevision={releaseDetail.revision}
                   onApplySuccess={() => refetch()}
                 />
               </RoleGatedPanel>

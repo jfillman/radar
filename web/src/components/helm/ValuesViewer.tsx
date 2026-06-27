@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Copy, Check, Settings, Pencil, X, Eye, Play, Loader2 } from 'lucide-react'
 import { PaneLoader } from '@skyhook-io/k8s-ui'
 import { clsx } from 'clsx'
@@ -21,6 +21,8 @@ interface ValuesViewerProps {
   // Required for editing
   namespace?: string
   name?: string
+  revision?: number
+  currentRevision?: number
   onApplySuccess?: () => void
 }
 
@@ -33,6 +35,8 @@ export function ValuesViewer({
   copied,
   namespace,
   name,
+  revision,
+  currentRevision,
   onApplySuccess,
 }: ValuesViewerProps) {
   const [isEditing, setIsEditing] = useState(false)
@@ -44,8 +48,9 @@ export function ValuesViewer({
   const previewMutation = useHelmPreviewValues()
   const applyMutation = useHelmApplyValues()
   const { allowed: canHelmWrite, reason: helmActReason } = useCanHelmAct()
+  const isHistoricalRevision = typeof revision === 'number' && typeof currentRevision === 'number' && revision !== currentRevision
 
-  const canEdit = Boolean(namespace && name) && canHelmWrite
+  const canEdit = Boolean(namespace && name) && canHelmWrite && !isHistoricalRevision
 
   const displayValues = showAllValues && values?.computed ? values.computed : values?.userSupplied
   const isEmpty = !displayValues || Object.keys(displayValues).length === 0
@@ -72,6 +77,12 @@ export function ValuesViewer({
     setShowPreview(false)
   }, [])
 
+  useEffect(() => {
+    if (isHistoricalRevision && isEditing) {
+      handleCancelEdit()
+    }
+  }, [isHistoricalRevision, isEditing, handleCancelEdit])
+
   // Parse YAML and validate
   const parseYaml = useCallback((yamlStr: string): Record<string, unknown> | null => {
     try {
@@ -86,7 +97,7 @@ export function ValuesViewer({
 
   // Preview changes
   const handlePreview = useCallback(async () => {
-    if (!namespace || !name) return
+    if (!namespace || !name || isHistoricalRevision) return
     const parsed = parseYaml(editedYaml)
     if (!parsed) return
 
@@ -101,11 +112,11 @@ export function ValuesViewer({
     } catch {
       // Error is handled by mutation
     }
-  }, [namespace, name, editedYaml, parseYaml, previewMutation])
+  }, [namespace, name, isHistoricalRevision, editedYaml, parseYaml, previewMutation])
 
   // Apply changes
   const handleApply = useCallback(async () => {
-    if (!namespace || !name) return
+    if (!namespace || !name || isHistoricalRevision) return
     const parsed = parseYaml(editedYaml)
     if (!parsed) return
 
@@ -120,11 +131,11 @@ export function ValuesViewer({
     } catch {
       // Error is handled by mutation
     }
-  }, [namespace, name, editedYaml, parseYaml, applyMutation, handleCancelEdit, onApplySuccess])
+  }, [namespace, name, isHistoricalRevision, editedYaml, parseYaml, applyMutation, handleCancelEdit, onApplySuccess])
 
   // Apply from preview modal
   const handleApplyFromPreview = useCallback(async () => {
-    if (!previewData || !namespace || !name) return
+    if (!previewData || !namespace || !name || isHistoricalRevision) return
     try {
       await applyMutation.mutateAsync({
         namespace,
@@ -137,7 +148,7 @@ export function ValuesViewer({
     } catch {
       // Error is handled by mutation
     }
-  }, [previewData, namespace, name, applyMutation, handleCancelEdit, onApplySuccess])
+  }, [previewData, namespace, name, isHistoricalRevision, applyMutation, handleCancelEdit, onApplySuccess])
 
   if (isLoading) {
     return <PaneLoader label="Loading values…" className="h-32" />
@@ -147,7 +158,12 @@ export function ValuesViewer({
     return (
       <div className="p-4">
         <div className="flex items-center justify-between mb-3">
-          <span className="text-sm font-medium text-theme-text-secondary">Values</span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-theme-text-secondary">Values</span>
+            {isHistoricalRevision && (
+              <span className="badge-sm bg-theme-hover/50 text-theme-text-secondary">revision {revision}</span>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <ToggleButton showAll={showAllValues} onToggle={onToggleAllValues} disabled={isEditing} />
             {canEdit && (
@@ -161,6 +177,11 @@ export function ValuesViewer({
             )}
           </div>
         </div>
+        {isHistoricalRevision && (
+          <div className="mb-3 rounded border border-theme-border bg-theme-elevated/40 px-3 py-2 text-xs text-theme-text-secondary">
+            Viewing historical values. Switch back to the latest revision before editing or applying changes.
+          </div>
+        )}
         <div className="flex flex-col items-center justify-center h-32 text-theme-text-tertiary gap-2">
           <Settings className="w-8 h-8 text-theme-text-disabled" />
           <span>{showAllValues ? 'No computed values' : 'No user-supplied values'}</span>
@@ -179,6 +200,9 @@ export function ValuesViewer({
           <span className="text-sm font-medium text-theme-text-secondary">
             {isEditing ? 'Editing Values' : showAllValues ? 'All Values (Computed)' : 'User-Supplied Values'}
           </span>
+          {isHistoricalRevision && !isEditing && (
+            <span className="badge-sm bg-theme-hover/50 text-theme-text-secondary">revision {revision}</span>
+          )}
           {isEditing && (
             <span className="badge-sm bg-amber-500/20 text-amber-400 border-amber-500/30">
               unsaved
@@ -218,7 +242,7 @@ export function ValuesViewer({
               </button>
               <button
                 onClick={handlePreview}
-                disabled={!!yamlError || previewMutation.isPending}
+                disabled={!!yamlError || previewMutation.isPending || isHistoricalRevision}
                 className="flex items-center gap-1 px-2 py-1 text-xs text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded border border-theme-border disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {previewMutation.isPending ? (
@@ -231,7 +255,7 @@ export function ValuesViewer({
               <Tooltip content={!canHelmWrite ? helmActReason : ''}>
               <button
                 onClick={handleApply}
-                disabled={!!yamlError || applyMutation.isPending || !canHelmWrite}
+                disabled={!!yamlError || applyMutation.isPending || !canHelmWrite || isHistoricalRevision}
                 className="flex items-center gap-1 px-2.5 py-1 text-xs btn-brand rounded disabled:cursor-not-allowed disabled:pointer-events-none"
               >
                 {applyMutation.isPending ? (
@@ -246,6 +270,12 @@ export function ValuesViewer({
           )}
         </div>
       </div>
+
+      {isHistoricalRevision && (
+        <div className="mb-3 rounded border border-theme-border bg-theme-elevated/40 px-3 py-2 text-xs text-theme-text-secondary">
+          Viewing historical values. Switch back to the latest revision before editing or applying changes.
+        </div>
+      )}
 
       {/* Error message */}
       {yamlError && (

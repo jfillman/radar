@@ -803,8 +803,16 @@ export function PodRenderer({
         </Section>
       )}
 
-      {/* Conditions */}
-      <ConditionsSection conditions={data.status?.conditions} />
+      {/* Conditions. A completed pod's Ready/ContainersReady flip to False with
+          reason "PodCompleted" — that's expected for a finished pod, not a failure,
+          so tone it neutral (gray) instead of red. Gated on the PodCompleted reason
+          so a genuinely not-ready pod (any other reason) still reads red. */}
+      <ConditionsSection
+        conditions={data.status?.conditions}
+        getConditionTone={(cond) =>
+          cond?.status === 'False' && cond?.reason === 'PodCompleted' ? 'unknown' : undefined
+        }
+      />
 
       {/* Permissions (via ServiceAccount) — placed below the diagnostic-
        *  signal sections (status, containers, resource usage, conditions)

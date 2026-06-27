@@ -861,6 +861,56 @@ func TestEnrichHookDiagnosticsDoesNotTreatEventsOnlyErrorAsPrimaryRBAC(t *testin
 	}
 }
 
+func TestListHookEventsPrioritizesWarningsBeforeNormalBackfill(t *testing.T) {
+	namespace := "demo-hooks"
+	podName := "hooks-pre-upgrade-abcde"
+	objs := make([]runtime.Object, 0, maxHookEvidenceEvents+1)
+	for i := range maxHookEvidenceEvents {
+		objs = append(objs, &corev1.Event{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("normal-%d", i), Namespace: namespace},
+			InvolvedObject: corev1.ObjectReference{
+				Kind:      "Pod",
+				Namespace: namespace,
+				Name:      podName,
+			},
+			Type:          corev1.EventTypeNormal,
+			Reason:        fmt.Sprintf("Normal%d", i),
+			Message:       "normal lifecycle event",
+			LastTimestamp: metav1.NewTime(time.Unix(100+int64(i), 0)),
+		})
+	}
+	objs = append(objs, &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{Name: "warning", Namespace: namespace},
+		InvolvedObject: corev1.ObjectReference{
+			Kind:      "Pod",
+			Namespace: namespace,
+			Name:      podName,
+		},
+		Type:          corev1.EventTypeWarning,
+		Reason:        "BackoffLimitExceeded",
+		Message:       "job failed",
+		LastTimestamp: metav1.NewTime(time.Unix(1, 0)),
+	})
+	client := fake.NewSimpleClientset(objs...)
+
+	events, errText := listHookEvents(context.Background(), client, namespace, []hookObjectRef{{kind: "Pod", name: podName}})
+
+	if errText != "" {
+		t.Fatalf("errText = %q, want empty", errText)
+	}
+	if len(events) != maxHookEvidenceEvents {
+		t.Fatalf("len(events) = %d, want %d", len(events), maxHookEvidenceEvents)
+	}
+	if events[0].Type != corev1.EventTypeWarning || events[0].Reason != "BackoffLimitExceeded" {
+		t.Fatalf("first event = %#v, want warning before normal backfill", events[0])
+	}
+	for _, event := range events {
+		if event.Reason == "Normal0" {
+			t.Fatalf("oldest normal event was retained; events = %#v", events)
+		}
+	}
+}
+
 func TestEnrichHookDiagnosticsMarksUnavailableWhenClientMissing(t *testing.T) {
 	hooks := []HelmHook{{
 		Name:           "hooks-pre-upgrade",

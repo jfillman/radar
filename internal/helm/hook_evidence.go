@@ -294,7 +294,12 @@ func listHookEvents(ctx context.Context, client kubernetes.Interface, namespace 
 			events = append(events, event)
 		}
 	}
-	sort.Slice(events, func(i, j int) bool {
+	sort.SliceStable(events, func(i, j int) bool {
+		leftWarning := events[i].Type == corev1.EventTypeWarning
+		rightWarning := events[j].Type == corev1.EventTypeWarning
+		if leftWarning != rightWarning {
+			return leftWarning
+		}
 		return hookEventTime(events[i]).After(hookEventTime(events[j]))
 	})
 	if len(events) > maxHookEvidenceEvents {

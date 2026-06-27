@@ -101,7 +101,10 @@ func mapArgoHealth(s string) Health {
 	case "degraded":
 		return HealthUnhealthy
 	case "suspended":
-		return HealthDegraded
+		// Suspended = an operator deliberately paused sync (or a suspended
+		// CronJob/Rollout). Intentional, not a degradation — neutral (sky), so it
+		// doesn't light up amber on a surface meant for things that need action.
+		return HealthNeutral
 	case "missing":
 		// Argo "Missing" = "should exist but doesn't" — a real signal
 		// (controller hasn't been able to apply); not the same as

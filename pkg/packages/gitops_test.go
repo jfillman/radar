@@ -81,7 +81,8 @@ func TestMapArgoHealth(t *testing.T) {
 		"healthy":     HealthHealthy,
 		"Progressing": HealthDegraded,
 		"Degraded":    HealthUnhealthy,
-		"Suspended":   HealthDegraded,
+		// Suspended = intentional pause, not a degradation — neutral (sky).
+		"Suspended": HealthNeutral,
 		// Missing means "should exist but doesn't" — surface as a
 		// real signal (degraded), not as the same bucket as Unknown.
 		"Missing": HealthDegraded,

@@ -9,10 +9,9 @@ import (
 )
 
 // healthLevelToStatus projects a canonical health.Level onto the topology
-// HealthStatus used for NODE COLORING. Until the topology vocabulary gains a
-// dedicated neutral tier, neutral (intentional / lifecycle states — completed,
-// scaled-to-zero, pending PVC) renders as unknown (gray): calm, and never
-// green-for-intentional.
+// HealthStatus used for NODE COLORING. neutral (intentional / lifecycle states —
+// completed, scaled-to-zero, suspended, pending PVC) renders as StatusNeutral
+// (sky): calm, and distinct from unknown (gray, "can't determine").
 func healthLevelToStatus(l health.Level) HealthStatus {
 	switch l {
 	case health.LevelHealthy:
@@ -21,7 +20,9 @@ func healthLevelToStatus(l health.Level) HealthStatus {
 		return StatusDegraded
 	case health.LevelUnhealthy:
 		return StatusUnhealthy
-	default: // neutral (interim) + unknown
+	case health.LevelNeutral:
+		return StatusNeutral
+	default: // unknown
 		return StatusUnknown
 	}
 }

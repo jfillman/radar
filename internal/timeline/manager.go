@@ -63,6 +63,7 @@ const (
 	HealthHealthy   = pkgtimeline.HealthHealthy
 	HealthDegraded  = pkgtimeline.HealthDegraded
 	HealthUnhealthy = pkgtimeline.HealthUnhealthy
+	HealthNeutral   = pkgtimeline.HealthNeutral
 	HealthUnknown   = pkgtimeline.HealthUnknown
 
 	// GroupingMode constants

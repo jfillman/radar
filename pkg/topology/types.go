@@ -121,7 +121,10 @@ const (
 	StatusHealthy   HealthStatus = "healthy"
 	StatusDegraded  HealthStatus = "degraded"
 	StatusUnhealthy HealthStatus = "unhealthy"
-	StatusUnknown   HealthStatus = "unknown"
+	// StatusNeutral = intentional/idle (suspended, scaled-to-0, completed) —
+	// renders sky on the frontend, distinct from StatusUnknown (gray).
+	StatusNeutral HealthStatus = "neutral"
+	StatusUnknown HealthStatus = "unknown"
 )
 
 // EdgeType represents the type of connection between nodes

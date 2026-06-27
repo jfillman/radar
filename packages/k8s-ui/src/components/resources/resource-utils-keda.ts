@@ -29,7 +29,9 @@ export function getScaledObjectStatus(resource: any): StatusBadge {
     conditions.some((c: any) => c.type === 'Paused' && c.status === 'True')
 
   if (isPaused) {
-    return { text: 'Paused', color: healthColors.degraded, level: 'degraded' }
+    // Paused = operator deliberately froze autoscaling — intentional, sky/neutral
+    // (like Idle), not amber.
+    return { text: 'Paused', color: healthColors.neutral, level: 'neutral' }
   }
 
   // Check Fallback condition

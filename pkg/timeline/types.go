@@ -55,7 +55,11 @@ const (
 	HealthHealthy   HealthState = "healthy"
 	HealthDegraded  HealthState = "degraded"
 	HealthUnhealthy HealthState = "unhealthy"
-	HealthUnknown   HealthState = "unknown"
+	// HealthNeutral = intentional/idle (suspended, scaled-to-0, completed) —
+	// renders sky in the timeline, distinct from HealthUnknown (gray). Aggregates
+	// as most-benign via health.WorseOf (ties healthy, healthy-preferred).
+	HealthNeutral HealthState = "neutral"
+	HealthUnknown HealthState = "unknown"
 )
 
 // GroupingMode determines how events are grouped in the timeline

@@ -1208,15 +1208,11 @@ func jobDesired(j *batchv1.Job) int {
 }
 
 // levelToPackagesHealth projects a canonical health.Level onto the package wire
-// vocabulary. The package/app wire stays four-valued in this change, so neutral
-// (intentional/lifecycle states) collapses to healthy — benign, and it keeps a
-// running-Job or scaled-to-zero workload from regressing to Unknown in the
-// Applications UI. The dedicated neutral tier lands with the frontend follow-up
-// that owns the wire + rendering together.
+// vocabulary. neutral (intentional/idle — suspended, scaled-to-zero) maps to the
+// dedicated HealthNeutral; it aggregates as most-benign, so an all-idle app rolls
+// up to "Idle" in the Applications UI while a mixed healthy+idle app still reads
+// Healthy (WorseHealth prefers healthy on the tie).
 func levelToPackagesHealth(l health.Level) packages.Health {
-	if l == health.LevelNeutral {
-		return packages.HealthHealthy
-	}
 	return packages.Health(l)
 }
 

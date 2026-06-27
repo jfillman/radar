@@ -46,7 +46,11 @@ const (
 	HealthHealthy   Health = "healthy"
 	HealthDegraded  Health = "degraded"
 	HealthUnhealthy Health = "unhealthy"
-	HealthUnknown   Health = "unknown"
+	// HealthNeutral = intentional/idle (suspended app, every workload scaled to
+	// 0). Aggregates as most-benign (WorseHealth ties healthy, healthy-preferred),
+	// so an all-idle app rolls up to neutral while a mixed app stays healthy.
+	HealthNeutral Health = "neutral"
+	HealthUnknown Health = "unknown"
 )
 
 // Overlay is the optional Tier-2 "application" identity ABOVE a package — the

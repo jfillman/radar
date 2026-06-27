@@ -26,16 +26,12 @@ function formatStorage(value: string | undefined): string {
   return formatMemory(value)
 }
 
-// Extract problems from node status and spec
+// Extract genuine problems from node status. Cordoned (unschedulable) is
+// deliberately NOT included here — it's an intentional operator action
+// (cordon/drain), surfaced separately as a calm advisory, not a red error.
 function getNodeProblems(data: any): string[] {
   const problems: string[] = []
   const conditions = data.status?.conditions || []
-  const spec = data.spec || {}
-
-  // Check if unschedulable
-  if (spec.unschedulable) {
-    problems.push('Node is cordoned (unschedulable)')
-  }
 
   for (const cond of conditions) {
     // NotReady is a problem when status is not True
@@ -77,6 +73,7 @@ export function NodeRenderer({ data, relationships, onViewPods, metrics, metrics
   // Check for problems
   const problems = getNodeProblems(data)
   const hasProblems = problems.length > 0
+  const isCordoned = !!spec.unschedulable
 
   // Extract platform info from labels
   const instanceType = labels['node.kubernetes.io/instance-type']
@@ -88,9 +85,18 @@ export function NodeRenderer({ data, relationships, onViewPods, metrics, metrics
 
   return (
     <>
-      {/* Problems alert - shown at top when there are issues */}
+      {/* Problems alert - shown at top when there are genuine issues */}
       {hasProblems && (
         <AlertBanner variant="error" title="Issues Detected" items={problems} />
+      )}
+
+      {/* Cordoned is intentional (cordon/drain) — calm sky advisory, not an error */}
+      {isCordoned && (
+        <AlertBanner
+          variant="info"
+          title="Cordoned (unschedulable)"
+          message="New pods won't be scheduled here. Uncordon to resume scheduling."
+        />
       )}
 
       {/* Node Info */}

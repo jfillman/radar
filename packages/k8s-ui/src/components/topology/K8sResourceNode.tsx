@@ -215,6 +215,12 @@ const STATUS_STYLES: Record<HealthStatus, React.CSSProperties> = {
     border: '2px solid rgb(239 68 68 / 0.7)',
     backgroundColor: 'rgb(248 113 113 / 0.15)',
   },
+  // neutral = intentional/idle (suspended, scaled-to-0) — sky outline, calm.
+  // Distinct from `unknown`/`healthy` which carry no outline.
+  neutral: {
+    border: '2px solid rgb(56 189 248 / 0.55)',
+    backgroundColor: 'rgb(56 189 248 / 0.1)',
+  },
   healthy: {},
   unknown: {},
 }

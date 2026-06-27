@@ -193,7 +193,7 @@ export function displayKind(kind: string): string {
   return shortNames[kind] || kind
 }
 
-export type HealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+export type HealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'neutral' | 'unknown'
 
 export type EdgeType = 'routes-to' | 'exposes' | 'manages' | 'uses' | 'configures' | 'protects'
 
@@ -557,7 +557,7 @@ export interface HelmRelease {
   lastOperation?: HelmOperation
   operations?: HelmOperation[]
   // Health summary from owned resources
-  resourceHealth?: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+  resourceHealth?: 'healthy' | 'degraded' | 'unhealthy' | 'neutral' | 'unknown'
   healthIssue?: string    // Primary issue if unhealthy (e.g., "OOMKilled")
   healthSummary?: string  // Brief summary like "2/3 pods ready"
   // When set, this release was installed by Flux's helm-controller — the
@@ -612,7 +612,7 @@ export interface HelmReleaseDetail {
   notes: string
   history: HelmRevision[]
   resources: HelmOwnedResource[]
-  resourceHealth?: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+  resourceHealth?: 'healthy' | 'degraded' | 'unhealthy' | 'neutral' | 'unknown'
   healthIssue?: string
   healthSummary?: string
   hooks?: HelmHook[]

@@ -38,6 +38,10 @@ export const HEALTH_BADGE_COLORS: Record<string, string> = {
   degraded: BADGE_SEVERITY_COLORS.warning,
   alert: BADGE_SEVERITY_COLORS.alert,
   unhealthy: BADGE_SEVERITY_COLORS.error,
+  // neutral = intentional/idle (suspended, scaled-to-0, completed) — sky, calm
+  // and distinct from `unknown` (gray, "can't determine"). Reuses the `info`
+  // sky palette; see `.status-neutral` in theme/components.css.
+  neutral: BADGE_SEVERITY_COLORS.info,
   unknown: BADGE_SEVERITY_COLORS.neutral,
 }
 
@@ -225,6 +229,9 @@ export function healthToSeverity(health: string): Severity {
     case 'error':
     case 'failed':
       return 'error'
+    // health 'neutral' (intentional/idle) renders sky via the `info` palette —
+    // calm, and visually distinct from 'unknown' which falls through to gray.
+    case 'neutral':
     case 'info':
       return 'info'
     default:

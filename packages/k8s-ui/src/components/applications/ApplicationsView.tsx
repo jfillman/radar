@@ -56,6 +56,7 @@ const HEALTH_TONE: Record<AppHealth, FacetTone> = {
   unhealthy: 'error',
   degraded: 'warning',
   healthy: 'success',
+  neutral: 'info', // Idle — sky, calm
   unknown: 'neutral',
 }
 
@@ -297,6 +298,7 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
               {healthTile('unhealthy', 'error')}
               {healthTile('degraded', 'warning')}
               {healthTile('healthy', 'success')}
+              {healthTile('neutral', 'info')}
               {healthTile('unknown', 'neutral')}
             </>
           }

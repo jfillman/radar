@@ -28,10 +28,10 @@ export function PVCRenderer({ data, onNavigate, extraSections }: PVCRendererProp
   const annotations = data.metadata?.annotations || {}
   const phase = status.phase
 
-  // Problem detection
+  // Lost is a genuine failure (bound volume disappeared). Pending is a normal
+  // lifecycle state (provisioning / WaitForFirstConsumer), surfaced calmly below.
   const isLost = phase === 'Lost'
   const isPending = phase === 'Pending'
-  const hasProblems = isLost || isPending
 
   // Provisioner info from annotations
   const provisioner = annotations['volume.kubernetes.io/storage-provisioner']
@@ -42,7 +42,7 @@ export function PVCRenderer({ data, onNavigate, extraSections }: PVCRendererProp
   return (
     <>
       {/* Problem alerts */}
-      {hasProblems && isLost && (
+      {isLost && (
         <AlertBanner
           variant="error"
           title="Issues Detected"
@@ -50,11 +50,11 @@ export function PVCRenderer({ data, onNavigate, extraSections }: PVCRendererProp
         />
       )}
 
-      {hasProblems && isPending && (
+      {isPending && (
         <AlertBanner
-          variant="warning"
-          title="Issues Detected"
-          message="PVC is waiting to be bound to a volume"
+          variant="info"
+          title="Pending — awaiting binding"
+          message="Not yet bound to a volume. This is normal while provisioning, and expected indefinitely for a WaitForFirstConsumer StorageClass until a Pod that mounts this claim is scheduled."
         />
       )}
 

@@ -138,6 +138,10 @@ export function HealthSpanLegend() {
         <span className="w-4 h-2 rounded-sm bg-red-500/60 dark:bg-red-500/60" />
         <span>Unhealthy</span>
       </span>
+      <span className="flex items-center gap-1">
+        <span className="w-4 h-2 rounded-sm bg-sky-500/60 dark:bg-sky-500/60" />
+        <span>Idle</span>
+      </span>
     </div>
   )
 }
@@ -387,7 +391,7 @@ export function TimeAxis({ startTime, endTime, tickCount = 8, labelColumnClass =
  * Health span bar showing a health state over a time range.
  */
 interface HealthSpanProps {
-  health: 'healthy' | 'degraded' | 'unhealthy' | string
+  health: 'healthy' | 'rolling' | 'degraded' | 'unhealthy' | 'neutral' | 'unknown' | string
   left: number // percentage
   width: number // percentage
   title?: string
@@ -408,6 +412,9 @@ export function HealthSpan({ health, left, width, title, createdBefore }: Health
         return 'bg-amber-500/60 dark:bg-[#b8861e]'
       case 'unhealthy':
         return 'bg-red-500/60 dark:bg-red-500/60'
+      case 'neutral':
+        // intentional/idle (suspended, scaled-to-0) — sky, calm
+        return 'bg-sky-500/60 dark:bg-sky-500/60'
       default:
         // Unknown or other states
         return 'bg-gray-400/40'
@@ -569,7 +576,11 @@ export function buildHealthSpans(
   const existsUntil = deleteEvent ? new Date(deleteEvent.timestamp).getTime() : now
 
   const spans: { start: number; end: number; health: string }[] = []
-  let currentHealth = 'unknown'
+  // `null` is the "no health observed yet" sentinel — kept distinct from the
+  // real 'unknown' health value (emitted for node-lost pods). Overloading
+  // 'unknown' as both swallowed genuine-unknown spans and then false-greened
+  // them via the empty-spans fallback below.
+  let currentHealth: string | null = null
   let spanStart = Math.max(existsFrom, startTime)
 
   for (const evt of sorted) {
@@ -586,7 +597,7 @@ export function buildHealthSpans(
       continue
     }
 
-    if (newHealth !== currentHealth && currentHealth !== 'unknown') {
+    if (newHealth !== currentHealth && currentHealth !== null) {
       spans.push({ start: spanStart, end: ts, health: currentHealth })
       spanStart = ts
     }
@@ -594,7 +605,7 @@ export function buildHealthSpans(
   }
 
   // Close final span (only up to when resource existed)
-  if (currentHealth !== 'unknown') {
+  if (currentHealth !== null) {
     spans.push({ start: spanStart, end: Math.min(existsUntil, now), health: currentHealth })
   }
 

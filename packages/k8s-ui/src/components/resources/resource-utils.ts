@@ -475,11 +475,11 @@ export function getPodProblems(pod: any): PodProblem[] {
     problems.push({ severity: 'high', message: 'Evicted', detail: podStatusMessage })
   }
 
-  // Stuck terminating (zombie pod)
+  // Stuck terminating (zombie pod). Use the same threshold as the badge
+  // (TERMINATING_STUCK_MINUTES) so the drawer problem and the table badge flip
+  // together — firing at 60s while the badge stayed calm to 10m was a mismatch.
   if (pod.metadata?.deletionTimestamp) {
-    const deleteTime = new Date(pod.metadata.deletionTimestamp).getTime()
-    const ageSeconds = (Date.now() - deleteTime) / 1000
-    if (ageSeconds > 60) {
+    if (minutesSince(pod.metadata.deletionTimestamp) >= TERMINATING_STUCK_MINUTES) {
       problems.push({ severity: 'medium', message: 'Stuck Terminating' })
     }
   }

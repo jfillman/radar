@@ -87,6 +87,7 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
     release.name,
     showAllValues,
     canViewSensitive,
+    selectedRevision,
   )
 
   // Fetch diff if comparing revisions
@@ -1072,8 +1073,26 @@ function HelmOperationBanner({
   managedByFluxHelmRelease?: string
   hookDiagnostics?: HookDiagnostic[]
 }) {
-  if (!operation || !shouldShowOperationBanner(operation)) {
+  const primaryHookDiagnostic = hookDiagnostics?.[0]
+  if ((!operation || !shouldShowOperationBanner(operation)) && !primaryHookDiagnostic) {
     return null
+  }
+  if (!operation || !shouldShowOperationBanner(operation)) {
+    const tone = hookDiagnosticTone(primaryHookDiagnostic!)
+    return (
+      <div className="m-4 mb-0 card-inner-lg">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className={clsx('mt-0.5 h-5 w-5 shrink-0', SEVERITY_TEXT[tone])} />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-medium text-theme-text-primary">Helm hook needs attention</span>
+              <span className={clsx('badge-sm', SEVERITY_BADGE[tone])}>{primaryHookDiagnostic!.phase}</span>
+            </div>
+            <HookSignal diagnostic={primaryHookDiagnostic!} />
+          </div>
+        </div>
+      </div>
+    )
   }
 
   const isFailure = operation.status === 'failed'
@@ -1103,20 +1122,7 @@ function HelmOperationBanner({
               Helm history does not record whether <code className="inline-code text-[11px]">--atomic</code> was set; the rollback is inferred from adjacent release revisions.
             </p>
           )}
-          {hookDiagnostics && hookDiagnostics.length > 0 && (
-            <div className="mt-2 rounded-md bg-theme-base/50 p-2 text-xs">
-              <div className="font-medium text-theme-text-secondary">
-                Hook signal: {formatHookRef(hookDiagnostics[0])} is {hookDiagnostics[0].phase}
-              </div>
-              <div className="mt-1 text-theme-text-tertiary">{hookDiagnostics[0].message}</div>
-              {hookDiagnostics[0].evidence?.summary && (
-                <div className="mt-1 text-theme-text-secondary">{hookDiagnostics[0].evidence.summary}</div>
-              )}
-              {hookDiagnostics[0].evidenceUnavailableReason && (
-                <div className="mt-1 text-theme-text-tertiary">{hookDiagnostics[0].evidenceUnavailableReason}</div>
-              )}
-            </div>
-          )}
+          {primaryHookDiagnostic && <HookSignal diagnostic={primaryHookDiagnostic} />}
           {managedByFluxHelmRelease && (
             <p className="mt-1 text-xs text-theme-text-tertiary">
               This release is managed by Flux HelmRelease {managedByFluxHelmRelease}; direct Helm changes may be reconciled back.
@@ -1124,6 +1130,27 @@ function HelmOperationBanner({
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function hookDiagnosticTone(diagnostic: HookDiagnostic): 'error' | 'warning' {
+  return diagnostic.phase.toLowerCase() === 'failed' ? 'error' : 'warning'
+}
+
+function HookSignal({ diagnostic }: { diagnostic: HookDiagnostic }) {
+  return (
+    <div className="mt-2 rounded-md bg-theme-base/50 p-2 text-xs">
+      <div className="font-medium text-theme-text-secondary">
+        Hook signal: {formatHookRef(diagnostic)} is {diagnostic.phase}
+      </div>
+      <div className="mt-1 text-theme-text-tertiary">{diagnostic.message}</div>
+      {diagnostic.evidence?.summary && (
+        <div className="mt-1 text-theme-text-secondary">{diagnostic.evidence.summary}</div>
+      )}
+      {diagnostic.evidenceUnavailableReason && (
+        <div className="mt-1 text-theme-text-tertiary">{diagnostic.evidenceUnavailableReason}</div>
+      )}
     </div>
   )
 }

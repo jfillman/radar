@@ -79,15 +79,16 @@ func EnrichHookDiagnosticsWithClusterEvidence(ctx context.Context, detail *HelmR
 			diag.EvidenceUnavailableReason = ""
 			continue
 		}
+		if len(evidence.Errors) > 0 {
+			diag.EvidenceUnavailable = true
+			diag.EvidenceUnavailableReason = "Radar could not read live hook evidence with the current Kubernetes identity."
+			continue
+		}
 		if diag.EvidenceUnavailable {
 			continue
 		}
 		diag.EvidenceUnavailable = true
-		if len(evidence.Errors) > 0 {
-			diag.EvidenceUnavailableReason = "Radar could not read live hook evidence with the current Kubernetes identity."
-		} else {
-			diag.EvidenceUnavailableReason = "No live Job/Pod evidence found for this hook; it may have been deleted by a hook policy, TTL controller, or garbage collection."
-		}
+		diag.EvidenceUnavailableReason = "No live Job/Pod evidence found for this hook; it may have been deleted by a hook policy, TTL controller, or garbage collection."
 	}
 }
 

@@ -21,9 +21,12 @@ import (
 	helmtime "helm.sh/helm/v3/pkg/time"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 func TestFindBestUpgradeVersion(t *testing.T) {
@@ -691,6 +694,43 @@ metadata:
 	}
 	if diag.Evidence.Summary == "" {
 		t.Fatal("Evidence summary is empty")
+	}
+}
+
+func TestEnrichHookDiagnosticsPrefersReadErrorOverDeletePolicyHint(t *testing.T) {
+	hooks := []HelmHook{{
+		Name:           "hooks-pre-upgrade",
+		Namespace:      "demo-hooks",
+		Kind:           "Job",
+		Events:         []string{"pre-upgrade"},
+		Status:         "Failed",
+		DeletePolicies: []string{"before-hook-creation"},
+	}}
+	detail := &HelmReleaseDetail{
+		Name:            "hooks",
+		Namespace:       "demo-hooks",
+		Hooks:           hooks,
+		HookDiagnostics: extractHookDiagnostics(hooks),
+	}
+	client := fake.NewSimpleClientset()
+	client.Fake.PrependReactor("get", "jobs", func(action ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "batch", Resource: "jobs"}, "hooks-pre-upgrade", fmt.Errorf("denied"))
+	})
+
+	EnrichHookDiagnosticsWithClusterEvidence(context.Background(), detail, client)
+
+	if len(detail.HookDiagnostics) != 1 {
+		t.Fatalf("len(HookDiagnostics) = %d, want 1", len(detail.HookDiagnostics))
+	}
+	diag := detail.HookDiagnostics[0]
+	if !diag.EvidenceUnavailable {
+		t.Fatal("EvidenceUnavailable = false, want true")
+	}
+	if !strings.Contains(diag.EvidenceUnavailableReason, "current Kubernetes identity") {
+		t.Fatalf("EvidenceUnavailableReason = %q, want RBAC/read error", diag.EvidenceUnavailableReason)
+	}
+	if diag.Evidence == nil || len(diag.Evidence.Errors) == 0 {
+		t.Fatalf("Evidence errors = %#v, want read error evidence", diag.Evidence)
 	}
 }
 

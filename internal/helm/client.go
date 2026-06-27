@@ -564,22 +564,21 @@ func getValuesWith(actionConfig *action.Configuration, name string, allValues bo
 		return nil, fmt.Errorf("failed to get helm release values: %w", err)
 	}
 
-	result := &HelmValues{
-		UserSupplied: values,
-	}
-
-	// If allValues requested, also get just user-supplied for comparison
 	if allValues {
+		result := &HelmValues{
+			Computed:     values,
+			UserSupplied: map[string]any{},
+		}
 		getValuesAction.AllValues = false
 		getValuesAction.Version = revision
 		userValues, err := getValuesAction.Run(name)
 		if err == nil {
 			result.UserSupplied = userValues
-			result.Computed = values
 		}
+		return result, nil
 	}
 
-	return result, nil
+	return &HelmValues{UserSupplied: values}, nil
 }
 
 // GetValuesDiff returns a values diff between two revisions.

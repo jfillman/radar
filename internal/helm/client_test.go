@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,9 +16,13 @@ import (
 
 	"github.com/skyhook-io/radar/pkg/helmhistory"
 
+	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/cli"
+	kubefake "helm.sh/helm/v3/pkg/kube/fake"
 	"helm.sh/helm/v3/pkg/release"
+	helmstorage "helm.sh/helm/v3/pkg/storage"
+	storagedriver "helm.sh/helm/v3/pkg/storage/driver"
 	helmtime "helm.sh/helm/v3/pkg/time"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -496,6 +501,55 @@ func TestComputeValuesDiffIsStableForReorderedMaps(t *testing.T) {
 	}
 }
 
+func TestGetValuesWithAllValuesKeepsComputedWhenUserValuesReadFails(t *testing.T) {
+	rel := helmTestRelease("values-demo", "demo", 1, release.StatusDeployed, "deployed")
+	rel.Chart = &chart.Chart{
+		Metadata: &chart.Metadata{Name: "values-demo"},
+		Values: map[string]any{
+			"replicaCount": 1,
+			"image": map[string]any{
+				"repository": "example/app",
+				"tag":        "default",
+			},
+		},
+	}
+	rel.Config = map[string]any{
+		"image": map[string]any{
+			"tag": "2.0.0",
+		},
+	}
+	driver := &failSecondReadDriver{inner: storagedriver.NewMemory()}
+	actionConfig := &action.Configuration{
+		KubeClient: &kubefake.PrintingKubeClient{Out: io.Discard},
+		Releases:   helmstorage.Init(driver),
+	}
+	if err := actionConfig.Releases.Create(rel); err != nil {
+		t.Fatal(err)
+	}
+
+	values, err := getValuesWith(actionConfig, rel.Name, true, rel.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if values.Computed == nil {
+		t.Fatal("Computed = nil, want computed values from successful all-values read")
+	}
+	if got := values.Computed["replicaCount"]; got != 1 {
+		t.Fatalf("Computed[replicaCount] = %#v, want 1", got)
+	}
+	image, ok := values.Computed["image"].(map[string]any)
+	if !ok {
+		t.Fatalf("Computed[image] = %#v, want map", values.Computed["image"])
+	}
+	if got := image["tag"]; got != "2.0.0" {
+		t.Fatalf("Computed[image][tag] = %#v, want user override", got)
+	}
+	if len(values.UserSupplied) != 0 {
+		t.Fatalf("UserSupplied = %#v, want empty when secondary read fails", values.UserSupplied)
+	}
+}
+
 func TestDiffResourceRefs(t *testing.T) {
 	left := []ResourceRef{
 		{APIVersion: "apps/v1", Kind: "Deployment", Namespace: "demo", Name: "cart"},
@@ -517,6 +571,43 @@ func TestDiffResourceRefs(t *testing.T) {
 	if len(unchanged) != 1 || unchanged[0].Kind != "Deployment" {
 		t.Fatalf("unchanged = %#v, want Deployment", unchanged)
 	}
+}
+
+type failSecondReadDriver struct {
+	inner *storagedriver.Memory
+	reads int
+}
+
+func (d *failSecondReadDriver) Name() string {
+	return d.inner.Name()
+}
+
+func (d *failSecondReadDriver) Create(key string, rls *release.Release) error {
+	return d.inner.Create(key, rls)
+}
+
+func (d *failSecondReadDriver) Update(key string, rls *release.Release) error {
+	return d.inner.Update(key, rls)
+}
+
+func (d *failSecondReadDriver) Delete(key string) (*release.Release, error) {
+	return d.inner.Delete(key)
+}
+
+func (d *failSecondReadDriver) Get(key string) (*release.Release, error) {
+	d.reads++
+	if d.reads > 1 {
+		return nil, fmt.Errorf("forced second read failure")
+	}
+	return d.inner.Get(key)
+}
+
+func (d *failSecondReadDriver) List(filter func(*release.Release) bool) ([]*release.Release, error) {
+	return d.inner.List(filter)
+}
+
+func (d *failSecondReadDriver) Query(labels map[string]string) ([]*release.Release, error) {
+	return d.inner.Query(labels)
 }
 
 func TestNonNilResourceRefs(t *testing.T) {

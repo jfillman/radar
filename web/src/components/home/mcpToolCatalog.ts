@@ -109,9 +109,9 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
   },
   {
     name: 'diagnose',
-    desc: 'One-call root-cause bundle. Workloads get spec + resourceContext + current AND previous logs across pods + warning events + startup blockers; GitOps reconcilers get status summary + parsed related issues.',
+    desc: 'One-call root-cause bundle. Workloads get spec + resourceContext + current AND previous logs across pods + warning events + startup blockers; GitOps reconcilers, including Flux HelmRelease, get status summary + parsed related issues.',
     params: [
-      { arg: 'kind', required: true, desc: 'pod, deployment, statefulset, daemonset, application, kustomization, or helmrelease' },
+      { arg: 'kind', required: true, desc: 'pod, deployment, statefulset, daemonset, application, kustomization, or Flux HelmRelease' },
       { arg: 'namespace', required: true, desc: 'resource namespace' },
       { arg: 'name', required: true, desc: 'resource name' },
       { arg: 'container', desc: 'specific container (defaults to all)' },
@@ -126,7 +126,7 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
   },
   {
     name: 'get_changes',
-    desc: 'Recent resource creates, updates, and deletes from the Kubernetes timeline. Helm release history is separate; use list_helm_releases or get_helm_release include=history,operations for failed upgrades and rollbacks.',
+    desc: 'Recent meaningful changes from the Kubernetes timeline plus native Helm deployment history (source=helm). Includes failed upgrades, rollbacks, and current Helm revisions; sourcesErrored marks partial source failures.',
     params: [
       { arg: 'namespace', desc: 'filter to a specific namespace' },
       { arg: 'kind', desc: 'filter to a resource kind (e.g. Deployment)' },
@@ -172,7 +172,7 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
   },
   {
     name: 'issues',
-    desc: 'Ranked list of what is broken right now — failing workloads, dangling references, scheduling blockers, and false CRD conditions. Live operational state (distinct from get_cluster_audit posture).',
+    desc: 'Ranked list of what is broken right now — failing workloads, active native Helm release failures or stuck pending operations, dangling references, scheduling blockers, and false CRD conditions. Native Helm rows use group=helm.sh.',
     params: [
       { arg: 'namespace', desc: 'filter to one namespace' },
       { arg: 'severity', desc: 'comma-separated: critical, warning' },

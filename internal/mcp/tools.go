@@ -176,7 +176,7 @@ func registerTools(server *mcp.Server) {
 			"ConfigMaps (no Secret content) + a " +
 			"startupBlockers section when the workload can't reach Running (unschedulable " +
 			"with the offending node constraint named, admission/quota rejection, or a " +
-			"post-bind CNI/volume stall). For Application/Kustomization/HelmRelease, returns " +
+			"post-bind CNI/volume stall). For Application/Kustomization/Flux HelmRelease, returns " +
 			"the reconciler resource + GitOps status summary + related parsed issues " +
 			"(cause/action/remediation), without pod-log fan-out. Use for " +
 			"CrashLoopBackOff, OOMKills, failed deploys, image-pull errors, readiness " +
@@ -205,9 +205,12 @@ func registerTools(server *mcp.Server) {
 			"ReplicaSet histories or individual audit/log streams, especially when issues " +
 			"are empty or dominated by baseline failures. Pair with since to bound the window; " +
 			"filter by namespace, kind, or name when you know the scope. Omit namespace when " +
-			"the relevant change may be outside the app namespace. Helm release deployment " +
-			"history is separate from this Kubernetes timeline; use list_helm_releases or " +
-			"get_helm_release include=history,operations for failed upgrades and rollbacks.",
+			"the relevant change may be outside the app namespace. Also includes native Helm " +
+			"release deployment/operation history as `source: helm` changes, so failed upgrades, " +
+			"rollbacks, and successful current revisions appear in the same recent-change feed. " +
+			"If `sourcesErrored` includes helm, treat the result as partial rather than proof " +
+			"that no Helm deployment happened. Use get_helm_release include=history,operations " +
+			"for the full Helm revision trail.",
 		Annotations: readOnly,
 	}, logToolCall("get_changes", handleGetChanges))
 
@@ -305,7 +308,8 @@ func registerTools(server *mcp.Server) {
 		Description: "Use when the agent's decision is 'what's broken right now?' — LIVE " +
 			"OPERATIONAL STATE, not config posture. Returns a ranked list of currently " +
 			"failing resources: failing Deployments/StatefulSets/CronJobs/HPAs/Nodes/Jobs/" +
-			"PVCs, dangling-reference errors like Pod→missing PVC/CM/Secret/SA, HPA→missing " +
+			"PVCs, active native Helm release failures or stuck pending operations, " +
+			"dangling-reference errors like Pod→missing PVC/CM/Secret/SA, HPA→missing " +
 			"scaleTargetRef, Ingress→missing backend Service, RoleBinding→missing Role, " +
 			"webhook→missing Service, pod startup blockers — why a Pod can't reach Running: " +
 			"unschedulable (arch/taint/resources/affinity), admission-rejected " +
@@ -337,11 +341,14 @@ func registerTools(server *mcp.Server) {
 			"PolicyReport violations are not in either — they surface per-resource via " +
 			"get_resource's resourceContext policy rollup. " +
 			"Recovered Helm rollbacks are deploy history, not live issues; use get_changes for " +
-			"Kubernetes timeline changes and list_helm_releases / get_helm_release for Helm release history. " +
+			"Kubernetes timeline changes plus Helm deployment history, and get_helm_release for " +
+			"full Helm revision/history/hook diagnostics. " +
 			"After identifying a suspect issue, call diagnose when the affected resource " +
 			"is a workload (Pod/Deployment/StatefulSet/DaemonSet) or GitOps reconciler " +
-			"(Application/Kustomization/HelmRelease). For other non-workload kinds, call " +
-			"get_resource. Use get_neighborhood when the failure likely crosses " +
+			"(Application/Kustomization/HelmRelease with group=helm.toolkit.fluxcd.io). " +
+			"For native Helm issues (kind=HelmRelease, group=helm.sh), call get_helm_release " +
+			"with include=history,operations. For other non-workload kinds, call get_resource. " +
+			"Use get_neighborhood when the failure likely crosses " +
 			"Services/workloads/Pods/dependencies. Use namespace for app-local triage; " +
 			"omit it when the root may be cluster-scoped or outside the app namespace.",
 		Annotations: readOnly,
@@ -1269,7 +1276,7 @@ func handleGetChanges(ctx context.Context, req *mcp.CallToolRequest, input getCh
 
 	query := meaningfulchanges.Query{
 		Since:      since,
-		Limit:      limit,
+		Limit:      50,
 		FieldLimit: meaningfulchanges.DefaultFieldLimit,
 		Name:       input.Name,
 	}
@@ -1287,22 +1294,35 @@ func handleGetChanges(ctx context.Context, req *mcp.CallToolRequest, input getCh
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to query timeline: %w", err)
 	}
+	var sourcesErrored []string
+	helmChanges, err := helmRecentChangesForContext(ctx, input, since)
+	if err != nil {
+		sourcesErrored = append(sourcesErrored, "helm: "+err.Error())
+	} else {
+		changes = append(changes, helmChanges...)
+	}
 	changes = filterChangesByClusterScopedRBAC(ctx, changes)
+	totalMatched := len(changes)
+	meaningfulchanges.RankAndCap(&changes, limit)
 
 	// Always wrap so capped + uncapped agree on wire shape
 	// ({changes: [...], narrowHint?: "..."}).
-	resp := getChangesResponseMCP{Changes: changes}
-	if capped {
+	resp := getChangesResponseMCP{
+		Changes:        changes,
+		SourcesErrored: sourcesErrored,
+	}
+	if capped || totalMatched > len(changes) {
 		resp.NarrowHint = fmt.Sprintf(
-			"meaningful change candidates were capped before ranking — narrow with namespace=, kind=, name=, shorten since= (e.g. 15m), or raise limit (cap 50)",
+			"meaningful change results were capped or candidate queries saturated — narrow with namespace=, kind=, name=, shorten since= (e.g. 15m), or raise limit (cap 50)",
 		)
 	}
 	return toJSONResult(resp)
 }
 
 type getChangesResponseMCP struct {
-	Changes    []mcpChange `json:"changes"`
-	NarrowHint string      `json:"narrowHint,omitempty"`
+	Changes        []mcpChange `json:"changes"`
+	NarrowHint     string      `json:"narrowHint,omitempty"`
+	SourcesErrored []string    `json:"sourcesErrored,omitempty"`
 }
 
 func handleGetTopology(ctx context.Context, req *mcp.CallToolRequest, input topologyInput) (*mcp.CallToolResult, any, error) {
@@ -2586,7 +2606,10 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 		}
 		filters.Filter = f
 	}
-	out, stats := issues.ComposeWithStats(provider, filters)
+	composeFilters := filters
+	composeFilters.Limit = issues.NoLimit
+	out, stats := issues.ComposeWithStats(provider, composeFilters)
+	out, stats = issues.MergeExternalIssues(out, stats, filters, nativeHelmIssuesForContext(ctx, allowedNamespaces, filters))
 	// Shared base response shape (issues.ListResponse), then MCP-specific
 	// enrichments below.
 	resp := issues.NewListResponse(out, stats)
@@ -2632,6 +2655,29 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 		}
 	}
 	return toJSONResult(resp)
+}
+
+func nativeHelmIssuesForContext(ctx context.Context, namespaces []string, filters issues.Filters) []issues.Issue {
+	if !issues.KindFilterIncludes(filters.Kinds, "HelmRelease", "helmreleases") {
+		return nil
+	}
+	helmClient := helm.GetClient()
+	if helmClient == nil {
+		return nil
+	}
+	username, groups := userFromContext(ctx)
+	helmNamespaces := namespaces
+	if helmNamespaces == nil {
+		helmNamespaces = resolveHelmListNamespaces(ctx, "")
+	}
+	releases, err := helmClient.ListReleasesAcrossNamespaces(helmNamespaces, username, groups)
+	if err != nil {
+		if !helm.IsForbiddenError(err) {
+			log.Printf("[mcp] Failed to list Helm releases for issue stream: %v", err)
+		}
+		return nil
+	}
+	return issues.NativeHelmReleaseIssues(releases, time.Now())
 }
 
 func parseSeverityList(v string) ([]issues.Severity, error) {

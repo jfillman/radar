@@ -63,24 +63,7 @@ func resolveUserPerms(ctx context.Context) (*pkgauth.User, *pkgauth.UserPermissi
 		return user, &pkgauth.UserPermissions{AllowedNamespaces: []string{}}
 	}
 
-	var allNamespaces []string
-	if rc := k8s.GetResourceCache(); rc != nil {
-		if nsLister := rc.Namespaces(); nsLister != nil {
-			nsList, _ := nsLister.List(labels.Everything())
-			for _, ns := range nsList {
-				allNamespaces = append(allNamespaces, ns.Name)
-			}
-		}
-	}
-	// Fallback for namespace-scoped SAs: see internal/server/server.go's
-	// getUserNamespaces for the rationale. Without this, restricted users
-	// in a namespace-scoped Radar deploy get [] instead of their RBAC ceiling.
-	if len(allNamespaces) == 0 {
-		if accessible, _ := k8s.GetAccessibleNamespaces(ctx); len(accessible) > 0 {
-			allNamespaces = accessible
-		}
-	}
-
+	allNamespaces := mcpAllNamespaceNames(ctx)
 	allowed, err := pkgauth.DiscoverNamespaces(ctx, client, user.Username, user.Groups, allNamespaces)
 	if err != nil {
 		log.Printf("[mcp] DiscoverNamespaces failed for %s: %v — denying access (fail-closed)", user.Username, err)
@@ -90,6 +73,24 @@ func resolveUserPerms(ctx context.Context) (*pkgauth.User, *pkgauth.UserPermissi
 	perms := &pkgauth.UserPermissions{AllowedNamespaces: allowed}
 	cache.Set(user.Username, perms)
 	return user, perms
+}
+
+func mcpAllNamespaceNames(ctx context.Context) []string {
+	var allNamespaces []string
+	if rc := k8s.GetResourceCache(); rc != nil {
+		if nsLister := rc.Namespaces(); nsLister != nil {
+			nsList, _ := nsLister.List(labels.Everything())
+			for _, ns := range nsList {
+				allNamespaces = append(allNamespaces, ns.Name)
+			}
+		}
+	}
+	if len(allNamespaces) == 0 {
+		if accessible, _ := k8s.GetAccessibleNamespaces(ctx); len(accessible) > 0 {
+			allNamespaces = accessible
+		}
+	}
+	return allNamespaces
 }
 
 // filterNamespacesForUser intersects requested namespaces with the user's

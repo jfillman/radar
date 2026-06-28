@@ -63,7 +63,7 @@ Use `get_helm_release` for detail:
 - `include=notes_diff` returns release notes diff.
 - `include=resource_diff` returns added/removed/unchanged rendered resource identities between revisions.
 
-`get_changes` is intentionally Kubernetes-resource timeline data, not Helm release history. For Helm deployments, use the Helm MCP tools above.
+`get_changes` includes the Kubernetes-resource timeline plus recent native Helm release deployment and operation history (`source: helm`). Use it when an agent asks what changed before an incident. For full Helm revision history, operation details, hook diagnostics, values, and diffs, use the Helm MCP tools above.
 
 ## Known Limits
 

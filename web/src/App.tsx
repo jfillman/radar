@@ -535,11 +535,32 @@ function AppInner() {
     navigate({ pathname: `/resources/${pluralKind}`, search: newParams.toString() })
   }, [searchParams, navigate])
 
-  // From the Issues queue: a GitOps reconciler subject (Argo Application / Flux
-  // Kustomization / HelmRelease) routes to its rich detail page (tree + insights
-  // + ops), not the generic resource drawer that's a dead-end for it. Member
-  // resources (Pods, Services, …) fall through to the standard resource view.
+  const navigateToHelmRelease = useCallback((namespace: string, name: string, storageNamespace?: string) => {
+    const newParams = new URLSearchParams()
+    const globalNamespaces = searchParams.get('namespaces')
+    if (globalNamespaces) {
+      newParams.set('namespaces', globalNamespaces)
+    }
+    newParams.set('release', `${namespace}/${name}`)
+    if (storageNamespace) {
+      newParams.set('releaseStorage', storageNamespace)
+    }
+    setSelectedHelmRelease({ namespace, name, storageNamespace })
+    if (mainView === 'helm') {
+      setSearchParams(newParams, { replace: true })
+      return
+    }
+    navigate({ pathname: '/helm', search: newParams.toString() })
+  }, [mainView, searchParams, navigate, setSearchParams])
+
+  // From the Issues queue: special controller/manager subjects route to their
+  // rich detail pages, not the generic resource drawer that's a dead-end for
+  // them. Member resources (Pods, Services, …) fall through to resources.
   const navigateFromIssue = useCallback((resource: SelectedResource) => {
+    if (resource.kind === 'HelmRelease' && resource.group === 'helm.sh' && resource.namespace) {
+      navigateToHelmRelease(resource.namespace, resource.name)
+      return
+    }
     const gitOpsPath = gitOpsRouteForResource({
       apiVersion: resource.group ? `${resource.group}/v1` : 'v1',
       kind: resource.kind,
@@ -550,7 +571,7 @@ function AppInner() {
       return
     }
     navigateToResourceList(resource)
-  }, [navigate, navigateToResourceList])
+  }, [navigate, navigateToHelmRelease, navigateToResourceList])
 
   // Collapse from expanded WorkloadView back to drawer
   const handleCollapseFromExpanded = useCallback(() => {
@@ -1868,17 +1889,7 @@ function AppInner() {
           <HelmView
             namespaces={namespaces}
             selectedRelease={selectedHelmRelease}
-            onReleaseClick={(ns, name, storageNamespace) => {
-              setSelectedHelmRelease({ namespace: ns, name, storageNamespace })
-              const params = new URLSearchParams(window.location.search)
-              params.set('release', `${ns}/${name}`)
-              if (storageNamespace) {
-                params.set('releaseStorage', storageNamespace)
-              } else {
-                params.delete('releaseStorage')
-              }
-              setSearchParams(params, { replace: true })
-            }}
+            onReleaseClick={navigateToHelmRelease}
           />
         )}
 

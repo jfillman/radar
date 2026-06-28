@@ -73,7 +73,8 @@ func attachIssueChangeCorrelation(ctx context.Context, resp *issues.ListResponse
 		}
 		// Only kinds whose changes the feed records can truthfully claim "no
 		// changes" — for untracked kinds the marker is omitted (= unknown).
-		if !meaningfulchanges.TrackedKind(iss.Kind) {
+		nativeHelmIssue := iss.Kind == "HelmRelease" && iss.Group == issues.NativeHelmGroup
+		if !nativeHelmIssue && !meaningfulchanges.TrackedKind(iss.Kind) {
 			continue
 		}
 		if checked >= correlationIssueCap {
@@ -82,7 +83,14 @@ func attachIssueChangeCorrelation(ctx context.Context, resp *issues.ListResponse
 		}
 		checked++
 
-		changes, saturated, err := correlationChangesForIssue(ctx, iss, window)
+		var changes []issuesapi.RecentChange
+		var saturated bool
+		var err error
+		if nativeHelmIssue {
+			changes, saturated, err = helmIssueChangesForCorrelation(ctx, iss, window)
+		} else {
+			changes, saturated, err = correlationChangesForIssue(ctx, iss, window)
+		}
 		if err != nil {
 			log.Printf("[mcp] issue change correlation failed for %s %s/%s: %v", iss.Kind, iss.Namespace, iss.Name, err)
 			continue // marker omitted = unknown, never a false "no changes"
@@ -118,6 +126,15 @@ func filterSpecConfigChanges(changes []issuesapi.RecentChange) []issuesapi.Recen
 		}
 	}
 	return out
+}
+
+func helmIssueChangesForCorrelation(ctx context.Context, iss *issuesapi.Issue, window time.Duration) ([]issuesapi.RecentChange, bool, error) {
+	changes, err := helmRecentChangesForContext(ctx, getChangesInput{
+		Namespace: iss.Namespace,
+		Kind:      "HelmRelease",
+		Name:      iss.Name,
+	}, window)
+	return changes, false, err
 }
 
 func correlationChangesForIssue(ctx context.Context, iss *issuesapi.Issue, window time.Duration) ([]issuesapi.RecentChange, bool, error) {

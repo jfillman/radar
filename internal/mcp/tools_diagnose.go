@@ -28,7 +28,7 @@ import (
 // diagnoseInput is the one-shot debug bundle request. Workloads resolve to a
 // pod set for log fan-out; GitOps reconcilers take a no-pods status path.
 type diagnoseInput struct {
-	Kind      string `json:"kind" jsonschema:"kind to diagnose: a workload (pod, deployment, statefulset, daemonset) for logs+events+startup blockers, or a GitOps reconciler (application, kustomization, helmrelease) for sync/health summary + parsed failure cause"`
+	Kind      string `json:"kind" jsonschema:"kind to diagnose: a workload (pod, deployment, statefulset, daemonset) for logs+events+startup blockers, or a GitOps reconciler (application, kustomization, Flux HelmRelease) for sync/health summary + parsed failure cause"`
 	Namespace string `json:"namespace" jsonschema:"resource namespace"`
 	Name      string `json:"name" jsonschema:"resource name"`
 	Container string `json:"container,omitempty" jsonschema:"specific container; defaults to all containers across the workload's pods"`
@@ -176,7 +176,7 @@ func handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, input diagnoseI
 	}
 	kindNorm := normalizeDiagnoseKind(input.Kind)
 	if kindNorm == "" {
-		return nil, nil, fmt.Errorf("invalid kind %q: must be pod, deployment, statefulset, daemonset, application, kustomization, or helmrelease", input.Kind)
+		return nil, nil, fmt.Errorf("invalid kind %q: must be pod, deployment, statefulset, daemonset, application, kustomization, or Flux HelmRelease", input.Kind)
 	}
 
 	if !checkNamespaceAccess(ctx, input.Namespace) {

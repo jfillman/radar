@@ -11,6 +11,7 @@ func TestGroupOf(t *testing.T) {
 		{"image pull", CategoryImagePullFailed, GroupStartup},
 		{"unschedulable", CategoryUnschedulable, GroupScheduling},
 		{"gitops sync", CategoryGitOpsSyncFailed, GroupControlPlane},
+		{"native helm release failed", CategoryHelmReleaseFailed, GroupControlPlane},
 		{"unknown", CategoryUnknown, GroupUnknown},
 		{"unmapped", Category("future_category"), GroupUnknown},
 	}

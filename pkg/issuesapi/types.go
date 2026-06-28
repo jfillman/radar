@@ -87,6 +87,7 @@ const (
 	CategoryGitOpsOperationFailed Category = "gitops_operation_failed" // sync apply failed (operationState / Flux install/upgrade)
 	CategoryGitOpsOutOfSync       Category = "gitops_out_of_sync"      // live state drifted from desired
 	CategoryGitOpsHealthDegraded  Category = "gitops_health_degraded"  // managed resources unhealthy/missing
+	CategoryHelmReleaseFailed     Category = "helm_release_failed"
 	CategoryWebhookBackendDown    Category = "webhook_backend_down"
 	CategoryControlPlaneNotReady  Category = "control_plane_not_ready"
 	CategoryMachineNotReady       Category = "machine_not_ready"
@@ -155,6 +156,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryGitOpsOperationFailed:    GroupControlPlane,
 	CategoryGitOpsOutOfSync:          GroupControlPlane,
 	CategoryGitOpsHealthDegraded:     GroupControlPlane,
+	CategoryHelmReleaseFailed:        GroupControlPlane,
 	CategoryWebhookBackendDown:       GroupControlPlane,
 	CategoryControlPlaneNotReady:     GroupControlPlane,
 	CategoryMachineNotReady:          GroupControlPlane,
@@ -246,6 +248,7 @@ const (
 )
 
 type RecentChange struct {
+	Source         string         `json:"source,omitempty"`
 	Kind           string         `json:"kind"`
 	Namespace      string         `json:"namespace,omitempty"`
 	Name           string         `json:"name"`

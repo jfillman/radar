@@ -1,6 +1,10 @@
 package issues
 
-import "github.com/skyhook-io/radar/internal/filter"
+import (
+	"strings"
+
+	"github.com/skyhook-io/radar/internal/filter"
+)
 
 // CELFilter aliased so callers don't need a separate import to set
 // Filters.Filter.
@@ -46,3 +50,19 @@ const (
 	// regardless; this just turns off the post-sort slice.
 	NoLimit = -1
 )
+
+func KindFilterIncludes(kinds []string, canonical string, aliases ...string) bool {
+	if len(kinds) == 0 {
+		return true
+	}
+	want := map[string]bool{strings.ToLower(canonical): true}
+	for _, alias := range aliases {
+		want[strings.ToLower(alias)] = true
+	}
+	for _, kind := range kinds {
+		if want[strings.ToLower(strings.TrimSpace(kind))] {
+			return true
+		}
+	}
+	return false
+}

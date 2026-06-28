@@ -108,13 +108,8 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 	// doesn't silently drop counts for resources whose issues fall in
 	// the tail beyond MaxLimit. Zero still maps to DefaultLimit so the
 	// public /api/issues + MCP issues_list keep their tight caps.
-	uncapped := f.Limit < 0
-	if f.Limit == 0 {
-		f.Limit = DefaultLimit
-	}
-	if !uncapped && f.Limit > MaxLimit {
-		f.Limit = MaxLimit
-	}
+	limit, uncapped := normalizedLimit(f.Limit)
+	f.Limit = limit
 
 	out := make([]Issue, 0, 64)
 	now := time.Now()
@@ -172,44 +167,56 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 	}
 	out = enrichDiagnosticContext(out, flatForContext, groupedForContext, p)
 
-	// ---- 4. Public filters on the shaped rows ------------------------
-	out = applyFilters(out, f) // severity + kind, against subject (grouped) or evidence (flat)
-	var stats ComposeStats
-	if f.Filter != nil {
-		// CEL evaluated last so it sees the public shape. Eval errors count as
-		// non-match ("missing field" semantics: zero hits + clean response, not
-		// a 500); ComposeStats forwards the count + first sample so the caller
-		// can distinguish "filter excluded everything" from "nothing matched."
-		filtered := out[:0]
-		var firstErr error
-		errCount := 0
-		for _, i := range out {
-			ok, err := f.Filter.Match(issueToActivation(i))
-			if err != nil {
-				errCount++
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			if ok {
-				filtered = append(filtered, i)
-			}
+	return finalizeShapedIssues(out, f, !f.Grouped, uncapped)
+}
+
+// MergeExternalIssues adds already-shaped issue rows from handler-owned data
+// sources, then applies the public sort/cap. `base` must already have gone
+// through ComposeWithStats with the same filters except Limit=NoLimit.
+func MergeExternalIssues(base []Issue, baseStats ComposeStats, f Filters, extras []Issue) ([]Issue, ComposeStats) {
+	limit, uncapped := normalizedLimit(f.Limit)
+	f.Limit = limit
+
+	if len(extras) == 0 {
+		baseStats.TotalMatched = len(base)
+		if !uncapped && len(base) > f.Limit {
+			base = base[:f.Limit]
 		}
-		if errCount > 0 {
-			log.Printf("[issues] CEL filter eval errors: %d/%d rows; first=%v", errCount, len(out), firstErr)
-			stats.FilterErrors = errCount
-			if firstErr != nil {
-				stats.FilterErrorSample = firstErr.Error()
-			}
-		}
-		out = filtered
+		return base, baseStats
 	}
 
-	// ---- 5. Sort, count, cap -----------------------------------------
-	// GroupIssues already sorted deterministically; the flat path sorts here
-	// with the same comparator so both orders agree.
-	if !f.Grouped {
+	filteredExtras, extraStats := filterShapedIssues(append([]Issue(nil), extras...), f)
+	out := make([]Issue, 0, len(base)+len(filteredExtras))
+	out = append(out, base...)
+	out = append(out, filteredExtras...)
+	sort.SliceStable(out, func(i, j int) bool { return lessIssue(out[i], out[j]) })
+
+	stats := baseStats
+	stats.FilterErrors += extraStats.FilterErrors
+	if stats.FilterErrorSample == "" {
+		stats.FilterErrorSample = extraStats.FilterErrorSample
+	}
+	stats.TotalMatched = len(out)
+	if !uncapped && len(out) > f.Limit {
+		out = out[:f.Limit]
+	}
+	return out, stats
+}
+
+func normalizedLimit(limit int) (int, bool) {
+	uncapped := limit < 0
+	if limit == 0 {
+		limit = DefaultLimit
+	}
+	if !uncapped && limit > MaxLimit {
+		limit = MaxLimit
+	}
+	return limit, uncapped
+}
+
+func finalizeShapedIssues(out []Issue, f Filters, sortOut bool, uncapped bool) ([]Issue, ComposeStats) {
+	out, stats := filterShapedIssues(out, f)
+	if sortOut {
 		sort.SliceStable(out, func(i, j int) bool { return lessIssue(out[i], out[j]) })
 	}
 	stats.TotalMatched = len(out)
@@ -217,4 +224,40 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 		out = out[:f.Limit]
 	}
 	return out, stats
+}
+
+func filterShapedIssues(out []Issue, f Filters) ([]Issue, ComposeStats) {
+	out = applyFilters(out, f) // severity + kind, against subject (grouped) or evidence (flat)
+	var stats ComposeStats
+	if f.Filter == nil {
+		return out, stats
+	}
+	// CEL evaluated last so it sees the public shape. Eval errors count as
+	// non-match ("missing field" semantics: zero hits + clean response, not
+	// a 500); ComposeStats forwards the count + first sample so the caller
+	// can distinguish "filter excluded everything" from "nothing matched."
+	filtered := out[:0]
+	var firstErr error
+	errCount := 0
+	for _, i := range out {
+		ok, err := f.Filter.Match(issueToActivation(i))
+		if err != nil {
+			errCount++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if ok {
+			filtered = append(filtered, i)
+		}
+	}
+	if errCount > 0 {
+		log.Printf("[issues] CEL filter eval errors: %d/%d rows; first=%v", errCount, len(out), firstErr)
+		stats.FilterErrors = errCount
+		if firstErr != nil {
+			stats.FilterErrorSample = firstErr.Error()
+		}
+	}
+	return filtered, stats
 }

@@ -2,11 +2,14 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/filter"
+	"github.com/skyhook-io/radar/internal/helm"
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/meaningfulchanges"
@@ -92,7 +95,10 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 		filters.Filter = f
 	}
 
-	out, stats := issues.ComposeWithStats(provider, filters)
+	composeFilters := filters
+	composeFilters.Limit = issues.NoLimit
+	out, stats := issues.ComposeWithStats(provider, composeFilters)
+	out, stats = issues.MergeExternalIssues(out, stats, filters, s.nativeHelmIssuesForRequest(r, namespaces, filters))
 	// Shared base response shape (issues.ListResponse); surfaces add their
 	// own enrichments after this point.
 	resp := issues.NewListResponse(out, stats)
@@ -118,6 +124,37 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.writeJSON(w, resp)
+}
+
+func (s *Server) nativeHelmIssuesForRequest(r *http.Request, namespaces []string, filters issues.Filters) []issues.Issue {
+	if !issues.KindFilterIncludes(filters.Kinds, "HelmRelease", "helmreleases") {
+		return nil
+	}
+	helmClient := helm.GetClient()
+	if helmClient == nil {
+		return nil
+	}
+	username, groups := "", []string(nil)
+	if user := auth.UserFromContext(r.Context()); user != nil {
+		username = user.Username
+		groups = user.Groups
+	}
+	helmNamespaces := namespaces
+	if helmNamespaces == nil {
+		var ok bool
+		helmNamespaces, ok = s.resolveHelmNamespaces(r)
+		if !ok {
+			return nil
+		}
+	}
+	releases, err := helmClient.ListReleasesAcrossNamespaces(helmNamespaces, username, groups)
+	if err != nil {
+		if !helm.IsForbiddenError(err) {
+			log.Printf("[issues] Failed to list Helm releases for issue stream: %v", err)
+		}
+		return nil
+	}
+	return issues.NativeHelmReleaseIssues(releases, time.Now())
 }
 
 func parseSeverities(v string) ([]issues.Severity, error) {

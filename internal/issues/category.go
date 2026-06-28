@@ -274,6 +274,9 @@ func classifyProblem(in classifyInput) issuesapi.Category {
 		if g == "kustomize.toolkit.fluxcd.io" || g == "helm.toolkit.fluxcd.io" {
 			return classifyGitOpsReason(in.Reason, issuesapi.CategoryGitOpsSyncFailed)
 		}
+		if in.Kind == "HelmRelease" && g == NativeHelmGroup {
+			return issuesapi.CategoryHelmReleaseFailed
+		}
 		return issuesapi.CategoryUnknown
 
 	case "Cluster", "KubeadmControlPlane":

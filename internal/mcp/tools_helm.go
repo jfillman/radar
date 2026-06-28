@@ -68,7 +68,17 @@ func resolveHelmListNamespaces(ctx context.Context, namespace string) []string {
 		return []string{namespace}
 	}
 	if pkgauth.UserFromContext(ctx) != nil {
-		return filterNamespacesForUser(ctx, nil)
+		allowed := filterNamespacesForUser(ctx, nil)
+		if allowed != nil {
+			return allowed
+		}
+		if canReadInNamespace(ctx, "", "secrets", "", "list") {
+			return nil
+		}
+		if scoped := filterNamespacesByCanRead(ctx, "", "secrets", "list", mcpAllNamespaceNames(ctx)); len(scoped) > 0 {
+			return scoped
+		}
+		return nil
 	}
 	return helm.ResolveNoAuthListNamespaces(ctx)
 }

@@ -99,6 +99,7 @@ export interface IssueRecentChangeField {
 }
 
 export interface IssueRecentChange {
+  source?: string;
   kind: string;
   namespace?: string;
   name: string;

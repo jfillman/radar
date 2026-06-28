@@ -64,7 +64,7 @@ export function RevisionHistory({ history, currentRevision, operations = [], onV
         {history.map((revision, index) => {
           const isCurrent = revision.revision === currentRevision
           const isSelectedForCompare = selectedForCompare === revision.revision
-          const annotations = operationAnnotationsForRevision(operations, revision.revision)
+          const annotations = operationAnnotationsForRevision(operations, revision.revision, revision.status)
 
           return (
             <div
@@ -174,7 +174,7 @@ export function RevisionHistory({ history, currentRevision, operations = [], onV
   )
 }
 
-function operationAnnotationsForRevision(operations: HelmOperation[], revision: number): Array<{ label: string; className: string }> {
+function operationAnnotationsForRevision(operations: HelmOperation[], revision: number, revisionStatus: string): Array<{ label: string; className: string }> {
   const annotations: Array<{ label: string; className: string }> = []
   const seen = new Set<string>()
   const add = (label: string, className: string) => {
@@ -182,10 +182,14 @@ function operationAnnotationsForRevision(operations: HelmOperation[], revision: 
     seen.add(label)
     annotations.push({ label, className })
   }
+  const addFailure = (label: string) => {
+    if (revisionStatus.toLowerCase() === 'failed') return
+    add(label, SEVERITY_BADGE.error)
+  }
 
   for (const op of operations) {
     if (op.failedRevision === revision) {
-      add('Failed upgrade', SEVERITY_BADGE.error)
+      addFailure('Failed upgrade')
     }
     if (op.rollbackRevision === revision) {
       add('Rollback revision', SEVERITY_BADGE.warning)
@@ -193,10 +197,10 @@ function operationAnnotationsForRevision(operations: HelmOperation[], revision: 
     if (op.revision === revision) {
       switch (op.kind) {
         case 'upgrade_failed':
-          add('Failed upgrade', SEVERITY_BADGE.error)
+          addFailure('Failed upgrade')
           break
         case 'release_failed':
-          add('Failed', SEVERITY_BADGE.error)
+          addFailure('Failed')
           break
         case 'rollback':
           add('Rollback', SEVERITY_BADGE.warning)

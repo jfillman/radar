@@ -1102,6 +1102,8 @@ function HelmOperationBanner({
   const tone: 'error' | 'warning' | 'info' = isFailure ? 'error' : operation.kind === 'rollback' ? 'info' : 'warning'
   const Icon = operation.kind === 'upgrade_rolled_back' || operation.kind === 'rollback' ? RotateCcw : isPending ? Clock : AlertTriangle
   const title = operationTitle(operation)
+  const statusLabel = operation.status.replace(/_/g, ' ')
+  const showStatusBadge = !(operation.status === 'failed' && title.toLowerCase().includes('failed'))
 
   return (
     <div className="m-4 mb-0 card-inner-lg">
@@ -1110,7 +1112,9 @@ function HelmOperationBanner({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium text-theme-text-primary">{title}</span>
-            <span className={clsx('badge-sm', SEVERITY_BADGE[tone])}>{operation.status.replace(/_/g, ' ')}</span>
+            {showStatusBadge && (
+              <span className={clsx('badge-sm', SEVERITY_BADGE[tone])}>{statusLabel}</span>
+            )}
             <OperationRevisionChips operation={operation} />
           </div>
           <p className="mt-1 text-sm text-theme-text-secondary">{operation.message}</p>

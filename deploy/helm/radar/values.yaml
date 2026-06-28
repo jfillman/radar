@@ -279,6 +279,16 @@ auth:
   # OIDC mode settings
   oidc:
     issuerURL: ""
+    # Optional internal issuer base URL used by the Radar pod for discovery and
+    # derived server-side token/userinfo/JWKS endpoints. Tokens are still
+    # validated against issuerURL, and browser redirects stay browser-facing.
+    internalIssuerURL: ""
+    # Optional endpoint overrides. Use these when browser-facing and server-side
+    # OIDC URLs cannot be derived from issuerURL/internalIssuerURL.
+    authorizationURL: ""
+    tokenURL: ""
+    userInfoURL: ""
+    jwksURL: ""
     clientID: ""
     clientSecret: ""
     # Use an existing K8s Secret for the OIDC client secret (avoids storing in Helm values).

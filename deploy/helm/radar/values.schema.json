@@ -198,6 +198,11 @@
           "additionalProperties": true,
           "properties": {
             "issuerURL": { "type": "string" },
+            "internalIssuerURL": { "type": "string" },
+            "authorizationURL": { "type": "string" },
+            "tokenURL": { "type": "string" },
+            "userInfoURL": { "type": "string" },
+            "jwksURL": { "type": "string" },
             "clientID": { "type": "string" },
             "clientSecret": { "type": "string" },
             "existingSecret": { "type": "string" },

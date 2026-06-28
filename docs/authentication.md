@@ -90,6 +90,31 @@ auth:
 
 **Scopes:** by default Radar requests `openid profile email groups` at the authorization endpoint. The `groups` scope is required by Dex, Keycloak, and most IdPs to actually include the groups claim in the ID token. If your IdP rejects unknown scopes (Google in particular doesn't define `groups`), override via `auth.oidc.scopes` / `--auth-oidc-scopes` to drop it or substitute the provider-specific equivalent.
 
+**Split public/internal provider URLs:** Kubernetes deployments sometimes need the browser to use the canonical issuer URL while the Radar pod talks to the IdP through service DNS. Keep `issuerURL` set to the canonical browser-facing issuer; Radar still validates the token `iss` claim against that value. Set `internalIssuerURL` when the internal endpoint has the same path layout, and Radar will fetch discovery internally while deriving server-side token, userinfo, and JWKS URLs from the internal base:
+
+```yaml
+auth:
+  mode: oidc
+  oidc:
+    issuerURL: http://authentik.example.com/application/o/radar/
+    internalIssuerURL: http://authentik-server.authentik.svc.cluster.local/application/o/radar/
+    clientID: radar
+    redirectURL: https://radar.example.com/auth/callback
+```
+
+If the endpoints cannot be derived from the two issuer bases, override them explicitly. `authorizationURL` is browser-facing; `tokenURL`, `userInfoURL`, and `jwksURL` are server-side URLs used by the Radar process:
+
+```yaml
+auth:
+  mode: oidc
+  oidc:
+    issuerURL: http://authentik.example.com/application/o/radar/
+    authorizationURL: http://authentik.example.com/application/o/radar/authorize/
+    tokenURL: http://authentik-server.authentik.svc.cluster.local/application/o/radar/token/
+    userInfoURL: http://authentik-server.authentik.svc.cluster.local/application/o/radar/userinfo/
+    jwksURL: http://authentik-server.authentik.svc.cluster.local/application/o/radar/jwks/
+```
+
 **Logout behavior:**
 
 When a user clicks logout, Radar clears the local session cookie and — if the identity provider supports it — redirects the browser to the provider's logout endpoint ([RP-Initiated Logout](https://openid.net/specs/openid-connect-rpinitiated-1_0.html)) to terminate the SSO session as well. This prevents the common issue where the user appears to log out but is silently re-authenticated on the next visit.
@@ -393,6 +418,11 @@ Radar uses stateless HMAC-SHA256 signed cookies for sessions. The cookie contain
 | Groups header (proxy) | `--auth-groups-header` | `auth.proxy.groupsHeader` | `X-Forwarded-Groups` |
 | Proxy logout URL (proxy) | `--auth-proxy-logout-url` | `auth.proxy.logoutURL` | — |
 | OIDC issuer | `--auth-oidc-issuer` | `auth.oidc.issuerURL` | — |
+| OIDC internal issuer | `--auth-oidc-internal-issuer` | `auth.oidc.internalIssuerURL` | — |
+| OIDC authorization URL | `--auth-oidc-authorization-url` | `auth.oidc.authorizationURL` | — |
+| OIDC token URL | `--auth-oidc-token-url` | `auth.oidc.tokenURL` | — |
+| OIDC userinfo URL | `--auth-oidc-userinfo-url` | `auth.oidc.userInfoURL` | — |
+| OIDC JWKS URL | `--auth-oidc-jwks-url` | `auth.oidc.jwksURL` | — |
 | OIDC client ID | `--auth-oidc-client-id` | `auth.oidc.clientID` | — |
 | OIDC client secret | `--auth-oidc-client-secret` | `auth.oidc.clientSecret` | — |
 | OIDC client secret (K8s Secret) | — | `auth.oidc.existingSecret` | — |

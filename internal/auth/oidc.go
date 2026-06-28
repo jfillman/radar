@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -34,6 +36,30 @@ type OIDCHandler struct {
 	// Discovery: backchannel logout support
 	backchannelLogoutSupported        bool
 	backchannelLogoutSessionSupported bool
+}
+
+type oidcDiscoveryClaims struct {
+	EndSessionEndpoint                string `json:"end_session_endpoint"`
+	BackchannelLogoutSupported        bool   `json:"backchannel_logout_supported"`
+	BackchannelLogoutSessionSupported bool   `json:"backchannel_logout_session_supported"`
+}
+
+type oidcProviderMetadata struct {
+	oidc.ProviderConfig
+	oidcDiscoveryClaims
+}
+
+var supportedOIDCSigningAlgorithms = map[string]bool{
+	oidc.RS256: true,
+	oidc.RS384: true,
+	oidc.RS512: true,
+	oidc.ES256: true,
+	oidc.ES384: true,
+	oidc.ES512: true,
+	oidc.PS256: true,
+	oidc.PS384: true,
+	oidc.PS512: true,
+	oidc.EdDSA: true,
 }
 
 // NewOIDCHandler creates a new OIDC handler. Returns an error if the provider
@@ -68,7 +94,7 @@ func NewOIDCHandler(ctx context.Context, cfg Config) (*OIDCHandler, error) {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 	}
 
-	provider, err := oidc.NewProvider(ctx, cfg.OIDCIssuer)
+	provider, providerClaims, err := newOIDCProvider(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -87,16 +113,7 @@ func NewOIDCHandler(ctx context.Context, cfg Config) (*OIDCHandler, error) {
 	log.Printf("[oidc] Requesting scopes: %v", scopes)
 
 	verifier := provider.Verifier(&oidc.Config{ClientID: cfg.OIDCClientID})
-
-	// Extract endpoints and feature flags from OIDC discovery document
-	var providerClaims struct {
-		EndSessionEndpoint                string `json:"end_session_endpoint"`
-		BackchannelLogoutSupported        bool   `json:"backchannel_logout_supported"`
-		BackchannelLogoutSessionSupported bool   `json:"backchannel_logout_session_supported"`
-	}
-	if err := provider.Claims(&providerClaims); err != nil {
-		log.Printf("[oidc] Warning: failed to parse end_session_endpoint from discovery document: %v", err)
-	} else if providerClaims.EndSessionEndpoint != "" {
+	if providerClaims.EndSessionEndpoint != "" {
 		log.Printf("[oidc] RP-Initiated Logout enabled (end_session_endpoint discovered)")
 	} else {
 		log.Printf("[oidc] IdP does not advertise end_session_endpoint — will use prompt=login on next auth after logout")
@@ -125,6 +142,172 @@ func NewOIDCHandler(ctx context.Context, cfg Config) (*OIDCHandler, error) {
 	}
 
 	return h, nil
+}
+
+func newOIDCProvider(ctx context.Context, cfg Config) (*oidc.Provider, oidcDiscoveryClaims, error) {
+	if !hasCustomOIDCEndpoints(cfg) {
+		provider, err := oidc.NewProvider(ctx, cfg.OIDCIssuer)
+		if err != nil {
+			return nil, oidcDiscoveryClaims{}, err
+		}
+		var claims oidcDiscoveryClaims
+		if err := provider.Claims(&claims); err != nil {
+			log.Printf("[oidc] Warning: failed to parse optional OIDC discovery claims: %v", err)
+		}
+		return provider, claims, nil
+	}
+
+	metadata, err := resolveOIDCProviderMetadata(ctx, cfg)
+	if err != nil {
+		return nil, oidcDiscoveryClaims{}, err
+	}
+	return metadata.ProviderConfig.NewProvider(ctx), metadata.oidcDiscoveryClaims, nil
+}
+
+func hasCustomOIDCEndpoints(cfg Config) bool {
+	return cfg.OIDCInternalIssuer != "" ||
+		cfg.OIDCAuthorizationURL != "" ||
+		cfg.OIDCTokenURL != "" ||
+		cfg.OIDCUserInfoURL != "" ||
+		cfg.OIDCJWKSURL != ""
+}
+
+func resolveOIDCProviderMetadata(ctx context.Context, cfg Config) (*oidcProviderMetadata, error) {
+	var metadata oidcProviderMetadata
+	if cfg.OIDCInternalIssuer != "" || !hasExplicitRequiredOIDCEndpoints(cfg) {
+		discoveryIssuer := cfg.OIDCIssuer
+		if cfg.OIDCInternalIssuer != "" {
+			discoveryIssuer = cfg.OIDCInternalIssuer
+		}
+		discovered, err := fetchOIDCProviderMetadata(ctx, discoveryIssuer)
+		if err != nil {
+			return nil, err
+		}
+		metadata = *discovered
+		if metadata.IssuerURL != cfg.OIDCIssuer {
+			return nil, fmt.Errorf("oidc: issuer URL configured for Radar (%q) did not match the issuer URL returned by provider discovery (%q)", cfg.OIDCIssuer, metadata.IssuerURL)
+		}
+	} else {
+		metadata.ProviderConfig.IssuerURL = cfg.OIDCIssuer
+	}
+
+	metadata.ProviderConfig.IssuerURL = cfg.OIDCIssuer
+	metadata.ProviderConfig.Algorithms = filterOIDCSigningAlgorithms(metadata.ProviderConfig.Algorithms)
+	applyOIDCEndpointConfig(&metadata, cfg)
+	if err := validateOIDCProviderMetadata(metadata.ProviderConfig); err != nil {
+		return nil, err
+	}
+	return &metadata, nil
+}
+
+func hasExplicitRequiredOIDCEndpoints(cfg Config) bool {
+	return cfg.OIDCAuthorizationURL != "" && cfg.OIDCTokenURL != "" && cfg.OIDCJWKSURL != ""
+}
+
+func filterOIDCSigningAlgorithms(algs []string) []string {
+	if len(algs) == 0 {
+		return nil
+	}
+	filtered := make([]string, 0, len(algs))
+	for _, alg := range algs {
+		if supportedOIDCSigningAlgorithms[alg] {
+			filtered = append(filtered, alg)
+		}
+	}
+	return filtered
+}
+
+func fetchOIDCProviderMetadata(ctx context.Context, issuer string) (*oidcProviderMetadata, error) {
+	wellKnown := strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnown, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	client := http.DefaultClient
+	if c, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok && c != nil {
+		client = c
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read response body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s: %s", resp.Status, body)
+	}
+
+	var metadata oidcProviderMetadata
+	if err := json.Unmarshal(body, &metadata); err != nil {
+		return nil, fmt.Errorf("oidc: failed to decode provider discovery object: %w", err)
+	}
+	return &metadata, nil
+}
+
+func applyOIDCEndpointConfig(metadata *oidcProviderMetadata, cfg Config) {
+	publicIssuer := cfg.OIDCIssuer
+	internalIssuer := cfg.OIDCInternalIssuer
+
+	if cfg.OIDCAuthorizationURL != "" {
+		metadata.AuthURL = cfg.OIDCAuthorizationURL
+	} else if internalIssuer != "" {
+		metadata.AuthURL = replaceOIDCURLBase(metadata.AuthURL, internalIssuer, publicIssuer)
+	}
+
+	if cfg.OIDCTokenURL != "" {
+		metadata.TokenURL = cfg.OIDCTokenURL
+	} else if internalIssuer != "" {
+		metadata.TokenURL = replaceOIDCURLBase(metadata.TokenURL, publicIssuer, internalIssuer)
+	}
+
+	if cfg.OIDCUserInfoURL != "" {
+		metadata.UserInfoURL = cfg.OIDCUserInfoURL
+	} else if internalIssuer != "" {
+		metadata.UserInfoURL = replaceOIDCURLBase(metadata.UserInfoURL, publicIssuer, internalIssuer)
+	}
+
+	if cfg.OIDCJWKSURL != "" {
+		metadata.JWKSURL = cfg.OIDCJWKSURL
+	} else if internalIssuer != "" {
+		metadata.JWKSURL = replaceOIDCURLBase(metadata.JWKSURL, publicIssuer, internalIssuer)
+	}
+
+	if internalIssuer != "" {
+		metadata.EndSessionEndpoint = replaceOIDCURLBase(metadata.EndSessionEndpoint, internalIssuer, publicIssuer)
+	}
+}
+
+func validateOIDCProviderMetadata(metadata oidc.ProviderConfig) error {
+	if metadata.AuthURL == "" {
+		return fmt.Errorf("oidc: authorization endpoint is empty")
+	}
+	if metadata.TokenURL == "" {
+		return fmt.Errorf("oidc: token endpoint is empty")
+	}
+	if metadata.JWKSURL == "" {
+		return fmt.Errorf("oidc: JWKS endpoint is empty")
+	}
+	return nil
+}
+
+func replaceOIDCURLBase(raw, fromBase, toBase string) string {
+	if raw == "" || fromBase == "" || toBase == "" {
+		return raw
+	}
+	from := strings.TrimRight(fromBase, "/")
+	to := strings.TrimRight(toBase, "/")
+	if raw == from {
+		return to
+	}
+	if strings.HasPrefix(raw, from+"/") {
+		return to + strings.TrimPrefix(raw, from)
+	}
+	return raw
 }
 
 // HandleLogin redirects to the OIDC provider for authentication

@@ -92,6 +92,21 @@ spec:
             {{- if .Values.auth.oidc.issuerURL }}
             - {{ printf "--auth-oidc-issuer=%s" .Values.auth.oidc.issuerURL | quote }}
             {{- end }}
+            {{- if .Values.auth.oidc.internalIssuerURL }}
+            - {{ printf "--auth-oidc-internal-issuer=%s" .Values.auth.oidc.internalIssuerURL | quote }}
+            {{- end }}
+            {{- if .Values.auth.oidc.authorizationURL }}
+            - {{ printf "--auth-oidc-authorization-url=%s" .Values.auth.oidc.authorizationURL | quote }}
+            {{- end }}
+            {{- if .Values.auth.oidc.tokenURL }}
+            - {{ printf "--auth-oidc-token-url=%s" .Values.auth.oidc.tokenURL | quote }}
+            {{- end }}
+            {{- if .Values.auth.oidc.userInfoURL }}
+            - {{ printf "--auth-oidc-userinfo-url=%s" .Values.auth.oidc.userInfoURL | quote }}
+            {{- end }}
+            {{- if .Values.auth.oidc.jwksURL }}
+            - {{ printf "--auth-oidc-jwks-url=%s" .Values.auth.oidc.jwksURL | quote }}
+            {{- end }}
             {{- if .Values.auth.oidc.clientID }}
             - {{ printf "--auth-oidc-client-id=%s" .Values.auth.oidc.clientID | quote }}
             {{- end }}

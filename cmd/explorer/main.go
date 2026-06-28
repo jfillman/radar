@@ -21,6 +21,7 @@ import (
 	"github.com/skyhook-io/radar/internal/config"
 	"github.com/skyhook-io/radar/internal/k8s"
 	mcppkg "github.com/skyhook-io/radar/internal/mcp"
+	"github.com/skyhook-io/radar/internal/reachability"
 	"github.com/skyhook-io/radar/internal/server"
 	"golang.org/x/net/http/httpguts"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // Register all auth provider plugins (OIDC, GCP, Azure, etc.)
@@ -34,12 +35,26 @@ var (
 func main() {
 	startupStart := time.Now()
 
+	// Subcommand dispatch: `radar probe` runs a one-shot reachability probe and
+	// exits — no server, no cluster client. The in-cluster reachability runner
+	// executes this binary in that mode. Intercept before the server flag
+	// parsing, since "probe" is a positional argument, not a flag.
+	if len(os.Args) > 1 && os.Args[1] == "probe" {
+		os.Exit(runProbeCommand(os.Args[2:]))
+	}
+
 	// Propagate the build-time version to the cloud dialer so the agent
 	// advertises the real version (e.g. "1.5.5") on the tunnel handshake
 	// instead of the "dev" default. Dockerfile + Makefile inject
 	// `-X main.version=...`; mirror it here rather than adding a second
 	// ldflags target so there's a single source of truth.
 	cloud.Version = version
+
+	// The in-cluster reachability probe Job runs the version-matched published
+	// Radar image by default (overridable via --reachability-image / RADAR_IMAGE).
+	// The flag override is applied just after it is parsed (see below) so BOTH the
+	// REST handler and the MCP diagnose(inCluster) path resolve the same image.
+	reachability.DefaultImageRef = "ghcr.io/skyhook-io/radar:" + version
 
 	// Load persistent config (~/.radar/config.json) for flag defaults.
 	// CLI flags override config file values.
@@ -62,6 +77,7 @@ func main() {
 	disableLocalTerminal := flag.Bool("disable-local-terminal", false, "Disable local terminal feature")
 	podShellDefault := flag.String("pod-shell-default", "", "Override the default pod exec shell command (runs as 'sh -c <value>'; empty = built-in bash -il → ash → sh cascade)")
 	debugImage := flag.String("debug-image", fileCfg.DebugImage, "Image for ephemeral debug containers and node debug pods (empty = busybox:latest; point at a mirror for air-gapped/private-registry clusters)")
+	reachabilityImage := flag.String("reachability-image", fileCfg.ReachabilityImage, "Image for the in-cluster reachability probe Job (empty = RADAR_IMAGE env, then the version-matched published Radar image; point at a mirror for air-gapped clusters)")
 	listPageSize := flag.Int64("list-page-size", 0, "Paginate the initial LIST of high-cardinality kinds (Pods, ReplicaSets) at this page size on clusters without WatchList streaming. 0 = off (single LIST). Try 2000 if a very large cluster fails to sync.")
 	namespaceScope := flag.Bool("namespace-scope", false, "Scope namespaced informer caches to a single namespace (multiple namespaces are not supported yet). Requires --namespace or a kubeconfig context namespace. Local mode can rescope by switching namespaces; auth/cloud mode locks to the startup namespace.")
 	// Timeline storage options
@@ -118,6 +134,16 @@ func main() {
 	namespaceListTimeout := flag.Duration("namespace-list-timeout", k8s.EnvDurationOr("RADAR_NAMESPACE_LIST_TIMEOUT", 5*time.Second), "Timeout for the cluster-wide namespace LIST used to decide if the user is RBAC-namespace-restricted (default: 5s). Widen to 30s or more on slow control planes — a timeout here is misreported in the UI as 'Limited list — RBAC'. Env: RADAR_NAMESPACE_LIST_TIMEOUT")
 	maxScopeCandidates := flag.Int("max-scope-candidates", k8s.EnvIntOr("RADAR_MAX_SCOPE_CANDIDATES", 20), "Cap on the namespace-fallback probe fanout for users who can list namespaces cluster-wide but not list a specific kind cluster-wide (default: 20). Raise for clusters with more than 20 namespaces to avoid silently marking kinds as denied in dropped namespaces. Env: RADAR_MAX_SCOPE_CANDIDATES")
 	flag.Parse()
+
+	// An explicit --reachability-image override applies to BOTH probe paths. It must
+	// win over the in-cluster self-read, so record it as the configured override
+	// (checked ABOVE self-read), not as DefaultImageRef (the last-resort fallback,
+	// below self-read — which would let radar's own pod image beat the operator's
+	// explicit choice on the MCP path). REST passes the config as the override arg;
+	// MCP has no server config, so it relies on this. Air-gapped mirrors work on both.
+	if *reachabilityImage != "" {
+		reachability.SetConfiguredImage(*reachabilityImage)
+	}
 
 	// Cloud-mode: Radar runs inside a customer cluster and fronts Radar
 	// Cloud. Under cloud-mode the tunnel is the only path to this listener
@@ -212,6 +238,7 @@ func main() {
 		DisableLocalTerminal:     *disableLocalTerminal,
 		PodShellDefault:          *podShellDefault,
 		DebugImage:               *debugImage,
+		ReachabilityImage:        *reachabilityImage,
 		ListPageSize:             *listPageSize,
 		NamespaceScope:           *namespaceScope,
 		TimelineStorage:          *timelineStorage,

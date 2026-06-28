@@ -36,6 +36,11 @@ type Config struct {
 	// pods. Empty falls back to busybox:latest; set it to a reachable mirror for
 	// air-gapped / private-registry clusters.
 	DebugImage string `json:"debugImage,omitempty"`
+
+	// ReachabilityImage is the image for the in-cluster reachability probe Job
+	// (`radar probe`). Empty falls back to RADAR_IMAGE, then the version-matched
+	// published Radar image; set it to a reachable mirror for air-gapped clusters.
+	ReachabilityImage string `json:"reachabilityImage,omitempty"`
 }
 
 // mu serializes Load-mutate-Save cycles to prevent concurrent writes

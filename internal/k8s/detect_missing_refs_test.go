@@ -684,6 +684,20 @@ func TestDetectMissingGatewayRefs(t *testing.T) {
 		t.Fatalf("expected exactly 4 Gateway missing-ref problems, got %+v", problems)
 	}
 
+	var portMismatch *Detection
+	for i := range problems {
+		if problems[i].Reason == "Missing Gateway backend Service port" && hasSubstr(problems[i].Message, "9090") {
+			portMismatch = &problems[i]
+			break
+		}
+	}
+	if portMismatch == nil {
+		t.Fatalf("port-mismatch problem for port 9090 not found: %+v", problems)
+	}
+	if !hasSubstr(portMismatch.Message, "http/80") {
+		t.Errorf("port-mismatch message should name the Service's actual ports for actionability, got %q", portMismatch.Message)
+	}
+
 	scoped := DetectMissingGatewayRefs(GetResourceCache(), dynCache, GetResourceDiscovery(), "prod")
 	if len(scoped) != 4 {
 		t.Fatalf("namespace-scoped Gateway refs should include prod route problems, got %+v", scoped)

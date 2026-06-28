@@ -1,7 +1,10 @@
 package k8s
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +16,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -20,6 +24,18 @@ import (
 )
 
 const probeFailureWindow = 10 * time.Minute
+
+// ScaledToZeroFingerprint marks the benign "backing workload intentionally
+// scaled to 0" detection so downstream consumers (the network trace's coverage
+// tone) can recognize it structurally and read it as deliberate dormancy, not
+// a red outage.
+const ScaledToZeroFingerprint = "svc:scaled-to-zero"
+
+// ScaledToZeroReason is the detection reason for the benign scale-to-0 case,
+// shared so the trace coverage layer can recognise the GROUPED issue (whose
+// code is "<source>:<reason>" — issue grouping does not preserve the
+// per-detection fingerprint) without hardcoding the literal.
+const ScaledToZeroReason = "Backing workload scaled to 0"
 
 const livenessProbeFailedReason = "LivenessProbeFailed"
 
@@ -563,13 +579,15 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				// because the workload is up but unhealthy.
 				reason := "Selector matches no pods"
 				message := selectorMessage(svc.Spec.Selector)
+				fingerprint := ""
 				// Distinguish the deliberate scale-to-0 case (managed-prometheus
 				// components disabled, antrea on Autopilot, dormant staging) from
 				// a genuinely orphaned selector. Both stay warning, but an honest
 				// reason keeps the row from reading as a routing fault.
-				if scaledToZeroBackingWorkload(cache, svc) {
-					reason = "Backing workload scaled to 0"
-					message = "selector matches a Deployment/StatefulSet that is intentionally scaled to 0 replicas"
+				if zero, _ := scaledToZeroBackingWorkload(cache, svc); zero {
+					reason = ScaledToZeroReason
+					message = "selector matches a workload (Deployment/StatefulSet/Rollout) intentionally scaled to 0 replicas"
+					fingerprint = ScaledToZeroFingerprint
 				} else if selectorMatchesSucceededPod(svc, podsByNamespace[svc.Namespace]) {
 					// The selector DOES match pods — they're just completed Job pods,
 					// which aren't routable endpoints. "matches no pods" would be a
@@ -584,6 +602,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					Severity:        "warning",
 					Reason:          reason,
 					Message:         message,
+					Fingerprint:     fingerprint,
 					Age:             FormatAge(ageDur),
 					AgeSeconds:      int64(ageDur.Seconds()),
 					Duration:        FormatAge(ageDur),
@@ -602,14 +621,36 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				// the selector (selected>0) but isn't ready — that's the
 				// deliberate scale-down, not a routing break. Same benign case
 				// as the zero-selected branch above, just caught a poll earlier.
-				if scaledToZeroBackingWorkload(cache, svc) {
+				zero, uncertain := scaledToZeroBackingWorkload(cache, svc)
+				if zero {
 					problems = append(problems, Detection{
 						Kind:            "Service",
 						Namespace:       svc.Namespace,
 						Name:            svc.Name,
 						Severity:        "warning",
-						Reason:          "Backing workload scaled to 0",
+						Reason:          ScaledToZeroReason,
 						Message:         "selector matches a Deployment/StatefulSet that is intentionally scaled to 0 replicas",
+						Fingerprint:     ScaledToZeroFingerprint,
+						Age:             FormatAge(ageDur),
+						AgeSeconds:      int64(ageDur.Seconds()),
+						Duration:        FormatAge(ageDur),
+						DurationSeconds: int64(ageDur.Seconds()),
+					})
+					continue
+				}
+				if uncertain {
+					// Couldn't read the Rollout CRD to confirm whether this is a
+					// deliberate scale-down (transient discovery/RBAC/cache error).
+					// Don't escalate to the red "routing break" framing on
+					// unverifiable state — warn and let the next poll settle it.
+					problems = append(problems, Detection{
+						Kind:            "Service",
+						Namespace:       svc.Namespace,
+						Name:            svc.Name,
+						Severity:        "warning",
+						Reason:          fmt.Sprintf("0/%d selected pods ready", len(selected)),
+						Message:         "no ready endpoints; couldn't verify whether the backing workload is intentionally scaled to 0 (Rollout lookup failed) — re-check shortly",
+						Fingerprint:     "svc:no-ready-endpoints",
 						Age:             FormatAge(ageDur),
 						AgeSeconds:      int64(ageDur.Seconds()),
 						Duration:        FormatAge(ageDur),
@@ -633,6 +674,26 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					Duration:        FormatAge(ageDur),
 					DurationSeconds: int64(ageDur.Seconds()),
 				})
+				// Only surface the probe-port-vs-target mismatch when it's
+				// CORROBORATED by no ready endpoints — otherwise it false-condemns
+				// the common separate health/admin-port pattern and every
+				// mesh-injected pod (istio-proxy :15021, etc.) on healthy Services.
+				// Here it's a plausible reason the Service has no ready endpoints.
+				if msg, ok := probePortServiceMismatch(svc, selected); ok {
+					problems = append(problems, Detection{
+						Kind:            "Service",
+						Namespace:       svc.Namespace,
+						Name:            svc.Name,
+						Severity:        "warning",
+						Reason:          "Readiness probe port differs from Service target port",
+						Message:         msg,
+						Fingerprint:     "svc:probe-port-mismatch",
+						Age:             FormatAge(ageDur),
+						AgeSeconds:      int64(ageDur.Seconds()),
+						Duration:        FormatAge(ageDur),
+						DurationSeconds: int64(ageDur.Seconds()),
+					})
+				}
 			}
 			if missing := unresolvedNamedTargetPorts(svc, selected); len(missing) > 0 {
 				problems = append(problems, Detection{
@@ -1734,21 +1795,32 @@ func selectorMatchesSucceededPod(svc *corev1.Service, pods []*corev1.Pod) bool {
 }
 
 // scaledToZeroBackingWorkload reports whether the Service's selector matches a
-// Deployment or StatefulSet that is intentionally scaled to 0 replicas. Such a
-// Service has no endpoints by design (a disabled managed component, a dormant
-// environment), which is a different — benign — state than a selector that
-// matches nothing in the cluster. Only called on the rare zero-endpoint branch,
-// so the per-Service workload scan is not a hot path.
-func scaledToZeroBackingWorkload(cache *ResourceCache, svc *corev1.Service) bool {
+// workload (Deployment, StatefulSet, or Argo Rollout) that is intentionally
+// scaled to 0 replicas. Such a Service has no endpoints by design (a disabled
+// managed component, a dormant environment, a KEDA target idled to 0), which is
+// a different — benign — state than a selector that matches nothing in the
+// cluster. Only called on the rare zero-endpoint branch, so the per-Service
+// workload scan is not a hot path.
+//
+// The gate is the workload's CURRENT replicas == 0, never a mere "can scale to
+// 0" capability: a KEDA/Rollout target at replicas>0 with 0 ready pods is a real
+// break and must stay critical. KEDA needs no special case here — it sets its
+// target Deployment/Rollout's replicas to 0 when idle, which the checks below
+// already see; minReplicaCount alone proves nothing about current state.
+// Returns uncertain=true when the Argo Rollout lookup failed for a reason OTHER
+// than the CRD being absent (transient discovery/RBAC/cache-not-synced) — the
+// caller must not escalate a possibly-dormant Service to the red critical framing
+// on unverifiable state.
+func scaledToZeroBackingWorkload(cache *ResourceCache, svc *corev1.Service) (scaledZero, uncertain bool) {
 	if cache == nil || len(svc.Spec.Selector) == 0 {
-		return false
+		return false, false
 	}
 	sel := labels.SelectorFromSet(labels.Set(svc.Spec.Selector))
 	if dl := cache.Deployments(); dl != nil {
 		deps, _ := dl.Deployments(svc.Namespace).List(labels.Everything())
 		for _, d := range deps {
 			if d.Spec.Replicas != nil && *d.Spec.Replicas == 0 && sel.Matches(labels.Set(d.Spec.Template.Labels)) {
-				return true
+				return true, false
 			}
 		}
 	}
@@ -1756,11 +1828,52 @@ func scaledToZeroBackingWorkload(cache *ResourceCache, svc *corev1.Service) bool
 		stss, _ := sl.StatefulSets(svc.Namespace).List(labels.Everything())
 		for _, s := range stss {
 			if s.Spec.Replicas != nil && *s.Spec.Replicas == 0 && sel.Matches(labels.Set(s.Spec.Template.Labels)) {
-				return true
+				return true, false
 			}
 		}
 	}
-	return false
+	// Argo Rollouts are a Deployment-shaped CRD with their own spec.replicas.
+	// Best-effort via the dynamic cache: an absent CRD comes back as
+	// ErrUnknownDynamicKind and is correctly read as no-match. Any OTHER error
+	// (transient discovery/RBAC/cache-not-synced) is NOT a definitive "not scaled
+	// to zero" — flag uncertain so the caller doesn't escalate to red. The dynamic
+	// List is a cache read, so a background context is sufficient.
+	rollouts, err := cache.ListDynamicWithGroup(context.Background(), "Rollout", svc.Namespace, "argoproj.io")
+	if err != nil {
+		// Absent CRD or dynamic support not wired = a clean no-match (Rollouts
+		// genuinely aren't in play). Only a transient List failure against an
+		// AVAILABLE CRD (RBAC / cache-not-synced) is actionable uncertainty.
+		if errors.Is(err, ErrUnknownDynamicKind) || errors.Is(err, ErrDynamicNotReady) {
+			return false, false
+		}
+		log.Printf("[detect] scale-to-zero Rollout lookup failed for Service %s/%s: %v", svc.Namespace, svc.Name, err)
+		return false, true
+	}
+	for _, r := range rollouts {
+		replicas, found, _ := unstructured.NestedInt64(r.Object, "spec", "replicas")
+		if !found || replicas != 0 {
+			continue
+		}
+		tmpl, _, _ := unstructured.NestedStringMap(r.Object, "spec", "template", "metadata", "labels")
+		if len(tmpl) > 0 && sel.Matches(labels.Set(tmpl)) {
+			return true, false
+		}
+	}
+	// An empty Rollout list with no error is ambiguous: DynamicResourceCache.List
+	// doesn't gate on HasSynced, so the first read of a not-yet-watched Rollout GVR
+	// returns ([], nil) even when a scaled-to-zero Rollout exists. Verify the cache
+	// actually synced before concluding no-match — otherwise stay uncertain so the
+	// caller keeps the warning framing until the next poll.
+	if len(rollouts) == 0 {
+		if disc := GetResourceDiscovery(); disc != nil {
+			if gvr, ok := disc.GetGVRWithGroup("Rollout", "argoproj.io"); ok {
+				if dc := GetDynamicResourceCache(); dc != nil && !dc.IsSynced(gvr) {
+					return false, true
+				}
+			}
+		}
+	}
+	return false, false
 }
 
 func isPodReadyForProblem(pod *corev1.Pod) bool {
@@ -1810,6 +1923,183 @@ func addNamedContainerPorts(dst map[string]bool, ports []corev1.ContainerPort) {
 			dst[port.Name] = true
 		}
 	}
+}
+
+// probePortServiceMismatch returns a summary message if any selected pod has a
+// readiness probe whose resolved port is not among the ports the Service
+// targets on that pod. Skips probes whose port can't be resolved at all —
+// that's caught upstream by missingNamedProbePort and is a different fix.
+func probePortServiceMismatch(svc *corev1.Service, pods []*corev1.Pod) (string, bool) {
+	if svc == nil || len(svc.Spec.Ports) == 0 || len(pods) == 0 {
+		return "", false
+	}
+	type mismatch struct {
+		pod, container string
+		probePort      int32
+	}
+	var examples []mismatch
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		targets := serviceTargetPortsForPod(svc, pod)
+		if len(targets) == 0 {
+			continue
+		}
+		for _, container := range pod.Spec.Containers {
+			if container.ReadinessProbe == nil {
+				continue
+			}
+			// Only the routed app container is in scope: it must expose one of the
+			// Service's resolved target ports. A sidecar (istio-proxy, linkerd,
+			// cloud-sql-proxy) or a portless container whose probe port the Service
+			// doesn't target is irrelevant to the data path — the no-ready-endpoints
+			// gate doesn't establish that its probe port causes the outage, so
+			// implicating it would false-condemn the dedicated-health-port pattern.
+			if !containerExposesTarget(container, targets) {
+				continue
+			}
+			port, ok := resolveProbePort(container.ReadinessProbe, container.Ports)
+			if !ok {
+				continue
+			}
+			if _, hit := targets[port]; hit {
+				continue
+			}
+			examples = append(examples, mismatch{pod: pod.Name, container: container.Name, probePort: port})
+		}
+	}
+	if len(examples) == 0 {
+		return "", false
+	}
+	first := examples[0]
+	targetList := describeServiceTargets(svc)
+	if len(examples) == 1 {
+		return fmt.Sprintf("pod %q container %q probes :%d, but Service targets %s — kubelet readiness verdict may not reflect the routed port", first.pod, first.container, first.probePort, targetList), true
+	}
+	// Count distinct pods, not example rows: multiple containers in the
+	// same pod each contribute a row, so len(examples) over-counts pods
+	// when a single pod has several mismatching probes.
+	distinctPods := map[string]struct{}{}
+	for _, ex := range examples {
+		distinctPods[ex.pod] = struct{}{}
+	}
+	return fmt.Sprintf("%d selected pods have readiness probes on ports the Service does not target (e.g. pod %q container %q probes :%d; Service targets %s)", len(distinctPods), first.pod, first.container, first.probePort, targetList), true
+}
+
+// containerExposesTarget reports whether a container declares a port that is one
+// of the Service's resolved target ports — i.e. it actually serves the routed
+// traffic (the app container, not a sidecar).
+func containerExposesTarget(c corev1.Container, targets map[int32]struct{}) bool {
+	for _, p := range c.Ports {
+		if _, ok := targets[p.ContainerPort]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceTargetPortsForPod(svc *corev1.Service, pod *corev1.Pod) map[int32]struct{} {
+	if svc == nil || pod == nil {
+		return nil
+	}
+	out := make(map[int32]struct{}, len(svc.Spec.Ports))
+	for _, sp := range svc.Spec.Ports {
+		switch sp.TargetPort.Type {
+		case intstr.Int:
+			if sp.TargetPort.IntVal > 0 {
+				out[sp.TargetPort.IntVal] = struct{}{}
+			} else if sp.Port > 0 {
+				out[sp.Port] = struct{}{}
+			}
+		case intstr.String:
+			if p, ok := containerPortByName(pod, sp.TargetPort.StrVal); ok {
+				out[p] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+func resolveProbePort(probe *corev1.Probe, ports []corev1.ContainerPort) (int32, bool) {
+	if probe == nil {
+		return 0, false
+	}
+	var port intstr.IntOrString
+	switch {
+	case probe.HTTPGet != nil:
+		port = probe.HTTPGet.Port
+	case probe.TCPSocket != nil:
+		port = probe.TCPSocket.Port
+	case probe.GRPC != nil:
+		if probe.GRPC.Port > 0 {
+			return probe.GRPC.Port, true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
+	switch port.Type {
+	case intstr.Int:
+		if port.IntVal > 0 {
+			return port.IntVal, true
+		}
+	case intstr.String:
+		for _, p := range ports {
+			if p.Name == port.StrVal && p.ContainerPort > 0 {
+				return p.ContainerPort, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func containerPortByName(pod *corev1.Pod, name string) (int32, bool) {
+	for _, c := range pod.Spec.Containers {
+		for _, p := range c.Ports {
+			if p.Name == name && p.ContainerPort > 0 {
+				return p.ContainerPort, true
+			}
+		}
+	}
+	for _, c := range pod.Spec.InitContainers {
+		for _, p := range c.Ports {
+			if p.Name == name && p.ContainerPort > 0 {
+				return p.ContainerPort, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func describeServiceTargets(svc *corev1.Service) string {
+	if svc == nil || len(svc.Spec.Ports) == 0 {
+		return "no ports"
+	}
+	seen := make(map[string]bool, len(svc.Spec.Ports))
+	parts := make([]string, 0, len(svc.Spec.Ports))
+	for _, sp := range svc.Spec.Ports {
+		var label string
+		switch sp.TargetPort.Type {
+		case intstr.Int:
+			if sp.TargetPort.IntVal > 0 {
+				label = fmt.Sprintf(":%d", sp.TargetPort.IntVal)
+			} else if sp.Port > 0 {
+				label = fmt.Sprintf(":%d", sp.Port)
+			}
+		case intstr.String:
+			label = sp.TargetPort.StrVal
+		}
+		if label == "" || seen[label] {
+			continue
+		}
+		seen[label] = true
+		parts = append(parts, label)
+	}
+	if len(parts) == 0 {
+		return "no ports"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func selectorMessage(selector map[string]string) string {

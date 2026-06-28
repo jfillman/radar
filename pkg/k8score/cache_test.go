@@ -1554,3 +1554,27 @@ func fakeDynamicForListAccess(
 	})
 	return dyn
 }
+
+// TestKindCoversNamespace pins the empty-vs-unreadable distinction: an empty list
+// is only authoritative when the informer actually covers the namespace.
+func TestKindCoversNamespace(t *testing.T) {
+	// nil ResourceScopes = legacy / cluster-wide default → covers everything.
+	if !(&ResourceCache{}).KindCoversNamespace("pods", "any") {
+		t.Error("nil scopes must cover all (legacy cluster-wide)")
+	}
+	clusterWide := &ResourceCache{config: CacheConfig{ResourceScopes: map[string]ResourceScope{"pods": {Enabled: true, Namespace: ""}}}}
+	if !clusterWide.KindCoversNamespace("pods", "prod") {
+		t.Error("cluster-wide pods must cover any namespace")
+	}
+	scoped := &ResourceCache{config: CacheConfig{ResourceScopes: map[string]ResourceScope{"pods": {Enabled: true, Namespace: "prod"}}}}
+	if !scoped.KindCoversNamespace("pods", "prod") {
+		t.Error("namespace-scoped pods must cover its own namespace")
+	}
+	if scoped.KindCoversNamespace("pods", "other") {
+		t.Error("pods scoped to prod must NOT cover another namespace (empty there is out-of-scope, not 0 pods)")
+	}
+	disabled := &ResourceCache{config: CacheConfig{ResourceScopes: map[string]ResourceScope{}}}
+	if disabled.KindCoversNamespace("pods", "prod") {
+		t.Error("a kind absent from an authoritative scope set is not covered")
+	}
+}

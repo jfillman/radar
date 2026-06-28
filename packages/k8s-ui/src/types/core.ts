@@ -211,8 +211,16 @@ export interface TopologyEdge {
   target: string
   type: EdgeType
   label?: string
+  /** Hover tooltip for the edge label. Used by the Reachability view to keep the
+   *  DECLARED route path available when the label shows an overridden tested path. */
+  labelTitle?: string
   skipIfKindVisible?: string // Hide this edge if this kind is visible (for shortcut edges)
   policyEffect?: 'allowed' | 'blocked' | 'unprotected'
+  /** Reachability outcome for THIS route/hop edge (distinct from policyEffect, a
+   *  NetworkPolicy concept). When set, the topology renderer colors the edge by
+   *  reachability: verified/reached = green, unreachable = red, blocked (downstream
+   *  of a break) = dashed gray, not-tested = neutral. Used by the Reachability view. */
+  reachOutcome?: 'verified' | 'reached' | 'unreachable' | 'blocked' | 'not-tested'
 }
 
 export interface Topology {

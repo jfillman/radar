@@ -56,6 +56,16 @@ func registerTools(server *mcp.Server) {
 		DestructiveHint: boolPtr(true),
 		OpenWorldHint:   boolPtr(false),
 	}
+	// diagnose is read-only EXCEPT when inCluster=true, which creates UP TO
+	// maxInClusterProbes transient, self-destructing probe pods (one per intended
+	// route, sequentially) to test the real dataplane. That makes it non-read-only
+	// (a client gating on readOnlyHint must know the inCluster arg can create pods),
+	// but NOT destructive — each pod is additive and deletes itself within ~60s — so
+	// DestructiveHint stays false.
+	diagnoseAnno := &mcp.ToolAnnotations{
+		DestructiveHint: boolPtr(false),
+		OpenWorldHint:   boolPtr(false),
+	}
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "get_dashboard",
@@ -185,10 +195,22 @@ func registerTools(server *mcp.Server) {
 			"flaps, scheduling failures, error-spewing services, GitOps sync/health failures, or any workload " +
 			"root-causing where you would otherwise call get_resource → events → " +
 			"get_pod_logs → get_pod_logs(previous=true) in sequence — this returns the " +
-			"same data in one round-trip. If you only need ONE facet (e.g. just spec, " +
+			"same data in one round-trip. " +
+			"For network entry kinds (Service/Ingress/HTTPRoute/GRPCRoute/Gateway), " +
+			"returns a coverage-honest reachability diagnosis instead of pod-log fan-out: a " +
+			"`summary` (headline + tested/passed/failed/skipped counts over the INTENDED routes), " +
+			"`routes` (each declared route's outcome + confidence — `indirect` means reached only " +
+			"via the API-server proxy, NOT the live-traffic path), `notTested` (what we couldn't " +
+			"probe + why), a NAMED `brokenRoute`, and `path` (hops with their static findings). Use " +
+			"for 'traffic is not reaching this service / route / ingress', backend port " +
+			"mismatches, route not Accepted by parent gateway, no-ready-endpoints, " +
+			"readiness probe targeting the wrong port. " +
+			"If you only need ONE facet (e.g. just spec, " +
 			"just logs), prefer the targeted tool. For other CRDs or non-workload kinds, " +
-			"use get_resource (with optional include=events).",
-		Annotations: readOnly,
+			"use get_resource (with optional include=events). " +
+			"Read-only EXCEPT the optional inCluster=true arg (network kinds), which creates up to 5 " +
+			"transient, self-destructing probe pods (one per intended route) to test the real dataplane.",
+		Annotations: diagnoseAnno,
 	}, logToolCall("diagnose", handleDiagnose))
 
 	mcp.AddTool(server, &mcp.Tool{

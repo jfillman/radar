@@ -1,12 +1,13 @@
-import { useMemo, useEffect, useCallback, useState } from 'react'
+import { useMemo, useEffect, useCallback, useRef, useState } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import { clsx } from 'clsx'
-import { Terminal } from 'lucide-react'
+import { Terminal, Stethoscope } from 'lucide-react'
 import {
   WorkloadView as BaseWorkloadView,
   EditableYamlView,
   FetchResult,
+  Section,
   type WorkloadTabType,
   type RendererOverrides,
   type GitOpsOwnerRef,
@@ -16,6 +17,7 @@ import {
   gitOpsOwnerFromRelationships,
   getGitOpsResourceStatus,
   resolvedEnvFromKey,
+  isDiagnoseKind,
 } from '@skyhook-io/k8s-ui'
 import type { SelectedResource, ResourceRef, Relationships, ResolvedEnvFrom } from '../../types'
 import { kindToPlural, buildWorkloadPath, type NavigateToResource } from '../../utils/navigation'
@@ -35,8 +37,8 @@ import { PrometheusCharts, isPrometheusSupported } from '../resource/PrometheusC
 import { PrometheusChartsGrid } from '../resource/PrometheusChartsGrid'
 import { RestartEventLane } from '../resource/RestartChart'
 import { RightsizingStrip } from '../resource/RightsizingStrip'
-import { useResourceAudit, useResourceIssues, useResources } from '../../api/client'
-import { AuditAlerts, ResourceIssuesSection } from '@skyhook-io/k8s-ui'
+import { useResourceAudit, useResourceIssues, useResources, useTrace, fetchTraceWithProbes, fetchInClusterCapability, runInCluster, runInClusterMerged } from '../../api/client'
+import { AuditAlerts, ResourceIssuesSection, ReachabilityView, TraceSummary, type Trace as NetworkTrace, type InClusterRunner } from '@skyhook-io/k8s-ui'
 import { WorkloadLogsViewer } from '../logs/WorkloadLogsViewer'
 import { LogsViewer } from '../logs/LogsViewer'
 import { useCanUpdateSecrets, useCanNodeWrite, useNamespacedCapabilities, useIsLocalDeployment } from '../../contexts/CapabilitiesContext'
@@ -278,6 +280,7 @@ export function WorkloadView({
   const rawTab = searchParams.get('tab')
   const migratedTab: TabType = rawTab === 'info' ? 'overview'
     : rawTab === 'events' ? 'timeline'
+    : rawTab === 'diagnose' ? 'reachability' // the network tab was renamed Reachability
     : (rawTab as TabType) || 'overview'
 
   const handleTabChange = useCallback((tab: TabType) => {
@@ -481,6 +484,17 @@ export function WorkloadView({
     (path: string) => navigateRouter(path),
     [navigateRouter],
   )
+  // Drawer TraceSummary CTA → open the full resource view ON the Reachability tab.
+  // The generic onExpand navigates to the workload path but drops the query, so we
+  // navigate directly to that path WITH ?tab=reachability — the deeplink the
+  // expanded view reads to land on the right tab.
+  const openReachability = useCallback(() => {
+    const base = buildWorkloadPath({ kind: kindProp, namespace, name, group: rest.group })
+    // autorun=1 tells the expanded view to immediately run the (proxy) reachability
+    // test — the operator clicked "Open Reachability" to SEE results, not to land on
+    // a static page and click Run again.
+    navigateRouter(`${base}${base.includes('?') ? '&' : '?'}tab=reachability&autorun=1`)
+  }, [navigateRouter, kindProp, namespace, name, rest.group])
   const handleOpenHelmRelease = useCallback(
     (ref: HelmOwnerRef) => {
       const params = new URLSearchParams()
@@ -509,6 +523,11 @@ export function WorkloadView({
       name={name}
       expanded={expanded}
       {...rest}
+      // The URL group arrives as '' when ?apiGroup is absent, which fails
+      // isDiagnoseKind's group check for Gateway-API kinds (HTTPRoute/GRPCRoute/
+      // Gateway). Fall back to the group derived from the fetched resource, then
+      // to undefined (which the gate treats as "group unknown → allow").
+      group={rest.group || resourceGroup || undefined}
       // Data
       resource={resource}
       relationships={relationships}
@@ -541,6 +560,12 @@ export function WorkloadView({
       renderMetricsTab={({ kind, namespace: ns, name: n }) => (
         <MetricsTabContent kind={kind} namespace={ns} name={n} resource={resource} expanded={expanded} />
       )}
+      renderDiagnoseTab={({ kind, namespace: ns, name: n }) => (
+        // Key by resource identity so the tab REMOUNTS on A→B navigation — without
+        // this, the first render with B's identity but A's still-set probeTrace
+        // paints A's verdict under B for one commit before the reset effect runs.
+        <DiagnoseTabContent key={`${kind}/${ns}/${n}`} kind={kind} namespace={ns} name={n} onNavigate={rest.onNavigateToResource} />
+      )}
       isMetricsAvailable={(kind, res) =>
         isPrometheusSupported(kind) && !(kind === 'Pod' && res?.status?.phase === 'Pending')
       }
@@ -549,12 +574,35 @@ export function WorkloadView({
       actionsBarProps={actionsBarProps}
       rendererOverrides={rendererOverrides}
       resolvedEnvFrom={resolvedEnvFrom}
-      renderOverviewExtra={({ kind: k, namespace: ns, name: n }) => (
-        <>
-          <AuditSection kind={k} namespace={ns} name={n} />
-          <FluxSourceConsumersSection kind={k} namespace={ns} name={n} />
-        </>
-      )}
+      renderOverviewExtra={({ kind: k, namespace: ns, name: n, group: g, context }) => {
+        // Diagnose-related sections per kind:
+        //   * Network entry kinds (Service, Ingress, Route, Gateway) ARE
+        //     the diagnosis target. DiagnoseInlineSection renders first;
+        //     no hint is shown because the panel is already here.
+        //   * Workload kinds (Deployment, Pod, etc.) lead with the
+        //     DiagnoseFromWorkloadHint shortcut so an app developer who
+        //     opened the drawer on a failing workload finds the diagnose
+        //     entry without having to know which Service fronts it.
+        //   * Other kinds render neither (both components self-gate).
+        // Pass the API group so a CRD sharing a core kind name (Knative Service,
+        // Istio Gateway) does NOT enable the trace — without the group this fired
+        // /trace/<kind> against the wrong (core) object: a confident wrong diagnosis.
+        const isNetworkKind = isDiagnoseKind(k, g)
+        const diagnoseInline = context === 'drawer' && isNetworkKind ? (
+          <DiagnoseInlineSection kind={k} namespace={ns} name={n} group={g} onOpenReachability={openReachability} />
+        ) : null
+        const diagnoseHint = context === 'drawer' && !isNetworkKind ? (
+          <DiagnoseFromWorkloadHint kind={k} namespace={ns} name={n} onNavigate={rest.onNavigateToResource} />
+        ) : null
+        return (
+          <>
+            {diagnoseInline}
+            {diagnoseHint}
+            <AuditSection kind={k} namespace={ns} name={n} />
+            <FluxSourceConsumersSection kind={k} namespace={ns} name={n} />
+          </>
+        )
+      }}
       renderOverviewLead={() => (
         <ResourceIssuesSection
           issues={liveIssues}
@@ -865,6 +913,252 @@ function AuditSection({ kind, namespace, name }: { kind: string; namespace: stri
   const { data: findings } = useResourceAudit(kind, namespace, name)
   if (!findings || findings.length === 0) return null
   return <AuditAlerts findings={findings} onViewAll={() => navigate('/checks')} />
+}
+
+// DiagnoseFromWorkloadHint surfaces the Diagnose entry point for app
+// developers who open a failing workload (Deployment, StatefulSet, Pod,
+// etc.) and don't know that diagnosis lives on the fronting Service.
+// Without this card the operator has to navigate the topology themselves
+// to find the right Service. Renders only when the workload has at
+// least one Service in its relationships; on isolated workloads (no
+// Service in front) the card stays hidden because no entry-point exists
+// to link to. The relationships fetch is the same query the drawer
+// infrastructure already uses, so React Query dedupes — no extra
+// network cost.
+function DiagnoseFromWorkloadHint({ kind, namespace, name, onNavigate }: { kind: string; namespace: string; name: string; onNavigate?: NavigateToResource }) {
+  const { relationships } = useResource<unknown>(kind, namespace, name)
+  const services = relationships?.services ?? []
+  if (services.length === 0 || !onNavigate) return null
+  const open = (svc: ResourceRef) => onNavigate({
+    kind: 'services',
+    namespace: svc.namespace ?? '',
+    name: svc.name,
+    group: '',
+  })
+  return (
+    <Section title="Diagnose network path">
+      <div className="flex items-start gap-2 text-xs text-theme-text-secondary">
+        <Stethoscope className="w-4 h-4 mt-0.5 shrink-0 text-theme-text-tertiary" aria-hidden />
+        <div className="flex-1 min-w-0">
+          {services.length === 1 ? 'Exposed by Service ' : 'Exposed by Services '}
+          {services.map((svc, i) => (
+            <span key={`${svc.namespace ?? ''}/${svc.name}`}>
+              <button
+                type="button"
+                onClick={() => open(svc)}
+                className="text-accent-text hover:underline font-medium"
+              >
+                {svc.name}
+              </button>
+              {i < services.length - 1 ? <span className="text-theme-text-tertiary">{', '}</span> : null}
+            </span>
+          ))}
+          <span className="text-theme-text-tertiary">. Open to trace the traffic path and run probes.</span>
+        </div>
+      </div>
+    </Section>
+  )
+}
+
+// DiagnoseTabContent binds the static-trace polling hook + the one-shot
+// probe fetch to the presentational TracePanel. Probe results are held in
+// local state so the panel keeps showing them until the resource changes;
+// the static trace remains the source of truth.
+// useProbeRun owns the one-shot reachability-probe state for a focused
+// resource. A per-resource token guards every async resolution: navigating to
+// a different resource (props change) does NOT unmount this component, so an
+// aliveRef-only guard would let an in-flight probe for resource A resolve and
+// paint A's verdict onto resource B — a confident-wrong verdict on the wrong
+// resource. The token is bumped on every resource change (and unmount); a late
+// then/catch whose captured token no longer matches simply bails.
+function useProbeRun(kind: string, namespace: string, name: string) {
+  const [probeTrace, setProbeTrace] = useState<NetworkTrace | undefined>(undefined)
+  const [probeError, setProbeError] = useState<Error | null>(null)
+  const [running, setRunning] = useState(false)
+  const tokenRef = useRef(0)
+  // runningRef mirrors `running` so runProbes' in-flight guard reads LIVE state, not a
+  // value captured at render. applyProbePath calls resetProbe() then runProbes()
+  // synchronously; the closed-over `running` would still be true and bail the new run,
+  // whereas resetProbe clears runningRef immediately so the guard sees it's free.
+  const runningRef = useRef(false)
+  useEffect(() => {
+    tokenRef.current += 1
+    setProbeTrace(undefined)
+    setProbeError(null)
+    runningRef.current = false
+    setRunning(false)
+  }, [kind, namespace, name])
+  useEffect(() => () => { tokenRef.current += 1 }, [])
+  const runProbes = useCallback((path?: string) => {
+    if (runningRef.current) return
+    const token = tokenRef.current
+    runningRef.current = true
+    setRunning(true)
+    setProbeError(null)
+    fetchTraceWithProbes(kind, namespace, name, path)
+      .then((result) => { if (tokenRef.current === token) setProbeTrace(result) })
+      .catch((e: unknown) => { if (tokenRef.current === token) setProbeError(e instanceof Error ? e : new Error(String(e))) })
+      .finally(() => { if (tokenRef.current === token) { runningRef.current = false; setRunning(false) } })
+  }, [kind, namespace, name])
+  // resetProbe drops the current probe trace AND bumps the token so an in-flight
+  // probe for the OLD path can't resolve and repaint. Used when the tested path
+  // changes: the prior path's verdict must not linger under the new path's label.
+  const resetProbe = useCallback(() => {
+    tokenRef.current += 1
+    setProbeTrace(undefined)
+    setProbeError(null)
+    runningRef.current = false
+    setRunning(false)
+  }, [])
+  return { probeTrace, probeError, running, runProbes, resetProbe }
+}
+
+function useInClusterRunner(kind: string, namespace: string, name: string): InClusterRunner {
+  return useMemo(() => ({
+    capability: () => fetchInClusterCapability(kind, namespace, name),
+    run: (req) => runInCluster(kind, namespace, name, req),
+  }), [kind, namespace, name])
+}
+
+// useInClusterTest runs the WHOLE-subject in-cluster test in one click. The server
+// runs every route's live probe and folds them in via the canonical
+// trace.ApplyInClusterResults, returning the FINALIZED trace — so this hook just
+// displays it, never reimplementing a weaker merge that could falsely confirm a
+// sibling route or leave stale diagnosis/netpol beside a live-verified route. The
+// result resets whenever the base trace changes (a fresh proxy run), so stale
+// in-cluster data never lingers.
+function useInClusterTest(runner: InClusterRunner, base: NetworkTrace | undefined, kind: string, namespace: string, name: string) {
+  const [running, setRunning] = useState(false)
+  const [allowed, setAllowed] = useState(false)
+  const [merged, setMerged] = useState<NetworkTrace | undefined>(undefined)
+  const [error, setError] = useState<string | undefined>(undefined)
+  // Per-resource token: bumped whenever the base trace changes (navigation / fresh
+  // proxy run) and on unmount, so an in-flight run that resolves AFTER the operator
+  // navigated to another resource never paints resource A's verdict onto resource B.
+  const tokenRef = useRef(0)
+  useEffect(() => {
+    let alive = true
+    runner.capability().then((c) => { if (alive) setAllowed(!!c.allowed) }).catch(() => { if (alive) setAllowed(false) })
+    return () => { alive = false }
+  }, [runner])
+  useEffect(() => {
+    tokenRef.current++
+    setMerged(undefined); setError(undefined); setRunning(false)
+  }, [base])
+  // Invalidate an in-flight run on unmount. Kept as a separate []-effect: bumping
+  // the ref in a deps-driven cleanup trips react-hooks/exhaustive-deps (the ref
+  // changes between re-runs), and the base-change case is already covered by the
+  // body bump above.
+  useEffect(() => () => { tokenRef.current++ }, [])
+  const run = useCallback(async (path: string = '/') => {
+    if (!base || running) return
+    const token = tokenRef.current
+    setRunning(true)
+    setError(undefined)
+    try {
+      const { trace } = await runInClusterMerged(kind, namespace, name, path)
+      if (tokenRef.current !== token) return // navigated away / base changed mid-run
+      setMerged(trace)
+      setError(undefined)
+    } catch (e: unknown) {
+      if (tokenRef.current !== token) return
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      if (tokenRef.current === token) setRunning(false)
+    }
+  }, [base, running, kind, namespace, name])
+  return { run, running, allowed, merged, error }
+}
+
+function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: string; namespace: string; name: string; onNavigate?: NavigateToResource }) {
+  const { data: staticTrace, isLoading, error, refetch } = useTrace(kind, namespace, name)
+  const { probeTrace, probeError, running, runProbes, resetProbe } = useProbeRun(kind, namespace, name)
+  const inClusterRunner = useInClusterRunner(kind, namespace, name)
+  const baseTrace = probeTrace ?? staticTrace
+  const { run: runInClusterTest, running: inClusterRunning, allowed: inClusterAllowed, merged: inClusterTrace, error: inClusterError } = useInClusterTest(inClusterRunner, baseTrace, kind, namespace, name)
+  const displayTrace = inClusterTrace ?? baseTrace
+  // The HTTP path the probes request (default "/"). Editable via the "what to
+  // test" menu; the buttons re-run with the current path, the form applies a new
+  // one. Applies to BOTH the reachability and in-cluster tests.
+  const [probePath, setProbePath] = useState('/')
+  // When the tested path actually changes, drop the prior path's probe trace
+  // BEFORE re-running so displayTrace falls back to the static trace (config-only)
+  // during the probe window — never the old path's verdict under the new label.
+  const applyProbePath = useCallback((p: string) => {
+    // Reset synchronously BEFORE runProbes — a reset inside the setProbePath updater is
+    // deferred to the next render, so it would bump the token AFTER runProbes captured
+    // the old one (dropping the result) and leave the stale running-guard set.
+    if (p !== probePath) resetProbe()
+    setProbePath(p)
+    runProbes(p)
+  }, [probePath, runProbes, resetProbe])
+  // Bump a nonce every time a run produces a new result object (proxy or in-cluster),
+  // so the view can flash "updated just now" even when the values are unchanged.
+  const [runNonce, setRunNonce] = useState(0)
+  useEffect(() => { if (probeTrace || inClusterTrace) setRunNonce((n) => n + 1) }, [probeTrace, inClusterTrace])
+  // Auto-run the (proxy) reachability test once per resource when the tab loads — the
+  // operator opened Reachability to SEE results, not a static page they must click Run
+  // on. Only the proxy test auto-runs; the in-cluster test (which spawns a Job) stays a
+  // deliberate manual action. Keyed by resource so navigating to a new one re-runs; the
+  // stale ?autorun=1 deeplink flag (now redundant) is stripped to keep the URL clean.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const autorunKey = useRef<string>('')
+  useEffect(() => {
+    const key = `${kind}/${namespace}/${name}`
+    if (autorunKey.current === key) return
+    autorunKey.current = key
+    runProbes()
+    if (searchParams.get('autorun')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('autorun')
+      setSearchParams(next, { replace: true })
+    }
+  }, [kind, namespace, name, runProbes, searchParams, setSearchParams])
+  // Full-view Diagnose tab owns the page padding (the drawer variant wraps
+  // in Section, which handles its own indentation).
+  return (
+    <div className="p-4">
+      <ReachabilityView
+        trace={displayTrace}
+        isLoading={isLoading || running}
+        error={error as Error | null}
+        probeError={probeError}
+        onRefresh={() => void refetch()}
+        probeRequested={running}
+        probed={probeTrace !== undefined || inClusterTrace !== undefined}
+        onRunProbes={() => runProbes(probePath)}
+        inClusterRunner={inClusterRunner}
+        onRunInCluster={() => runInClusterTest(probePath)}
+        inClusterRunning={inClusterRunning}
+        inClusterAllowed={inClusterAllowed && (probeTrace !== undefined)}
+        inClusterError={inClusterError}
+        probePath={probePath}
+        onApplyProbePath={applyProbePath}
+        runNonce={runNonce}
+        onNavigateToResource={onNavigate ? (ref) => onNavigate({ kind: kindToPlural(ref.kind), namespace: ref.namespace ?? '', name: ref.name, group: ref.group ?? '' }) : undefined}
+      />
+    </div>
+  )
+}
+
+// DiagnoseInlineSection is the drawer-mode glance: a passive TraceSummary, NOT the
+// full panel. The full route matrix, active probes, per-route localization, path
+// topology and the in-cluster test all live on the Reachability tab — reached via
+// the "Open Reachability →" CTA, which deeplinks to ?tab=reachability and expands.
+// The useTrace hook is gated on enabled so non-traceable kinds short-circuit.
+function DiagnoseInlineSection({ kind, namespace, name, group, onOpenReachability }: { kind: string; namespace: string; name: string; group?: string; onOpenReachability: () => void }) {
+  // Gate on (kind, group) so a CRD sharing a core kind name (Knative Service,
+  // Istio Gateway) never enables the trace against the wrong (core) object.
+  const enabled = isDiagnoseKind(kind, group)
+  const { data: staticTrace } = useTrace(kind, namespace, name, enabled)
+  if (!enabled || !staticTrace) return null
+  // Wrap in Section so the surface matches the rest of the drawer (Ports /
+  // Selector / Related Resources / Metadata) — chevron, title, divider.
+  return (
+    <Section title="Reachability · Network Path">
+      <TraceSummary trace={staticTrace} onOpenReachability={onOpenReachability} />
+    </Section>
+  )
 }
 
 // FluxSourceConsumersSection lists the reconcilers (Kustomization, HelmRelease)

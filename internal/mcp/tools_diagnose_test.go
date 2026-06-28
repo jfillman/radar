@@ -173,7 +173,9 @@ func TestHandleDiagnose_InvalidKind(t *testing.T) {
 	setupFakeCacheForFilterTests(t)
 	ctx := withClusterAdmin(t, "admin")
 
-	_, _, err := handleDiagnose(ctx, nil, diagnoseInput{Kind: "service", Namespace: "alpha", Name: "alpha-pod"})
+	// configmap is not a workload, not a GitOps reconciler, and not a
+	// network entry kind — diagnose should reject it.
+	_, _, err := handleDiagnose(ctx, nil, diagnoseInput{Kind: "configmap", Namespace: "alpha", Name: "alpha-cm"})
 	if err == nil {
 		t.Fatalf("expected error for unsupported kind, got nil")
 	}

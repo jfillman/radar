@@ -40,6 +40,11 @@ export * from './components/topology'
 // Cluster audit (AuditCard, AuditAlerts, AuditFindingsTable)
 export * from './components/audit'
 
+// Network path trace (TracePanel + types) — diagnostics for Service /
+// Ingress / HTTPRoute / GRPCRoute / Gateway. Backed by /api/trace and the
+// internal/trace Go package; the panel is presentation-only.
+export * from './components/trace'
+
 // Checks remediation queue (ChecksView, shared types + severity vocabulary).
 // Host-agnostic: Hub feeds fleet-resolved data, OSS can feed a single-cluster
 // resolve.

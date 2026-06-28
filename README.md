@@ -363,6 +363,18 @@ Proactive best-practices scanner with 31 checks across security, reliability, an
 - Framework labels: NSA/CISA, CIS benchmarks
 - MCP tool (`get_cluster_audit`) for AI-assisted cluster analysis
 
+### Network Path Diagnose
+
+Hop-ordered diagnosis for Service, Ingress, HTTPRoute, GRPCRoute, and Gateway — answering "if traffic is sent toward this resource, does it reach a healthy process, and if not which hop breaks first?"
+
+- Composes the detections Radar already runs (missing backend Service, port mismatches, no-ready-endpoints, route not Accepted by parent Gateway, readiness probe targeting the wrong port) into a path shape ordered along the traffic flow
+- Upstreams (Ingresses / Routes pointing at a Service) are judged independently — one broken Ingress doesn't condemn the other delivery paths
+- First critical hop is named explicitly so the operator can localize the break without reading the whole list; each finding ships a kubectl reproducer
+- **Optional one-shot reachability test** runs DNS / TCP / TLS / HTTP probes against the declared path — direct TCP when Radar is in-cluster, K8s API server proxy when running from a laptop — so the same button works regardless of where Radar runs. Probes never override the static verdict; they add evidence.
+- NetworkPolicies that select the subject's pods are statically evaluated for their caller-independent ingress rules: a "would block" **WARNING prediction** when no rule admits the path's port, a source-restricted advisory, or an outbound egress note. It's a prediction, never a verdict — the CNI is the only enforcement authority, so the live in-cluster probe confirms or downgrades it
+- Static trace is pure functions over the in-memory informer cache. Active probing from a laptop uses the cluster's normal RBAC (`get services/proxy`, `get pods/proxy`); in-cluster mode goes directly to the data path.
+- Exposed via the **Diagnose** tab in the resource detail view and via the MCP `diagnose` tool for AI consumers — see [docs/diagnose.md](docs/diagnose.md)
+
 ### Access Control (RBAC visibility)
 
 Inspect what any ServiceAccount can actually do — without three `kubectl describe` calls.

@@ -144,12 +144,12 @@ func detectArgoAppProblems(apps []*unstructured.Unstructured, now time.Time) []D
 					continue
 				}
 			}
-			msg := opMsg
+			msg := diagnose.CleanArgoControllerMessage(opMsg)
 			if strings.TrimSpace(msg) == "" {
 				msg = "Last sync operation failed"
 			}
 			d := gitopsProblem("Application", argoGroup, ns, name, "critical", "OperationFailed", msg, argoOperationIssueAge(app, now, age))
-			applyArgoOperationDiagnosis(&d, opMsg)
+			applyArgoOperationDiagnosis(&d, msg)
 			// When there's a structured remediation, that one-click fix IS the
 			// next step. Otherwise (RBAC / webhook / immutable field, or an
 			// unrecognized message) point the operator at the operation details
@@ -317,6 +317,7 @@ func argoErrorCondition(app *unstructured.Unstructured, now time.Time) (condType
 		switch ct {
 		case "ComparisonError", "InvalidSpecError", "SyncError":
 			msg, _ := cm["message"].(string)
+			msg = diagnose.CleanArgoControllerMessage(msg)
 			ts, _ := cm["lastTransitionTime"].(string)
 			since, hasSince := durationFromTimestamp(now, ts)
 			return ct, msg, since, hasSince, true

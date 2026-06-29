@@ -75,7 +75,8 @@ type Ref struct {
 // frontend dispatches on Kind to render the right button + onClick handler.
 //
 // Invariants (per Kind):
-//   RemediationCreateNamespace: Target MUST be a non-empty namespace name.
+//
+//	RemediationCreateNamespace: Target MUST be a non-empty namespace name.
 //
 // Construct via NewCreateNamespaceRemediation rather than struct literal —
 // the constructor enforces the per-Kind invariants; literal construction
@@ -344,6 +345,7 @@ func buildSummary(root *unstructured.Unstructured, tool string) Summary {
 		s.Health, _, _ = unstructured.NestedString(root.Object, "status", "health", "status")
 		s.OperationPhase, _, _ = unstructured.NestedString(root.Object, "status", "operationState", "phase")
 		s.OperationMessage, _, _ = unstructured.NestedString(root.Object, "status", "operationState", "message")
+		s.OperationMessage = diagnose.CleanArgoControllerMessage(s.OperationMessage)
 		s.TargetRevision, _, _ = unstructured.NestedString(root.Object, "status", "sync", "revision")
 		s.LastRevision, _, _ = unstructured.NestedString(root.Object, "status", "operationState", "syncResult", "revision")
 		s.LastReconcile, _, _ = unstructured.NestedString(root.Object, "status", "reconciledAt")
@@ -431,6 +433,7 @@ func buildIssues(root *unstructured.Unstructured, resourceTree *gitopstree.Resou
 		if phase, _, _ := unstructured.NestedString(root.Object, "status", "operationState", "phase"); phase == "Failed" || phase == "Error" {
 			operationFailed = true
 			msg, _, _ := unstructured.NestedString(root.Object, "status", "operationState", "message")
+			msg = diagnose.CleanArgoControllerMessage(msg)
 			parsed := diagnose.ParseArgoOperationError(msg)
 			issue := Issue{
 				Severity:    SeverityCritical,
@@ -753,7 +756,7 @@ func argoResourceChanges(root *unstructured.Unstructured, resolver Resolver) []C
 		if sr, ok := m["syncResult"].(map[string]any); ok {
 			status := gitops.StringValue(sr["status"])
 			if status != "Synced" && status != "Pruned" {
-				syncError = gitops.StringValue(sr["message"])
+				syncError = diagnose.CleanArgoControllerMessage(gitops.StringValue(sr["message"]))
 			}
 			hookPhase = gitops.StringValue(sr["hookPhase"])
 		}
@@ -918,7 +921,7 @@ func buildHistory(root *unstructured.Unstructured, tool string) []HistoryItem {
 			}
 			out = append(out, HistoryItem{
 				Phase:       gitops.StringValue(op["phase"]),
-				Message:     gitops.StringValue(op["message"]),
+				Message:     diagnose.CleanArgoControllerMessage(gitops.StringValue(op["message"])),
 				DeployedAt:  deployedAt,
 				Revision:    nestedString(op, "syncResult", "revision"),
 				InitiatedBy: initiatedBy,
@@ -1492,7 +1495,6 @@ func detectPendingDeletion(root *unstructured.Unstructured, resolver Resolver) *
 	}
 }
 
-
 // detectStuckDriftLoop emits a critical issue when an Argo Application is
 // in the "applied successfully but still drifted" state — the case where
 // the user stares at the OutOfSync badge for hours wondering why nothing
@@ -1608,7 +1610,7 @@ func argoApplicationConditions(root *unstructured.Unstructured) []Issue {
 			continue
 		}
 		typ := gitops.StringValue(m["type"])
-		msg := gitops.StringValue(m["message"])
+		msg := diagnose.CleanArgoControllerMessage(gitops.StringValue(m["message"]))
 		if typ == "" && msg == "" {
 			continue
 		}

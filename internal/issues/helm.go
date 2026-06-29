@@ -2,6 +2,7 @@ package issues
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/skyhook-io/radar/internal/helm"
@@ -69,6 +70,9 @@ func nativeHelmIssueReason(op helm.HelmOperation) (Severity, string, bool) {
 }
 
 func nativeHelmIssueMessage(rel helm.HelmRelease, op helm.HelmOperation) string {
+	if nativeHelmOperationTimedOutWaitingForReadiness(op.Message) {
+		return fmt.Sprintf("Helm release %q did not become ready before Helm timed out.", rel.Name)
+	}
 	if op.Message != "" {
 		return op.Message
 	}
@@ -81,10 +85,21 @@ func nativeHelmIssueMessage(rel helm.HelmRelease, op helm.HelmOperation) string 
 }
 
 func nativeHelmIssueCause(op helm.HelmOperation) string {
+	if nativeHelmOperationTimedOutWaitingForReadiness(op.Message) {
+		return "The release's workload did not become ready before Helm timed out."
+	}
 	if op.Kind == helmhistory.KindPending {
 		return "A Helm install, upgrade, or rollback has remained pending past the stuck-operation threshold."
 	}
 	return "The latest native Helm release revision is failed."
+}
+
+func nativeHelmOperationTimedOutWaitingForReadiness(msg string) bool {
+	lower := strings.ToLower(msg)
+	if !strings.Contains(lower, "context deadline exceeded") || !strings.Contains(lower, "status: inprogress") {
+		return false
+	}
+	return strings.Contains(lower, "not ready") || strings.Contains(lower, "available: 0/")
 }
 
 func nativeHelmIssueAction(op helm.HelmOperation) string {

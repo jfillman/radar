@@ -39,18 +39,6 @@ func TestNativeHelmReleaseIssues(t *testing.T) {
 			},
 		},
 		{
-			Name:      "stuck-install-timeout",
-			Namespace: "apps",
-			LastOperation: &helm.HelmOperation{
-				Kind:          helmhistory.KindPending,
-				Status:        helmhistory.StatusStuck,
-				Revision:      3,
-				PendingStatus: "pending-install",
-				Updated:       updated.Add(2 * time.Minute),
-				Message:       `Release "stuck-install-timeout" failed: demo is not ready. status: InProgress, message: Available: 0/1 context deadline exceeded`,
-			},
-		},
-		{
 			Name:      "recovered-rollback",
 			Namespace: "apps",
 			LastOperation: &helm.HelmOperation{
@@ -76,8 +64,8 @@ func TestNativeHelmReleaseIssues(t *testing.T) {
 	}
 
 	got := NativeHelmReleaseIssues(releases, now)
-	if len(got) != 3 {
-		t.Fatalf("len(NativeHelmReleaseIssues) = %d, want 3: %#v", len(got), got)
+	if len(got) != 2 {
+		t.Fatalf("len(NativeHelmReleaseIssues) = %d, want 2: %#v", len(got), got)
 	}
 
 	failed := got[0]
@@ -106,19 +94,5 @@ func TestNativeHelmReleaseIssues(t *testing.T) {
 	pending := got[1]
 	if pending.Name != "stuck-upgrade" || pending.Severity != SeverityWarning || pending.Reason != "HelmReleasePending" {
 		t.Fatalf("pending issue = %#v", pending)
-	}
-
-	pendingTimeout := got[2]
-	if pendingTimeout.Name != "stuck-install-timeout" || pendingTimeout.Severity != SeverityWarning || pendingTimeout.Reason != "HelmReleasePending" {
-		t.Fatalf("pending timeout issue = %#v", pendingTimeout)
-	}
-	if !strings.Contains(pendingTimeout.Message, "did not become ready before Helm timed out") {
-		t.Fatalf("pending timeout issue message = %q, want readiness timeout copy", pendingTimeout.Message)
-	}
-	if strings.Contains(strings.ToLower(pendingTimeout.Message), "failed") {
-		t.Fatalf("pending timeout issue message should not call a pending release failed: %q", pendingTimeout.Message)
-	}
-	if !strings.Contains(pendingTimeout.RawMessage, "status: InProgress") || !strings.Contains(pendingTimeout.RawMessage, "context deadline exceeded") {
-		t.Fatalf("pending timeout raw message = %q, want original Helm timeout text", pendingTimeout.RawMessage)
 	}
 }

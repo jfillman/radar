@@ -46,12 +46,12 @@ context deadline exceeded`
 	if got.LastOperation.RawMessage == "" {
 		t.Fatal("RawMessage is empty, want original Helm timeout")
 	}
+	if got.LastOperation.RawMessage != rawDescription {
+		t.Fatalf("RawMessage = %q, want %q", got.LastOperation.RawMessage, rawDescription)
+	}
 	for _, leaked := range []string{"status: InProgress", "Available: 0/1", "context deadline exceeded"} {
 		if strings.Contains(got.LastOperation.Message, leaked) {
 			t.Fatalf("message leaked raw Helm timeout text %q: %q", leaked, got.LastOperation.Message)
-		}
-		if !strings.Contains(got.LastOperation.RawMessage, leaked) {
-			t.Fatalf("RawMessage missing %q: %q", leaked, got.LastOperation.RawMessage)
 		}
 	}
 }

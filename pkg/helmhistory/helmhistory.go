@@ -196,7 +196,7 @@ func failedOperation(releaseName string, rev Revision, source Source) Operation 
 	}
 	rawMessage := ""
 	if IsReadinessTimeoutMessage(message) {
-		rawMessage = strings.TrimSpace(message)
+		rawMessage = strings.TrimSpace(rev.Description)
 		message = readinessTimeoutMessage(releaseName)
 	}
 	evidence := "Helm history revision status is failed"

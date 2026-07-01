@@ -1541,7 +1541,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
             without ever shifting the search box. The pill's own name/value caps
             keep it inside this width; the embedded/pill layout keeps auto width
             (its center bar is absolutely positioned). */}
-        <div className={`flex items-center gap-4 shrink-0 ${showNavRail ? 'w-[440px]' : ''}`}>
+        <div className={`flex items-center gap-4 shrink-0 ${showNavRail ? 'w-[478px]' : ''}`}>
           {/* Standalone rail owns the brand; only the embedded/pill layout
               shows it in the header (host may override via brandSlot). */}
           {navCustomization.brandSlot ?? (showNavRail ? null : <Logo />)}

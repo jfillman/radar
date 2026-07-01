@@ -229,7 +229,7 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
           disabled={isDisabled}
           className={
             variant === 'segment'
-              ? `flex items-center gap-1.5 px-3 py-1.5 h-full min-w-[110px] max-w-[170px] text-sm text-theme-text-primary hover:bg-theme-hover disabled:opacity-60 transition-colors ${className}`
+              ? `flex items-center gap-1.5 px-3 py-1.5 h-full min-w-[110px] max-w-[200px] text-[13px] text-theme-text-primary hover:bg-theme-hover disabled:opacity-60 transition-colors ${className}`
               : `flex items-center gap-1.5 px-2 py-1 rounded text-sm bg-theme-elevated hover:bg-theme-hover text-theme-text-primary disabled:opacity-60 transition-colors ${className}`
           }
           aria-label="Switch active namespaces"

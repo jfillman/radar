@@ -127,6 +127,48 @@ function getViewFromPath(pathname: string): ExtendedMainView {
   return 'home'
 }
 
+// The namespace scope filter is meaningful only on namespaced surfaces. On
+// cluster-scoped views it does nothing, so we disable it with an explanation
+// rather than leaving a dead control that silently ignores the pick:
+//   - Cost is reported per-namespace across the whole cluster (the view IS the
+//     breakdown; a filter would only hide rows).
+//   - A GitOps detail tree spans namespaces — its controller lives in one
+//     namespace but manages workloads across many.
+//   - A cluster-scoped resource kind (Nodes, PVs, ClusterRoles…) has no
+//     namespace at all.
+// The pick itself is preserved so it re-applies when the user returns to a
+// namespaced view.
+function namespaceFilterDisabled(
+  view: ExtendedMainView,
+  pathname: string,
+  apiResources?: { name: string; kind: string; namespaced: boolean }[],
+): { disabled: boolean; tooltip?: string } {
+  if (view === 'cost') {
+    return {
+      disabled: true,
+      tooltip: 'Cost is reported per namespace across the whole cluster — the namespace filter doesn’t apply here.',
+    }
+  }
+  const segments = pathname.replace(/^\//, '').split('/')
+  if (view === 'gitops' && segments[1] === 'detail') {
+    return {
+      disabled: true,
+      tooltip: 'This resource manages workloads across namespaces — the namespace filter doesn’t apply to its tree.',
+    }
+  }
+  if (view === 'resources') {
+    const kindSlug = segments[1]
+    const match = kindSlug ? apiResources?.find(r => r.name === kindSlug) : undefined
+    if (match && !match.namespaced) {
+      return {
+        disabled: true,
+        tooltip: `${match.kind} is a cluster-scoped resource — namespaces don’t apply.`,
+      }
+    }
+  }
+  return { disabled: false }
+}
+
 // Browser tab label for every Radar view, derived from the route URL so it's
 // correct regardless of which component renders it. A detail drawer that opens
 // over a list (?resource=…) is deliberately NOT titled — it's the same page, so
@@ -337,6 +379,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
   // resources view has run initNavigationMap().
   const { data: navApiResources } = useAPIResources()
   useEffect(() => { if (navApiResources) initNavigationMap(navApiResources) }, [navApiResources])
+
+  // View-aware namespace scope: disabled on cluster-scoped surfaces so the
+  // chip isn't a dead control next to the cluster switcher.
+  const namespaceFilter = namespaceFilterDisabled(mainView, location.pathname, navApiResources)
 
   // One URL-derived tab title for every view (see radarPageTitle). Driving it
   // from the URL — not the mounted component. Off unless the host opts in
@@ -1543,6 +1589,15 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                 </Tooltip>
               )}
             </div>
+            {/* Namespace scope — the trailing chip of the cluster/namespace
+                "scope zone". Lighter than the cluster switcher (a reversible
+                view filter, not a destructive context switch) and view-aware
+                (disabled on cluster-scoped surfaces). */}
+            <NamespaceSwitcher
+              ref={namespaceSwitcherRef}
+              disabled={namespaceFilter.disabled}
+              disabledTooltip={namespaceFilter.tooltip}
+            />
             {/* Port forwards indicator — shown only when sessions exist */}
             <PortForwardIndicator />
           </div>
@@ -1633,11 +1688,6 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
 
         {/* Right: Controls */}
         <div className="flex items-center gap-3 shrink-0">
-          <NamespaceSwitcher
-            ref={namespaceSwitcherRef}
-          />
-
-
           {/* Command palette trigger — embedded only; standalone has the
               top-center omnibar (which is the ⌘K surface). */}
           {!showNavRail && (

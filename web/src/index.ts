@@ -23,6 +23,16 @@ export { ShortcutHelpOverlay } from './components/ui/ShortcutHelpOverlay';
 export { ClusterSwitcher } from '@skyhook-io/k8s-ui';
 export type { ClusterSwitcherProps, ClusterSwitcherItem } from '@skyhook-io/k8s-ui';
 
+// Shared namespace-scope picker primitive — re-exported so embedders (Radar
+// Hub) can render a namespace filter visually identical to OSS Radar's, driving
+// their own per-cluster scope (Hub via ?namespaces= on the embedded RadarApp).
+export { NamespacePicker } from '@skyhook-io/k8s-ui';
+export type {
+  NamespacePickerProps,
+  NamespacePickerHandle,
+  NamespaceScopeView,
+} from '@skyhook-io/k8s-ui';
+
 // Deep-link builders — so consumers (Radar Hub) construct deep links into a
 // cluster view without hand-rolling Radar's internal URL format, which drifts
 // silently when Radar re-routes. `resourcePath` opens the detail drawer for any

@@ -71,7 +71,7 @@ func nativeHelmIssueReason(op helm.HelmOperation) (Severity, string, bool) {
 }
 
 func nativeHelmIssueMessage(rel helm.HelmRelease, op helm.HelmOperation) string {
-	if nativeHelmOperationTimedOutWaitingForReadiness(op.Message) {
+	if helmhistory.IsReadinessTimeoutMessage(nativeHelmRawCandidate(op)) {
 		return fmt.Sprintf("Helm release %q did not become ready before Helm timed out.", rel.Name)
 	}
 	if op.Message != "" {
@@ -86,7 +86,7 @@ func nativeHelmIssueMessage(rel helm.HelmRelease, op helm.HelmOperation) string 
 }
 
 func nativeHelmIssueCause(op helm.HelmOperation) string {
-	if nativeHelmOperationTimedOutWaitingForReadiness(op.Message) {
+	if helmhistory.IsReadinessTimeoutMessage(nativeHelmRawCandidate(op)) {
 		return "The release's workload did not become ready before Helm timed out."
 	}
 	if op.Kind == helmhistory.KindPending {
@@ -96,18 +96,20 @@ func nativeHelmIssueCause(op helm.HelmOperation) string {
 }
 
 func nativeHelmIssueRawMessage(op helm.HelmOperation) string {
-	if nativeHelmOperationTimedOutWaitingForReadiness(op.Message) {
+	if op.RawMessage != "" {
+		return strings.TrimSpace(op.RawMessage)
+	}
+	if helmhistory.IsReadinessTimeoutMessage(op.Message) {
 		return strings.TrimSpace(op.Message)
 	}
 	return ""
 }
 
-func nativeHelmOperationTimedOutWaitingForReadiness(msg string) bool {
-	lower := strings.ToLower(msg)
-	if !strings.Contains(lower, "context deadline exceeded") || !strings.Contains(lower, "status: inprogress") {
-		return false
+func nativeHelmRawCandidate(op helm.HelmOperation) string {
+	if op.RawMessage != "" {
+		return op.RawMessage
 	}
-	return strings.Contains(lower, "not ready") || strings.Contains(lower, "available: 0/")
+	return op.Message
 }
 
 func nativeHelmIssueAction(op helm.HelmOperation) string {

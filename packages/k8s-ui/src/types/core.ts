@@ -587,6 +587,7 @@ export interface HelmOperation {
   source: HelmOperationSource
   confidence: HelmOperationConfidence
   message: string
+  rawMessage?: string
   evidence?: string
   failureDescription?: string
   revision?: number

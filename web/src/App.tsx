@@ -1543,7 +1543,22 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
 
           <div className="flex items-center gap-2">
             {navCustomization.contextSlot ?? <ContextSwitcher ref={contextSwitcherRef} />}
-            {/* Connection status - next to cluster name */}
+            {/* Namespace scope — the trailing chip of the cluster/namespace
+                "scope zone". Lighter than the cluster switcher (a reversible
+                view filter, not a destructive context switch) and view-aware
+                (disabled on cluster-scoped surfaces). Kept immediately after
+                the cluster chip so the two scope controls read as one unit. */}
+            <NamespaceSwitcher
+              ref={namespaceSwitcherRef}
+              disabled={namespaceFilter.disabled}
+              disabledTooltip={namespaceFilter.tooltip}
+            />
+            {/* Connection status — placed AFTER the scope zone, not between the
+                cluster and namespace chips: its inline label is variable-width
+                (dot only when healthy, "Discovering…" / "Disconnected" + retry
+                otherwise), so sitting it between them would shove the namespace
+                chip sideways on every connection-state change. Trailing here,
+                its width changes never move the scope controls. */}
             <div className="flex items-center gap-1.5 ml-1">
               <Tooltip
                 content={
@@ -1589,15 +1604,6 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                 </Tooltip>
               )}
             </div>
-            {/* Namespace scope — the trailing chip of the cluster/namespace
-                "scope zone". Lighter than the cluster switcher (a reversible
-                view filter, not a destructive context switch) and view-aware
-                (disabled on cluster-scoped surfaces). */}
-            <NamespaceSwitcher
-              ref={namespaceSwitcherRef}
-              disabled={namespaceFilter.disabled}
-              disabledTooltip={namespaceFilter.tooltip}
-            />
             {/* Port forwards indicator — shown only when sessions exist */}
             <PortForwardIndicator />
           </div>

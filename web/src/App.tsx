@@ -1579,7 +1579,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                 header is wide enough (xl+), a label that fills the fixed left
                 column's remaining slack and TRUNCATES, so it never overflows or
                 pushes the pinned search box. Below xl it's the dot alone. */}
-            <div className={`ml-1 flex items-center gap-1.5 ${showNavRail ? 'flex-1 min-w-0' : 'shrink-0'}`}>
+            <div className="ml-1 flex items-center gap-1.5 shrink-0">
               <Tooltip
                 content={
                   !clusterConnected
@@ -1610,7 +1610,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                 )}
               </Tooltip>
               {showNavRail && (!clusterConnected || crdDiscoveryStatus === 'discovering') && (
-                <span className="hidden xl:block flex-1 min-w-0 truncate text-[11px] text-theme-text-tertiary">
+                <span className="hidden xl:block whitespace-nowrap text-[11px] text-theme-text-tertiary">
                   {!clusterConnected ? 'Disconnected' : 'Discovering Custom Resources…'}
                 </span>
               )}

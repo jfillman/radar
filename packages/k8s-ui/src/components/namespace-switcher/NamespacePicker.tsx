@@ -190,12 +190,8 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
   }
 
   const activeCount = scopeActives.length
-  // In segment mode the "Namespace" label already carries the noun, so the
-  // cluster-wide value collapses "All namespaces" → "All".
   const triggerLabel =
-    activeCount === 0
-      ? variant === 'segment' ? 'All' : 'All namespaces'
-      : activeCount === 1 ? scopeActives[0] : `${activeCount} namespaces`
+    activeCount === 0 ? 'All namespaces' : activeCount === 1 ? scopeActives[0] : `${activeCount} namespaces`
   const isClusterWide = activeCount === 0
   const restrictedHint = scope.mode === 'restricted'
   const cacheScopeLocked = scope.cacheScoped && !scope.namespaceRescope

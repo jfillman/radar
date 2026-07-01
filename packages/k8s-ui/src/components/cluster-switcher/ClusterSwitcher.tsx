@@ -238,7 +238,7 @@ export const ClusterSwitcher = forwardRef<ClusterSwitcherHandle, ClusterSwitcher
             <ClusterName
               name={currentName}
               fallbackBadge={<Server className="w-3.5 h-3.5 text-theme-text-secondary" />}
-              className={variant === 'segment' ? 'min-w-0' : TRIGGER_NAME_MAX_WIDTH}
+              className={variant === 'segment' ? 'min-w-0 max-w-[168px]' : TRIGGER_NAME_MAX_WIDTH}
               noTooltip={isOpen}
             />
             {currentSourceLabel && (

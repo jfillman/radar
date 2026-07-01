@@ -1541,7 +1541,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
             without ever shifting the search box. The pill's own name/value caps
             keep it inside this width; the embedded/pill layout keeps auto width
             (its center bar is absolutely positioned). */}
-        <div className={`flex items-center gap-4 shrink-0 ${showNavRail ? 'w-[478px]' : ''}`}>
+        <div className={`flex items-center gap-4 shrink-0 ${showNavRail ? 'w-[492px]' : ''}`}>
           {/* Standalone rail owns the brand; only the embedded/pill layout
               shows it in the header (host may override via brandSlot). */}
           {navCustomization.brandSlot ?? (showNavRail ? null : <Logo />)}
@@ -1576,9 +1576,13 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
             )}
             {/* Connection status — a fixed-size dot (state in the tooltip; the
                 dot is the reconnect control when disconnected) plus, when the
-                header is wide enough (xl+), a label that fills the fixed left
-                column's remaining slack and TRUNCATES, so it never overflows or
-                pushes the pinned search box. Below xl it's the dot alone. */}
+                header is wide enough (xl+), a label. The label is nowrap and
+                unbounded: it overflows the fixed left column into the empty gap
+                before the centered search box rather than shifting anything (the
+                dot + pill are shrink-0, so layout stays put — the search box
+                never moves). Where the gap is smaller than the label, its tail
+                tucks under the omnibar's solid background. Below xl it's the dot
+                alone. */}
             <div className="ml-1 flex items-center gap-1.5 shrink-0">
               <Tooltip
                 content={

@@ -246,7 +246,7 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
           ) : restrictedHint ? (
             <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-theme-text-tertiary" />
           ) : null}
-          <span className={`font-medium truncate ${variant === 'segment' ? 'flex-1 min-w-0' : 'max-w-[180px]'}`}>
+          <span className={`font-medium truncate ${variant === 'segment' ? 'min-w-0' : 'max-w-[180px]'}`}>
             {pending ? 'Switching…' : triggerLabel}
           </span>
           <ChevronDown className="w-3 h-3 shrink-0 opacity-60" />

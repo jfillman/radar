@@ -1546,7 +1546,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
               shows it in the header (host may override via brandSlot). */}
           {navCustomization.brandSlot ?? (showNavRail ? null : <Logo />)}
 
-          <div className="flex items-center gap-2 min-w-0">
+          <div className={`flex items-center gap-2 min-w-0 ${showNavRail ? 'flex-1' : ''}`}>
             {navCustomization.contextSlot ? (
               // Embedded host supplies its own cluster switcher — keep the two
               // controls separate (the host owns the cluster chip's styling).
@@ -1564,7 +1564,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
               // "what am I looking at" unit. No overflow-hidden on the container:
               // the ClusterSwitcher dropdown renders inline (absolute), so an
               // ancestor clip would hide it.
-              <div className="flex items-stretch rounded-lg border border-theme-border bg-theme-surface divide-x divide-theme-border min-w-0">
+              <div className="flex items-stretch shrink-0 rounded-lg border border-theme-border bg-theme-surface divide-x divide-theme-border">
                 <ContextSwitcher ref={contextSwitcherRef} variant="segment" />
                 <NamespaceSwitcher
                   ref={namespaceSwitcherRef}
@@ -1574,12 +1574,12 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                 />
               </div>
             )}
-            {/* Connection status — a single FIXED-SIZE dot (state lives in the
-                tooltip), trailing the scope pill. Dot-only keeps the left group
-                a stable width, so the pinned search box never shifts on
-                connection-state changes; when disconnected the dot itself is the
-                reconnect control. */}
-            <div className="ml-1 shrink-0 flex items-center">
+            {/* Connection status — a fixed-size dot (state in the tooltip; the
+                dot is the reconnect control when disconnected) plus, when the
+                header is wide enough (xl+), a label that fills the fixed left
+                column's remaining slack and TRUNCATES, so it never overflows or
+                pushes the pinned search box. Below xl it's the dot alone. */}
+            <div className={`ml-1 flex items-center gap-1.5 ${showNavRail ? 'flex-1 min-w-0' : 'shrink-0'}`}>
               <Tooltip
                 content={
                   !clusterConnected
@@ -1593,7 +1593,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
               >
                 {clusterConnected ? (
                   <span
-                    className={`block w-2.5 h-2.5 rounded-full ${
+                    className={`block w-2.5 h-2.5 shrink-0 rounded-full ${
                       crdDiscoveryStatus === 'discovering' ? 'bg-amber-400 animate-pulse' : 'bg-green-500'
                     }`}
                   />
@@ -1603,12 +1603,17 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                     onClick={retryConnection}
                     disabled={isRetrying}
                     aria-label="Cluster disconnected — reconnect"
-                    className="block disabled:cursor-default"
+                    className="block shrink-0 disabled:cursor-default"
                   >
                     <span className={`block w-2.5 h-2.5 rounded-full bg-red-500 ${isRetrying ? 'animate-pulse' : ''}`} />
                   </button>
                 )}
               </Tooltip>
+              {showNavRail && (!clusterConnected || crdDiscoveryStatus === 'discovering') && (
+                <span className="hidden xl:block flex-1 min-w-0 truncate text-[11px] text-theme-text-tertiary">
+                  {!clusterConnected ? 'Disconnected' : 'Discovering Custom Resources…'}
+                </span>
+              )}
             </div>
             {/* Port forwards indicator — shown only when sessions exist */}
             <PortForwardIndicator />

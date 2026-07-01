@@ -238,7 +238,7 @@ export const ClusterSwitcher = forwardRef<ClusterSwitcherHandle, ClusterSwitcher
             <ClusterName
               name={currentName}
               fallbackBadge={<Server className="w-3.5 h-3.5 text-theme-text-secondary" />}
-              className={variant === 'segment' ? 'flex-1 min-w-0' : TRIGGER_NAME_MAX_WIDTH}
+              className={variant === 'segment' ? 'min-w-0' : TRIGGER_NAME_MAX_WIDTH}
               noTooltip={isOpen}
             />
             {currentSourceLabel && (
@@ -258,7 +258,7 @@ export const ClusterSwitcher = forwardRef<ClusterSwitcherHandle, ClusterSwitcher
             )}
           </>
         )}
-        <ChevronDown className={`w-3 h-3 ml-auto shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        <ChevronDown className={`w-3 h-3 shrink-0 transition-transform ${variant === 'segment' ? '' : 'ml-auto'} ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
       {isOpen && (

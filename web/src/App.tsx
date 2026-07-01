@@ -1540,7 +1540,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
             pinned; overflowing chrome truncates rather than shoving the search
             box. The embedded/pill layout keeps shrink-0 (its center bar is
             absolutely positioned, so equal columns aren't needed). */}
-        <div className={`flex items-center gap-4 ${showNavRail ? 'flex-1 min-w-0 overflow-hidden' : 'shrink-0'}`}>
+        <div className={`flex items-center gap-4 ${showNavRail ? 'flex-1 min-w-0' : 'shrink-0'}`}>
           {/* Standalone rail owns the brand; only the embedded/pill layout
               shows it in the header (host may override via brandSlot). */}
           {navCustomization.brandSlot ?? (showNavRail ? null : <Logo />)}

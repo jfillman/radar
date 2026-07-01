@@ -95,6 +95,18 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
     setDraft(new Set(scopeActives))
   }, [activesKey, scopeActives])
 
+  // Fully disable when the host disables the control (e.g. view-awareness
+  // navigating to a cluster-scoped surface): the trigger is inert and open()
+  // is blocked, but an already-open dropdown would still commit via Done /
+  // outside-click / Clear all — so close it (discarding the uncommitted draft)
+  // rather than letting a dead view apply a namespace change.
+  useEffect(() => {
+    if (disabled && isOpen) {
+      setIsOpen(false)
+      setSearch('')
+    }
+  }, [disabled, isOpen])
+
   const items = useMemo(() => {
     if (!scope) return [] as string[]
     return [...(scope.accessibleNamespaces ?? [])].sort((a, b) => a.localeCompare(b))

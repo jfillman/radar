@@ -8,7 +8,7 @@ import { HomeView } from './components/home/HomeView'
 import { DebugOverlay } from './components/DebugOverlay'
 import { TopologyGraph, TopologySearch, TopologyFilterSidebar, TopologyControls, gitOpsRouteForKind, gitOpsRouteForResource } from '@skyhook-io/k8s-ui'
 import { initNavigationMap } from '@skyhook-io/k8s-ui/utils/navigation'
-import { useAPIResources } from './api/apiResources'
+import { useAPIResources, CORE_RESOURCES } from './api/apiResources'
 import { TimelineView } from './components/timeline/TimelineView'
 import { ResourcesView } from './components/resources/ResourcesView'
 import { serializeColumnFilters } from './components/resources/resource-utils'
@@ -382,7 +382,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
 
   // View-aware namespace scope: disabled on cluster-scoped surfaces so the
   // chip isn't a dead control next to the cluster switcher.
-  const namespaceFilter = namespaceFilterDisabled(mainView, location.pathname, navApiResources)
+  // Fall back to the static core-resource list before discovery loads, so the
+  // chip disables immediately on a cluster-scoped core kind (Nodes, PVs, …)
+  // instead of flickering enabled until /api-resources resolves.
+  const namespaceFilter = namespaceFilterDisabled(mainView, location.pathname, navApiResources ?? CORE_RESOURCES)
 
   // One URL-derived tab title for every view (see radarPageTitle). Driving it
   // from the URL — not the mounted component. Off unless the host opts in

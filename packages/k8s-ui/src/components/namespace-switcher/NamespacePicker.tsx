@@ -104,8 +104,11 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
     if (disabled && isOpen) {
       setIsOpen(false)
       setSearch('')
+      // Discard the uncommitted draft so a later re-open reflects the current
+      // server actives, not stale toggles from before the control was disabled.
+      setDraft(new Set(scopeActives))
     }
-  }, [disabled, isOpen])
+  }, [disabled, isOpen, scopeActives])
 
   const items = useMemo(() => {
     if (!scope) return [] as string[]

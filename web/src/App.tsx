@@ -1535,8 +1535,12 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
       {/* Header — suppressed in chromeless embed; the host owns the chrome. */}
       {!chromeless && (
       <header className="relative z-50 flex items-center justify-between px-4 py-2 bg-theme-base/90 backdrop-blur-sm border-b border-theme-border/50">
-        {/* Left: Logo + Cluster info */}
-        <div className="flex items-center gap-4 shrink-0">
+        {/* Left: Logo + Cluster info. In the standalone (nav-rail) layout this
+            is one of three equal flex-1 columns so the centered omnibar stays
+            pinned; overflowing chrome truncates rather than shoving the search
+            box. The embedded/pill layout keeps shrink-0 (its center bar is
+            absolutely positioned, so equal columns aren't needed). */}
+        <div className={`flex items-center gap-4 ${showNavRail ? 'flex-1 min-w-0 overflow-hidden' : 'shrink-0'}`}>
           {/* Standalone rail owns the brand; only the embedded/pill layout
               shows it in the header (host may override via brandSlot). */}
           {navCustomization.brandSlot ?? (showNavRail ? null : <Logo />)}
@@ -1668,7 +1672,12 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
         )}
 
         {/* Center: omnibar — standalone search + command surface (the ⌘K entry).
-            Fills the space the pill bar left; embedded keeps the pills + modal. */}
+            Its container is one of three EQUAL flex-1 columns (see the left/right
+            groups): equal side columns keep this middle column — and the search
+            box centered in it — pinned regardless of how wide the left-side
+            chrome gets (cluster name, namespace label, "Discovering…" /
+            "Disconnected" text). Overflowing side content truncates instead of
+            dragging the box. Same pattern as Radar Hub's ClusterTopBar. */}
         {showNavRail && (
           <div className="hidden sm:flex flex-1 justify-center min-w-0 px-3">
             <RadarOmnibar
@@ -1692,8 +1701,9 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
           </div>
         )}
 
-        {/* Right: Controls */}
-        <div className="flex items-center gap-3 shrink-0">
+        {/* Right: Controls. Equal flex-1 column in the standalone layout (mirror
+            of the left group) so the omnibar column stays centered. */}
+        <div className={`flex items-center gap-3 ${showNavRail ? 'flex-1 min-w-0 justify-end' : 'shrink-0'}`}>
           {/* Command palette trigger — embedded only; standalone has the
               top-center omnibar (which is the ⌘K surface). */}
           {!showNavRail && (

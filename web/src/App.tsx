@@ -52,7 +52,7 @@ import { KeyboardShortcutProvider, useRegisterShortcut, useRegisterShortcuts, us
 import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
 import { useDocumentTitle } from './hooks/useDocumentTitle'
 import radarLoadingIcon from '@skyhook-io/k8s-ui/assets/radar/radar-icon-loading.svg'
-import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, SquareTerminal, ShieldCheck, GitBranch, HelpCircle } from 'lucide-react'
+import { Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, SquareTerminal, ShieldCheck, GitBranch, HelpCircle } from 'lucide-react'
 import { useTheme } from './context/ThemeContext'
 import { Tooltip } from './components/ui/Tooltip'
 import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
@@ -1536,38 +1536,54 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
       {!chromeless && (
       <header className="relative z-50 flex items-center justify-between px-4 py-2 bg-theme-base/90 backdrop-blur-sm border-b border-theme-border/50">
         {/* Left: Logo + Cluster info. In the standalone (nav-rail) layout this
-            is one of three equal flex-1 columns so the centered omnibar stays
-            pinned; overflowing chrome truncates rather than shoving the search
-            box. The embedded/pill layout keeps shrink-0 (its center bar is
-            absolutely positioned, so equal columns aren't needed). */}
-        <div className={`flex items-center gap-4 ${showNavRail ? 'flex-1 min-w-0' : 'shrink-0'}`}>
+            is a FIXED-WIDTH column so the omnibar after it is force-pinned: the
+            scope pill + status dot can change width (cluster/namespace value)
+            without ever shifting the search box. The pill's own name/value caps
+            keep it inside this width; the embedded/pill layout keeps auto width
+            (its center bar is absolutely positioned). */}
+        <div className={`flex items-center gap-4 shrink-0 ${showNavRail ? 'w-[440px]' : ''}`}>
           {/* Standalone rail owns the brand; only the embedded/pill layout
               shows it in the header (host may override via brandSlot). */}
           {navCustomization.brandSlot ?? (showNavRail ? null : <Logo />)}
 
-          <div className="flex items-center gap-2">
-            {navCustomization.contextSlot ?? <ContextSwitcher ref={contextSwitcherRef} />}
-            {/* Namespace scope — the trailing chip of the cluster/namespace
-                "scope zone". Lighter than the cluster switcher (a reversible
-                view filter, not a destructive context switch) and view-aware
-                (disabled on cluster-scoped surfaces). Kept immediately after
-                the cluster chip so the two scope controls read as one unit. */}
-            <NamespaceSwitcher
-              ref={namespaceSwitcherRef}
-              disabled={namespaceFilter.disabled}
-              disabledTooltip={namespaceFilter.tooltip}
-            />
-            {/* Connection status — placed AFTER the scope zone, not between the
-                cluster and namespace chips: its inline label is variable-width
-                (dot only when healthy, "Discovering…" / "Disconnected" + retry
-                otherwise), so sitting it between them would shove the namespace
-                chip sideways on every connection-state change. Trailing here,
-                its width changes never move the scope controls. */}
-            <div className="flex items-center gap-1.5 ml-1">
+          <div className="flex items-center gap-2 min-w-0">
+            {navCustomization.contextSlot ? (
+              // Embedded host supplies its own cluster switcher — keep the two
+              // controls separate (the host owns the cluster chip's styling).
+              <>
+                {navCustomization.contextSlot}
+                <NamespaceSwitcher
+                  ref={namespaceSwitcherRef}
+                  disabled={namespaceFilter.disabled}
+                  disabledTooltip={namespaceFilter.tooltip}
+                />
+              </>
+            ) : (
+              // Standalone: cluster + namespace as one labelled "scope" pill —
+              // two borderless segments split by a divider, reading as a single
+              // "what am I looking at" unit. No overflow-hidden on the container:
+              // the ClusterSwitcher dropdown renders inline (absolute), so an
+              // ancestor clip would hide it.
+              <div className="flex items-stretch rounded-lg border border-theme-border bg-theme-surface divide-x divide-theme-border min-w-0">
+                <ContextSwitcher ref={contextSwitcherRef} variant="segment" />
+                <NamespaceSwitcher
+                  ref={namespaceSwitcherRef}
+                  variant="segment"
+                  disabled={namespaceFilter.disabled}
+                  disabledTooltip={namespaceFilter.tooltip}
+                />
+              </div>
+            )}
+            {/* Connection status — a single FIXED-SIZE dot (state lives in the
+                tooltip), trailing the scope pill. Dot-only keeps the left group
+                a stable width, so the pinned search box never shifts on
+                connection-state changes; when disconnected the dot itself is the
+                reconnect control. */}
+            <div className="ml-1 shrink-0 flex items-center">
               <Tooltip
                 content={
                   !clusterConnected
-                    ? 'Cluster disconnected'
+                    ? 'Cluster disconnected — click to reconnect'
                     : crdDiscoveryStatus === 'discovering'
                       ? 'Connected — discovering Custom Resources...'
                       : 'Connected'
@@ -1575,38 +1591,24 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                 delay={100}
                 position="bottom"
               >
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    !clusterConnected
-                      ? 'bg-red-500'
-                      : crdDiscoveryStatus === 'discovering'
-                        ? 'bg-amber-400 animate-pulse'
-                        : 'bg-green-500'
-                  }`}
-                />
+                {clusterConnected ? (
+                  <span
+                    className={`block w-2.5 h-2.5 rounded-full ${
+                      crdDiscoveryStatus === 'discovering' ? 'bg-amber-400 animate-pulse' : 'bg-green-500'
+                    }`}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={retryConnection}
+                    disabled={isRetrying}
+                    aria-label="Cluster disconnected — reconnect"
+                    className="block disabled:cursor-default"
+                  >
+                    <span className={`block w-2.5 h-2.5 rounded-full bg-red-500 ${isRetrying ? 'animate-pulse' : ''}`} />
+                  </button>
+                )}
               </Tooltip>
-              {/* Inline label only for non-steady states where the user
-                  might need to act or wait. The healthy "Connected" case
-                  is the dot alone; the dot's tooltip discloses it. Keeping
-                  "Connected" text here would expand the left section and
-                  collide with the absolute-centered nav block at xl, which
-                  is the same breakpoint where nav labels appear. */}
-              {(!clusterConnected || crdDiscoveryStatus === 'discovering') && (
-                <span className="text-[11px] text-theme-text-tertiary hidden xl:inline">
-                  {!clusterConnected ? 'Disconnected' : 'Discovering Custom Resources...'}
-                </span>
-              )}
-              {!clusterConnected && (
-                <Tooltip content="Reconnect">
-                <button
-                  onClick={retryConnection}
-                  disabled={isRetrying}
-                  className="p-1 text-theme-text-secondary hover:text-theme-text-primary disabled:opacity-50 disabled:pointer-events-none"
-                >
-                  <RefreshCw className={`w-3 h-3 ${isRetrying ? 'animate-spin' : ''}`} />
-                </button>
-                </Tooltip>
-              )}
             </div>
             {/* Port forwards indicator — shown only when sessions exist */}
             <PortForwardIndicator />
@@ -1701,9 +1703,8 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
           </div>
         )}
 
-        {/* Right: Controls. Equal flex-1 column in the standalone layout (mirror
-            of the left group) so the omnibar column stays centered. */}
-        <div className={`flex items-center gap-3 ${showNavRail ? 'flex-1 min-w-0 justify-end' : 'shrink-0'}`}>
+        {/* Right: Controls */}
+        <div className="flex items-center gap-3 shrink-0">
           {/* Command palette trigger — embedded only; standalone has the
               top-center omnibar (which is the ⌘K surface). */}
           {!showNavRail && (

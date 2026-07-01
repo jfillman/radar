@@ -44,6 +44,15 @@ export interface NamespacePickerProps {
   disabled?: boolean
   disabledTooltip?: string
   className?: string
+  /**
+   * 'chip' (default) renders a self-contained pill. 'segment' renders a
+   * borderless label+value cell for embedding in a shared bordered container
+   * (the unified cluster+namespace scope control), with an optional muted
+   * {@link label} before the value and a shorter value ("All" vs "All namespaces").
+   */
+  variant?: 'chip' | 'segment'
+  /** Muted label shown before the value in the 'segment' variant (e.g. "Namespace"). */
+  label?: string
 }
 
 /**
@@ -66,7 +75,7 @@ export interface NamespacePickerProps {
  * onApply. "Clear all" applies immediately and closes.
  */
 export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePickerProps>(function NamespacePicker(
-  { scope, onApply, loading = false, pending = false, disabled = false, disabledTooltip, className = '' },
+  { scope, onApply, loading = false, pending = false, disabled = false, disabledTooltip, className = '', variant = 'chip', label },
   ref,
 ) {
   const [isOpen, setIsOpen] = useState(false)
@@ -181,8 +190,12 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
   }
 
   const activeCount = scopeActives.length
+  // In segment mode the "Namespace" label already carries the noun, so the
+  // cluster-wide value collapses "All namespaces" → "All".
   const triggerLabel =
-    activeCount === 0 ? 'All namespaces' : activeCount === 1 ? scopeActives[0] : `${activeCount} namespaces`
+    activeCount === 0
+      ? variant === 'segment' ? 'All' : 'All namespaces'
+      : activeCount === 1 ? scopeActives[0] : `${activeCount} namespaces`
   const isClusterWide = activeCount === 0
   const restrictedHint = scope.mode === 'restricted'
   const cacheScopeLocked = scope.cacheScoped && !scope.namespaceRescope
@@ -218,18 +231,25 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
           ref={triggerRef}
           onClick={() => !isDisabled && (isOpen ? closeAndApply() : setIsOpen(true))}
           disabled={isDisabled}
-          className={`flex items-center gap-1.5 px-2 py-1 rounded text-sm bg-theme-elevated hover:bg-theme-hover text-theme-text-primary disabled:opacity-60 transition-colors ${className}`}
+          className={
+            variant === 'segment'
+              ? `flex items-center gap-1.5 px-3 py-1.5 h-full min-w-[110px] max-w-[170px] text-sm text-theme-text-primary hover:bg-theme-hover disabled:opacity-60 transition-colors ${className}`
+              : `flex items-center gap-1.5 px-2 py-1 rounded text-sm bg-theme-elevated hover:bg-theme-hover text-theme-text-primary disabled:opacity-60 transition-colors ${className}`
+          }
           aria-label="Switch active namespaces"
         >
+          {label && (
+            <span className="shrink-0 font-normal text-theme-text-tertiary">{label}</span>
+          )}
           {isClusterWide ? (
-            <Globe className="w-3.5 h-3.5 text-theme-text-tertiary" />
+            <Globe className="w-3.5 h-3.5 shrink-0 text-theme-text-tertiary" />
           ) : restrictedHint ? (
-            <AlertTriangle className="w-3.5 h-3.5 text-theme-text-tertiary" />
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-theme-text-tertiary" />
           ) : null}
-          <span className="font-medium max-w-[180px] truncate">
+          <span className={`font-medium truncate ${variant === 'segment' ? 'flex-1 min-w-0' : 'max-w-[180px]'}`}>
             {pending ? 'Switching…' : triggerLabel}
           </span>
-          <ChevronDown className="w-3 h-3 opacity-60" />
+          <ChevronDown className="w-3 h-3 shrink-0 opacity-60" />
         </button>
       </Tooltip>
 

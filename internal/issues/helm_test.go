@@ -99,6 +99,9 @@ func TestNativeHelmReleaseIssues(t *testing.T) {
 	if !strings.Contains(failed.Cause, "workload did not become ready before Helm timed out") {
 		t.Fatalf("failed issue cause = %q, want readiness timeout cause", failed.Cause)
 	}
+	if !strings.Contains(failed.RawMessage, "status: InProgress") || !strings.Contains(failed.RawMessage, "context deadline exceeded") {
+		t.Fatalf("failed issue raw message = %q, want original Helm timeout text", failed.RawMessage)
+	}
 
 	pending := got[1]
 	if pending.Name != "stuck-upgrade" || pending.Severity != SeverityWarning || pending.Reason != "HelmReleasePending" {
@@ -114,5 +117,8 @@ func TestNativeHelmReleaseIssues(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(pendingTimeout.Message), "failed") {
 		t.Fatalf("pending timeout issue message should not call a pending release failed: %q", pendingTimeout.Message)
+	}
+	if !strings.Contains(pendingTimeout.RawMessage, "status: InProgress") || !strings.Contains(pendingTimeout.RawMessage, "context deadline exceeded") {
+		t.Fatalf("pending timeout raw message = %q, want original Helm timeout text", pendingTimeout.RawMessage)
 	}
 }

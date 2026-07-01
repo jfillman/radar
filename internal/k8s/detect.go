@@ -49,6 +49,7 @@ type Detection struct {
 	Severity        string // "critical", "high", "medium", "warning", or "info"
 	Reason          string
 	Message         string
+	RawMessage      string
 	Age             string // human-readable
 	AgeSeconds      int64  // for sorting
 	Duration        string // how long the problem has persisted

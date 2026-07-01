@@ -119,6 +119,7 @@ func foldGroup(members []Issue) Issue {
 		Name:                 subject.Name,
 		Reason:               rep.Reason,
 		Message:              rep.Message,
+		RawMessage:           rep.RawMessage,
 		RestartCount:         rep.RestartCount,
 		LastTerminatedReason: rep.LastTerminatedReason,
 		FirstSeen:            rep.FirstSeen,

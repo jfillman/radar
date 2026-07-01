@@ -234,6 +234,22 @@ func TestCleanArgoControllerMessage(t *testing.T) {
 	}
 }
 
+func TestCleanArgoControllerMessageWithRaw(t *testing.T) {
+	raw := "rpc error: code = Unknown desc = app path does not exist"
+	cleaned, rawOut := CleanArgoControllerMessageWithRaw(raw)
+	if cleaned != "app path does not exist" {
+		t.Fatalf("cleaned = %q, want app path error", cleaned)
+	}
+	if rawOut != raw {
+		t.Fatalf("raw = %q, want %q", rawOut, raw)
+	}
+
+	cleaned, rawOut = CleanArgoControllerMessageWithRaw("app path does not exist")
+	if cleaned != "app path does not exist" || rawOut != "" {
+		t.Fatalf("plain message cleaned/raw = %q/%q, want unchanged/empty raw", cleaned, rawOut)
+	}
+}
+
 func TestSeverityForConditionType(t *testing.T) {
 	cases := []struct {
 		typ            string

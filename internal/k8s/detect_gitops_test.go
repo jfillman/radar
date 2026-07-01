@@ -281,6 +281,7 @@ func TestDetectArgoAppProblems_EnabledFalseIsManual(t *testing.T) {
 // double-reported.
 func TestDetectArgoAppProblems_OperationFailedParsesCause(t *testing.T) {
 	now := time.Now()
+	rawMessage := `rpc error: code = Unknown desc = failed to create resource: namespaces "demo-broken-sync" not found`
 	app := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "argoproj.io/v1alpha1", "kind": "Application",
 		"metadata": map[string]any{"name": "broken-sync", "namespace": "argocd"},
@@ -290,7 +291,7 @@ func TestDetectArgoAppProblems_OperationFailedParsesCause(t *testing.T) {
 			"sync":   map[string]any{"status": "OutOfSync"},
 			"operationState": map[string]any{
 				"phase":   "Failed",
-				"message": `rpc error: code = Unknown desc = failed to create resource: namespaces "demo-broken-sync" not found`,
+				"message": rawMessage,
 			},
 			// Argo writes a SyncError condition that parallel-encodes the same
 			// failure; the operation branch must supersede it (one row, not two).
@@ -315,6 +316,9 @@ func TestDetectArgoAppProblems_OperationFailedParsesCause(t *testing.T) {
 	}
 	if d.Message != `failed to create resource: namespaces "demo-broken-sync" not found` {
 		t.Errorf("operation message = %q, want cleaned failure text", d.Message)
+	}
+	if d.RawMessage != rawMessage {
+		t.Errorf("operation raw message = %q, want %q", d.RawMessage, rawMessage)
 	}
 	if strings.Contains(d.Message, "rpc error") || strings.Contains(d.Message, "Unknown desc") {
 		t.Errorf("operation message leaked gRPC envelope: %q", d.Message)

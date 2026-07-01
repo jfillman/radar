@@ -168,6 +168,15 @@ func CleanArgoControllerMessage(msg string) string {
 	return cleaned
 }
 
+func CleanArgoControllerMessageWithRaw(msg string) (cleaned, raw string) {
+	original := strings.TrimSpace(msg)
+	cleaned = CleanArgoControllerMessage(original)
+	if original != "" && cleaned != original {
+		raw = original
+	}
+	return cleaned, raw
+}
+
 var unrecognizedOpErrorLogged sync.Map
 
 func logUnrecognizedOpError(msg string) {

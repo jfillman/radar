@@ -57,6 +57,7 @@ func fromProblem(p k8s.Detection, now time.Time, source Source) Issue {
 		Name:                 p.Name,
 		Reason:               p.Reason,
 		Message:              p.Message,
+		RawMessage:           p.RawMessage,
 		Cause:                p.Cause,
 		Action:               p.Action,
 		RemediationKind:      p.RemediationKind,

@@ -34,19 +34,20 @@ func NativeHelmReleaseIssues(releases []helm.HelmRelease, now time.Time) []Issue
 			storageNamespace = rel.Namespace
 		}
 		iss := Issue{
-			Severity:  severity,
-			Source:    SourceProblem,
-			Kind:      "HelmRelease",
-			Group:     NativeHelmGroup,
-			Namespace: storageNamespace,
-			Name:      rel.Name,
-			Reason:    reason,
-			Message:   nativeHelmIssueMessage(rel, *op),
-			Cause:     nativeHelmIssueCause(*op),
-			Action:    nativeHelmIssueAction(*op),
-			Stuck:     true,
-			FirstSeen: firstSeen,
-			LastSeen:  now,
+			Severity:   severity,
+			Source:     SourceProblem,
+			Kind:       "HelmRelease",
+			Group:      NativeHelmGroup,
+			Namespace:  storageNamespace,
+			Name:       rel.Name,
+			Reason:     reason,
+			Message:    nativeHelmIssueMessage(rel, *op),
+			RawMessage: nativeHelmIssueRawMessage(*op),
+			Cause:      nativeHelmIssueCause(*op),
+			Action:     nativeHelmIssueAction(*op),
+			Stuck:      true,
+			FirstSeen:  firstSeen,
+			LastSeen:   now,
 		}
 		classifyIssue(&iss)
 		enrichIdentity(&iss)
@@ -92,6 +93,13 @@ func nativeHelmIssueCause(op helm.HelmOperation) string {
 		return "A Helm install, upgrade, or rollback has remained pending past the stuck-operation threshold."
 	}
 	return "The latest native Helm release revision is failed."
+}
+
+func nativeHelmIssueRawMessage(op helm.HelmOperation) string {
+	if nativeHelmOperationTimedOutWaitingForReadiness(op.Message) {
+		return strings.TrimSpace(op.Message)
+	}
+	return ""
 }
 
 func nativeHelmOperationTimedOutWaitingForReadiness(msg string) bool {

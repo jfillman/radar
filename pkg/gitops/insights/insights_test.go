@@ -44,10 +44,12 @@ func TestBuildIssuesArgoFailedOperationProducesCritical(t *testing.T) {
 }
 
 func TestBuildArgoCleansControllerMessages(t *testing.T) {
+	rawOperation := "rpc error: code = Unknown desc = app path does not exist"
+	rawResource := "rpc error: code = Unknown desc = resource hook failed"
 	root := argoApp(map[string]any{
 		"operationState": map[string]any{
 			"phase":     "Failed",
-			"message":   "rpc error: code = Unknown desc = app path does not exist",
+			"message":   rawOperation,
 			"startedAt": "2026-05-03T12:00:00Z",
 		},
 		"resources": []any{
@@ -59,7 +61,7 @@ func TestBuildArgoCleansControllerMessages(t *testing.T) {
 				"status":    "OutOfSync",
 				"syncResult": map[string]any{
 					"status":  "SyncFailed",
-					"message": "rpc error: code = Unknown desc = resource hook failed",
+					"message": rawResource,
 				},
 			},
 		},
@@ -68,6 +70,9 @@ func TestBuildArgoCleansControllerMessages(t *testing.T) {
 	got := Build(root, nil, nil)
 	if got.Summary.OperationMessage != "app path does not exist" {
 		t.Fatalf("summary operation message = %q, want cleaned app path error", got.Summary.OperationMessage)
+	}
+	if got.Summary.RawOperationMessage != rawOperation {
+		t.Fatalf("summary raw operation message = %q, want %q", got.Summary.RawOperationMessage, rawOperation)
 	}
 	var opIssue *Issue
 	for i := range got.Issues {
@@ -79,11 +84,20 @@ func TestBuildArgoCleansControllerMessages(t *testing.T) {
 	if opIssue == nil || opIssue.Message != "app path does not exist" {
 		t.Fatalf("operation issue did not carry cleaned message: %+v", got.Issues)
 	}
+	if opIssue.RawMessage != rawOperation {
+		t.Fatalf("operation issue raw message = %q, want %q", opIssue.RawMessage, rawOperation)
+	}
 	if len(got.History) != 1 || got.History[0].Message != "app path does not exist" {
 		t.Fatalf("history did not carry cleaned message: %+v", got.History)
 	}
+	if got.History[0].RawMessage != rawOperation {
+		t.Fatalf("history raw message = %q, want %q", got.History[0].RawMessage, rawOperation)
+	}
 	if len(got.Changes) != 1 || got.Changes[0].SyncError != "resource hook failed" {
 		t.Fatalf("resource change did not carry cleaned sync error: %+v", got.Changes)
+	}
+	if got.Changes[0].RawSyncError != rawResource {
+		t.Fatalf("resource change raw sync error = %q, want %q", got.Changes[0].RawSyncError, rawResource)
 	}
 	for _, msg := range []string{
 		got.Summary.OperationMessage,

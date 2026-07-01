@@ -300,7 +300,7 @@ function Diagnosis({ issue }: { issue: Issue }) {
   const { headline, detail } = issueMessageParts(issue);
   // When the issue carries a parsed plain-English cause, lead with it. The raw
   // detector message is kept below as de-emphasized detail.
-  const rawMessage = issue.cause ? issue.message ?? '' : [headline, detail].filter(Boolean).join(' ');
+  const rawMessage = issue.cause ? (issue.raw_message ?? issue.message ?? '') : [headline, detail].filter(Boolean).join(' ');
   return (
     <section className="flex flex-col gap-1">
       <h4 className="text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">What's wrong</h4>

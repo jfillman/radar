@@ -33,6 +33,11 @@ export type {
   NamespaceScopeView,
 } from '@skyhook-io/k8s-ui';
 
+// Shared bordered shell that groups the cluster + namespace segments into one
+// pill — so Radar Hub's cluster top bar matches OSS Radar's header exactly.
+export { ScopePill } from '@skyhook-io/k8s-ui';
+export type { ScopePillProps } from '@skyhook-io/k8s-ui';
+
 // Deep-link builders — so consumers (Radar Hub) construct deep links into a
 // cluster view without hand-rolling Radar's internal URL format, which drifts
 // silently when Radar re-routes. `resourcePath` opens the detail drawer for any

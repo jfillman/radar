@@ -6,7 +6,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useLocation, useSearchParams, useNavigationType, NavigationType } from 'react-router-dom'
 import { HomeView } from './components/home/HomeView'
 import { DebugOverlay } from './components/DebugOverlay'
-import { TopologyGraph, TopologySearch, TopologyFilterSidebar, TopologyControls, gitOpsRouteForKind, gitOpsRouteForResource } from '@skyhook-io/k8s-ui'
+import { TopologyGraph, TopologySearch, TopologyFilterSidebar, TopologyControls, gitOpsRouteForKind, gitOpsRouteForResource, ScopePill } from '@skyhook-io/k8s-ui'
 import { initNavigationMap } from '@skyhook-io/k8s-ui/utils/navigation'
 import { useAPIResources, CORE_RESOURCES } from './api/apiResources'
 import { TimelineView } from './components/timeline/TimelineView'
@@ -1562,12 +1562,11 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                 />
               </>
             ) : (
-              // Standalone: cluster + namespace as one labelled "scope" pill —
-              // two borderless segments split by a divider, reading as a single
-              // "what am I looking at" unit. No overflow-hidden on the container:
-              // the ClusterSwitcher dropdown renders inline (absolute), so an
-              // ancestor clip would hide it.
-              <div className="flex items-stretch shrink-0 rounded-lg border border-theme-border bg-theme-surface divide-x divide-theme-border">
+              // Standalone: cluster + namespace as one "scope" pill — two
+              // borderless segments split by a divider, reading as a single
+              // "what am I looking at" unit. The shared ScopePill shell is the
+              // same one Radar Hub's cluster top bar uses, so the two match.
+              <ScopePill>
                 <ContextSwitcher ref={contextSwitcherRef} variant="segment" />
                 <NamespaceSwitcher
                   ref={namespaceSwitcherRef}
@@ -1575,7 +1574,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                   disabled={namespaceFilter.disabled}
                   disabledTooltip={namespaceFilter.tooltip}
                 />
-              </div>
+              </ScopePill>
             )}
             {/* Connection status — a fixed-size dot (state in the tooltip; the
                 dot is the reconnect control when disconnected) plus, when the

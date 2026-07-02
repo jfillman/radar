@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef, useContext, useId } from 'react'
 import { TableVirtuoso, type TableVirtuosoHandle } from 'react-virtuoso'
-import { useRefreshAnimation } from '../../hooks/useRefreshAnimation'
 import { PaneLoader } from '../ui/PaneLoader'
 import { RestrictedState } from '../ui/RestrictedState'
 import type { TopPodMetrics, TopNodeMetrics } from '../../types'
@@ -13,7 +12,6 @@ import {
   ChevronDown,
   ChevronUp,
   ArrowUpDown,
-  Clock,
   ListFilter,
   X,
   Columns3,
@@ -133,6 +131,7 @@ import { SEVERITY_BADGE, EVENT_TYPE_COLORS, SEVERITY_TEXT } from '../../utils/ba
 import { pluralize } from '../../utils/pluralize'
 import { getPodGpuCount, getNodeGpuCount } from '../../utils/extended-resources'
 import { type CustomColumnDef, type CustomColumnSource, customColumnKey, readCustomColumnValue, sanitizeCustomColumnDefs } from '../../utils/custom-columns'
+import { FreshnessControl, type FreshnessConnection } from '../ui/FreshnessControl'
 import { Tooltip } from '../ui/Tooltip'
 import { AuditBadgeTooltip, type AuditBadgeMessage } from '../audit/AuditBadgeTooltip'
 // CRD-specific cell components (extracted)
@@ -1851,6 +1850,9 @@ interface ResourcesViewProps {
   resourceUnavailable?: string[]
   // Single query for the currently selected kind's full data
   selectedKindQuery?: ResourceQueryResult
+  // Cluster/SSE connection health — the list is SSE-invalidated ("Auto-updating"),
+  // so it must degrade to "Reconnecting…" when the stream drops.
+  connectionState?: FreshnessConnection
   largeListGuard?: LargeListGuardState | null
   topPodMetrics?: TopPodMetrics[]
   topNodeMetrics?: TopNodeMetrics[]
@@ -2017,51 +2019,6 @@ function getInitialFiltersFromURL() {
 // Sort state type
 type SortDirection = 'asc' | 'desc' | null
 
-// Coarse "just now / Xm / Xh / Xd" buckets — finer-grained updates
-// add motion in the periphery without aiding any user decision.
-function formatLastUpdatedBucket(elapsedMs: number): string {
-  const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000))
-  if (elapsedSec < 60) return 'just now'
-  const minutes = Math.floor(elapsedSec / 60)
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.floor(hours / 24)}d`
-}
-
-// ms until the displayed bucket would change.
-function msToNextBucket(elapsedMs: number): number {
-  const elapsed = Math.max(0, elapsedMs)
-  if (elapsed < 60_000) return 60_000 - elapsed
-  if (elapsed < 3_600_000) return 60_000 - (elapsed % 60_000)
-  if (elapsed < 86_400_000) return 3_600_000 - (elapsed % 3_600_000)
-  return 86_400_000 - (elapsed % 86_400_000)
-}
-
-// Isolated subtree so re-renders don't cascade into the parent's
-// virtualized table.
-function LastUpdatedLabel({ lastUpdated }: { lastUpdated: Date }) {
-  const [, force] = useState(0)
-  useEffect(() => {
-    let id: ReturnType<typeof setTimeout>
-    function schedule() {
-      const delay = Math.max(1000, msToNextBucket(Date.now() - lastUpdated.getTime()))
-      id = setTimeout(() => {
-        force(t => t + 1)
-        schedule()
-      }, delay)
-    }
-    schedule()
-    return () => clearTimeout(id)
-  }, [lastUpdated])
-  return (
-    <div className="flex items-center gap-1.5 text-xs text-theme-text-tertiary">
-      <Clock className="w-3.5 h-3.5" />
-      <span>Updated {formatLastUpdatedBucket(Date.now() - lastUpdated.getTime())}</span>
-    </div>
-  )
-}
-
 export function ResourcesView({
   namespaces, selectedResource, onResourceClick, onResourceClickYaml, onKindChange,
   apiResources: apiResourcesProp,
@@ -2071,6 +2028,7 @@ export function ResourcesView({
   resourceReasons,
   resourceUnavailable: resourceUnavailableProp,
   selectedKindQuery: selectedKindQueryProp,
+  connectionState,
   largeListGuard,
   topPodMetrics,
   topNodeMetrics,
@@ -2130,7 +2088,6 @@ export function ResourcesView({
   const [regexMode, setRegexMode] = useState(false)
   const [sortColumn, setSortColumn] = useState<string | null>(null)
   const [sortDirection, setSortDirection] = useState<SortDirection>(null)
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   // Filter state
   const [columnFilters, setColumnFilters] = useState<Record<string, string[]>>(initialFilters.columnFilters)
   const [problemFilters, setProblemFilters] = useState<string[]>(initialFilters.problemFilters)
@@ -3249,23 +3206,6 @@ export function ResourcesView({
   }, [resources])
   const isLoading = selectedQuery?.isLoading ?? true
   const selectedQueryError = selectedQuery?.error
-  const refetchFn = selectedQuery?.refetch
-  const dataUpdatedAt = selectedQuery?.dataUpdatedAt
-
-  const [refetch, isRefreshAnimating, refreshPhase] = useRefreshAnimation(() => refetchFn?.())
-
-  // React Query bumps dataUpdatedAt on no-op refetches (window focus,
-  // mount, sibling subscribers); structural sharing returns the same
-  // resources reference when data is byte-identical. Skip the timer
-  // reset in that case — otherwise opening a filter drawer looks like
-  // it triggered a real fetch.
-  const lastDataRef = useRef<unknown>(undefined)
-  useEffect(() => {
-    if (!dataUpdatedAt) return
-    if (resources === lastDataRef.current) return
-    lastDataRef.current = resources
-    setLastUpdated(new Date(dataUpdatedAt))
-  }, [dataUpdatedAt, resources])
 
   // Derive counts — prefer lightweight resourceCounts prop over full query data
   const counts = useMemo(() => {
@@ -4293,19 +4233,19 @@ export function ResourcesView({
             </Tooltip>
           )}
 
-          {lastUpdated && <LastUpdatedLabel lastUpdated={lastUpdated} />}
           {/* Column picker */}
           <div className="relative" ref={columnPickerRef}>
+            <Tooltip content="Configure columns">
             <button
               onClick={() => setShowColumnPicker(prev => !prev)}
               className={clsx(
                 'p-2 text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded-lg',
                 showColumnPicker && 'bg-theme-elevated text-theme-text-primary'
               )}
-              title="Configure columns"
             >
               <Columns3 className="w-4 h-4" />
             </button>
+            </Tooltip>
             {showColumnPicker && (
               <div className="absolute right-0 top-full mt-1 z-50 bg-theme-surface border border-theme-border rounded-lg shadow-lg py-1 min-w-[200px] max-h-[400px] flex flex-col">
                 <div className="shrink-0 px-3 py-2 border-b border-theme-border flex items-center justify-between">
@@ -4411,20 +4351,6 @@ export function ResourcesView({
               </div>
             )}
           </div>
-          <button
-            onClick={refetch}
-            disabled={isRefreshAnimating}
-            className={clsx(
-              'p-2 hover:bg-theme-elevated rounded-lg disabled:opacity-50 transition-colors duration-500',
-              refreshPhase === 'success' ? 'text-emerald-400' : 'text-theme-text-secondary hover:text-theme-text-primary'
-            )}
-            title="Refresh"
-          >
-            {refreshPhase === 'success'
-              ? <Check className="w-4 h-4 stroke-[2.5]" />
-              : <RefreshCw className={clsx('w-4 h-4', refreshPhase === 'spinning' && 'animate-spin')} />
-            }
-          </button>
           {onCreateResource && (
             <Tooltip content={`Create ${selectedKind.kind || 'resource'}`}>
               <button
@@ -4475,6 +4401,14 @@ export function ResourcesView({
               </button>
             </Tooltip>
           )}
+          {/* Freshness/liveness status — trailing and divided off from the action
+              buttons so it reads as a status, not another control. Resources has
+              no PageHeader, so this toolbar is its home. */}
+          <div className="mx-1 h-5 w-px bg-theme-border/60" />
+          {/* The list is SSE-invalidated (near-real-time), so it reads
+              "Auto-updating" with no refresh button — the stream keeps it
+              current, so a manual refresh would only undercut the claim. */}
+          <FreshnessControl mode="auto" connectionState={connectionState} />
         </div>
 
         {/* Bulk actions bar */}

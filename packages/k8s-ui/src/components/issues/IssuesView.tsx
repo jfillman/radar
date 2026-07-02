@@ -300,7 +300,11 @@ function Diagnosis({ issue }: { issue: Issue }) {
   const { headline, detail } = issueMessageParts(issue);
   // When the issue carries a parsed plain-English cause, lead with it. The raw
   // detector message is kept below as de-emphasized detail.
-  const rawMessage = issue.cause ? issue.message ?? '' : [headline, detail].filter(Boolean).join(' ');
+  const visibleMessage = [headline, detail].filter(Boolean).join(' ');
+  const rawMessage = issue.raw_message ?? (issue.cause ? issue.message ?? '' : '');
+  const shouldShowRawMessage = issue.cause
+    ? Boolean(rawMessage)
+    : Boolean(issue.raw_message && issue.raw_message !== visibleMessage);
   return (
     <section className="flex flex-col gap-1">
       <h4 className="text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">What's wrong</h4>
@@ -335,9 +339,9 @@ function Diagnosis({ issue }: { issue: Issue }) {
           {issue.operation_retry_count ? ` · retried ${issue.operation_retry_count}×` : ''}
         </p>
       ) : null}
-      {/* Raw detector message, de-emphasized — shown below the parsed cause so
-          the precise error (URLs, resource names) is available without leading. */}
-      {issue.cause && rawMessage ? (
+      {/* Raw detector message, de-emphasized so precise controller/kubelet text
+          remains available without leading the diagnosis. */}
+      {shouldShowRawMessage ? (
         <p className="break-words font-mono text-[11px] leading-relaxed text-theme-text-tertiary">{rawMessage}</p>
       ) : null}
       {crash ? <p className="text-xs text-theme-text-tertiary tabular-nums">{crash}</p> : null}

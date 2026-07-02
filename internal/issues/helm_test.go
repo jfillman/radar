@@ -1,6 +1,7 @@
 package issues
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ func TestNativeHelmReleaseIssues(t *testing.T) {
 				Status:   helmhistory.StatusFailed,
 				Revision: 1,
 				Updated:  updated,
-				Message:  `Release "failed-install" failed: context deadline exceeded`,
+				Message:  `Release "failed-install" failed: demo is not ready. status: InProgress, message: Available: 0/1 context deadline exceeded`,
 			},
 		},
 		{
@@ -76,6 +77,18 @@ func TestNativeHelmReleaseIssues(t *testing.T) {
 	}
 	if !failed.Stuck || failed.FirstSeen != updated || failed.LastSeen != now {
 		t.Fatalf("failed issue timing/stuck = stuck:%v first:%v last:%v", failed.Stuck, failed.FirstSeen, failed.LastSeen)
+	}
+	if !strings.Contains(failed.Message, "did not become ready before Helm timed out") {
+		t.Fatalf("failed issue message = %q, want readiness timeout copy", failed.Message)
+	}
+	if strings.Contains(failed.Message, "status: InProgress") || strings.Contains(failed.Message, "Available: 0/1") || strings.Contains(failed.Message, "context deadline exceeded") {
+		t.Fatalf("failed issue message leaked Helm condition-speak: %q", failed.Message)
+	}
+	if !strings.Contains(failed.Cause, "workload did not become ready before Helm timed out") {
+		t.Fatalf("failed issue cause = %q, want readiness timeout cause", failed.Cause)
+	}
+	if !strings.Contains(failed.RawMessage, "status: InProgress") || !strings.Contains(failed.RawMessage, "context deadline exceeded") {
+		t.Fatalf("failed issue raw message = %q, want original Helm timeout text", failed.RawMessage)
 	}
 
 	pending := got[1]

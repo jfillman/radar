@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -75,7 +76,7 @@ func TestDetectGitOpsProblems(t *testing.T) {
 	kustGVR := schema.GroupVersionResource{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Resource: "kustomizations"}
 
 	comparisonErr := []any{
-		map[string]any{"type": "ComparisonError", "message": "app path does not exist"},
+		map[string]any{"type": "ComparisonError", "message": "rpc error: code = Unknown desc = app path does not exist"},
 	}
 
 	objs := []runtime.Object{
@@ -160,6 +161,14 @@ func TestDetectGitOpsProblems(t *testing.T) {
 	// action (not leave it empty).
 	if c, ok := bySubject["comparison"]; ok && c.Action == "" {
 		t.Errorf("ComparisonError problem should carry an Action, got empty")
+	}
+	if c, ok := bySubject["comparison"]; ok {
+		if c.Message != "app path does not exist" {
+			t.Errorf("ComparisonError message = %q, want cleaned app path error", c.Message)
+		}
+		if strings.Contains(c.Message, "rpc error") || strings.Contains(c.Message, "Unknown desc") {
+			t.Errorf("ComparisonError message leaked gRPC envelope: %q", c.Message)
+		}
 	}
 
 	wantSkip := []string{"missing-manual", "suspended", "progressing", "syncing", "healthy", "reconciling", "stale-gen", "ready"}
@@ -272,6 +281,7 @@ func TestDetectArgoAppProblems_EnabledFalseIsManual(t *testing.T) {
 // double-reported.
 func TestDetectArgoAppProblems_OperationFailedParsesCause(t *testing.T) {
 	now := time.Now()
+	rawMessage := `rpc error: code = Unknown desc = failed to create resource: namespaces "demo-broken-sync" not found`
 	app := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "argoproj.io/v1alpha1", "kind": "Application",
 		"metadata": map[string]any{"name": "broken-sync", "namespace": "argocd"},
@@ -281,7 +291,7 @@ func TestDetectArgoAppProblems_OperationFailedParsesCause(t *testing.T) {
 			"sync":   map[string]any{"status": "OutOfSync"},
 			"operationState": map[string]any{
 				"phase":   "Failed",
-				"message": `failed to create resource: namespaces "demo-broken-sync" not found`,
+				"message": rawMessage,
 			},
 			// Argo writes a SyncError condition that parallel-encodes the same
 			// failure; the operation branch must supersede it (one row, not two).
@@ -304,8 +314,14 @@ func TestDetectArgoAppProblems_OperationFailedParsesCause(t *testing.T) {
 	if d.RemediationKind != diagnose.RemediationCreateNamespace || d.RemediationTarget != "demo-broken-sync" {
 		t.Errorf("got remediation kind=%q target=%q, want %q/demo-broken-sync", d.RemediationKind, d.RemediationTarget, diagnose.RemediationCreateNamespace)
 	}
-	if d.Message == "" {
-		t.Error("expected the raw operation message preserved on Message")
+	if d.Message != `failed to create resource: namespaces "demo-broken-sync" not found` {
+		t.Errorf("operation message = %q, want cleaned failure text", d.Message)
+	}
+	if d.RawMessage != rawMessage {
+		t.Errorf("operation raw message = %q, want %q", d.RawMessage, rawMessage)
+	}
+	if strings.Contains(d.Message, "rpc error") || strings.Contains(d.Message, "Unknown desc") {
+		t.Errorf("operation message leaked gRPC envelope: %q", d.Message)
 	}
 }
 
@@ -347,7 +363,7 @@ func TestDetectArgoAppProblems_ErrorConditionUsesTransitionTimestamp(t *testing.
 			"conditions": []any{
 				map[string]any{
 					"type":               "ComparisonError",
-					"message":            "app path does not exist",
+					"message":            "rpc error: code = Unknown desc = failed to generate manifests: rpc error: code = Unknown desc = app path does not exist",
 					"lastTransitionTime": now.Add(-3 * time.Minute).Format(time.RFC3339),
 				},
 			},
@@ -360,6 +376,9 @@ func TestDetectArgoAppProblems_ErrorConditionUsesTransitionTimestamp(t *testing.
 	}
 	if got[0].DurationSeconds != int64((3 * time.Minute).Seconds()) {
 		t.Fatalf("condition should age from lastTransitionTime, got duration=%ds", got[0].DurationSeconds)
+	}
+	if got[0].Message != "failed to generate manifests: app path does not exist" {
+		t.Fatalf("condition message = %q, want cleaned manifest-generation error", got[0].Message)
 	}
 }
 

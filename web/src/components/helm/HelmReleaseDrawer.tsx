@@ -788,6 +788,8 @@ function HelmOperationBanner({
   const title = operationTitle(operation)
   const statusLabel = operation.status.replace(/_/g, ' ')
   const showStatusBadge = !(operation.status === 'failed' && title.toLowerCase().includes('failed'))
+  const rawMessage = operation.rawMessage?.trim()
+  const hasRawMessage = !!rawMessage && rawMessage !== operation.message.trim()
 
   return (
     <div className="m-4 mb-0 card-inner-lg">
@@ -802,7 +804,17 @@ function HelmOperationBanner({
             <OperationRevisionChips operation={operation} />
           </div>
           <p className="mt-1 text-sm text-theme-text-secondary">{operation.message}</p>
-          {operation.failureDescription && (
+          {hasRawMessage && (
+            <details className="mt-2">
+              <summary className="cursor-pointer select-none text-xs font-medium text-theme-text-tertiary hover:text-theme-text-secondary">
+                Show raw Helm error
+              </summary>
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded bg-theme-base/60 p-2 font-mono text-[11px] leading-relaxed text-theme-text-tertiary">
+                {rawMessage}
+              </pre>
+            </details>
+          )}
+          {operation.failureDescription && !hasRawMessage && (
             <Tooltip content={operation.failureDescription} wrapperClassName="mt-1 flex">
               <span className="line-clamp-2 text-xs text-theme-text-tertiary">
                 {operation.failureDescription}
@@ -1032,12 +1044,15 @@ interface OverviewTabProps {
     notes: string
     readme?: string
     dependencies?: ChartDependency[]
+    lastOperation?: HelmOperation
   }
   onCopy: (text: string, key: string) => void
   copied: string | null
 }
 
 function OverviewTab({ release, onCopy, copied }: OverviewTabProps) {
+  const showDescription = !!release.description && !isDuplicateOperationRawDescription(release.description, release.lastOperation)
+
   return (
     <div className="p-4 space-y-4">
       {/* Chart info */}
@@ -1068,7 +1083,7 @@ function OverviewTab({ release, onCopy, copied }: OverviewTabProps) {
       </div>
 
       {/* Description */}
-      {release.description && (
+      {showDescription && (
         <div className="bg-theme-elevated/30 rounded-lg p-4">
           <h3 className="text-sm font-medium text-theme-text-secondary mb-2">Description</h3>
           <p className="text-sm text-theme-text-secondary">{release.description}</p>
@@ -1150,6 +1165,16 @@ function OverviewTab({ release, onCopy, copied }: OverviewTabProps) {
       )}
     </div>
   )
+}
+
+function isDuplicateOperationRawDescription(description: string, operation?: HelmOperation): boolean {
+  const desc = normalizeComparableText(description)
+  const raw = normalizeComparableText(operation?.rawMessage || '')
+  return desc !== '' && raw.includes(desc)
+}
+
+function normalizeComparableText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ')
 }
 
 // Hooks tab content

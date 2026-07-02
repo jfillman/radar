@@ -43,6 +43,74 @@ func TestBuildIssuesArgoFailedOperationProducesCritical(t *testing.T) {
 	}
 }
 
+func TestBuildArgoCleansControllerMessages(t *testing.T) {
+	rawOperation := "rpc error: code = Unknown desc = app path does not exist"
+	rawResource := "rpc error: code = Unknown desc = resource hook failed"
+	root := argoApp(map[string]any{
+		"operationState": map[string]any{
+			"phase":     "Failed",
+			"message":   rawOperation,
+			"startedAt": "2026-05-03T12:00:00Z",
+		},
+		"resources": []any{
+			map[string]any{
+				"group":     "apps",
+				"kind":      "Deployment",
+				"namespace": "apps",
+				"name":      "api",
+				"status":    "OutOfSync",
+				"syncResult": map[string]any{
+					"status":  "SyncFailed",
+					"message": rawResource,
+				},
+			},
+		},
+	})
+
+	got := Build(root, nil, nil)
+	if got.Summary.OperationMessage != "app path does not exist" {
+		t.Fatalf("summary operation message = %q, want cleaned app path error", got.Summary.OperationMessage)
+	}
+	if got.Summary.RawOperationMessage != rawOperation {
+		t.Fatalf("summary raw operation message = %q, want %q", got.Summary.RawOperationMessage, rawOperation)
+	}
+	var opIssue *Issue
+	for i := range got.Issues {
+		if got.Issues[i].Scope == ScopeOperation {
+			opIssue = &got.Issues[i]
+			break
+		}
+	}
+	if opIssue == nil || opIssue.Message != "app path does not exist" {
+		t.Fatalf("operation issue did not carry cleaned message: %+v", got.Issues)
+	}
+	if opIssue.RawMessage != rawOperation {
+		t.Fatalf("operation issue raw message = %q, want %q", opIssue.RawMessage, rawOperation)
+	}
+	if len(got.History) != 1 || got.History[0].Message != "app path does not exist" {
+		t.Fatalf("history did not carry cleaned message: %+v", got.History)
+	}
+	if got.History[0].RawMessage != rawOperation {
+		t.Fatalf("history raw message = %q, want %q", got.History[0].RawMessage, rawOperation)
+	}
+	if len(got.Changes) != 1 || got.Changes[0].SyncError != "resource hook failed" {
+		t.Fatalf("resource change did not carry cleaned sync error: %+v", got.Changes)
+	}
+	if got.Changes[0].RawSyncError != rawResource {
+		t.Fatalf("resource change raw sync error = %q, want %q", got.Changes[0].RawSyncError, rawResource)
+	}
+	for _, msg := range []string{
+		got.Summary.OperationMessage,
+		opIssue.Message,
+		got.History[0].Message,
+		got.Changes[0].SyncError,
+	} {
+		if strings.Contains(msg, "rpc error") || strings.Contains(msg, "Unknown desc") {
+			t.Fatalf("Argo controller message leaked gRPC envelope: %q", msg)
+		}
+	}
+}
+
 func TestBuildIssuesArgoRunningOperationProducesInfo(t *testing.T) {
 	root := argoApp(map[string]any{
 		"operationState": map[string]any{"phase": "Running"},
@@ -543,7 +611,7 @@ func TestDetectManualDriftWithoutAutoSync(t *testing.T) {
 func TestArgoApplicationConditions_MapsTypesToSeverity(t *testing.T) {
 	root := argoApp(map[string]any{
 		"conditions": []any{
-			map[string]any{"type": "ComparisonError", "message": "rpc error: revision not found"},
+			map[string]any{"type": "ComparisonError", "message": "rpc error: code = Unknown desc = revision not found"},
 			map[string]any{"type": "OrphanedResourceWarning", "message": "ConfigMap foo has no owner"},
 			map[string]any{"type": "SomeUnrelatedInfo", "message": "noise"},
 			map[string]any{"type": "", "message": ""}, // skipped
@@ -557,8 +625,18 @@ func TestArgoApplicationConditions_MapsTypesToSeverity(t *testing.T) {
 	for _, iss := range got {
 		bySev[iss.Reason] = iss.Severity
 	}
+	byMessage := map[string]string{}
+	for _, iss := range got {
+		byMessage[iss.Reason] = iss.Message
+	}
 	if bySev["ComparisonError"] != SeverityCritical {
 		t.Errorf("ComparisonError severity = %q, want critical", bySev["ComparisonError"])
+	}
+	if byMessage["ComparisonError"] != "revision not found" {
+		t.Errorf("ComparisonError message = %q, want cleaned revision error", byMessage["ComparisonError"])
+	}
+	if strings.Contains(byMessage["ComparisonError"], "rpc error") || strings.Contains(byMessage["ComparisonError"], "Unknown desc") {
+		t.Errorf("ComparisonError message leaked gRPC envelope: %q", byMessage["ComparisonError"])
 	}
 	if bySev["OrphanedResourceWarning"] != SeverityWarning {
 		t.Errorf("OrphanedResourceWarning severity = %q, want warning", bySev["OrphanedResourceWarning"])

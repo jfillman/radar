@@ -33,7 +33,6 @@ import { SortableTh, TH_CLASS, type SortDir } from '../ui/SortableTh'
 import { DistributionBar } from '../ui/DistributionBar'
 import { RowActionMenu, type RowActionItem } from '../ui/RowActionMenu'
 import { PaneLoader } from '../ui/PaneLoader'
-import { useRefreshAnimation } from '../../hooks/useRefreshAnimation'
 import { getGitOpsResourceStatus } from './detail-helpers'
 import { isArgoSuspendedByRadar } from '../resources/resource-utils-argo'
 import { toggleSet } from './GitOpsGraphFilterRail'
@@ -192,8 +191,13 @@ export interface GitOpsTableViewProps {
   // the Scope-section mode tabs and the empty-state check.
   counts: Record<string, number>
   countsUnavailable?: string[]
-  // Caller refresh — typically invalidates its useQuery + refetches.
+  // @deprecated Superseded by `freshnessSlot` — kept for source compatibility
+  // with existing consumers; no longer drives any affordance here.
   onRefresh?: () => void
+  // Host-injected freshness/liveness control (e.g. a <FreshnessControl>),
+  // rendered leading the header actions. The host owns the mode + data, so this
+  // shared table makes no assumption about whether the view auto-updates.
+  freshnessSlot?: ReactNode
   // Row click — caller routes to its own detail page. When the host also
   // passes `rowHrefFor`, the callback receives the MouseEvent so it can
   // `preventDefault()` for same-tree nav (e.g. react-router) or skip the
@@ -275,7 +279,7 @@ export function GitOpsTableView({
   error,
   counts,
   countsUnavailable,
-  onRefresh,
+  freshnessSlot,
   onRowClick,
   rowHrefFor,
   onDestinationClick,
@@ -318,10 +322,6 @@ export function GitOpsTableView({
   }, [])
   const [lifecycleFilter, setLifecycleFilter] = useState<'all' | 'terminating' | 'active'>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>({ key: 'urgency', dir: 'asc' })
-  // Shared refresh feedback (spin ≥400ms → checkmark) so clicking Refresh gives
-  // the same visual confirmation as every other view, even when the refetch is
-  // instant (the cache is already warm).
-  const [triggerRefresh, , refreshPhase] = useRefreshAnimation(onRefresh ?? (() => {}))
   // 3-state cycle: natural direction → reversed → off. The first click uses each
   // column's natural direction (SORT_DEFAULT_DIR — e.g. Last Sync is newest-first)
   // so the header cycle agrees with the tile-mode sort menu, which seeds the same
@@ -605,19 +605,24 @@ export function GitOpsTableView({
           icon={GitBranch}
           title="GitOps"
           description="Applications and reconciliations with source, destination, sync, and health state."
-          actions={summaryTiles.map((tile) => (
-            <SummaryTile
-              key={tile.key}
-              label={tile.label}
-              value={tile.value}
-              tone={tile.tone}
-              active={tile.active}
-              onClick={() => {
-                if (tile.active) tile.clear?.()
-                else tile.apply?.()
-              }}
-            />
-          ))}
+          actions={
+            <>
+              {freshnessSlot}
+              {summaryTiles.map((tile) => (
+                <SummaryTile
+                  key={tile.key}
+                  label={tile.label}
+                  value={tile.value}
+                  tone={tile.tone}
+                  active={tile.active}
+                  onClick={() => {
+                    if (tile.active) tile.clear?.()
+                    else tile.apply?.()
+                  }}
+                />
+              ))}
+            </>
+          }
         />
       </div>
       <div
@@ -736,19 +741,6 @@ export function GitOpsTableView({
               <GitOpsIconToggle active={viewMode === 'table'} label="Table view" icon={List} onClick={() => setViewMode('table')} />
               <GitOpsIconToggle active={viewMode === 'tiles'} label="Tiles view" icon={LayoutGrid} onClick={() => setViewMode('tiles')} />
             </div>
-            {onRefresh && (
-              <Tooltip content="Refresh GitOps resources">
-                <button
-                  type="button"
-                  onClick={triggerRefresh}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-theme-border bg-theme-base text-theme-text-secondary hover:bg-theme-hover hover:text-theme-text-primary"
-                >
-                  {refreshPhase === 'success'
-                    ? <Check className="h-3.5 w-3.5 text-emerald-500" />
-                    : <RefreshCw className={clsx('h-3.5 w-3.5', (refreshPhase === 'spinning' || loading) && 'animate-spin')} />}
-                </button>
-              </Tooltip>
-            )}
           </div>
         </div>
 

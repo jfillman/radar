@@ -2,6 +2,7 @@ package issues
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/skyhook-io/radar/internal/helm"
@@ -33,19 +34,20 @@ func NativeHelmReleaseIssues(releases []helm.HelmRelease, now time.Time) []Issue
 			storageNamespace = rel.Namespace
 		}
 		iss := Issue{
-			Severity:  severity,
-			Source:    SourceProblem,
-			Kind:      "HelmRelease",
-			Group:     NativeHelmGroup,
-			Namespace: storageNamespace,
-			Name:      rel.Name,
-			Reason:    reason,
-			Message:   nativeHelmIssueMessage(rel, *op),
-			Cause:     nativeHelmIssueCause(*op),
-			Action:    nativeHelmIssueAction(*op),
-			Stuck:     true,
-			FirstSeen: firstSeen,
-			LastSeen:  now,
+			Severity:   severity,
+			Source:     SourceProblem,
+			Kind:       "HelmRelease",
+			Group:      NativeHelmGroup,
+			Namespace:  storageNamespace,
+			Name:       rel.Name,
+			Reason:     reason,
+			Message:    nativeHelmIssueMessage(rel, *op),
+			RawMessage: nativeHelmIssueRawMessage(*op),
+			Cause:      nativeHelmIssueCause(*op),
+			Action:     nativeHelmIssueAction(*op),
+			Stuck:      true,
+			FirstSeen:  firstSeen,
+			LastSeen:   now,
 		}
 		classifyIssue(&iss)
 		enrichIdentity(&iss)
@@ -69,6 +71,9 @@ func nativeHelmIssueReason(op helm.HelmOperation) (Severity, string, bool) {
 }
 
 func nativeHelmIssueMessage(rel helm.HelmRelease, op helm.HelmOperation) string {
+	if helmhistory.IsReadinessTimeoutMessage(nativeHelmRawCandidate(op)) {
+		return fmt.Sprintf("Helm release %q did not become ready before Helm timed out.", rel.Name)
+	}
 	if op.Message != "" {
 		return op.Message
 	}
@@ -81,10 +86,30 @@ func nativeHelmIssueMessage(rel helm.HelmRelease, op helm.HelmOperation) string 
 }
 
 func nativeHelmIssueCause(op helm.HelmOperation) string {
+	if helmhistory.IsReadinessTimeoutMessage(nativeHelmRawCandidate(op)) {
+		return "The release's workload did not become ready before Helm timed out."
+	}
 	if op.Kind == helmhistory.KindPending {
 		return "A Helm install, upgrade, or rollback has remained pending past the stuck-operation threshold."
 	}
 	return "The latest native Helm release revision is failed."
+}
+
+func nativeHelmIssueRawMessage(op helm.HelmOperation) string {
+	if op.RawMessage != "" {
+		return strings.TrimSpace(op.RawMessage)
+	}
+	if helmhistory.IsReadinessTimeoutMessage(op.Message) {
+		return strings.TrimSpace(op.Message)
+	}
+	return ""
+}
+
+func nativeHelmRawCandidate(op helm.HelmOperation) string {
+	if op.RawMessage != "" {
+		return op.RawMessage
+	}
+	return op.Message
 }
 
 func nativeHelmIssueAction(op helm.HelmOperation) string {

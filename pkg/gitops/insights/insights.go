@@ -34,19 +34,20 @@ type Insight struct {
 }
 
 type Summary struct {
-	Tool             string `json:"tool"`
-	Kind             string `json:"kind"`
-	Namespace        string `json:"namespace"`
-	Name             string `json:"name"`
-	Sync             string `json:"sync,omitempty"`
-	Health           string `json:"health,omitempty"`
-	OperationPhase   string `json:"operationPhase,omitempty"`
-	OperationMessage string `json:"operationMessage,omitempty"`
-	Source           string `json:"source,omitempty"`
-	TargetRevision   string `json:"targetRevision,omitempty"`
-	LastRevision     string `json:"lastRevision,omitempty"`
-	LastReconcile    string `json:"lastReconcile,omitempty"`
-	PartialReason    string `json:"partialReason,omitempty"`
+	Tool                string `json:"tool"`
+	Kind                string `json:"kind"`
+	Namespace           string `json:"namespace"`
+	Name                string `json:"name"`
+	Sync                string `json:"sync,omitempty"`
+	Health              string `json:"health,omitempty"`
+	OperationPhase      string `json:"operationPhase,omitempty"`
+	OperationMessage    string `json:"operationMessage,omitempty"`
+	RawOperationMessage string `json:"rawOperationMessage,omitempty"`
+	Source              string `json:"source,omitempty"`
+	TargetRevision      string `json:"targetRevision,omitempty"`
+	LastRevision        string `json:"lastRevision,omitempty"`
+	LastReconcile       string `json:"lastReconcile,omitempty"`
+	PartialReason       string `json:"partialReason,omitempty"`
 	// AutoSyncMode is the human-readable syncPolicy chip label, e.g.
 	// "Manual", "Auto", "Auto · prune", "Auto · self-heal",
 	// "Auto · prune · self-heal", "Suspended" (Flux), or "".
@@ -75,7 +76,8 @@ type Ref struct {
 // frontend dispatches on Kind to render the right button + onClick handler.
 //
 // Invariants (per Kind):
-//   RemediationCreateNamespace: Target MUST be a non-empty namespace name.
+//
+//	RemediationCreateNamespace: Target MUST be a non-empty namespace name.
 //
 // Construct via NewCreateNamespaceRemediation rather than struct literal —
 // the constructor enforces the per-Kind invariants; literal construction
@@ -122,12 +124,13 @@ func (r *Remediation) Validate() error {
 }
 
 type Issue struct {
-	Severity Severity `json:"severity"`
-	Scope    Scope    `json:"scope"`
-	Reason   string   `json:"reason"`
-	Message  string   `json:"message"`
-	Refs     []Ref    `json:"refs,omitempty"`
-	Action   string   `json:"action,omitempty"`
+	Severity   Severity `json:"severity"`
+	Scope      Scope    `json:"scope"`
+	Reason     string   `json:"reason"`
+	Message    string   `json:"message"`
+	RawMessage string   `json:"rawMessage,omitempty"`
+	Refs       []Ref    `json:"refs,omitempty"`
+	Action     string   `json:"action,omitempty"`
 	// Remediation, when set, exposes a structured one-click fix for this
 	// Issue. Frontend renders a contextual button on the failure card.
 	// Nil when no automated remedy is appropriate; the Action string still
@@ -155,7 +158,8 @@ type Change struct {
 	// SyncError is Argo's status.resources[].syncResult message — the last
 	// sync's per-resource failure. Distinct from Message (live health) so
 	// the UI can show "degraded right now" vs "last sync errored".
-	SyncError string `json:"syncError,omitempty"`
+	SyncError    string `json:"syncError,omitempty"`
+	RawSyncError string `json:"rawSyncError,omitempty"`
 	// HookPhase identifies sync hook resources (PreSync / PostSync /
 	// SyncFail / PostDelete); empty for non-hook resources.
 	HookPhase  string `json:"hookPhase,omitempty"`
@@ -218,6 +222,7 @@ type HistoryItem struct {
 	DeployedAt  string `json:"deployedAt,omitempty"`
 	Phase       string `json:"phase,omitempty"`
 	Message     string `json:"message,omitempty"`
+	RawMessage  string `json:"rawMessage,omitempty"`
 	Source      string `json:"source,omitempty"`
 	InitiatedBy string `json:"initiatedBy,omitempty"`
 }
@@ -343,7 +348,8 @@ func buildSummary(root *unstructured.Unstructured, tool string) Summary {
 		s.Sync, _, _ = unstructured.NestedString(root.Object, "status", "sync", "status")
 		s.Health, _, _ = unstructured.NestedString(root.Object, "status", "health", "status")
 		s.OperationPhase, _, _ = unstructured.NestedString(root.Object, "status", "operationState", "phase")
-		s.OperationMessage, _, _ = unstructured.NestedString(root.Object, "status", "operationState", "message")
+		opMessage, _, _ := unstructured.NestedString(root.Object, "status", "operationState", "message")
+		s.OperationMessage, s.RawOperationMessage = diagnose.CleanArgoControllerMessageWithRaw(opMessage)
 		s.TargetRevision, _, _ = unstructured.NestedString(root.Object, "status", "sync", "revision")
 		s.LastRevision, _, _ = unstructured.NestedString(root.Object, "status", "operationState", "syncResult", "revision")
 		s.LastReconcile, _, _ = unstructured.NestedString(root.Object, "status", "reconciledAt")
@@ -430,13 +436,15 @@ func buildIssues(root *unstructured.Unstructured, resourceTree *gitopstree.Resou
 	if tool == "argocd" {
 		if phase, _, _ := unstructured.NestedString(root.Object, "status", "operationState", "phase"); phase == "Failed" || phase == "Error" {
 			operationFailed = true
-			msg, _, _ := unstructured.NestedString(root.Object, "status", "operationState", "message")
+			opMessage, _, _ := unstructured.NestedString(root.Object, "status", "operationState", "message")
+			msg, rawMsg := diagnose.CleanArgoControllerMessageWithRaw(opMessage)
 			parsed := diagnose.ParseArgoOperationError(msg)
 			issue := Issue{
 				Severity:    SeverityCritical,
 				Scope:       ScopeOperation,
 				Reason:      phase,
 				Message:     fallback(msg, "Last sync operation failed"),
+				RawMessage:  rawMsg,
 				Action:      "Open Activity for operation details.",
 				Cause:       parsed.Cause,
 				RetryCount:  parsed.RetryCount,
@@ -749,26 +757,28 @@ func argoResourceChanges(root *unstructured.Unstructured, resolver Resolver) []C
 		// Empty status counts as "unknown — show the message" because Argo
 		// can write a pre-apply failure message before stamping a status.
 		syncError := ""
+		rawSyncError := ""
 		hookPhase := ""
 		if sr, ok := m["syncResult"].(map[string]any); ok {
 			status := gitops.StringValue(sr["status"])
 			if status != "Synced" && status != "Pruned" {
-				syncError = gitops.StringValue(sr["message"])
+				syncError, rawSyncError = diagnose.CleanArgoControllerMessageWithRaw(gitops.StringValue(sr["message"]))
 			}
 			hookPhase = gitops.StringValue(sr["hookPhase"])
 		}
 		change := Change{
-			Ref:         ref,
-			Category:    category,
-			Sync:        sync,
-			Health:      health,
-			Message:     nestedMessage(m["health"]),
-			SyncError:   syncError,
-			HookPhase:   hookPhase,
-			HasDesired:  false,
-			HasLive:     true,
-			Partial:     true,
-			PartialNote: "Argo reports resource status here; desired manifest content is not available in Radar yet.",
+			Ref:          ref,
+			Category:     category,
+			Sync:         sync,
+			Health:       health,
+			Message:      nestedMessage(m["health"]),
+			SyncError:    syncError,
+			RawSyncError: rawSyncError,
+			HookPhase:    hookPhase,
+			HasDesired:   false,
+			HasLive:      true,
+			Partial:      true,
+			PartialNote:  "Argo reports resource status here; desired manifest content is not available in Radar yet.",
 		}
 		// Enrich from live cluster state when a resolver is wired. The
 		// drift diff turns the bare "OutOfSync" badge into a concrete
@@ -916,9 +926,11 @@ func buildHistory(root *unstructured.Unstructured, tool string) []HistoryItem {
 			if deployedAt == "" {
 				deployedAt = gitops.StringValue(op["startedAt"])
 			}
+			msg, rawMsg := diagnose.CleanArgoControllerMessageWithRaw(gitops.StringValue(op["message"]))
 			out = append(out, HistoryItem{
 				Phase:       gitops.StringValue(op["phase"]),
-				Message:     gitops.StringValue(op["message"]),
+				Message:     msg,
+				RawMessage:  rawMsg,
 				DeployedAt:  deployedAt,
 				Revision:    nestedString(op, "syncResult", "revision"),
 				InitiatedBy: initiatedBy,
@@ -1492,7 +1504,6 @@ func detectPendingDeletion(root *unstructured.Unstructured, resolver Resolver) *
 	}
 }
 
-
 // detectStuckDriftLoop emits a critical issue when an Argo Application is
 // in the "applied successfully but still drifted" state — the case where
 // the user stares at the OutOfSync badge for hours wondering why nothing
@@ -1608,7 +1619,7 @@ func argoApplicationConditions(root *unstructured.Unstructured) []Issue {
 			continue
 		}
 		typ := gitops.StringValue(m["type"])
-		msg := gitops.StringValue(m["message"])
+		msg, rawMsg := diagnose.CleanArgoControllerMessageWithRaw(gitops.StringValue(m["message"]))
 		if typ == "" && msg == "" {
 			continue
 		}
@@ -1620,11 +1631,12 @@ func argoApplicationConditions(root *unstructured.Unstructured) []Issue {
 			severity = SeverityWarning
 		}
 		out = append(out, Issue{
-			Severity: severity,
-			Scope:    ScopeCondition,
-			Reason:   fallback(typ, "Condition"),
-			Message:  fallback(msg, typ),
-			Action:   diagnose.ActionForCondition(typ),
+			Severity:   severity,
+			Scope:      ScopeCondition,
+			Reason:     fallback(typ, "Condition"),
+			Message:    fallback(msg, typ),
+			RawMessage: rawMsg,
+			Action:     diagnose.ActionForCondition(typ),
 		})
 	}
 	return out

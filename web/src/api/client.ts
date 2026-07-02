@@ -36,6 +36,15 @@ import type { GitOpsOperationResponse } from '../types/gitops'
 import { getApiBase, getAuthHeaders, getCredentialsMode, getBasename, routePath } from './config'
 import { pluralToKind } from '../utils/navigation'
 
+// Auto-refresh cadences (ms) — named constants for each polled hook's
+// refetchInterval below, so the poll rate reads clearly at each call site.
+const DASHBOARD_REFRESH_INTERVAL_MS = 30_000
+const AUDIT_REFRESH_INTERVAL_MS = 60_000
+const ISSUES_REFRESH_INTERVAL_MS = 30_000
+const COST_REFRESH_INTERVAL_MS = 60_000
+const CHANGES_REFRESH_INTERVAL_MS = 60_000
+const APPLICATIONS_REFRESH_INTERVAL_MS = 60_000
+
 // Wrapper around fetch that always includes credentials (for session cookies)
 // and handles 401 responses globally. Merges caller-provided headers with
 // auth headers from the config module so library consumers (Radar Hub) can
@@ -327,7 +336,7 @@ export function useDashboard(namespaces: string[] = []) {
     queryKey: ['dashboard', namespaces],
     queryFn: () => fetchJSON(`/dashboard${params}`),
     staleTime: 15000, // 15 seconds
-    refetchInterval: 30000, // Refresh every 30 seconds
+    refetchInterval: DASHBOARD_REFRESH_INTERVAL_MS,
   })
 }
 
@@ -338,7 +347,7 @@ export function useAudit(namespaces: string[] = []) {
     queryKey: ['audit', namespaces],
     queryFn: () => fetchJSON(`/audit${params}`),
     staleTime: 30000,
-    refetchInterval: 60000,
+    refetchInterval: AUDIT_REFRESH_INTERVAL_MS,
     placeholderData: (prev) => prev,
   })
 }
@@ -369,7 +378,7 @@ export function useIssues(namespaces: string[] = []) {
     queryKey: ['issues', namespaces],
     queryFn: () => fetchJSON(`/issues${params}`),
     staleTime: 30000,
-    refetchInterval: 30000,
+    refetchInterval: ISSUES_REFRESH_INTERVAL_MS,
   })
 }
 
@@ -517,7 +526,7 @@ export function useOpenCostSummary() {
   return useQuery<OpenCostSummary>({
     queryKey: ['opencost-summary'],
     queryFn: () => fetchJSON('/opencost/summary'),
-    refetchInterval: 60000, // Refresh every minute
+    refetchInterval: COST_REFRESH_INTERVAL_MS,
     staleTime: 30000,
     placeholderData: (prev) => prev, // Keep previous data visible during refetch
   })
@@ -955,7 +964,7 @@ export function useApplications(namespaces: string[]) {
     queryKey: ['applications', namespaces],
     queryFn: () => fetchJSON(`/applications${queryString ? `?${queryString}` : ''}`),
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval: APPLICATIONS_REFRESH_INTERVAL_MS,
   })
 }
 
@@ -1114,7 +1123,7 @@ export function useChanges(options: UseChangesOptions = {}) {
     queryKey: ['changes', namespaces, kind, timeRange, filter, includeK8sEvents, includeManaged, includeDeleted, limit],
     queryFn: () => fetchJSON(`/changes${queryString ? `?${queryString}` : ''}`),
     staleTime: 5000, // Consider data stale after 5 seconds to ensure fresh data on navigation
-    refetchInterval: 60000, // SSE handles real-time updates; this is a fallback
+    refetchInterval: CHANGES_REFRESH_INTERVAL_MS, // SSE handles real-time updates; this is a fallback
     enabled,
   })
 }

@@ -56,6 +56,7 @@ export function GitOpsStatusStrip({ insight, loading }: GitOpsStatusStripProps) 
   const operationFailure = (insight.issues ?? []).find(
     (i) => i.severity === 'critical' && i.scope === 'operation' && i.stuck,
   )
+  const operationTooltipMessage = summary.rawOperationMessage || summary.operationMessage
   return (
     <div className="border-b border-theme-border bg-theme-base px-4 py-2">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
@@ -87,7 +88,7 @@ export function GitOpsStatusStrip({ insight, loading }: GitOpsStatusStripProps) 
             (parsed cause, retry count, raw message) so the strip stays a
             calm orientation row instead of duplicating the error three times. */}
         {operation && summary.operationMessage && isInFlightPhase(operation) && (
-          <Tooltip content={summary.operationMessage} delay={400} wrapperClassName="min-w-0 max-w-[60ch]">
+          <Tooltip content={operationTooltipMessage} delay={400} wrapperClassName="min-w-0 max-w-[60ch]">
             <span className="block truncate text-[11px] text-theme-text-secondary">
               {summary.operationMessage}
             </span>
@@ -424,6 +425,8 @@ function GitOpsFailureCard({
   const [showRaw, setShowRaw] = useState(false)
   const stuck = !!issue.stuck
   const ref = issue.refs?.[0]
+  const rawControllerMessage = issue.rawMessage || issue.message
+  const rawControllerLabel = issue.rawMessage ? 'raw controller error' : 'controller message'
   // Title prioritizes the parsed cause's first sentence. Without parsing we
   // get the bare phase ("Failed") which alone tells the user nothing — fall
   // back to the first sentence of the raw message in that case so something
@@ -486,12 +489,12 @@ function GitOpsFailureCard({
               className="inline-flex items-center gap-1 text-[11px] text-theme-text-tertiary transition-colors hover:text-theme-text-secondary"
             >
               {showRaw ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-              {showRaw ? 'Hide raw controller error' : 'Show raw controller error'}
+              {showRaw ? `Hide ${rawControllerLabel}` : `Show ${rawControllerLabel}`}
             </button>
           </div>
           {showRaw && (
             <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded border border-theme-border bg-theme-base px-3 py-2 font-mono text-[11px] text-theme-text-secondary">
-              {issue.message}
+              {rawControllerMessage}
             </pre>
           )}
         </div>
@@ -609,6 +612,7 @@ function GitOpsCompactIssueStack({ issues, onSelectIssue }: { issues: GitOpsIssu
             const t = severityTone(issue.severity)
             const ref = issue.refs?.[0]
             const actionable = !!(onSelectIssue && ref)
+            const rawMessage = issue.rawMessage && issue.rawMessage !== issue.message ? issue.rawMessage : ''
             return (
               <button
                 key={`${issue.reason}-${index}`}
@@ -628,6 +632,7 @@ function GitOpsCompactIssueStack({ issues, onSelectIssue }: { issues: GitOpsIssu
                   </div>
                   <p className="mt-0.5 text-theme-text-secondary">{issue.message}</p>
                   {issue.cause && <p className="mt-0.5 text-[11px] text-theme-text-tertiary">{issue.cause}</p>}
+                  {rawMessage && <p className="mt-0.5 break-words font-mono text-[11px] text-theme-text-tertiary">{rawMessage}</p>}
                   {issue.action && <p className="mt-0.5 text-[11px] text-theme-text-tertiary">{issue.action}</p>}
                 </div>
                 {actionable && ref && (
@@ -1112,7 +1117,7 @@ function ChangeRow({
               live health message — operators chasing a broken sync want
               the failure reason on the same row, not in a drawer. */}
           {change.syncError && (
-            <Tooltip content={change.syncError} delay={400} wrapperClassName="ml-[18px] mt-1 block max-w-full">
+            <Tooltip content={change.rawSyncError || change.syncError} delay={400} wrapperClassName="ml-[18px] mt-1 block max-w-full">
               <span className="line-clamp-3 text-xs text-red-600 dark:text-red-400">{change.syncError}</span>
             </Tooltip>
           )}
@@ -1386,7 +1391,9 @@ function HistoryRows({
                 </Tooltip>
               )}
               {item.message && (
-                <div className={clsx('mt-0.5 line-clamp-2 text-[11px]', sourceDisplay ? 'text-theme-text-tertiary' : 'text-theme-text-secondary')}>{item.message}</div>
+                <Tooltip content={item.rawMessage || item.message} delay={400} wrapperClassName="mt-0.5 block max-w-full">
+                  <div className={clsx('line-clamp-2 text-[11px]', sourceDisplay ? 'text-theme-text-tertiary' : 'text-theme-text-secondary')}>{item.message}</div>
+                </Tooltip>
               )}
             </div>
           </li>

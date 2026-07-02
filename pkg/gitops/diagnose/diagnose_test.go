@@ -188,6 +188,68 @@ func TestParseArgoOperationError_HookFailures(t *testing.T) {
 	}
 }
 
+func TestCleanArgoControllerMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "single grpc envelope",
+			in:   "rpc error: code = Unknown desc = app path does not exist",
+			want: "app path does not exist",
+		},
+		{
+			name: "nested grpc envelope keeps diagnostic context",
+			in:   "application spec is invalid: rpc error: code = Unknown desc = failed to generate manifests: rpc error: code = Unknown desc = app path does not exist",
+			want: "application spec is invalid: failed to generate manifests: app path does not exist",
+		},
+		{
+			name: "nested command failure keeps middle layer",
+			in:   "rpc error: code = Unknown desc = Manifest generation error (cached): helm template failed: rpc error: code = Unknown desc = exit status 1",
+			want: "Manifest generation error (cached): helm template failed: exit status 1",
+		},
+		{
+			name: "plain condition message unchanged",
+			in:   "app path does not exist",
+			want: "app path does not exist",
+		},
+		{
+			name: "empty grpc desc preserves original",
+			in:   "rpc error: code = Unknown desc = ",
+			want: "rpc error: code = Unknown desc =",
+		},
+		{
+			name: "empty",
+			in:   "   ",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CleanArgoControllerMessage(tc.in); got != tc.want {
+				t.Fatalf("CleanArgoControllerMessage = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCleanArgoControllerMessageWithRaw(t *testing.T) {
+	raw := "rpc error: code = Unknown desc = app path does not exist"
+	cleaned, rawOut := CleanArgoControllerMessageWithRaw(raw)
+	if cleaned != "app path does not exist" {
+		t.Fatalf("cleaned = %q, want app path error", cleaned)
+	}
+	if rawOut != raw {
+		t.Fatalf("raw = %q, want %q", rawOut, raw)
+	}
+
+	cleaned, rawOut = CleanArgoControllerMessageWithRaw("app path does not exist")
+	if cleaned != "app path does not exist" || rawOut != "" {
+		t.Fatalf("plain message cleaned/raw = %q/%q, want unchanged/empty raw", cleaned, rawOut)
+	}
+}
+
 func TestSeverityForConditionType(t *testing.T) {
 	cases := []struct {
 		typ            string

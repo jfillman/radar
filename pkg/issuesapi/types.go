@@ -245,8 +245,8 @@ const (
 // not part of this contract. Assigned only when unambiguous: a single best root
 // by confidence tier; distinct roots at the same tier leave it unset.
 type IncidentParent struct {
-	ID         string     `json:"id"`                  // parent grouped-issue ID (within-cluster)
-	Ref        Ref        `json:"ref"`                 // parent subject, for display + deep-link
+	ID         string     `json:"id"`  // parent grouped-issue ID (within-cluster)
+	Ref        Ref        `json:"ref"` // parent subject, for display + deep-link
 	Category   Category   `json:"category,omitempty"`
 	Confidence Confidence `json:"confidence,omitempty"`
 	FactType   string     `json:"fact_type,omitempty"` // node_blast_radius | pvc_blast_radius | apiservice_hpa | secret_not_ready
@@ -340,6 +340,7 @@ type Issue struct {
 	Name          string        `json:"name"`
 	Reason        string        `json:"reason"`
 	Message       string        `json:"message,omitempty"`
+	RawMessage    string        `json:"raw_message,omitempty"`
 	// Cause / Action / Remediation* carry parsed domain diagnosis. They give the
 	// Issues page + MCP a plain-English cause + next step when a detector has
 	// enough evidence. All optional — empty for issues without a parser.

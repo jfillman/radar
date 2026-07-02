@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
+import { createElement } from 'react'
+import { renderToString } from 'react-dom/server'
 import { compareIssues, subjectRef, memberRef, normalizeImagePullMessage, issueMessageParts, type Issue } from './types'
 import { categoryLabel, groupLabel, groupBadgeClass } from './severity'
+import { IssueRow } from './IssuesView'
 
 const base: Issue = {
   id: 'id-0',
@@ -103,5 +106,23 @@ describe('image-pull message normalization', () => {
     const parts = issueMessageParts(mk({ category: 'missing_config_ref', reason: 'Missing Secret', message: 'secret "project-infra" not found' }))
     expect(parts.headline).toBe('secret "project-infra" not found')
     expect(parts.detail).toBe('')
+  })
+})
+
+describe('IssueRow diagnosis raw messages', () => {
+  it('shows raw_message when cleaned issue copy has no parsed cause', () => {
+    const issue = mk({
+      category: 'gitops_operation_failed',
+      category_group: 'configuration',
+      severity: 'critical',
+      reason: 'OperationFailed',
+      message: 'app path does not exist',
+      raw_message: 'rpc error: code = Unknown desc = app path does not exist',
+    })
+
+    const html = renderToString(createElement(IssueRow, { issue, open: true, onToggle: () => undefined, as: 'div' }))
+
+    expect(html).toContain('app path does not exist')
+    expect(html).toContain('rpc error: code = Unknown desc = app path does not exist')
   })
 })

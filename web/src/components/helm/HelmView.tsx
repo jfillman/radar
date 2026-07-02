@@ -1,8 +1,8 @@
 import { useState, useMemo, useRef, useEffect, useCallback, forwardRef } from 'react'
-import { useRefreshAnimation } from '../../hooks/useRefreshAnimation'
 import { useRegisterShortcuts } from '../../hooks/useKeyboardShortcuts'
-import { Package, Search, RefreshCw, ArrowUpCircle, LayoutGrid, List, Shield, GitBranch, ChevronRight, RotateCcw, Clock } from 'lucide-react'
-import { PaneLoader, PageHeader, SortableTh, type SortDir } from '@skyhook-io/k8s-ui'
+import { Package, Search, ArrowUpCircle, LayoutGrid, List, Shield, GitBranch, ChevronRight, RotateCcw, Clock } from 'lucide-react'
+import { PaneLoader, PageHeader, SortableTh, FreshnessControl, type SortDir } from '@skyhook-io/k8s-ui'
+import { useConnection } from '../../context/ConnectionContext'
 import { clsx } from 'clsx'
 import { useHelmReleases, useHelmBatchUpgradeInfo, isForbiddenError } from '../../api/client'
 import type { HelmOperation, HelmRelease, SelectedHelmRelease, UpgradeInfo, ChartSource } from '../../types'
@@ -25,7 +25,7 @@ export function HelmView({ namespaces, selectedRelease, onReleaseClick }: HelmVi
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedChart, setSelectedChart] = useState<{ repo: string; chart: string; version: string; source: ChartSource } | null>(null)
 
-  const { data: releases, isLoading, error: releasesError, refetch: refetchReleases } = useHelmReleases(namespaces)
+  const { data: releases, isLoading, error: releasesError, dataUpdatedAt: releasesUpdatedAt, isFetching: releasesFetching, refetch: refetchReleases } = useHelmReleases(namespaces)
   const isForbidden = isForbiddenError(releasesError)
   const releasesErrorMessage = releasesError instanceof Error ? releasesError.message : 'Failed to load Helm releases'
 
@@ -36,11 +36,8 @@ export function HelmView({ namespaces, selectedRelease, onReleaseClick }: HelmVi
   )
   const upgradeErrorMessage = upgradeError instanceof Error ? upgradeError.message : 'Upgrade checks failed'
 
-  const [handleRefresh, isRefreshAnimating] = useRefreshAnimation(async () => {
-    await Promise.all([refetchReleases(), refetchUpgradeInfo()])
-  })
-
-  const isFullyLoaded = !isLoading && !upgradeLoading
+  const { connection } = useConnection()
+  const refetchAll = () => Promise.all([refetchReleases(), refetchUpgradeInfo()])
 
   // Filter releases by search term
   // Resources-table cycle: asc → desc → off (null restores the server's order).
@@ -191,6 +188,17 @@ export function HelmView({ namespaces, selectedRelease, onReleaseClick }: HelmVi
             icon={Package}
             title="Helm"
             description="Installed Helm releases and the chart catalog for this cluster."
+            actions={
+              activeTab === 'releases' ? (
+                <FreshnessControl
+                  mode="snapshot"
+                  dataUpdatedAt={releasesUpdatedAt}
+                  isFetching={releasesFetching || upgradeLoading}
+                  onRefresh={refetchAll}
+                  connectionState={connection.state}
+                />
+              ) : undefined
+            }
           />
         </div>
         {/* Tab bar */}
@@ -230,9 +238,6 @@ export function HelmView({ namespaces, selectedRelease, onReleaseClick }: HelmVi
           <>
             {/* Releases Toolbar */}
             <div className="flex items-center gap-4 px-4 py-3 border-b border-theme-border bg-theme-surface/50 shrink-0">
-              {!isFullyLoaded && (
-                <RefreshCw className="w-3.5 h-3.5 animate-spin text-theme-text-tertiary shrink-0" />
-              )}
               <div className="flex-1 relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-theme-text-tertiary" />
                 <input
@@ -244,15 +249,6 @@ export function HelmView({ namespaces, selectedRelease, onReleaseClick }: HelmVi
                   className="w-full max-w-md pl-10 pr-4 py-2 bg-theme-elevated border border-theme-border-light rounded-lg text-sm text-theme-text-primary placeholder-theme-text-disabled focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              <Tooltip content="Refresh">
-              <button
-                onClick={handleRefresh}
-                disabled={isRefreshAnimating}
-                className="p-2 text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded-lg disabled:opacity-50 disabled:pointer-events-none"
-              >
-                <RefreshCw className={clsx('w-4 h-4', isRefreshAnimating && 'animate-spin')} />
-              </button>
-              </Tooltip>
             </div>
 
             {/* Releases Table */}

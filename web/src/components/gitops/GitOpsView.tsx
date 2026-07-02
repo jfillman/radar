@@ -8,6 +8,7 @@ import {
   GitOpsDetailLayout,
   GitOpsGraphFilterRail,
   GitOpsTableView as SharedGitOpsTableView,
+  FreshnessControl,
   GitOpsTreeGraph,
   RollbackDialog,
   SyncOptionsDialog,
@@ -61,6 +62,7 @@ import {
   useResource,
 } from '../../api/client'
 import { useAPIResources } from '../../api/apiResources'
+import { useConnection } from '../../context/ConnectionContext'
 import { apiUrl, getAuthHeaders, getCredentialsMode } from '../../api/config'
 import { useRegisterShortcut } from '../../hooks/useKeyboardShortcuts'
 import { CodeViewer } from '../ui/CodeViewer'
@@ -79,6 +81,11 @@ const GITOPS_KINDS: APIResource[] = [
 ]
 
 const KIND_BY_NAME = new Map(GITOPS_KINDS.map((k) => [k.name, k]))
+
+// Rows are the table's primary content; their poll cadence is what the toolbar
+// freshness signal advertises ("Auto-refreshes every 2m"). Single source of
+// truth so the signal can't drift from the actual refetchInterval below.
+const GITOPS_ROWS_REFRESH_INTERVAL_MS = 120_000
 
 interface ResourceCountsResponse {
   counts: Record<string, number>
@@ -102,6 +109,7 @@ export function GitOpsView({ namespaces, onOpenResource, onClearNamespaces }: Gi
 
 function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string[]; onClearNamespaces?: () => void }) {
   const navigate = useNavigate()
+  const { connection } = useConnection()
   const namespacesParam = namespaces.join(',')
   const { data: apiResources, isLoading: apiResourcesLoading } = useAPIResources()
 
@@ -191,7 +199,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
     },
     enabled: !apiResourcesLoading,
     staleTime: 30_000,
-    refetchInterval: 120_000,
+    refetchInterval: GITOPS_ROWS_REFRESH_INTERVAL_MS,
   })
 
   // Row mutations invalidate granular keys (['resource', …], ['gitops-tree', …])
@@ -201,11 +209,11 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
   // inviting a duplicate request. Radar serves reads from an informer cache that
   // lags the write by the watch-propagation delay, so refetch once now (covers
   // an already-current cache) and once shortly after to catch the propagated
-  // update; refetch() forces a fetch regardless of staleTime.
-  const refetchTable = () => {
-    rowsQuery.refetch()
-    countsQuery.refetch()
-  }
+  // update; refetch() forces a fetch regardless of staleTime. The toolbar's
+  // manual refresh reuses refetchTable so rows + counts stay in sync.
+  // Return the combined promise so the toolbar's refresh animation waits for the
+  // real fetches to settle before showing its success checkmark.
+  const refetchTable = () => Promise.all([rowsQuery.refetch(), countsQuery.refetch()])
   const refetchTableAfterMutation = () => {
     refetchTable()
     window.setTimeout(refetchTable, 1200)
@@ -280,7 +288,14 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
         error={(rowsQuery.error as Error | null) ?? null}
         counts={countsQuery.data?.counts ?? {}}
         countsUnavailable={countsQuery.data?.unavailable}
-        onRefresh={() => rowsQuery.refetch()}
+        freshnessSlot={
+          <FreshnessControl
+            mode="auto"
+            dataUpdatedAt={rowsQuery.dataUpdatedAt}
+            onRefresh={refetchTable}
+            connectionState={connection.state}
+          />
+        }
         onRowClick={(row) => {
           const ns = row.namespace || '_'
           const params = new URLSearchParams()

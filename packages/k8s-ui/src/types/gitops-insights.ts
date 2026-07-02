@@ -45,6 +45,7 @@ export interface GitOpsInsightSummary {
   // Latest operation status message — surfaced inline in the status strip
   // when an operation is in flight or just failed.
   operationMessage?: string
+  rawOperationMessage?: string
   source?: string
   targetRevision?: string
   lastRevision?: string
@@ -79,6 +80,7 @@ export interface GitOpsIssue {
   scope: GitOpsScope
   reason: string
   message: string
+  rawMessage?: string
   refs?: GitOpsInsightRef[]
   action?: string
   // Plain-English root cause when the message matched a recognized error
@@ -112,6 +114,7 @@ export interface GitOpsChange {
   // Per-resource sync failure message (Argo's status.resources[].syncResult).
   // Distinct from `message` (live health). Empty when sync succeeded.
   syncError?: string
+  rawSyncError?: string
   // Sync hook phase: PreSync / PostSync / SyncFail / PostDelete. Empty
   // for non-hook resources.
   hookPhase?: string
@@ -175,6 +178,7 @@ export interface GitOpsHistoryItem {
   deployedAt?: string
   phase?: string
   message?: string
+  rawMessage?: string
   source?: string
   initiatedBy?: string
 }

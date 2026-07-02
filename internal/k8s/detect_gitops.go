@@ -132,8 +132,9 @@ func detectArgoAppProblems(apps []*unstructured.Unstructured, now time.Time) []D
 			// present, it holds the actionable guidance — prefer it over a
 			// generic "operation failed" row rather than masking it.
 			if strings.TrimSpace(opMsg) == "" {
-				if ct, cmsg, since, hasSince, ok := argoErrorCondition(app, now); ok {
+				if ct, cmsg, rawMsg, since, hasSince, ok := argoErrorCondition(app, now); ok {
 					d := gitopsProblem("Application", argoGroup, ns, name, "critical", ct, cmsg, fallbackDuration(since, hasSince, age))
+					d.RawMessage = rawMsg
 					if ct == "SyncError" {
 						applyArgoOperationDiagnosis(&d, cmsg)
 					}
@@ -144,12 +145,13 @@ func detectArgoAppProblems(apps []*unstructured.Unstructured, now time.Time) []D
 					continue
 				}
 			}
-			msg := opMsg
+			msg, rawMsg := diagnose.CleanArgoControllerMessageWithRaw(opMsg)
 			if strings.TrimSpace(msg) == "" {
 				msg = "Last sync operation failed"
 			}
 			d := gitopsProblem("Application", argoGroup, ns, name, "critical", "OperationFailed", msg, argoOperationIssueAge(app, now, age))
-			applyArgoOperationDiagnosis(&d, opMsg)
+			d.RawMessage = rawMsg
+			applyArgoOperationDiagnosis(&d, msg)
 			// When there's a structured remediation, that one-click fix IS the
 			// next step. Otherwise (RBAC / webhook / immutable field, or an
 			// unrecognized message) point the operator at the operation details
@@ -178,8 +180,9 @@ func detectArgoAppProblems(apps []*unstructured.Unstructured, now time.Time) []D
 		// without a sync operation (so operationState above won't catch them) —
 		// genuine reconciliation failures, critical, with the same condition-
 		// specific guidance the detail page shows.
-		if ct, msg, since, hasSince, ok := argoErrorCondition(app, now); ok {
+		if ct, msg, rawMsg, since, hasSince, ok := argoErrorCondition(app, now); ok {
 			d := gitopsProblem("Application", argoGroup, ns, name, "critical", ct, msg, fallbackDuration(since, hasSince, age))
+			d.RawMessage = rawMsg
 			d.Action = diagnose.ActionForCondition(ct)
 			out = append(out, d)
 			continue
@@ -303,10 +306,10 @@ func argoIsAutomated(app *unstructured.Unstructured) bool {
 // an error (ComparisonError / InvalidSpecError / SyncError). Argo writes these
 // as {type, message} without a status field, so FindFalseCondition can't match
 // them.
-func argoErrorCondition(app *unstructured.Unstructured, now time.Time) (condType, message string, since time.Duration, hasSince bool, found bool) {
+func argoErrorCondition(app *unstructured.Unstructured, now time.Time) (condType, message, rawMessage string, since time.Duration, hasSince bool, found bool) {
 	conds, ok, _ := unstructured.NestedSlice(app.Object, "status", "conditions")
 	if !ok {
-		return "", "", 0, false, false
+		return "", "", "", 0, false, false
 	}
 	for _, c := range conds {
 		cm, ok := c.(map[string]any)
@@ -317,12 +320,13 @@ func argoErrorCondition(app *unstructured.Unstructured, now time.Time) (condType
 		switch ct {
 		case "ComparisonError", "InvalidSpecError", "SyncError":
 			msg, _ := cm["message"].(string)
+			msg, rawMsg := diagnose.CleanArgoControllerMessageWithRaw(msg)
 			ts, _ := cm["lastTransitionTime"].(string)
 			since, hasSince := durationFromTimestamp(now, ts)
-			return ct, msg, since, hasSince, true
+			return ct, msg, rawMsg, since, hasSince, true
 		}
 	}
-	return "", "", 0, false, false
+	return "", "", "", 0, false, false
 }
 
 // detectFluxProblems flags Flux Kustomizations/HelmReleases whose Ready condition

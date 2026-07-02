@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
+	"github.com/skyhook-io/radar/pkg/gitops/diagnose"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -2057,6 +2058,7 @@ func diffApplication(oldObj, newObj any) ([]FieldChange, []string) {
 			summary = append(summary, fmt.Sprintf("operation: %s", opPhase))
 		}
 		if opMessage != "" && opPhase == "Failed" {
+			opMessage = diagnose.CleanArgoControllerMessage(opMessage)
 			summary = append(summary, fmt.Sprintf("error: %s", truncateMessage(opMessage)))
 		}
 	}
@@ -2078,6 +2080,7 @@ func diffApplication(oldObj, newObj any) ([]FieldChange, []string) {
 				opMessage, _, _ := unstructured.NestedString(newOp, "message")
 				summary = append(summary, "sync failed")
 				if opMessage != "" {
+					opMessage = diagnose.CleanArgoControllerMessage(opMessage)
 					summary = append(summary, fmt.Sprintf("error: %s", truncateMessage(opMessage)))
 				}
 			case "Running":

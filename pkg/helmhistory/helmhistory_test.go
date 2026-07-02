@@ -1,6 +1,7 @@
 package helmhistory
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,6 +24,35 @@ func TestAnalyzeCurrentFailedUpgrade(t *testing.T) {
 	}
 	if len(got.Operations) != 0 {
 		t.Fatalf("Operations = %#v, want no duplicate of live failed revision", got.Operations)
+	}
+}
+
+func TestAnalyzeCurrentFailedReadinessTimeoutCleansMessage(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	rawDescription := `Release "crossplane" failed: resource Deployment/crossplane-system/crossplane not ready. status: InProgress, message: Available: 0/1
+resource Deployment/crossplane-system/crossplane-rbac-manager not ready. status: InProgress, message: Available: 0/1
+context deadline exceeded`
+	got := Analyze("crossplane", 1, []Revision{
+		rev(1, "failed", rawDescription, now.Add(-5*time.Minute)),
+	}, Options{Now: now})
+
+	if got.LastOperation == nil {
+		t.Fatal("LastOperation = nil")
+	}
+	want := `Helm release "crossplane" did not become ready before Helm timed out.`
+	if got.LastOperation.Message != want {
+		t.Fatalf("message = %q, want %q", got.LastOperation.Message, want)
+	}
+	if got.LastOperation.RawMessage == "" {
+		t.Fatal("RawMessage is empty, want original Helm timeout")
+	}
+	if got.LastOperation.RawMessage != rawDescription {
+		t.Fatalf("RawMessage = %q, want %q", got.LastOperation.RawMessage, rawDescription)
+	}
+	for _, leaked := range []string{"status: InProgress", "Available: 0/1", "context deadline exceeded"} {
+		if strings.Contains(got.LastOperation.Message, leaked) {
+			t.Fatalf("message leaked raw Helm timeout text %q: %q", leaked, got.LastOperation.Message)
+		}
 	}
 }
 

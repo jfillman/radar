@@ -5,6 +5,7 @@ import {
   ApplicationDetail,
   CenteredEmpty,
   PageHeader,
+  FreshnessControl,
   useToast,
   orderEnvs,
   matchWorkloadAcrossInstances,
@@ -18,6 +19,7 @@ import {
 } from '@skyhook-io/k8s-ui'
 import { Boxes } from 'lucide-react'
 import { useApplications, useTopology } from '../../api/client'
+import { useConnection } from '../../context/ConnectionContext'
 import { kindToPlural } from '../../utils/navigation'
 import { WorkloadView } from '../workload/WorkloadView'
 
@@ -28,7 +30,17 @@ interface ApplicationsViewProps {
 
 export function ApplicationsView({ namespaces, onOpenResource }: ApplicationsViewProps) {
   const query = useApplications(namespaces)
+  const { connection } = useConnection()
   const apps = useMemo(() => query.data?.applications ?? [], [query.data])
+
+  const freshness = (
+    <FreshnessControl
+      mode="auto"
+      dataUpdatedAt={query.dataUpdatedAt}
+      onRefresh={() => query.refetch()}
+      connectionState={connection.state}
+    />
+  )
 
   // Which app is open lives in the URL (?app=<key>) so the detail view is
   // deep-linkable and the browser back button returns to the list. Opening or
@@ -92,7 +104,7 @@ export function ApplicationsView({ namespaces, onOpenResource }: ApplicationsVie
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <ApplicationsList apps={apps} onSelect={selectApp} />
+      <ApplicationsList apps={apps} onSelect={selectApp} headerActions={freshness} />
     </div>
   )
 }

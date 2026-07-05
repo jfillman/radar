@@ -510,6 +510,8 @@ func (s *Server) setupRoutes() {
 			prometheuspkg.RegisterRoutes(r)
 
 			// OpenCost routes
+			r.Get("/opencost/workload/{kind}/{namespace}/{name}", s.handleOpenCostWorkload)
+			r.Get("/opencost/workload/{kind}/{namespace}/{name}/trend", s.handleOpenCostWorkloadTrend)
 			opencost.RegisterRoutes(r)
 
 			// FluxCD routes

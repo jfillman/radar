@@ -42,6 +42,7 @@ import { PrometheusCharts, isPrometheusSupported } from '../resource/PrometheusC
 import { PrometheusChartsGrid } from '../resource/PrometheusChartsGrid'
 import { RestartEventLane } from '../resource/RestartChart'
 import { RightsizingStrip } from '../resource/RightsizingStrip'
+import { WorkloadCostTab } from '../cost/WorkloadCostTab'
 import { useResourceAudit, useResourceIssues, useResources } from '../../api/client'
 import { AuditAlerts, ResourceIssuesSection } from '@skyhook-io/k8s-ui'
 import { WorkloadLogsViewer } from '../logs/WorkloadLogsViewer'
@@ -679,9 +680,13 @@ export function WorkloadView({
       renderMetricsTab={({ kind, namespace: ns, name: n }) => (
         <MetricsTabContent kind={kind} namespace={ns} name={n} resource={resource} expanded={expanded} />
       )}
+      renderCostTab={({ kind, namespace: ns, name: n }) => (
+        <WorkloadCostTab kind={kind} namespace={ns} name={n} />
+      )}
       isMetricsAvailable={(kind, res) =>
         isPrometheusSupported(kind) && !(kind === 'Pod' && res?.status?.phase === 'Pending')
       }
+      isCostAvailable={(kind) => isOpenCostWorkloadKind(kind)}
       onDuplicate={handleDuplicate}
       onDownload={desktopDownload}
       actionsBarProps={actionsBarProps}
@@ -912,6 +917,10 @@ function hasGitOpsStatusPayload(owner: GitOpsOwnerRef, resource: any): boolean {
 // ============================================================================
 
 const WORKLOAD_LOG_KINDS = new Set(['Deployment', 'StatefulSet', 'DaemonSet'])
+
+function isOpenCostWorkloadKind(kind: string): boolean {
+  return WORKLOAD_LOG_KINDS.has(kind)
+}
 
 function LogsTabContent({
   kind,

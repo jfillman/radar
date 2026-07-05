@@ -604,6 +604,26 @@ export function useOpenCostWorkloads(namespace: string, options?: { enabled?: bo
   })
 }
 
+export interface OpenCostWorkloadDetailResponse {
+  available: boolean
+  reason?: CostUnavailableReason
+  namespace: string
+  kind: string
+  name: string
+  current?: OpenCostWorkloadCost
+}
+
+export function useOpenCostWorkload(kind: string, namespace: string, name: string, options?: { enabled?: boolean }) {
+  return useQuery<OpenCostWorkloadDetailResponse>({
+    queryKey: ['opencost-workload', kind, namespace, name],
+    queryFn: () => fetchJSON(`/opencost/workload/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`),
+    enabled: (options?.enabled ?? true) && Boolean(kind && namespace && name),
+    staleTime: 30000,
+    refetchInterval: COST_REFRESH_INTERVAL_MS,
+    placeholderData: (prev) => prev,
+  })
+}
+
 // Cost trend over time
 export type CostTimeRange = '6h' | '24h' | '7d'
 
@@ -630,6 +650,28 @@ export function useOpenCostTrend(range_: CostTimeRange = '24h') {
     queryFn: () => fetchJSON(`/opencost/trend?range=${range_}`),
     staleTime: 60000,
     refetchInterval: 120000, // Refresh every 2 minutes
+    placeholderData: (prev) => prev,
+  })
+}
+
+export interface OpenCostWorkloadTrendResponse {
+  available: boolean
+  reason?: CostUnavailableReason
+  namespace: string
+  kind: string
+  name: string
+  range: string
+  windowTotalCost?: number
+  dataPoints?: OpenCostTrendDataPoint[]
+}
+
+export function useOpenCostWorkloadTrend(kind: string, namespace: string, name: string, range_: CostTimeRange = '24h', options?: { enabled?: boolean }) {
+  return useQuery<OpenCostWorkloadTrendResponse>({
+    queryKey: ['opencost-workload-trend', kind, namespace, name, range_],
+    queryFn: () => fetchJSON(`/opencost/workload/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/trend?range=${range_}`),
+    enabled: (options?.enabled ?? true) && Boolean(kind && namespace && name),
+    staleTime: 60000,
+    refetchInterval: 120000,
     placeholderData: (prev) => prev,
   })
 }

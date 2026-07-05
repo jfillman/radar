@@ -67,13 +67,13 @@ func handleWorkloads(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, pkgopencost.ComputeWorkloadsFromProm(
-		r.Context(), client.Prom(), ns, buildPodOwnerLookup(ns)))
+		r.Context(), client.Prom(), ns, BuildPodOwnerLookup(ns)))
 }
 
-// buildPodOwnerLookup snapshots radar's pod informer for `ns` so
+// BuildPodOwnerLookup snapshots radar's pod informer for `ns` so
 // pkg/opencost.ComputeWorkloadsFromProm can resolve pod→workload without
 // depending on client-go.
-func buildPodOwnerLookup(ns string) pkgopencost.PodOwnerLookup {
+func BuildPodOwnerLookup(ns string) pkgopencost.PodOwnerLookup {
 	rc := k8s.GetResourceCache()
 	if rc == nil || rc.Pods() == nil {
 		return nil

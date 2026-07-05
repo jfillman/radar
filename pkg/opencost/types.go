@@ -27,7 +27,7 @@ type CostSummary struct {
 // rows — Kind disambiguates (empty = namespace).
 type NamespaceCost struct {
 	Name            string  `json:"name"`
-	Kind            string  `json:"kind,omitempty"` // "namespace" (default if empty) | "controller" | "pod"
+	Kind            string  `json:"kind,omitempty"`      // "namespace" (default if empty) | "controller" | "pod"
 	Namespace       string  `json:"namespace,omitempty"` // populated for controller/pod rows
 	HourlyCost      float64 `json:"hourlyCost"`
 	CPUCost         float64 `json:"cpuCost"`
@@ -46,6 +46,16 @@ type WorkloadCostResponse struct {
 	Reason    string         `json:"reason,omitempty"`
 	Namespace string         `json:"namespace"`
 	Workloads []WorkloadCost `json:"workloads"`
+}
+
+// WorkloadCostDetailResponse is the focused current-cost response for one workload.
+type WorkloadCostDetailResponse struct {
+	Available bool          `json:"available"`
+	Reason    string        `json:"reason,omitempty"`
+	Namespace string        `json:"namespace"`
+	Kind      string        `json:"kind"`
+	Name      string        `json:"name"`
+	Current   *WorkloadCost `json:"current,omitempty"`
 }
 
 // WorkloadCost holds per-workload cost breakdown within a namespace.
@@ -68,6 +78,18 @@ type CostTrendResponse struct {
 	Reason    string            `json:"reason,omitempty"`
 	Range     string            `json:"range"`
 	Series    []CostTrendSeries `json:"series,omitempty"`
+}
+
+// WorkloadCostTrendResponse is the focused historical cost response for one workload.
+type WorkloadCostTrendResponse struct {
+	Available       bool            `json:"available"`
+	Reason          string          `json:"reason,omitempty"`
+	Namespace       string          `json:"namespace"`
+	Kind            string          `json:"kind"`
+	Name            string          `json:"name"`
+	Range           string          `json:"range"`
+	WindowTotalCost float64         `json:"windowTotalCost,omitempty"`
+	DataPoints      []CostDataPoint `json:"dataPoints,omitempty"`
 }
 
 // CostTrendSeries holds cost data points for a single namespace.

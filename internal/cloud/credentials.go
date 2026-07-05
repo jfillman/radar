@@ -28,6 +28,13 @@ type ClusterCredential struct {
 	ClusterName string `json:"cluster_name"` // display name
 	Token       string `json:"token"`        // rhc_… bearer (secret)
 	WSSURL      string `json:"wss_url"`      // agent WebSocket URL to dial
+	// ServerURL is the kube-apiserver endpoint of the cluster this credential
+	// was minted for. Auto-resume compares it against the current context's
+	// server URL so a same-named context in a DIFFERENT kubeconfig (a name
+	// collision — "kind-kind", "default", …) can't resume this cluster's Cloud
+	// identity onto a different cluster. Empty in creds written before this
+	// field existed → resume falls back to name-only (prior behavior).
+	ServerURL string `json:"server_url,omitempty"`
 }
 
 var credMu sync.Mutex

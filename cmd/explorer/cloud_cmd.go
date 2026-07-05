@@ -130,6 +130,7 @@ func cloudConnect(args []string) {
 		ClusterName: clusterName,
 		Token:       res.Token,
 		WSSURL:      res.WSSURL,
+		ServerURL:   currentClusterServerURL(),
 	}); err != nil {
 		// Non-fatal: we can still serve this session; the user just won't get
 		// auto-resume next time. Warn and continue.
@@ -234,6 +235,17 @@ func maybeResumeCloud(fileCfg config.Config) {
 	if !ok || cred.Token == "" || cred.WSSURL == "" {
 		return
 	}
+	// Bind the credential to the cluster: if the saved server URL differs from
+	// the current context's, this is a same-named context in a different
+	// kubeconfig pointing at a different cluster — don't resume (would serve
+	// the wrong cluster under this cred's Cloud identity). Empty saved URL
+	// (legacy cred) falls back to name-only matching.
+	if cred.ServerURL != "" {
+		if cur := currentClusterServerURL(); cur != "" && cur != cred.ServerURL {
+			log.Printf("[cloud] not resuming context %q: kubeconfig now points at a different cluster than the saved connection", ctxName)
+			return
+		}
+	}
 	log.Printf("[cloud] resuming saved Radar Cloud connection for context %q (cluster %s) — `radar cloud disconnect` to stop", ctxName, cred.ClusterID)
 	os.Args = append(os.Args,
 		"--cloud-url="+cred.WSSURL,
@@ -263,6 +275,21 @@ func currentKubeContextName() string {
 		return ""
 	}
 	return cfg.CurrentContext
+}
+
+// currentClusterServerURL returns the kube-apiserver endpoint of the current
+// context, resolved locally (no network). Empty on any failure. Used to bind a
+// saved credential to its cluster so a same-named context in a different
+// kubeconfig can't resume it.
+func currentClusterServerURL() string {
+	restCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		clientcmd.NewDefaultClientConfigLoadingRules(),
+		&clientcmd.ConfigOverrides{},
+	).ClientConfig()
+	if err != nil {
+		return ""
+	}
+	return restCfg.Host
 }
 
 // gatherConnectMetadata assembles best-effort display context for the consent

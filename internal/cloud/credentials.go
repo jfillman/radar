@@ -60,13 +60,18 @@ func LoadCredentials() Credentials {
 	return c
 }
 
-// saveCredentials writes the store atomically at 0600.
+// saveCredentials writes the store atomically at 0600. The temp file is created
+// via os.CreateTemp — which opens it 0600 by default (the token is never briefly
+// world-readable) with a UNIQUE name, so two concurrent Radar processes can't
+// collide on a fixed `.tmp` path. Atomic rename means a concurrent writer only
+// risks a lost update (last-writer-wins), never a corrupt file.
 func saveCredentials(c Credentials) error {
 	path := CredentialsPath()
 	if path == "" {
 		return errors.New("cannot determine home directory")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(c, "", "  ")
@@ -74,19 +79,31 @@ func saveCredentials(c Credentials) error {
 		return err
 	}
 	data = append(data, '\n')
-	tmp := path + ".tmp"
-	// Write the temp file 0600 so the secret is never briefly world-readable.
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+
+	f, err := os.CreateTemp(dir, "credentials-*.json.tmp") // 0600, unique
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	// Ensure 0600 even if umask/CreateTemp semantics ever differ on a target.
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return err
 	}
-	// Defense in depth: re-assert 0600 in case the file pre-existed with looser
-	// perms (rename preserves the temp file's mode, but a prior file replaced by
-	// rename doesn't carry over — this guards manual edits).
-	_ = os.Chmod(path, 0o600)
 	return nil
 }
 

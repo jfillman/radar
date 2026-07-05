@@ -48,13 +48,16 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "cloud" {
 		runCloudSubcommand()
 	}
-	// Resume a saved Cloud connection for the current kubecontext (no-op unless
-	// `radar cloud connect` was run before and no explicit cloud config is set).
-	maybeResumeCloud()
 
 	// Load persistent config (~/.radar/config.json) for flag defaults.
 	// CLI flags override config file values.
 	fileCfg := config.Load()
+
+	// Resume a saved Cloud connection for the current kubecontext (no-op unless
+	// `radar cloud connect` was run before and no explicit cloud config is set).
+	// Passed fileCfg so it can decline to resume when a non-default kubeconfig
+	// is in play (the saved cred is keyed by the default context).
+	maybeResumeCloud(fileCfg)
 
 	// Parse flags (defaults come from config file, falling back to hardcoded values)
 	kubeconfig := flag.String("kubeconfig", fileCfg.Kubeconfig, "Path to kubeconfig file (default: ~/.kube/config)")

@@ -112,10 +112,11 @@ func (c *ConnectClient) Poll(ctx context.Context, requestID, deviceSecret string
 		return nil, errors.New("poll rejected (401) — the connect request is no longer valid")
 	}
 	if resp.StatusCode != http.StatusOK {
-		// Read a little of the body for context without letting a hostile hub
-		// flood logs.
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return nil, fmt.Errorf("poll: hub returned %s: %s", resp.Status, strings.TrimSpace(string(snippet)))
+		// Status only — never echo the hub's response body into an error that
+		// gets printed: this request carried the device_secret in the auth
+		// header, and a diagnostic hub/proxy that reflected headers could
+		// otherwise surface it.
+		return nil, fmt.Errorf("poll: hub returned %s", resp.Status)
 	}
 	var out PollResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -154,17 +155,29 @@ func (c *ConnectClient) RunFlow(ctx context.Context, meta ConnectMetadata, out i
 	}
 	fmt.Fprintf(out, "  Waiting for approval… (Ctrl-C to cancel)\n")
 
+	// Clamp the hub-advertised interval to a sane band — don't trust a value
+	// that's implausibly small (busy-poll) or large (never checks before TTL).
 	interval := time.Duration(cr.PollInterval) * time.Second
 	if interval < time.Second {
 		interval = 5 * time.Second
 	}
+	if interval > 30*time.Second {
+		interval = 30 * time.Second
+	}
 	deadline := time.Now().Add(time.Duration(max(cr.ExpiresIn, 60)) * time.Second)
 
 	for {
-		if time.Now().After(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			return nil, ErrConnectExpired
 		}
-		if !sleep(ctx, interval) {
+		// Never sleep past the deadline (a large interval mustn't stretch the
+		// wait beyond expires_in).
+		wait := interval
+		if remaining < wait {
+			wait = remaining
+		}
+		if !sleep(ctx, wait) {
 			return nil, ctx.Err()
 		}
 		pr, err := c.Poll(ctx, cr.RequestID, cr.DeviceSecret)
@@ -173,12 +186,15 @@ func (c *ConnectClient) RunFlow(ctx context.Context, meta ConnectMetadata, out i
 		}
 		switch pr.Status {
 		case "approved":
-			if pr.Token == "" {
-				return nil, errors.New("hub approved the connection but returned no token")
-			}
 			wss := pr.WSSURL
 			if wss == "" {
 				wss = cr.WSSURL
+			}
+			// Require everything needed to actually dial — a token-less or
+			// URL-less "approved" would print "Connected" but silently serve
+			// nothing (main skips the dial when --cloud-url is empty).
+			if pr.Token == "" || pr.ClusterID == "" || wss == "" {
+				return nil, errors.New("hub approved the connection but returned incomplete details (missing token, cluster id, or URL)")
 			}
 			return &FlowResult{
 				ClusterID:   pr.ClusterID,

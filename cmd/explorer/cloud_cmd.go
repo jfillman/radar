@@ -26,6 +26,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/app"
 	"github.com/skyhook-io/radar/internal/cloud"
+	"github.com/skyhook-io/radar/internal/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -202,12 +203,26 @@ func cloudDisconnect(args []string) {
 // --cloud-url flag or RADAR_CLOUD_URL env — the in-cluster/Helm path) always
 // wins and short-circuits this. `radar cloud disconnect` removes the saved
 // credential, turning resume off.
-func maybeResumeCloud() {
+func maybeResumeCloud(fileCfg config.Config) {
 	if os.Getenv("RADAR_CLOUD_URL") != "" {
 		return
 	}
 	for _, a := range os.Args[1:] {
 		if a == "--cloud-url" || strings.HasPrefix(a, "--cloud-url=") {
+			return
+		}
+	}
+	// Auto-resume ONLY when the served cluster is unambiguously the default
+	// kubecontext. Saved credentials are keyed by the default context name; if a
+	// non-default kubeconfig is selected (--kubeconfig / --kubeconfig-dir flag,
+	// or a persisted path in config), the cluster actually served could differ
+	// from that context — resuming then would serve cluster B under context A's
+	// Cloud identity. In those cases require an explicit `radar cloud connect`.
+	if fileCfg.Kubeconfig != "" || len(fileCfg.KubeconfigDirs) > 0 {
+		return
+	}
+	for _, a := range os.Args[1:] {
+		if isKubeconfigOverrideArg(a) {
 			return
 		}
 	}
@@ -225,6 +240,17 @@ func maybeResumeCloud() {
 		"--cloud-token="+cred.Token,
 		"--cluster-name="+cred.ClusterID,
 	)
+}
+
+// isKubeconfigOverrideArg reports whether an arg selects a non-default
+// kubeconfig, which would make the default-context resume unsafe.
+func isKubeconfigOverrideArg(a string) bool {
+	for _, p := range []string{"--kubeconfig", "-kubeconfig", "--kubeconfig-dir", "-kubeconfig-dir"} {
+		if a == p || strings.HasPrefix(a, p+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // currentKubeContextName reads the current kubecontext directly from kubeconfig,

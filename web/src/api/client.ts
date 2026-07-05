@@ -42,6 +42,9 @@ const DASHBOARD_REFRESH_INTERVAL_MS = 30_000
 const AUDIT_REFRESH_INTERVAL_MS = 60_000
 const ISSUES_REFRESH_INTERVAL_MS = 30_000
 const COST_REFRESH_INTERVAL_MS = 60_000
+const COST_DISCOVERY_RETRY_INTERVAL_MS = 2_000
+export const COST_DISCOVERY_GRACE_MS = 30_000
+const COST_TREND_REFRESH_INTERVAL_MS = 120_000
 const CHANGES_REFRESH_INTERVAL_MS = 60_000
 const APPLICATIONS_REFRESH_INTERVAL_MS = 60_000
 
@@ -564,11 +567,35 @@ export interface OpenCostSummary {
   namespaces?: OpenCostNamespaceCost[]
 }
 
+const noPrometheusFirstSeenAt = new Map<string, number>()
+
+function costRefetchInterval(defaultInterval: number | false = COST_REFRESH_INTERVAL_MS) {
+  return (query: {
+    queryHash?: string
+    queryKey?: unknown
+    state: {
+      data?: { available?: boolean; reason?: CostUnavailableReason }
+      dataUpdatedAt?: number
+    }
+  }) => {
+    const data = query.state.data
+    const queryID = query.queryHash ?? JSON.stringify(query.queryKey ?? 'opencost')
+    if (data?.available === false && data.reason === 'no_prometheus') {
+      const now = Date.now()
+      const firstSeenAt = noPrometheusFirstSeenAt.get(queryID) ?? query.state.dataUpdatedAt ?? now
+      noPrometheusFirstSeenAt.set(queryID, firstSeenAt)
+      return now - firstSeenAt < COST_DISCOVERY_GRACE_MS ? COST_DISCOVERY_RETRY_INTERVAL_MS : defaultInterval
+    }
+    noPrometheusFirstSeenAt.delete(queryID)
+    return defaultInterval
+  }
+}
+
 export function useOpenCostSummary() {
   return useQuery<OpenCostSummary>({
     queryKey: ['opencost-summary'],
     queryFn: () => fetchJSON('/opencost/summary'),
-    refetchInterval: COST_REFRESH_INTERVAL_MS,
+    refetchInterval: costRefetchInterval(),
     staleTime: 30000,
     placeholderData: (prev) => prev, // Keep previous data visible during refetch
   })
@@ -600,6 +627,7 @@ export function useOpenCostWorkloads(namespace: string, options?: { enabled?: bo
     queryKey: ['opencost-workloads', namespace],
     queryFn: () => fetchJSON(`/opencost/workloads?namespace=${encodeURIComponent(namespace)}`),
     enabled: (options?.enabled ?? true) && Boolean(namespace),
+    refetchInterval: costRefetchInterval(false),
     staleTime: 30000,
   })
 }
@@ -619,7 +647,7 @@ export function useOpenCostWorkload(kind: string, namespace: string, name: strin
     queryFn: () => fetchJSON(`/opencost/workload/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`),
     enabled: (options?.enabled ?? true) && Boolean(kind && namespace && name),
     staleTime: 30000,
-    refetchInterval: COST_REFRESH_INTERVAL_MS,
+    refetchInterval: costRefetchInterval(),
     placeholderData: (prev) => prev,
   })
 }
@@ -649,7 +677,7 @@ export function useOpenCostTrend(range_: CostTimeRange = '24h') {
     queryKey: ['opencost-trend', range_],
     queryFn: () => fetchJSON(`/opencost/trend?range=${range_}`),
     staleTime: 60000,
-    refetchInterval: 120000, // Refresh every 2 minutes
+    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS),
     placeholderData: (prev) => prev,
   })
 }
@@ -671,7 +699,7 @@ export function useOpenCostWorkloadTrend(kind: string, namespace: string, name: 
     queryFn: () => fetchJSON(`/opencost/workload/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/trend?range=${range_}`),
     enabled: (options?.enabled ?? true) && Boolean(kind && namespace && name),
     staleTime: 60000,
-    refetchInterval: 120000,
+    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS),
     placeholderData: (prev) => prev,
   })
 }
@@ -697,7 +725,7 @@ export function useOpenCostNodes() {
     queryKey: ['opencost-nodes'],
     queryFn: () => fetchJSON('/opencost/nodes'),
     staleTime: 60000,
-    refetchInterval: 120000,
+    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS),
     placeholderData: (prev) => prev,
   })
 }

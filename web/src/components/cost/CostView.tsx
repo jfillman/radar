@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useOpenCostSummary, useOpenCostWorkloads, useOpenCostNodes } from '../../api/client'
+import { COST_DISCOVERY_GRACE_MS, useOpenCostSummary, useOpenCostWorkloads, useOpenCostNodes } from '../../api/client'
 import type { OpenCostNamespaceCost, OpenCostWorkloadCost, OpenCostNodeCost } from '../../api/client'
 import { ArrowLeft, ChevronDown, ChevronRight, DollarSign, HelpCircle, Loader2, Server, X } from 'lucide-react'
 import { PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
@@ -12,10 +12,19 @@ interface CostViewProps {
 }
 
 export function CostView({ onBack }: CostViewProps) {
-  const { data, isLoading, dataUpdatedAt, refetch } = useOpenCostSummary()
+  const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useOpenCostSummary()
   const { data: nodeData } = useOpenCostNodes()
   const { connection } = useConnection()
   const [showHelp, setShowHelp] = useState(false)
+  const [noPrometheusSince, setNoPrometheusSince] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (data?.available === false && data.reason === 'no_prometheus') {
+      setNoPrometheusSince((prev) => prev ?? Date.now())
+    } else {
+      setNoPrometheusSince(null)
+    }
+  }, [data?.available, data?.reason])
 
   if (isLoading) {
     return <PaneLoader label="Loading cost data…" className="flex-1" />
@@ -23,13 +32,40 @@ export function CostView({ onBack }: CostViewProps) {
 
   if (!data || !data.available) {
     const reason = data?.reason
-    const message = reason === 'no_prometheus'
-      ? 'Prometheus not found — OpenCost requires Prometheus or VictoriaMetrics'
-      : reason === 'no_metrics'
-        ? 'OpenCost metrics not found — Prometheus is available but no cost metrics were detected'
-        : reason === 'query_error'
-          ? 'Cost data temporarily unavailable — Prometheus was found but queries failed'
-          : 'OpenCost not detected — install OpenCost for cost visibility'
+    const discoveryAgeMs = noPrometheusSince == null ? 0 : Date.now() - noPrometheusSince
+    if (reason === 'no_prometheus' && discoveryAgeMs < COST_DISCOVERY_GRACE_MS) {
+      return (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex max-w-md flex-col items-center gap-3 text-center text-theme-text-secondary">
+            <Loader2 className="w-8 h-8 animate-spin text-theme-text-tertiary/60" />
+            <div>
+              <p className="text-sm font-medium text-theme-text-primary">Looking for Prometheus cost data…</p>
+              <p className="mt-1 text-xs text-theme-text-tertiary">
+                First discovery can take a few seconds while Radar checks cluster services and opens a local port-forward.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setNoPrometheusSince(Date.now())
+                refetch()
+              }}
+              disabled={isFetching}
+              className="text-xs text-accent-text hover:text-theme-text-primary disabled:cursor-not-allowed disabled:text-theme-text-disabled transition-colors"
+            >
+              {isFetching ? 'Checking…' : 'Check again'}
+            </button>
+          </div>
+        </div>
+      )
+    }
+    const message =
+      reason === 'no_prometheus'
+        ? 'Prometheus not found — OpenCost requires Prometheus or VictoriaMetrics'
+        : reason === 'no_metrics'
+          ? 'OpenCost metrics not found — Prometheus is available but no cost metrics were detected'
+          : reason === 'query_error'
+            ? 'Cost data temporarily unavailable — Prometheus was found but queries failed'
+            : 'OpenCost not detected — install OpenCost for cost visibility'
 
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -42,6 +78,18 @@ export function CostView({ onBack }: CostViewProps) {
           >
             Back to Dashboard
           </button>
+          {reason === 'no_prometheus' && (
+            <button
+              onClick={() => {
+                setNoPrometheusSince(Date.now())
+                refetch()
+              }}
+              disabled={isFetching}
+              className="text-xs text-accent-text hover:text-theme-text-primary disabled:cursor-not-allowed disabled:text-theme-text-disabled transition-colors"
+            >
+              {isFetching ? 'Checking…' : 'Check again'}
+            </button>
+          )}
         </div>
       </div>
     )

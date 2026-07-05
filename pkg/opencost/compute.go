@@ -395,7 +395,7 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 	memUsageMap := lastValuePerLabel(memUsageRes, memUsageErr, "namespace")
 
 	storageRes, storageErr := client.Query(ctx,
-		`sum by (namespace) (pv_hourly_cost * on(persistentvolume) group_left(namespace) kube_persistentvolume_claim_ref)`)
+		`sum by (namespace) (`+persistentVolumeHourlyCostExpr+` * on(persistentvolume) group_left(namespace) `+persistentVolumeClaimRef+`)`)
 	if storageErr != nil {
 		log.Printf("[opencost] storage cost query failed (storage costs will be 0): %v", storageErr)
 	}
@@ -425,7 +425,7 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 		namespaces = append(namespaces, *nc)
 	}
 
-	if nodeResult, err := client.Query(ctx, `sum(node_total_hourly_cost)`); err == nil && len(nodeResult.Series) > 0 && len(nodeResult.Series[0].DataPoints) > 0 {
+	if nodeResult, err := client.Query(ctx, `sum(`+nodeTotalHourlyCostExpr+`)`); err == nil && len(nodeResult.Series) > 0 && len(nodeResult.Series[0].DataPoints) > 0 {
 		if nodeCost := nodeResult.Series[0].DataPoints[0].Value; nodeCost > totalHourlyCost {
 			totalHourlyCost = nodeCost
 		}

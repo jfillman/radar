@@ -232,6 +232,9 @@ func (c *Client) EnsureConnected(ctx context.Context) (string, string, error) {
 			if ok {
 				return base, bp, nil
 			}
+			if err := ctx.Err(); err != nil {
+				return "", "", err
+			}
 			log.Printf("[prometheus] cached connection to %s failed probe (reason=%s), rediscovering", base, reason)
 			c.mu.Lock()
 			c.baseURL = ""
@@ -258,6 +261,9 @@ func (c *Client) EnsureConnected(ctx context.Context) (string, string, error) {
 			ok, reason := p.Probe(ctx)
 			if ok {
 				return base, bp, nil
+			}
+			if err := ctx.Err(); err != nil {
+				return "", "", err
 			}
 			log.Printf("[prometheus] cached connection to %s failed probe (reason=%s), rediscovering", base, reason)
 			c.mu.Lock()

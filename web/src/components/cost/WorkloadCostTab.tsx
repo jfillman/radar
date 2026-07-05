@@ -1,15 +1,17 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { clsx } from 'clsx'
 import { AlertCircle, DollarSign, Loader2, TrendingUp } from 'lucide-react'
 import {
   useOpenCostWorkload,
   useOpenCostWorkloadTrend,
+  COST_DISCOVERY_GRACE_MS,
   type CostTimeRange,
   type CostUnavailableReason,
   type OpenCostTrendDataPoint,
   type OpenCostWorkloadDetailResponse,
   type OpenCostWorkloadTrendResponse,
 } from '../../api/client'
+import { formatCostAxis } from './format'
 
 const TIME_RANGES: { value: CostTimeRange; label: string }[] = [
   { value: '6h', label: '6h' },
@@ -34,6 +36,7 @@ interface WorkloadCostTabProps {
 
 export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps) {
   const [range, setRange] = useState<CostTimeRange>('24h')
+  const [noPrometheusSince, setNoPrometheusSince] = useState<number | null>(null)
   const currentQuery = useOpenCostWorkload(kind, namespace, name)
   const trendQuery = useOpenCostWorkloadTrend(kind, namespace, name, range)
 
@@ -43,6 +46,14 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
     currentError: currentQuery.isError,
     trendError: trendQuery.isError,
   })
+
+  useEffect(() => {
+    if (state === 'no_prometheus') {
+      setNoPrometheusSince((prev) => prev ?? Date.now())
+    } else {
+      setNoPrometheusSince(null)
+    }
+  }, [state])
 
   if (state === 'loading') {
     return (
@@ -54,6 +65,19 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
   }
 
   if (state === 'no_prometheus' || state === 'no_metrics' || state === 'query_error' || state === 'load_error') {
+    const discoveryAgeMs = noPrometheusSince == null ? 0 : Date.now() - noPrometheusSince
+    if (state === 'no_prometheus' && discoveryAgeMs < COST_DISCOVERY_GRACE_MS) {
+      return (
+        <WorkloadCostDiscovering
+          isFetching={currentQuery.isFetching || trendQuery.isFetching}
+          onRetry={() => {
+            setNoPrometheusSince(Date.now())
+            currentQuery.refetch()
+            trendQuery.refetch()
+          }}
+        />
+      )
+    }
     return <WorkloadCostUnavailable state={state} />
   }
 
@@ -208,6 +232,7 @@ export function getWorkloadCostState(
   const currentRow = current?.available ? current.current : undefined
   const trendHasData = trend?.available === true && (trend.dataPoints ?? []).some((p) => p.value > 0)
   if (currentRow) {
+    if (queryStatus.trendLoading && !trend) return 'data'
     if (queryStatus.trendError || (trend?.available === false && trend.reason !== 'no_metrics')) return 'partial_missing_history'
     if (currentRow.hourlyCost === 0 && currentRow.replicas === 0 && !trendHasData) return 'zero'
     if (!trend?.available) return 'partial_missing_history'
@@ -220,6 +245,29 @@ export function getWorkloadCostState(
   const reason = current?.reason ?? trend?.reason
   if (reason === 'no_prometheus' || reason === 'query_error') return reason
   return 'no_metrics'
+}
+
+function WorkloadCostDiscovering({ isFetching, onRetry }: { isFetching: boolean; onRetry: () => void }) {
+  return (
+    <div className="flex h-full min-h-[320px] items-center justify-center">
+      <div className="flex max-w-md flex-col items-center gap-3 text-center text-theme-text-secondary">
+        <Loader2 className="h-8 w-8 animate-spin text-theme-text-tertiary/60" />
+        <div>
+          <p className="text-sm font-medium text-theme-text-primary">Looking for Prometheus cost data…</p>
+          <p className="mt-1 text-xs text-theme-text-tertiary">
+            First discovery can take a few seconds while Radar checks cluster services and opens a local port-forward.
+          </p>
+        </div>
+        <button
+          onClick={onRetry}
+          disabled={isFetching}
+          className="text-xs text-accent-text transition-colors hover:text-theme-text-primary disabled:cursor-not-allowed disabled:text-theme-text-disabled"
+        >
+          {isFetching ? 'Checking…' : 'Check again'}
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function WorkloadCostUnavailable({ state }: { state: CostUnavailableReason | 'load_error' }) {
@@ -284,7 +332,7 @@ function WorkloadCostLineChart({ points }: { points: OpenCostTrendDataPoint[] })
           <g key={tick.y}>
             <line x1="44" x2="704" y1={tick.y} y2={tick.y} stroke="var(--border-subtle)" />
             <text x="34" y={tick.y + 4} textAnchor="end" className="fill-theme-text-tertiary text-[10px]">
-              {formatCost(tick.value)}
+              {formatCostAxis(tick.value)}
             </text>
           </g>
         ))}
@@ -331,6 +379,7 @@ export function buildLineChart(points: OpenCostTrendDataPoint[]) {
 
 function formatCost(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '$0.00'
+  if (value < 0.0001) return formatCostAxis(value)
   if (value < 0.01) return `$${value.toFixed(4)}`
   if (value < 1) return `$${value.toFixed(3)}`
   return `$${value.toFixed(2)}`

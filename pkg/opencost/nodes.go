@@ -18,7 +18,7 @@ func ComputeNodeCosts(ctx context.Context, client *prom.Client) *NodeCostRespons
 		return &NodeCostResponse{Available: false, Reason: ReasonNoPrometheus}
 	}
 
-	totalResult, err := client.Query(ctx, `node_total_hourly_cost`)
+	totalResult, err := client.Query(ctx, nodeTotalHourlyCostExpr)
 	if err != nil {
 		log.Printf("[opencost] node_total_hourly_cost query failed: %v", err)
 		return &NodeCostResponse{Available: false, Reason: ReasonQueryError}
@@ -27,10 +27,12 @@ func ComputeNodeCosts(ctx context.Context, client *prom.Client) *NodeCostRespons
 		return &NodeCostResponse{Available: false, Reason: ReasonNoMetrics}
 	}
 
-	cpuResult, cpuErr := client.Query(ctx, `node_cpu_hourly_cost`)
+	cpuResult, cpuErr := client.Query(ctx, nodeCPUHourlyCostExpr)
 	cpuMap := lastValuePerLabel(cpuResult, cpuErr, "node")
-	memResult, memErr := client.Query(ctx, `node_ram_hourly_cost`)
+	memResult, memErr := client.Query(ctx, nodeRAMHourlyCostExpr)
 	memMap := lastValuePerLabel(memResult, memErr, "node")
+	metadataResult, metadataErr := client.Query(ctx, nodeTotalHourlyCostMetadataExpr)
+	metadataMap := nodeMetadataByNode(metadataResult, metadataErr)
 
 	nodes := make([]NodeCost, 0, len(totalResult.Series))
 	for _, s := range totalResult.Series {
@@ -38,10 +40,11 @@ func ComputeNodeCosts(ctx context.Context, client *prom.Client) *NodeCostRespons
 		if node == "" || len(s.DataPoints) == 0 {
 			continue
 		}
+		metadata := metadataMap[node]
 		nodes = append(nodes, NodeCost{
 			Name:         node,
-			InstanceType: s.Labels["instance_type"],
-			Region:       s.Labels["region"],
+			InstanceType: metadata.instanceType,
+			Region:       metadata.region,
 			HourlyCost:   roundTo(s.DataPoints[len(s.DataPoints)-1].Value, 4),
 			CPUCost:      roundTo(cpuMap[node], 4),
 			MemoryCost:   roundTo(memMap[node], 4),
@@ -51,6 +54,39 @@ func ComputeNodeCosts(ctx context.Context, client *prom.Client) *NodeCostRespons
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].HourlyCost > nodes[j].HourlyCost })
 
 	return &NodeCostResponse{Available: true, Nodes: nodes}
+}
+
+type nodeMetadata struct {
+	instanceType string
+	region       string
+}
+
+func nodeMetadataByNode(result *prom.QueryResult, err error) map[string]nodeMetadata {
+	out := make(map[string]nodeMetadata)
+	if err != nil || result == nil {
+		return out
+	}
+	for _, s := range result.Series {
+		node := s.Labels["node"]
+		if node == "" || len(s.DataPoints) == 0 {
+			continue
+		}
+		current := out[node]
+		next := nodeMetadata{
+			instanceType: s.Labels["instance_type"],
+			region:       s.Labels["region"],
+		}
+		if current.instanceType == "" || current.region == "" {
+			if next.instanceType == "" {
+				next.instanceType = current.instanceType
+			}
+			if next.region == "" {
+				next.region = current.region
+			}
+			out[node] = next
+		}
+	}
+	return out
 }
 
 func lastValuePerLabel(result *prom.QueryResult, err error, label string) map[string]float64 {

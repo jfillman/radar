@@ -6,6 +6,7 @@ import {
   type CostTimeRange,
   type OpenCostTrendSeries,
 } from '../../api/client'
+import { formatCostAxis } from './format'
 
 const SERIES_COLORS = [
   '#3b82f6', // blue-500
@@ -360,18 +361,11 @@ function ChartLegend({ series }: { series: OpenCostTrendSeries[] }) {
   )
 }
 
-function formatCostAxis(value: number): string {
-  if (value >= 1000) return `$${(value / 1000).toFixed(0)}k`
-  if (value >= 1) return `$${value.toFixed(1)}`
-  if (value >= 0.01) return `$${value.toFixed(2)}`
-  if (value > 0) return `$${value.toFixed(3)}`
-  return '$0'
-}
-
 function formatCostTooltip(value: number): string {
   if (value >= 1000) return `$${(value / 1000).toFixed(1)}k/hr`
   if (value >= 1) return `$${value.toFixed(2)}/hr`
   if (value >= 0.01) return `$${value.toFixed(3)}/hr`
+  if (value > 0 && value < 0.0001) return `${formatCostAxis(value)}/hr`
   if (value > 0) return `$${value.toFixed(4)}/hr`
   return '$0.00/hr'
 }

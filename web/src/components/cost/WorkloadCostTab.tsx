@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { clsx } from 'clsx'
-import { AlertCircle, DollarSign, Loader2, TrendingUp } from 'lucide-react'
+import { AlertCircle, DollarSign, HelpCircle, Loader2, TrendingUp } from 'lucide-react'
 import {
   useOpenCostWorkload,
   useOpenCostWorkloadTrend,
@@ -11,6 +11,7 @@ import {
   type OpenCostWorkloadDetailResponse,
   type OpenCostWorkloadTrendResponse,
 } from '../../api/client'
+import { Tooltip } from '../ui/Tooltip'
 import { formatCostAxis } from './format'
 
 const TIME_RANGES: { value: CostTimeRange; label: string }[] = [
@@ -108,7 +109,12 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
           <div className="flex items-center gap-2">
             <TrendingUp className="h-4 w-4 text-theme-text-tertiary" />
             <div>
-              <div className="text-sm font-semibold text-theme-text-primary">Historical compute cost</div>
+              <div className="flex items-center gap-1.5">
+                <div className="text-sm font-semibold text-theme-text-primary">Historical compute cost</div>
+                <MetricInfoTooltip
+                  content="Dollars are based on OpenCost CPU and memory allocation over time, not raw utilization. Efficiency compares actual usage against that allocated cost."
+                />
+              </div>
               <div className="text-xs text-theme-text-tertiary">CPU and memory allocation attributed by workload ownership</div>
             </div>
           </div>
@@ -179,6 +185,7 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
           label="Efficiency"
           value={hasCurrent ? (current?.efficiency ? `${current.efficiency.toFixed(0)}%` : '0%') : '—'}
           subvalue={hasCurrent ? `${formatCost(current?.idleCost ?? 0)}/hr idle` : 'Current allocation unavailable'}
+          tooltip="Actual CPU and memory usage divided by allocated CPU and memory cost for the last hour. Low efficiency usually means requested capacity is sitting idle."
         />
         <MetricTile
           label="Monthly projection"
@@ -190,7 +197,10 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
       <section className="rounded-lg border border-theme-border bg-theme-surface/50 p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold text-theme-text-primary">Current cost split</div>
+            <div className="flex items-center gap-1.5">
+              <div className="text-sm font-semibold text-theme-text-primary">Current cost split</div>
+              <MetricInfoTooltip content="Last-hour allocated CPU and memory cost for this workload. This is the cost of reserved/requested capacity, not only what the containers used." />
+            </div>
             <div className="text-xs text-theme-text-tertiary">Last 1h OpenCost allocation window</div>
           </div>
           <div className="text-sm font-medium text-theme-text-primary tabular-nums">{hasCurrent ? `${formatCost(splitTotal)}/hr` : '—'}</div>
@@ -299,13 +309,24 @@ function MetricBlock({ label, value, subvalue }: { label: string; value: string;
   )
 }
 
-function MetricTile({ label, value, subvalue }: { label: string; value: string; subvalue?: string }) {
+function MetricTile({ label, value, subvalue, tooltip }: { label: string; value: string; subvalue?: string; tooltip?: string }) {
   return (
     <div className="rounded-lg border border-theme-border bg-theme-surface/50 p-4">
-      <div className="text-xs font-medium uppercase text-theme-text-tertiary">{label}</div>
+      <div className="flex items-center gap-1.5">
+        <div className="text-xs font-medium uppercase text-theme-text-tertiary">{label}</div>
+        {tooltip && <MetricInfoTooltip content={tooltip} />}
+      </div>
       <div className="mt-1 text-lg font-semibold text-theme-text-primary tabular-nums">{value}</div>
       {subvalue && <div className="mt-1 text-xs text-theme-text-tertiary">{subvalue}</div>}
     </div>
+  )
+}
+
+function MetricInfoTooltip({ content }: { content: string }) {
+  return (
+    <Tooltip content={content} className="max-w-[280px] whitespace-normal text-left" delay={150}>
+      <HelpCircle className="h-3.5 w-3.5 cursor-help text-theme-text-tertiary transition-colors hover:text-theme-text-secondary" />
+    </Tooltip>
   )
 }
 

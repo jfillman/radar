@@ -40,9 +40,9 @@ func ComputeCostTrendFromProm(ctx context.Context, client *prom.Client, opts Tre
 	}
 
 	const query = `sum by (namespace) (
-  label_replace(avg_over_time(container_cpu_allocation{namespace!=""}[1h]), "namespace", "$1", "exported_namespace", "(.+)") * on(node) group_left() node_cpu_hourly_cost
+  label_replace(avg_over_time(container_cpu_allocation{namespace!=""}[1h]), "namespace", "$1", "exported_namespace", "(.+)") * on(node) group_left() ` + nodeCPUHourlyCostExpr + `
 ) + sum by (namespace) (
-  label_replace(avg_over_time(container_memory_allocation_bytes{namespace!=""}[1h]), "namespace", "$1", "exported_namespace", "(.+)") / 1073741824 * on(node) group_left() node_ram_hourly_cost
+  label_replace(avg_over_time(container_memory_allocation_bytes{namespace!=""}[1h]), "namespace", "$1", "exported_namespace", "(.+)") / 1073741824 * on(node) group_left() ` + nodeRAMHourlyCostExpr + `
 )`
 
 	result, err := client.QueryRange(ctx, query, start, end, step)

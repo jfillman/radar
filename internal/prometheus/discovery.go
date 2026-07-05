@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/skyhook-io/radar/internal/errorlog"
 	"github.com/skyhook-io/radar/internal/portforward"
@@ -155,5 +156,7 @@ func (c *Client) markConnected(addr, basePath string) {
 	c.basePath = basePath
 	c.prom = nil
 	c.discovered = true
+	c.lastDiscoverErr = nil
+	c.lastDiscoverAt = time.Time{}
 	c.mu.Unlock()
 }

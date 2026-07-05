@@ -77,16 +77,22 @@ func buildWorkloadTrendQuery(namespace, kind, name string, fallback bool) string
 		return fmt.Sprintf(`sum(
   (%s)
   * on(namespace, pod) group_left(replicaset)
-    label_replace(kube_pod_owner{namespace="%s", owner_kind="ReplicaSet"}, "replicaset", "$1", "owner_name", "(.+)")
+    max by (namespace, pod, replicaset) (
+      label_replace(kube_pod_owner{namespace="%s", owner_kind="ReplicaSet"}, "replicaset", "$1", "owner_name", "(.+)")
+    )
   * on(namespace, replicaset) group_left()
-    kube_replicaset_owner{namespace="%s", owner_kind="Deployment", owner_name="%s"}
+    max by (namespace, replicaset) (
+      kube_replicaset_owner{namespace="%s", owner_kind="Deployment", owner_name="%s"}
+    )
 )`, podCost, safeNS, safeNS, safeName)
 	}
 
 	return fmt.Sprintf(`sum(
   (%s)
   * on(namespace, pod) group_left(owner_kind, owner_name)
-    kube_pod_owner{namespace="%s", owner_kind="%s", owner_name="%s"}
+    max by (namespace, pod, owner_kind, owner_name) (
+      kube_pod_owner{namespace="%s", owner_kind="%s", owner_name="%s"}
+    )
 )`, podCost, safeNS, kind, safeName)
 }
 
@@ -104,11 +110,11 @@ func workloadPodCostExpr(namespace string, fallback bool) string {
 	return fmt.Sprintf(`sum by (namespace, pod) (
   (label_replace(avg_over_time(container_cpu_allocation{exported_namespace="%s"}[1h]), "namespace", "$1", "exported_namespace", "(.+)")
     or avg_over_time(container_cpu_allocation{namespace="%s", exported_namespace=""}[1h]))
-  * on(node) group_left() node_cpu_hourly_cost
+  * on(node) group_left() `+nodeCPUHourlyCostExpr+`
 ) + sum by (namespace, pod) (
   (label_replace(avg_over_time(container_memory_allocation_bytes{exported_namespace="%s"}[1h]), "namespace", "$1", "exported_namespace", "(.+)")
     or avg_over_time(container_memory_allocation_bytes{namespace="%s", exported_namespace=""}[1h]))
-  / 1073741824 * on(node) group_left() node_ram_hourly_cost
+  / 1073741824 * on(node) group_left() `+nodeRAMHourlyCostExpr+`
 )`, namespace, namespace, namespace, namespace)
 }
 

@@ -34,6 +34,12 @@ func TestComputeWorkloadCostTrendFromProm_DeploymentUsesOwnerMetrics(t *testing.
 	if !strings.Contains(query, `kube_replicaset_owner{namespace="default", owner_kind="Deployment", owner_name="checkout"}`) {
 		t.Fatalf("deployment query does not join ReplicaSets to target Deployment:\n%s", query)
 	}
+	if !strings.Contains(query, `max by (namespace, pod, replicaset)`) {
+		t.Fatalf("deployment query must dedupe duplicate pod owner series before joining:\n%s", query)
+	}
+	if !strings.Contains(query, `max by (namespace, replicaset)`) {
+		t.Fatalf("deployment query must dedupe duplicate replicaset owner series before joining:\n%s", query)
+	}
 	if strings.Contains(query, "kube_pod_labels") {
 		t.Fatalf("deployment query must not depend on kube_pod_labels allowlists:\n%s", query)
 	}
@@ -62,6 +68,9 @@ func TestComputeWorkloadCostTrendFromProm_StatefulSetUsesDirectPodOwner(t *testi
 	}
 	if !strings.Contains(query, `kube_pod_owner{namespace="db", owner_kind="StatefulSet", owner_name="postgres"}`) {
 		t.Fatalf("statefulset query does not use direct pod owner:\n%s", query)
+	}
+	if !strings.Contains(query, `max by (namespace, pod, owner_kind, owner_name)`) {
+		t.Fatalf("statefulset query must dedupe duplicate pod owner series before joining:\n%s", query)
 	}
 	if strings.Contains(query, "kube_replicaset_owner") {
 		t.Fatalf("statefulset query should not use ReplicaSet owner join:\n%s", query)

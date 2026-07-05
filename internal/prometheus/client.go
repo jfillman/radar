@@ -22,7 +22,8 @@ import (
 // with a pkg/prom.Client that performs the actual HTTP calls once an
 // endpoint has been discovered.
 type Client struct {
-	mu sync.RWMutex
+	mu         sync.RWMutex
+	discoverMu sync.Mutex
 
 	// Effective connection (populated after discover succeeds).
 	baseURL  string
@@ -34,6 +35,8 @@ type Client struct {
 	discoveryService *prom.ServiceInfo // discovered service info for port-forward
 	manualURL        string            // --prometheus-url override
 	headers          map[string]string
+	lastDiscoverErr  error
+	lastDiscoverAt   time.Time
 
 	// K8s clients for discovery
 	k8sClient   kubernetes.Interface
@@ -46,6 +49,8 @@ type Client struct {
 	// Dedicated HTTP client for the MCP path
 	mcpHTTPClient *http.Client
 }
+
+const failedDiscoveryCacheTTL = 5 * time.Second
 
 // Global client instance
 var (
@@ -101,6 +106,8 @@ func SetManualURL(rawURL string) {
 	globalClient.mu.Lock()
 	defer globalClient.mu.Unlock()
 	globalClient.manualURL = strings.TrimRight(rawURL, "/")
+	globalClient.lastDiscoverErr = nil
+	globalClient.lastDiscoverAt = time.Time{}
 }
 
 // SetHeaders sets HTTP headers attached to every Prometheus request on the
@@ -118,6 +125,8 @@ func SetHeaders(h map[string]string) {
 	// Drop the cached prom.Client so the next request rebuilds its transport
 	// with the new headers.
 	globalClient.prom = nil
+	globalClient.lastDiscoverErr = nil
+	globalClient.lastDiscoverAt = time.Time{}
 }
 
 func copyHeaders(h map[string]string) map[string]string {
@@ -147,6 +156,8 @@ func Reset() {
 		globalClient.prom = nil
 		globalClient.discovered = false
 		globalClient.discoveryService = nil
+		globalClient.lastDiscoverErr = nil
+		globalClient.lastDiscoverAt = time.Time{}
 		globalClient.mu.Unlock()
 	}
 }
@@ -231,7 +242,55 @@ func (c *Client) EnsureConnected(ctx context.Context) (string, string, error) {
 		}
 	}
 
-	return c.discover(ctx)
+	c.discoverMu.Lock()
+	defer c.discoverMu.Unlock()
+
+	if err := c.recentDiscoveryError(time.Now()); err != nil {
+		return "", "", err
+	}
+
+	c.mu.RLock()
+	base = c.baseURL
+	bp = c.basePath
+	c.mu.RUnlock()
+	if base != "" {
+		if p := c.getPromClient(); p != nil {
+			ok, reason := p.Probe(ctx)
+			if ok {
+				return base, bp, nil
+			}
+			log.Printf("[prometheus] cached connection to %s failed probe (reason=%s), rediscovering", base, reason)
+			c.mu.Lock()
+			c.baseURL = ""
+			c.basePath = ""
+			c.prom = nil
+			c.discovered = false
+			c.mu.Unlock()
+		}
+	}
+
+	base, bp, err := c.discover(ctx)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			c.mu.Lock()
+			c.lastDiscoverErr = err
+			c.lastDiscoverAt = time.Now()
+			c.mu.Unlock()
+		}
+		return "", "", err
+	}
+	return base, bp, nil
+}
+
+func (c *Client) recentDiscoveryError(now time.Time) error {
+	c.mu.RLock()
+	err := c.lastDiscoverErr
+	at := c.lastDiscoverAt
+	c.mu.RUnlock()
+	if err == nil || at.IsZero() || now.Sub(at) >= failedDiscoveryCacheTTL {
+		return nil
+	}
+	return err
 }
 
 // Prom returns the underlying pkg/prom.Client for callers that compose

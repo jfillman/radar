@@ -41,6 +41,17 @@ func main() {
 	// ldflags target so there's a single source of truth.
 	cloud.Version = version
 
+	// `radar cloud <sub>` — the one subcommand family, dispatched before flag
+	// parsing. `cloud connect` performs the browser device flow and then
+	// rewrites os.Args so the rest of main() brings up the server + dialer with
+	// the obtained token; `status`/`disconnect` handle themselves and exit.
+	if len(os.Args) >= 2 && os.Args[1] == "cloud" {
+		runCloudSubcommand()
+	}
+	// Resume a saved Cloud connection for the current kubecontext (no-op unless
+	// `radar cloud connect` was run before and no explicit cloud config is set).
+	maybeResumeCloud()
+
 	// Load persistent config (~/.radar/config.json) for flag defaults.
 	// CLI flags override config file values.
 	fileCfg := config.Load()

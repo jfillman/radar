@@ -50,6 +50,9 @@ export interface TracePanelProps {
   /** Set when the in-cluster test couldn't produce a result (e.g. a cold-start
    *  timeout) - surfaced so the click is never a silent no-op. */
   inClusterError?: string
+  /** The copyable kubectl command to run the probe by hand when the in-cluster
+   *  Job couldn't run - paired with inClusterError. */
+  inClusterFallback?: string
   /** The HTTP path the probes request (default "/"); shown as the tested-request
    *  indicator. onApplyProbePath sets a new path and re-runs. */
   probePath?: string
@@ -356,7 +359,7 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
 // CopyableCommand renders a one-line command in a mono box with a copy button.
 // Used for finding reproducers: the worst acceptable case is handing the user
 // exactly what to run.
-function CopyableCommand({ command }: { command: string }) {
+export function CopyableCommand({ command }: { command: string }) {
   const [copied, setCopied] = useState(false)
   const onCopy = useCallback(() => {
     void navigator.clipboard.writeText(command)

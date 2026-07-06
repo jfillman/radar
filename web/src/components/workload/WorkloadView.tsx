@@ -1033,6 +1033,7 @@ function useInClusterTest(runner: InClusterRunner, base: NetworkTrace | undefine
   const [cap, setCap] = useState<InClusterCapability | undefined>(undefined)
   const [merged, setMerged] = useState<NetworkTrace | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
+  const [fallback, setFallback] = useState<string | undefined>(undefined)
   // Per-resource token: bumped whenever the base trace changes (navigation / fresh
   // proxy run) and on unmount, so an in-flight run that resolves AFTER the operator
   // navigated to another resource never paints resource A's verdict onto resource B.
@@ -1044,7 +1045,7 @@ function useInClusterTest(runner: InClusterRunner, base: NetworkTrace | undefine
   }, [runner])
   useEffect(() => {
     tokenRef.current++
-    setMerged(undefined); setError(undefined); setRunning(false)
+    setMerged(undefined); setError(undefined); setFallback(undefined); setRunning(false)
   }, [base])
   // Invalidate an in-flight run on unmount. Kept as a separate []-effect: bumping
   // the ref in a deps-driven cleanup trips react-hooks/exhaustive-deps (the ref
@@ -1056,19 +1057,26 @@ function useInClusterTest(runner: InClusterRunner, base: NetworkTrace | undefine
     const token = tokenRef.current
     setRunning(true)
     setError(undefined)
+    setFallback(undefined)
     try {
-      const { trace } = await runInClusterMerged(kind, namespace, name, path)
+      const { trace, inClusterTests } = await runInClusterMerged(kind, namespace, name, path)
       if (tokenRef.current !== token) return // navigated away / base changed mid-run
       setMerged(trace)
-      setError(undefined)
+      // A per-route in-cluster failure (Job couldn't start, timed out, RBAC) comes
+      // back as HTTP 200 with an error status + a fallback command inside
+      // inClusterTests. Surface it - otherwise the failure vanishes as if nothing ran.
+      const failed = (inClusterTests ?? []).find((t) => !!t.fallbackCommand)
+      setError(failed ? failed.status || 'the in-cluster test could not run' : undefined)
+      setFallback(failed?.fallbackCommand)
     } catch (e: unknown) {
       if (tokenRef.current !== token) return
       setError(e instanceof Error ? e.message : String(e))
+      setFallback(undefined)
     } finally {
       if (tokenRef.current === token) setRunning(false)
     }
   }, [base, running, kind, namespace, name])
-  return { run, running, allowed, cap, merged, error }
+  return { run, running, allowed, cap, merged, error, fallback }
 }
 
 function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: string; namespace: string; name: string; onNavigate?: NavigateToResource }) {
@@ -1076,7 +1084,7 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
   const { probeTrace, probeError, running, runProbes, resetProbe } = useProbeRun(kind, namespace, name)
   const inClusterRunner = useInClusterRunner(kind, namespace, name)
   const baseTrace = probeTrace ?? staticTrace
-  const { run: runInClusterTest, running: inClusterRunning, allowed: inClusterAllowed, cap: inClusterCap, merged: inClusterTrace, error: inClusterError } = useInClusterTest(inClusterRunner, baseTrace, kind, namespace, name)
+  const { run: runInClusterTest, running: inClusterRunning, allowed: inClusterAllowed, cap: inClusterCap, merged: inClusterTrace, error: inClusterError, fallback: inClusterFallback } = useInClusterTest(inClusterRunner, baseTrace, kind, namespace, name)
   const displayTrace = inClusterTrace ?? baseTrace
   // Consent gate for the mutating in-cluster test: it spawns a Job/pod, so the first
   // run per cluster asks the operator to confirm - naming the cluster it lands in -
@@ -1148,6 +1156,7 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
         inClusterRunning={inClusterRunning}
         inClusterAllowed={inClusterAllowed && (probeTrace !== undefined)}
         inClusterError={inClusterError}
+        inClusterFallback={inClusterFallback}
         probePath={probePath}
         onApplyProbePath={applyProbePath}
         runNonce={runNonce}

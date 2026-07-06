@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ResourceRef, Trace, Hop, ProbeResult, ProbeLayer, Finding } from './types'
-import { ReachActions, JustTestedNote, FindingRow, VerdictCaveat, RequestIndicator, type TracePanelProps } from './TracePanel'
+import { ReachActions, JustTestedNote, FindingRow, VerdictCaveat, RequestIndicator, CopyableCommand, type TracePanelProps } from './TracePanel'
 import { reachVerdict, directLaneLabel, hostFromTarget } from './reachVerdict'
 import { ReachabilityExplainer } from './ReachabilityExplainer'
 import { TopologyGraph } from '../topology/TopologyGraph'
@@ -17,7 +17,7 @@ import { AlertBanner } from '../ui/drawer-components'
  * backend stay untouched.
  */
 export function ReachabilityView(props: TracePanelProps) {
-  const { trace, isLoading, error, inClusterError, probeError, onRunProbes, onRefresh } = props
+  const { trace, isLoading, error, inClusterError, inClusterFallback, probeError, onRunProbes, onRefresh } = props
   // A fetch that is still loading or has FAILED must not read as a definitive
   // "No reachability data." negative (ReachabilityDiagram's empty-trace fallback).
   // Mirror TracePanel: surface the loading state, and an error with a retry, so an
@@ -60,9 +60,9 @@ export function ReachabilityView(props: TracePanelProps) {
         </AlertBanner>
       )}
       {inClusterError && (
-        <div className="rounded-lg border border-theme-border bg-theme-surface px-3 py-2 text-xs text-theme-text-secondary">
-          <span className="font-medium text-theme-text-primary">In-cluster test:</span> {inClusterError}
-        </div>
+        <AlertBanner variant="warning" title="In-cluster test couldn't run" message={inClusterError}>
+          {inClusterFallback && <div className="mt-2"><CopyableCommand command={inClusterFallback} /></div>}
+        </AlertBanner>
       )}
       <ReachabilityDiagram
         trace={trace}

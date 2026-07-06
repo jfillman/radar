@@ -453,9 +453,19 @@ export async function runInCluster(kind: string, namespace: string, name: string
 // route's live probe, folds them in via the canonical trace.ApplyInClusterResults,
 // and returns the FINALIZED trace - so the frontend displays it directly instead of
 // reimplementing a weaker merge that could falsely confirm a sibling route.
+// InClusterTestOutcome is one route's in-cluster result. A failure (the Job
+// couldn't start / timed out / RBAC) comes back as HTTP 200 with a human status
+// and a copyable fallbackCommand - it MUST be surfaced, not dropped.
+export interface InClusterTestOutcome {
+  route: string
+  target?: string
+  status?: string
+  fallbackCommand?: string
+}
+
 export interface InClusterMergedResult {
   trace: NetworkTrace
-  inClusterTests?: unknown[]
+  inClusterTests?: InClusterTestOutcome[]
 }
 
 // runInClusterMerged triggers the whole-subject in-cluster test and returns the

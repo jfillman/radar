@@ -1,10 +1,10 @@
 package cloud
 
 // Cloud Connect device-flow client (RFC 8628-shaped). This is the Radar side of
-// the flow the hub implements: Radar POSTs a connect request, shows the user a
-// URL + verification code, the user approves in the browser, and Radar polls
-// with its device_secret until it receives the minted cluster token. See the
-// hub's connect_handlers.go and docs/OSS-TO-CLOUD-UX.md §3 for the contract.
+// the flow the hub implements: Radar POSTs a connect request, shows the user the
+// approval URL, the user approves in the browser, and Radar polls with its
+// device_secret until it receives the minted cluster token. See the hub's
+// connect_handlers.go and docs/OSS-TO-CLOUD-UX.md §3 for the contract.
 
 import (
 	"bytes"
@@ -33,13 +33,12 @@ type ConnectMetadata struct {
 
 // CreateResponse is the hub's reply to POST /api/connect/requests.
 type CreateResponse struct {
-	RequestID        string `json:"request_id"`
-	DeviceSecret     string `json:"device_secret"`
-	VerificationCode string `json:"verification_code"`
-	ConnectURL       string `json:"connect_url"`
-	ExpiresIn        int    `json:"expires_in"`
-	PollInterval     int    `json:"poll_interval"`
-	WSSURL           string `json:"wss_url"`
+	RequestID    string `json:"request_id"`
+	DeviceSecret string `json:"device_secret"`
+	ConnectURL   string `json:"connect_url"`
+	ExpiresIn    int    `json:"expires_in"`
+	PollInterval int    `json:"poll_interval"`
+	WSSURL       string `json:"wss_url"`
 }
 
 // PollResponse is the hub's reply to GET /api/connect/requests/{id}.
@@ -138,8 +137,8 @@ type FlowResult struct {
 var ErrConnectExpired = errors.New("connect request expired before approval")
 
 // RunFlow drives the whole browser device flow to completion: create the
-// request, present the URL + verification code (and open the browser unless
-// suppressed), then poll until approved. It writes user-facing progress to out.
+// request, present the approval URL (and open the browser unless suppressed),
+// then poll until approved. It writes user-facing progress to out.
 // openBrowser is called with the connect URL unless nil.
 func (c *ConnectClient) RunFlow(ctx context.Context, meta ConnectMetadata, out io.Writer, openBrowser func(string)) (*FlowResult, error) {
 	cr, err := c.Create(ctx, meta)
@@ -148,8 +147,6 @@ func (c *ConnectClient) RunFlow(ctx context.Context, meta ConnectMetadata, out i
 	}
 
 	fmt.Fprintf(out, "\n  Approve this connection in your browser:\n\n    %s\n\n", cr.ConnectURL)
-	fmt.Fprintf(out, "  Verification code: %s\n", cr.VerificationCode)
-	fmt.Fprintf(out, "  (confirm this matches the code shown on the page)\n\n")
 	if openBrowser != nil {
 		openBrowser(cr.ConnectURL)
 	}

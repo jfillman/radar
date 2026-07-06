@@ -23,7 +23,7 @@ func TestConnectClient_Create(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(CreateResponse{
-			RequestID: "req000000000000000000", DeviceSecret: "sec", VerificationCode: "K7QP-2M4X",
+			RequestID: "req000000000000000000", DeviceSecret: "sec",
 			ConnectURL: "https://app/connect/req000000000000000000", ExpiresIn: 900, PollInterval: 5,
 			WSSURL: "wss://api/agent",
 		})
@@ -35,7 +35,7 @@ func TestConnectClient_Create(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cr.RequestID != "req000000000000000000" || cr.DeviceSecret != "sec" || cr.VerificationCode != "K7QP-2M4X" {
+	if cr.RequestID != "req000000000000000000" || cr.DeviceSecret != "sec" {
 		t.Errorf("bad create response: %+v", cr)
 	}
 }
@@ -88,7 +88,7 @@ func TestRunFlow_PendingThenApproved(t *testing.T) {
 		case r.Method == http.MethodPost:
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(CreateResponse{
-				RequestID: "req1", DeviceSecret: "sec", VerificationCode: "AAAA-BBBB",
+				RequestID: "req1", DeviceSecret: "sec",
 				ConnectURL: "https://app/connect/req1", ExpiresIn: 900, PollInterval: 0, // 0 → client floors to a usable interval
 				WSSURL: "wss://api/agent",
 			})
@@ -131,7 +131,7 @@ func TestRunFlow_Approved(t *testing.T) {
 		if r.Method == http.MethodPost {
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(CreateResponse{
-				RequestID: "req1", DeviceSecret: "sec", VerificationCode: "AAAA-BBBB",
+				RequestID: "req1", DeviceSecret: "sec",
 				ConnectURL: "https://app/connect/req1", ExpiresIn: 900, PollInterval: 1, WSSURL: "wss://api/agent",
 			})
 			return

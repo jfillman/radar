@@ -629,7 +629,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 						Name:            svc.Name,
 						Severity:        "warning",
 						Reason:          ScaledToZeroReason,
-						Message:         "selector matches a Deployment/StatefulSet that is intentionally scaled to 0 replicas",
+						Message:         "selector matches a workload (Deployment/StatefulSet/Rollout) intentionally scaled to 0 replicas",
 						Fingerprint:     ScaledToZeroFingerprint,
 						Age:             FormatAge(ageDur),
 						AgeSeconds:      int64(ageDur.Seconds()),

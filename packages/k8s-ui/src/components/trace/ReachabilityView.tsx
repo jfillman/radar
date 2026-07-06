@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ResourceRef, Trace, Hop, ProbeResult, ProbeLayer, Finding } from './types'
 import { ReachActions, JustTestedNote, FindingRow, VerdictCaveat, RequestIndicator, type TracePanelProps } from './TracePanel'
-import { reachVerdict, directLaneLabel } from './reachVerdict'
+import { reachVerdict, directLaneLabel, hostFromTarget } from './reachVerdict'
 import { ReachabilityExplainer } from './ReachabilityExplainer'
 import { TopologyGraph } from '../topology/TopologyGraph'
 import type { TopologyNode } from '../../types/core'
@@ -163,7 +163,7 @@ function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, p
         </div>
         {selected && (
           <div style={{ maxHeight: canvasHeight }} className="w-80 shrink-0 overflow-auto">
-            <HopDetailPanel node={selected} onNavigate={onNavigate} onClose={() => setSelectedId(undefined)} inClusterRunning={inClusterRunning} />
+            <HopDetailPanel node={selected} namespace={trace.subject.namespace} onNavigate={onNavigate} onClose={() => setSelectedId(undefined)} inClusterRunning={inClusterRunning} />
           </div>
         )}
       </div>
@@ -263,10 +263,76 @@ function DirectionStack({ label, probes }: { label: string; probes: ProbeResult[
   )
 }
 
+// podReach summarizes ONE pod's probe results into a single reachability cell: its
+// worst live outcome (a failure wins, so a bad pod is never masked), else the deepest
+// layer it reached, with the vantage that produced it (apiserver = indirect knock,
+// in-cluster = real data path).
+// A Pods-hop probe target is "<name> port <N>" (apiserver path) or "<ip>:<port>"
+// (data path). The pod identity is the first token with any :port stripped, which
+// joins back to the roster's name (apiserver) or ip (data). hostFromTarget is
+// IPv6-aware for the ip:port form.
+export function podProbeKey(target?: string): string {
+  return hostFromTarget((target || '').split(' ')[0])
+}
+
+export function podReach(probes: ProbeResult[]): { tone: StatusTone; text: string; vantage: string } {
+  const live = probes.filter((p) => !p.skipped)
+  if (live.length === 0) return { tone: 'neutral', text: 'not tested', vantage: '' }
+  const vantage = live.some((p) => p.vantage === 'in-cluster') ? 'real' : live.some((p) => p.path === 'apiserver') ? 'via API server' : ''
+  const failed = live.find((p) => !p.ok || p.tone === 'unhealthy')
+  if (failed) return { tone: 'unhealthy', text: failed.detail || failed.error || `${failed.layer.toUpperCase()} failed`, vantage }
+  const order: ProbeLayer[] = ['http', 'tls', 'tcp', 'dns']
+  const best = order.map((L) => live.find((p) => p.layer === L && p.ok)).find(Boolean)
+  return { tone: best?.tone === 'degraded' ? 'degraded' : 'healthy', text: best?.detail || 'reached', vantage }
+}
+
+// PodReachabilityGrid renders one row per pod: its Kubernetes readiness plus whether
+// it answered when knocked on DIRECTLY (per-node reachability - the chain is skipped).
+// So the operator sees WHICH pod is broken and which shape: crashing (NotReady, nothing
+// to knock on → "not tested") vs ready-but-not-serving (Ready, but the knock failed).
+function PodReachabilityGrid({ hop, namespace, onNavigate }: { hop?: Hop; namespace?: string; onNavigate?: (ref: ResourceRef) => void }) {
+  const roster = hop?.config?.pods ?? []
+  if (roster.length === 0) return null
+  const probes = hop?.probes ?? []
+  // The roster is capped for JSON size; podTotal is the real count. Never let a
+  // sampled fleet read as complete - say "showing N of M" when it's a sample.
+  const total = hop?.config?.podTotal ?? roster.length
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="text-[10px] uppercase tracking-wide text-theme-text-tertiary">
+        Pods ({total > roster.length ? `showing ${roster.length} of ${total}` : roster.length})
+      </div>
+      {roster.map((pod) => {
+        const mine = probes.filter((p) => podProbeKey(p.target) === pod.name || (!!pod.ip && podProbeKey(p.target) === pod.ip))
+        const reach = pod.ready ? podReach(mine) : { tone: 'neutral' as StatusTone, text: 'not tested (pod not ready)', vantage: '' }
+        const dot: StatusTone = !pod.ready ? 'unhealthy' : reach.tone === 'unhealthy' ? 'degraded' : reach.tone
+        return (
+          <div key={pod.name} className="flex items-start gap-1.5 text-[11px]">
+            <span className="mt-0.5 shrink-0"><StatusDot tone={dot} size="sm" /></span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-1.5">
+                {onNavigate && namespace ? (
+                  <button type="button" onClick={() => onNavigate({ kind: 'Pod', name: pod.name, namespace })} className="font-mono text-theme-text-secondary hover:underline break-all">{pod.name}</button>
+                ) : (
+                  <span className="font-mono text-theme-text-secondary break-all">{pod.name}</span>
+                )}
+                <span className="shrink-0 text-theme-text-tertiary">{pod.ready ? 'Ready' : 'Not ready'}</span>
+              </div>
+              <div className="break-all text-theme-text-tertiary">
+                {pod.ready ? `${reach.text}${reach.vantage ? ` · ${reach.vantage}` : ''}` : pod.reason || 'not ready'}
+              </div>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // HopDetailPanel: the selected node's diagnostic as a connection STACK - Config first
 // (static issues), then one DNS→TCP→TLS→HTTP stack per direction it was tried from, so
 // a DevOps engineer reads exactly which layer breaks, and from where.
-function HopDetailPanel({ node, onNavigate, onClose, inClusterRunning }: { node: TopologyNode; onNavigate?: (ref: ResourceRef) => void; onClose?: () => void; inClusterRunning?: boolean }) {
+function HopDetailPanel({ node, namespace, onNavigate, onClose, inClusterRunning }: { node: TopologyNode; namespace?: string; onNavigate?: (ref: ResourceRef) => void; onClose?: () => void; inClusterRunning?: boolean }) {
   const data = node.data as { ref?: ResourceRef; subtitleOverride?: string; hop?: Hop }
   const hop = data.hop
   const ref = data.ref
@@ -313,9 +379,16 @@ function HopDetailPanel({ node, onNavigate, onClose, inClusterRunning }: { node:
           ))}
         </div>
       )}
-      {/* While the in-cluster Job runs, the In-cluster section reads "testing…" in
-          place - don't show a stale prior In-cluster stack underneath it. */}
-      {dirs.filter((d) => !(d === 'real' && showTesting)).map((d) => <DirectionStack key={d} label={d === 'direct' ? directLaneLabel(directVantage) : DIR_NAME[d]} probes={byDir.get(d)!} />)}
+      {/* For the Pods node, the per-pod grid replaces the aggregated per-direction
+          stack - the stack collapses all pods into one worst-wins chain, which is
+          exactly the per-pod detail this node is here to show. */}
+      {node.kind === 'Pods' && (hop?.config?.pods?.length ?? 0) > 0 ? (
+        <PodReachabilityGrid hop={hop} namespace={namespace} onNavigate={onNavigate} />
+      ) : (
+        /* While the in-cluster Job runs, the In-cluster section reads "testing…" in
+           place - don't show a stale prior In-cluster stack underneath it. */
+        dirs.filter((d) => !(d === 'real' && showTesting)).map((d) => <DirectionStack key={d} label={d === 'direct' ? directLaneLabel(directVantage) : DIR_NAME[d]} probes={byDir.get(d)!} />)
+      )}
       {showTesting && (
         <div className="flex flex-col gap-0.5">
           <div className="text-[10px] uppercase tracking-wide text-theme-text-tertiary">{DIR_NAME.real}</div>
@@ -325,7 +398,7 @@ function HopDetailPanel({ node, onNavigate, onClose, inClusterRunning }: { node:
           </div>
         </div>
       )}
-      {findings.length === 0 && probes.length === 0 && !showTesting && (
+      {findings.length === 0 && probes.length === 0 && !showTesting && !(node.kind === 'Pods' && (hop?.config?.pods?.length ?? 0) > 0) && (
         <div className="text-theme-text-tertiary">No findings or probe results for this hop.</div>
       )}
     </div>

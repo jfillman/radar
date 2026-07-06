@@ -540,18 +540,38 @@ func podsConfig(pods []*corev1.Pod, svc *corev1.Service) *HopConfig {
 	pr := map[string]ProbeRef{}
 	var ips []string
 	var names []string
+	var readyRoster, notReadyRoster []PodStatus
+	podTotal := 0
 	for _, pod := range sorted {
 		if pod == nil {
 			continue
 		}
+		podTotal++
 		// Names and IPs must stay positionally aligned: the data path probes
 		// the first N IPs while the apiserver path probes the first N
 		// names, and divergence detection assumes those are the same pods.
 		// Appending names while IP is empty would shift the sequences, so
 		// pods without a PodIP yet are dropped from the sample entirely.
-		if isPodReadyForTrace(pod) && pod.Status.PodIP != "" && len(names) < maxPodIPsInConfig {
+		ready := isPodReadyForTrace(pod)
+		if ready && pod.Status.PodIP != "" && len(names) < maxPodIPsInConfig {
 			ips = append(ips, pod.Status.PodIP)
 			names = append(names, pod.Name)
+		}
+		// Roster rows the grid renders. A ready pod only earns a row if it will
+		// actually be probed (the probe layer caps at maxPodsToProbe) - otherwise
+		// it reads a useless "not tested". A not-ready pod ALWAYS earns a row: it
+		// is a culprit, and dropping it (first-N-by-name) could hide the exact pod
+		// the operator is hunting. Reason is the plain-English cause.
+		ps := PodStatus{Name: pod.Name, IP: pod.Status.PodIP, Ready: ready}
+		if ready {
+			readyRoster = append(readyRoster, ps)
+		} else {
+			if cause, _ := podDiagnosis(pod); cause != "" {
+				ps.Reason = cause
+			} else {
+				ps.Reason = "not ready"
+			}
+			notReadyRoster = append(notReadyRoster, ps)
 		}
 		for _, c := range pod.Spec.Containers {
 			for _, port := range c.Ports {
@@ -577,12 +597,28 @@ func podsConfig(pods []*corev1.Pod, svc *corev1.Service) *HopConfig {
 			}
 		}
 	}
-	if len(cp) == 0 && len(pr) == 0 && len(ips) == 0 && len(names) == 0 {
+	// Culprits (not-ready) first so they are never sampled out, then the ready
+	// pods that were actually probed (aligned to maxPodsToProbe so no row reads a
+	// useless "not tested"), all capped for JSON size. PodTotal keeps the true
+	// count so the grid renders "N of total" and never reads as complete.
+	roster := append([]PodStatus{}, notReadyRoster...)
+	if len(roster) > maxPodIPsInConfig {
+		roster = roster[:maxPodIPsInConfig]
+	}
+	for i, rp := range readyRoster {
+		if i >= maxPodsToProbe || len(roster) >= maxPodIPsInConfig {
+			break
+		}
+		roster = append(roster, rp)
+	}
+	if len(cp) == 0 && len(pr) == 0 && len(ips) == 0 && len(names) == 0 && len(roster) == 0 {
 		return nil
 	}
 	c := &HopConfig{}
 	c.PodIPs = ips
 	c.PodNames = names
+	c.Pods = roster
+	c.PodTotal = podTotal
 	for _, v := range cp {
 		c.ContainerPorts = append(c.ContainerPorts, v)
 	}

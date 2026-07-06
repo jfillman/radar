@@ -117,6 +117,16 @@ export interface ContainerPortRef {
   protocol?: string
 }
 
+/** One row of the Pods hop's per-pod reachability grid. Mirrors Go trace.PodStatus.
+ *  A ready pod joins its probe result by name (apiserver path) or ip (data path);
+ *  a not-ready pod has no probe and reads its cause from `reason`. */
+export interface PodStatus {
+  name: string
+  ip?: string
+  ready: boolean
+  reason?: string
+}
+
 export interface ProbeRef {
   container: string
   type: string
@@ -161,6 +171,8 @@ export interface HopConfig {
   servedByTitle?: string
   podIPs?: string[]
   podNames?: string[]
+  pods?: PodStatus[]
+  podTotal?: number
 }
 
 export type UnknownClass = 'by-design' | 'investigate'

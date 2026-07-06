@@ -184,6 +184,14 @@ type HopConfig struct {
 	// separate from PodIPs because the in-cluster TCP path needs IPs and
 	// the local kube-proxy path needs names.
 	PodNames []string `json:"podNames,omitempty"`
+	// Pods is the per-pod roster (ready AND not-ready) for the reachability
+	// grid, capped like PodIPs. A ready pod also carries a probe result on the
+	// hop (joined by Name for the apiserver path or IP for the data path); a
+	// not-ready pod has nothing to reach, so the grid reads its state from here.
+	Pods []PodStatus `json:"pods,omitempty"`
+	// PodTotal is the count of ALL selected pods (Pods is capped for JSON size).
+	// The grid renders "N of PodTotal" so a sampled fleet never reads as complete.
+	PodTotal int `json:"podTotal,omitempty"`
 
 	// Ingress / HTTPRoute / GRPCRoute hops
 	Hostnames []string    `json:"hostnames,omitempty"`
@@ -220,6 +228,17 @@ type PortMap struct {
 }
 
 // ContainerPortRef carries a named or unnamed container port observed on at
+// PodStatus is one row of the Pods hop's per-pod reachability grid: a pod's
+// own kubelet-reported readiness plus a plain-English cause when NotReady.
+// Ready pods join their probe result by Name (apiserver path) or IP (data
+// path); a NotReady pod has no probe (nothing to reach) and reads from Reason.
+type PodStatus struct {
+	Name   string `json:"name"`
+	IP     string `json:"ip,omitempty"`
+	Ready  bool   `json:"ready"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // least one of the Service's selected pods. The Container field names the
 // container so multi-container pods stay readable.
 type ContainerPortRef struct {

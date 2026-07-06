@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import type { Trace, ProbeResult, ProbeLayer } from './types'
-import { externalNameHost, hostFromTarget } from './reachVerdict'
+import { externalNameHost, hostFromTarget, directLaneLabel } from './reachVerdict'
 import { StatusDot, type StatusTone } from '../ui/status-tone'
+import { Tooltip } from '../ui/Tooltip'
+import { HEALTH_BADGE_COLORS } from '../../utils/badge-colors'
+
+// A reachability tooltip: styled, width-capped hover text (matches TracePanel's
+// VerdictCaveat) - replaces the raw browser `title=` so hints render on-brand.
+const tip = (s: string) => <span className="block max-w-xs leading-snug whitespace-pre-line">{s}</span>
 
 export interface ReachabilityExplainerProps {
   trace: Trace
@@ -22,15 +29,18 @@ export interface ReachabilityExplainerProps {
 // the signal (e.g. reachable via the proxy but a real pod can't reach it).
 type Direction = 'direct' | 'proxy' | 'real'
 const DIRS: Direction[] = ['direct', 'proxy', 'real']
+// Rows shown before the "Show N more" toggle kicks in (a long path list would
+// otherwise push the reachability diagram below the fold).
+const COLLAPSED_ROWS = 2
 const DIR_LABEL: Record<Direction, string> = {
-  direct: 'From your machine',
+  direct: 'From Radar',
   proxy: 'Via API server',
   real: 'In-cluster',
 }
 const DIR_HELP: Record<Direction, string> = {
-  direct: 'Radar dials the target directly from where it runs (your machine, for a laptop) — works for public/external addresses, not in-cluster ClusterIPs.',
-  proxy: 'Control-plane path: Radar reached the backend through the Kubernetes API server, which bypasses kube-proxy (ClusterIP routing) and NetworkPolicy. The app answers — the real data path isn’t confirmed.',
-  real: 'Real pod-to-pod traffic — the actual kube-proxy + NetworkPolicy path. A short-lived Job dials from INSIDE the cluster, which the API-server column can’t prove. Use "Test inside the cluster" to fill this column.',
+  direct: 'Radar dials the target directly from where it runs (your machine, for a laptop). Works for public or external addresses, not in-cluster ClusterIPs.',
+  proxy: 'Via the Kubernetes API server: Radar reached the backend through the API server, which bypasses kube-proxy (ClusterIP routing) and NetworkPolicy. The app answers, but the real data path is not confirmed.',
+  real: 'Real pod-to-pod traffic: the actual kube-proxy and NetworkPolicy path. A short-lived Job dials from inside the cluster, which the API-server column cannot prove. Use "Test inside the cluster" to fill this column.',
 }
 function directionOf(p: ProbeResult): Direction {
   if (p.path === 'apiserver') return 'proxy'
@@ -175,39 +185,65 @@ function cellLabel(p?: ProbeResult): string {
   if (!p.ok) return p.detail || p.error || `${L} failed`
   return p.detail || `${L} ok`
 }
-function cellTitle(p?: ProbeResult): string | undefined {
-  if (!p) return 'This direction was not attempted for this path.'
-  const parts = [p.layer?.toUpperCase(), p.detail || p.reason || p.error].filter(Boolean)
-  return [parts.join(' — '), p.command].filter(Boolean).join('\n')
+// The HTTP status code from a probe's detail - shown IN the pill ("Verified · 200",
+// "Reached · 404") so this essential per-row fact never gets folded away.
+function httpCode(p?: ProbeResult): string | undefined {
+  return /HTTP\s+(\d{3})/i.exec(p?.detail || '')?.[1]
 }
 
-function Cell({ p, flash, testing, naEntry }: { p?: ProbeResult; flash?: boolean; testing?: boolean; naEntry?: boolean }) {
-  // An entry (front-door) host in a non-"From your machine" column: this vantage
-  // can't apply (proxy can't dial a hostname; in-cluster is a hairpin, not the real
-  // external flow). Say "n/a", distinct from a blank "not tested" — and suppress any
-  // hairpin probe that landed here so it never reads as a real in-cluster result.
-  if (naEntry) {
-    return (
-      <span className="inline-flex items-center gap-1 text-[11px]" title="An ingress/gateway host is reached from OUTSIDE the cluster. The API proxy can't dial a hostname, and an in-cluster dial would be a hairpin (not the real flow) — so this vantage doesn't apply to a front-door host.">
-        <StatusDot tone="neutral" size="sm" />
-        <span className="text-theme-text-tertiary">n/a · entry</span>
-      </span>
-    )
+// plainReason renders WHY a "Reached" isn't a full pass, in plain language for a
+// non-developer (no jargon like "route/auth not verified"). The code lives in the
+// pill, so this sentence omits it - and is undefined for a clean 2xx (the "Verified ·
+// 200" pill already says it all).
+function plainReason(p: ProbeResult): string | undefined {
+  const code = httpCode(p)
+  if (code) {
+    if (code.startsWith('2')) return undefined
+    if (code === '401' || code === '403') return 'Reachable, but this path needs authentication.'
+    if (code.startsWith('4')) return 'The app answered, but nothing serves this path.'
+    if (code.startsWith('3')) return 'Reachable, but it redirected instead of serving this path.'
+    if (code.startsWith('5')) return 'The app is reachable but erroring on this path.'
   }
-  // Live "testing…" while the in-cluster Job runs — the work is visible IN the cell,
-  // not just on the button (which otherwise looks like the only thing that happened).
-  if (testing) {
-    return (
-      <span className="inline-flex items-center gap-1 text-[11px] animate-pulse">
-        <StatusDot tone="neutral" size="sm" />
-        <span className="text-theme-text-tertiary">testing…</span>
-      </span>
-    )
+  return cellLabel(p)
+}
+
+// A surface cell's status: a short outcome word plus its tone, and the one-line
+// reason folded in beneath the pill. The muted variant (blank or "n/a") uses the
+// elevated surface so a not-tested cell never needs explaining.
+export type ReachPillState = { label: string; tone: StatusTone; code?: string; reason?: string; pulse?: boolean; muted?: boolean }
+
+function pillState(p: ProbeResult | undefined, opts: { testing?: boolean; naEntry?: boolean }): ReachPillState {
+  // An entry (front-door) host in a non-direct column: the proxy can't dial a hostname
+  // and an in-cluster dial of it is a hairpin, so this vantage simply doesn't apply.
+  if (opts.naEntry) return { label: 'n/a', tone: 'neutral', muted: true, reason: 'A front-door host is reached from outside the cluster, so this vantage doesn’t apply.' }
+  // Live "testing…" while the in-cluster Job runs - the work is visible IN the cell.
+  if (opts.testing) return { label: 'Testing…', tone: 'neutral', pulse: true, reason: 'Running a Job inside the cluster to test the real pod-to-pod path.' }
+  if (!p) return { label: 'Not tested', tone: 'neutral', muted: true }
+  if (p.skipped) return { label: 'Not tested', tone: 'neutral', muted: true, reason: plainReason(p) }
+  const tone = cellTone(p)
+  const label = tone === 'unhealthy' ? 'Unreachable' : tone === 'degraded' ? 'Degraded' : tone === 'neutral' ? 'Reached' : 'Verified'
+  return { label, tone, code: httpCode(p), reason: plainReason(p) }
+}
+
+// The reason folded into a blank in-cluster cell.
+function inClusterNotTestedReason(ext?: string): string {
+  return ext
+    ? 'Clients inside the cluster may resolve or route this host differently - run the in-cluster test to confirm.'
+    : 'Not tested from here - run Radar inside the cluster to test the real pod-to-pod path.'
+}
+
+// ReachStatusPill - a rounded status chip built from the shared health-badge palette
+// (tinted background + text) plus a solid StatusDot. The muted variant drops the dot
+// and sits on the elevated surface, keeping "not tested / n·a" visually quiet.
+function ReachPill({ state }: { state: ReachPillState }) {
+  if (state.muted) {
+    return <span className="inline-flex items-center rounded-full bg-theme-elevated px-2 py-0.5 text-[11px] font-semibold text-theme-text-tertiary">{state.label}</span>
   }
   return (
-    <span className={`inline-flex items-center gap-1 text-[11px] px-1 ${flash ? 'reach-flash' : ''}`} title={cellTitle(p)}>
-      <StatusDot tone={cellTone(p)} size="sm" />
-      <span className={!p ? 'text-theme-text-tertiary' : p.skipped ? 'text-theme-text-tertiary' : 'text-theme-text-secondary'}>{cellLabel(p)}</span>
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${HEALTH_BADGE_COLORS[state.tone] ?? ''}`}>
+      <StatusDot tone={state.tone} size="sm" className={`shrink-0 ${state.pulse ? 'animate-pulse' : ''}`} />
+      {state.label}
+      {state.code && <span className="font-mono font-normal opacity-80">· {state.code}</span>}
     </span>
   )
 }
@@ -231,6 +267,9 @@ export function ReachabilityExplainer({ trace, probed, inClusterRunning, probePa
   const sigKey = Array.from(sigs.entries()).map(([k, v]) => `${k}=${v}`).join(';')
   const prevRef = useRef<Map<string, string> | null>(null)
   const [flashKeys, setFlashKeys] = useState<Set<string>>(new Set())
+  // Collapse a long path list so the card never pushes the diagram below the fold -
+  // show the first COLLAPSED_ROWS, with a toggle to reveal the rest.
+  const [expanded, setExpanded] = useState(false)
   useEffect(() => {
     const prev = prevRef.current
     prevRef.current = sigs
@@ -253,41 +292,78 @@ export function ReachabilityExplainer({ trace, probed, inClusterRunning, probePa
   // show it so the "testing…" column is visible (and so the new column's arrival is felt).
   const testedDirs = dirs.filter((d) => rows.some((r) => r.cells[d]))
   if (!inClusterRunning && rows.length <= 1 && testedDirs.length <= 1) return null
-  const realMissing = dirs.includes('real') && rows.every((r) => !r.cells.real)
+  // Label the direct column from a DIRECT-lane probe's own vantage - never the whole
+  // trace's first probe: once the in-cluster test has run, the trace also holds
+  // in-cluster probes, and picking one of those would mislabel the (always-local) direct
+  // column as "in-cluster". directionOf routes in-cluster vantages to the 'real' column.
+  const directVantage = rows.map((r) => r.cells.direct).find((p) => p?.vantage)?.vantage
+  // One grid template shared by the column-header band and every data row so the
+  // surface columns line up: a wider PATH column, then one equal column per direction.
+  const gridCols = `minmax(7rem, 1.4fr) ${dirs.map(() => 'minmax(0, 1fr)').join(' ')}`
+  const bandLabel = 'text-[10px] font-bold uppercase tracking-wider text-theme-text-tertiary'
+  const collapsible = rows.length > COLLAPSED_ROWS
+  const visibleRows = collapsible && !expanded ? rows.slice(0, COLLAPSED_ROWS) : rows
+  const hiddenCount = rows.length - COLLAPSED_ROWS
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-theme-border bg-theme-surface px-3 py-2">
-      <div className="text-xs font-medium text-theme-text-secondary">
-        What this test checked
-        <span className="ml-2 font-normal text-theme-text-tertiary">{rows.length > 1 ? `${rows.length} paths` : '1 path'} · request <span className="font-mono text-theme-text-secondary">GET {probePath || '/'}</span> · blank = not tested</span>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left">
-          <thead>
-            <tr className="text-[10px] uppercase tracking-wide text-theme-text-tertiary">
-              <th className="pr-3 pb-1 font-normal">Path</th>
-              {dirs.map((d) => (
-                <th key={d} className="px-3 pb-1 font-normal whitespace-nowrap cursor-help" title={DIR_HELP[d]}>{DIR_LABEL[d]} ⓘ</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.key} className="align-top">
-                <td className="pr-3 py-0.5 font-mono text-[11px] text-theme-text-primary whitespace-nowrap">{r.label}</td>
-                {dirs.map((d) => (
-                  <td key={d} className="px-3 py-0.5"><Cell p={r.cells[d]} flash={flashKeys.has(`${r.key}|${d}`)} testing={d === 'real' && inClusterRunning && r.inClusterTestable} naEntry={r.isEntry && d !== 'direct'} /></td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {realMissing && (
-        <div className="text-[11px] text-theme-text-tertiary">
-          {ext
-            ? 'The in-cluster data path differs from a direct external dial — clients inside the cluster may resolve or route this host differently.'
-            : 'The in-cluster (pod-to-pod) data path wasn’t tested from here — run Radar inside the cluster to fill that column.'}
+    <div className="overflow-hidden rounded-xl border border-theme-border bg-theme-surface">
+      {/* Card header - title + scannable meta chips. */}
+      <div className="flex items-center justify-between gap-3 border-b border-theme-border px-4 py-3">
+        <span className="text-sm font-semibold text-theme-text-primary">What this test checked</span>
+        <div className="flex items-center gap-1.5">
+          <span className="inline-flex items-center rounded-md bg-theme-elevated px-2 py-0.5 text-xs font-medium text-theme-text-secondary">{rows.length > 1 ? `${rows.length} paths` : '1 path'}</span>
+          <span className="inline-flex items-center rounded-md bg-theme-elevated px-2 py-0.5 font-mono text-xs font-medium text-theme-text-secondary">GET {probePath || '/'}</span>
         </div>
+      </div>
+      {/* Column-header band - PATH + one direction per surface, each with its tooltip. */}
+      <div className="grid gap-x-4 border-b border-theme-border bg-theme-base px-4 py-2" style={{ gridTemplateColumns: gridCols }}>
+        <div className={bandLabel}>Path</div>
+        {dirs.map((d) => (
+          <div key={d} className={`${bandLabel} border-l border-theme-border pl-4`}>
+            <Tooltip content={tip(DIR_HELP[d])} position="bottom">
+              <span className="cursor-help">{d === 'direct' ? directLaneLabel(directVantage) : DIR_LABEL[d]} ⓘ</span>
+            </Tooltip>
+          </div>
+        ))}
+      </div>
+      {/* One row per path: the request on the left, a status pill + reason per surface. */}
+      {visibleRows.map((r) => (
+        <div key={r.key} className="grid items-start gap-x-4 border-b border-theme-border px-4 py-3 last:border-b-0" style={{ gridTemplateColumns: gridCols }}>
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="inline-flex shrink-0 items-center rounded bg-theme-elevated px-1.5 py-0.5 font-mono text-[10px] font-bold text-theme-text-secondary">GET</span>
+            <span className="truncate font-mono text-[12px] text-theme-text-primary">{r.label}</span>
+          </div>
+          {dirs.map((d) => {
+            const testing = d === 'real' && inClusterRunning && r.inClusterTestable
+            const naEntry = r.isEntry && d !== 'direct'
+            const state = pillState(r.cells[d], { testing, naEntry })
+            // The pill (outcome + status code) is always visible; the plain-language
+            // "why" lives on its tooltip so the rows stay scannable instead of a wall
+            // of repeated sentences.
+            const reason = state.reason ?? (d === 'real' && !r.cells[d] && !testing && !naEntry ? inClusterNotTestedReason(ext) : undefined)
+            return (
+              <div key={d} className={`border-l border-theme-border pl-4 ${flashKeys.has(`${r.key}|${d}`) ? 'reach-flash' : ''}`}>
+                {reason ? (
+                  <Tooltip content={tip(reason)} position="bottom">
+                    <span className="cursor-help"><ReachPill state={state} /></span>
+                  </Tooltip>
+                ) : (
+                  <ReachPill state={state} />
+                )}
+              </div>
+            )
+          })}
+        </div>
+      ))}
+      {/* Collapse toggle - keeps a long list from pushing the diagram below the fold. */}
+      {collapsible && (
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="flex w-full items-center justify-center gap-1.5 px-4 py-2 text-xs font-medium text-theme-text-secondary transition-colors hover:bg-theme-hover"
+        >
+          {expanded ? 'Show less' : `Show ${hiddenCount} more ${hiddenCount === 1 ? 'path' : 'paths'}`}
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        </button>
       )}
     </div>
   )

@@ -241,6 +241,10 @@ export interface RouteResult {
    *  (cross-namespace Gateway API backendRef) so the in-cluster probe dials an FQDN. */
   targetNamespace?: string
   outcome: RouteOutcome
+  /** Which layer failed on a non-reachable route, so the UI can say exactly what
+   *  broke: 'tcp' | 'tls' | 'http' (unreachable), or 'upstream' for a 502/504 where
+   *  HTTP was reached but the gateway couldn't reach its backend. */
+  failedLayer?: 'tcp' | 'tls' | 'http' | 'upstream'
   confidence?: RouteConfidence
   evidence?: string
   command?: string

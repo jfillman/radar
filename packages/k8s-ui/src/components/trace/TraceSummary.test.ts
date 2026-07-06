@@ -10,11 +10,14 @@ const cov = (o: Partial<Coverage>): Coverage => ({ tested: 0, passed: 0, failed:
 const route = (o: Partial<RouteResult>): RouteResult => ({ route: '/', outcome: 'verified', ...o })
 
 describe('summarizeTrace — the passive drawer glance', () => {
-  it('minimal when not probed (static / config-only): invites the run, honesty subtitle, no tone, no worst line', () => {
+  it('minimal when not probed (static / config-only): invites the run positively, no tone, no worst line', () => {
     const v = summarizeTrace(trace({}))
     expect(v.kind).toBe('minimal')
-    expect(v.ctaLabel).toBe('Run reachability test →')
-    expect(v.subtitle).toContain('Config check only')
+    expect(v.ctaLabel).toBe('Run test →')
+    // Positive, action-first framing - never the negative "not tested".
+    expect(v.headline.toLowerCase()).not.toContain('not tested')
+    expect(v.headline.toLowerCase()).toContain('path')
+    expect(v.subtitle).toBeTruthy()
     expect(v.tone).toBeUndefined()
     expect(v.worst).toBeUndefined()
   })
@@ -27,22 +30,25 @@ describe('summarizeTrace — the passive drawer glance', () => {
       notTested: [{}] as Trace['notTested'],
     }))
     expect(v.headline).not.toContain('Configuration only')
-    expect(v.ctaLabel).toBe('Run reachability test →')
+    expect(v.ctaLabel).toBe('Run test →')
   })
 
-  it('a config red flag the verdict did NOT escalate (warning finding on a healthy verdict) is surfaced, not swallowed', () => {
+  // The drawer performs NO detection of its own - every config-only (unprobed) trace
+  // yields the minimal invite button. Config findings, verdicts, and the diagnosis are
+  // owned by the resource's Operational Issues section; the drawer never echoes them.
+  it('a config red flag (e.g. a NetworkPolicy would-deny) is NOT surfaced in the drawer - it stays the invite button', () => {
     const v = summarizeTrace(trace({
-      verdict: 'healthy',
+      verdict: 'degraded',
       downstream: [
         { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [
-          { code: 'netpol:would-deny', severity: 'warning', message: 'A cluster network rule would block traffic to these pods on :80', cause: 'A NetworkPolicy selects these pods and no rule allows :80' },
+          { code: 'netpol:would-deny', severity: 'warning', message: 'A cluster network rule would block traffic to these pods on :80' },
         ] },
       ],
     }))
-    expect(v.kind).toBe('glance')
-    expect(v.tone).toBe('warning')
-    expect(v.headline).toContain('network rule')
-    expect(v.ctaLabel).toBe('Run reachability test →')
+    expect(v.kind).toBe('minimal')
+    expect(v.ctaLabel).toBe('Run test →')
+    expect(v.headline).not.toContain('network rule')
+    expect(v.tone).toBeUndefined()
   })
 
   it('partial failure: warning tone + the worst-offender line + Open Reachability CTA', () => {
@@ -119,38 +125,24 @@ describe('summarizeTrace — the passive drawer glance', () => {
     expect(v.notTested).toBe(2)
   })
 
-  it('static BROKEN (no probes yet) surfaces the diagnosis cause in error tone — never "Configuration only"', () => {
-    const v = summarizeTrace(trace({
-      verdict: 'broken',
-      headline: 'Configuration only — not yet tested',
-      diagnosis: { summary: '0/2 selected pods ready' } as Trace['diagnosis'],
-    }))
-    expect(v.kind).toBe('glance')
-    expect(v.tone).toBe('error')
-    expect(v.headline).toBe('0/2 selected pods ready')
-    expect(v.headline).not.toContain('Configuration only')
-    expect(v.ctaLabel).toBe('Run reachability test →')
+  it('a broken / degraded / unknown verdict is NOT surfaced in the drawer - no config headline, just the invite button', () => {
+    for (const verdict of ['broken', 'degraded', 'unknown'] as const) {
+      const v = summarizeTrace(trace({
+        verdict,
+        headline: 'Configuration only - not yet tested',
+        reason: 'RBAC denied: cannot list pods in namespace prod',
+        diagnosis: { summary: '0/2 selected pods ready' } as Trace['diagnosis'],
+      }))
+      expect(v.kind).toBe('minimal')
+      expect(v.ctaLabel).toBe('Run test →')
+      expect(v.headline).not.toContain('0/2 selected pods ready')
+      expect(v.headline).not.toContain('RBAC denied')
+      expect(v.headline).not.toContain('Configuration only')
+      expect(v.tone).toBeUndefined()
+    }
   })
 
-  it('static DEGRADED (heuristic, no probes) reads amber — not a hard red', () => {
-    const v = summarizeTrace(trace({
-      verdict: 'degraded',
-      headline: 'Configuration only — not yet tested',
-      diagnosis: { summary: 'Service targetPort likely wrong' } as Trace['diagnosis'],
-    }))
-    expect(v.kind).toBe('glance')
-    expect(v.tone).toBe('warning')
-    expect(v.headline).toBe('Service targetPort likely wrong')
-  })
-
-  it('static broken with no diagnosis falls back to a generic cause, still error tone', () => {
-    const v = summarizeTrace(trace({ verdict: 'broken' }))
-    expect(v.kind).toBe('glance')
-    expect(v.tone).toBe('error')
-    expect(v.headline).toContain('config check')
-  })
-
-  it('clean static (healthy, not probed) describes the path in plain language, never the empty "Configuration only" placeholder', () => {
+  it('clean static (healthy, not probed) is a minimal entry point - the Ports section already shows the wiring, so the glance must NOT restate "routes to N pods on :80"', () => {
     const v = summarizeTrace(trace({
       verdict: 'healthy',
       headline: 'Configuration only — not yet tested',
@@ -160,13 +152,12 @@ describe('summarizeTrace — the passive drawer glance', () => {
       ],
     }))
     expect(v.kind).toBe('minimal')
-    expect(v.headline).toContain('shop.example.com')
-    expect(v.headline).toContain('1 running pod')
-    expect(v.headline).toContain('port 80')
-    // No k8s idioms leaking into the plain glance.
-    expect(v.headline).not.toContain('→:')
-    expect(v.headline).not.toContain('Configuration only')
-    expect(v.ctaLabel).toBe('Run reachability test →')
+    expect(v.headline.toLowerCase()).not.toContain('not tested')
+    expect(v.headline).not.toContain('running pod')
+    expect(v.headline).not.toContain('shop.example.com')
+    expect(v.headline).not.toContain('port 80')
+    expect(v.subtitle).toBeTruthy()
+    expect(v.ctaLabel).toBe('Run test →')
   })
 
   it('path-owning subject (Ingress) clean+unprobed: NO wiring restatement — "routes to N pods" both repeats the Rules section and overclaims the unverified front door', () => {
@@ -180,16 +171,17 @@ describe('summarizeTrace — the passive drawer glance', () => {
       ],
     }))
     expect(v.kind).toBe('minimal')
-    expect(v.headline.toLowerCase()).toContain('not tested')
+    expect(v.headline.toLowerCase()).not.toContain('not tested')
+    expect(v.headline.toLowerCase()).toContain('front door')
     // Never asserts the backend wiring as if it were the verified entry.
     expect(v.headline).not.toContain('routes to')
     expect(v.headline).not.toContain('running pod')
     expect(v.headline).not.toContain('shop.example.com')
     expect(v.tone).toBeUndefined()
-    expect(v.ctaLabel).toBe('Run reachability test →')
+    expect(v.ctaLabel).toBe('Run test →')
   })
 
-  it('Service subject clean+unprobed STILL gets the wiring glance — no Rules section there, so it is the only place the path appears (not a restatement)', () => {
+  it('Service subject clean+unprobed does NOT restate the wiring - the Ports section already covers port→running-pod, so the glance stays a minimal Run entry point', () => {
     const v = summarizeTrace(trace({
       subject: { kind: 'Service', namespace: 'prod', name: 'echo' },
       verdict: 'healthy',
@@ -199,60 +191,22 @@ describe('summarizeTrace — the passive drawer glance', () => {
       ],
     }))
     expect(v.kind).toBe('minimal')
-    expect(v.headline).toContain('shop.example.com')
-    expect(v.headline).toContain('1 running pod')
+    expect(v.headline.toLowerCase()).not.toContain('not tested')
+    expect(v.headline).not.toContain('running pod')
+    expect(v.headline).not.toContain('shop.example.com')
   })
 
-  it('scaled-to-zero (a scale-0 finding backs it) — amber dormant, names "scaled to zero"', () => {
+  it('0 ready pods (crashing / scaled-to-zero / no selector match) is NOT surfaced - the invite button, not a "no running pods" line', () => {
     const v = summarizeTrace(trace({
       verdict: 'healthy',
       downstream: [
-        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [{ code: 'svc:scaled-to-zero', severity: 'warning', message: 'Backing workload scaled to 0' }], config: { ports: [{ port: 80 }] } },
-        { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [], meta: { ready: 0, selected: 0 } },
+        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [{ code: 'svc:no-ready-endpoints', severity: 'warning', message: 'no ready endpoints' }], config: { ports: [{ port: 80 }] } },
+        { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [], meta: { ready: 0, selected: 2 } },
       ],
     }))
-    expect(v.kind).toBe('glance')
-    expect(v.tone).toBe('warning')
-    // The scale-0 finding leads the glance with its own plain message (amber dormant).
-    expect(v.headline.toLowerCase()).toContain('scaled to 0')
-  })
-
-  it('0 selected with NO scale-0 finding does NOT fabricate "scaled to zero" — says the selector matched nothing', () => {
-    const v = summarizeTrace(trace({
-      verdict: 'healthy',
-      downstream: [
-        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [], config: { ports: [{ port: 80 }] } },
-        { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [], meta: { ready: 0, selected: 0 } },
-      ],
-    }))
-    expect(v.tone).toBe('warning')
-    expect(v.headline).not.toContain('scaled to zero')
-    expect(v.headline.toLowerCase()).toContain('selector')
-  })
-
-  it('worst finding message (plain) beats a verbose diagnosis.summary in the headline', () => {
-    const v = summarizeTrace(trace({
-      verdict: 'degraded',
-      diagnosis: { summary: 'A NetworkPolicy (np-x) selects these pods and no ingress rule permits :80 from any source. Whether it is actually enforced depends on the cluster network plugin which Radar cannot check from here.' } as Trace['diagnosis'],
-      downstream: [
-        { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [
-          { code: 'netpol:would-deny', severity: 'warning', message: 'A cluster network rule would block traffic to these pods on :80 — no rule allows it.' },
-        ] },
-      ],
-    }))
-    expect(v.headline).toBe('A cluster network rule would block traffic to these pods on :80 — no rule allows it.')
-    expect(v.headline).not.toContain('NetworkPolicy')
-  })
-
-  it('UNKNOWN (RBAC denied / cache not synced) surfaces the uncertainty in neutral info tone — never "Configuration only"', () => {
-    const v = summarizeTrace(trace({
-      verdict: 'unknown',
-      reason: 'RBAC denied: cannot list pods in namespace prod',
-      headline: 'Configuration only — not yet tested',
-    }))
-    expect(v.kind).toBe('glance')
-    expect(v.tone).toBe('info')
-    expect(v.headline).toBe('RBAC denied: cannot list pods in namespace prod')
-    expect(v.headline).not.toContain('Configuration only')
+    expect(v.kind).toBe('minimal')
+    expect(v.headline).not.toContain('running pod')
+    expect(v.headline).not.toContain('endpoints')
+    expect(v.ctaLabel).toBe('Run test →')
   })
 })

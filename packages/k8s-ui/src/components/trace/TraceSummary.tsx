@@ -2,7 +2,7 @@ import type { ComponentType } from 'react'
 import { CheckCircle2, AlertTriangle, ShieldAlert, Info } from 'lucide-react'
 import { AlertBanner } from '../ui/drawer-components'
 import { coverageBannerTone, routeOutcomeRank } from './TracePanel'
-import type { Trace, Finding } from './types'
+import type { Trace } from './types'
 
 type Tone = ReturnType<typeof coverageBannerTone>
 
@@ -25,28 +25,26 @@ export interface TraceSummaryView {
    *  routes failed in total — so the label can read honestly ("Failing route"
    *  for one, "Worst of N failing routes" when there are more). */
   worst?: { route: string; target?: string; evidence?: string; failingCount: number }
-  /** A muted honesty line under the headline — e.g. "Config check only — not
-   *  tested from live traffic" — so a config-derived glance never reads as a
-   *  tested result. */
+  /** A muted descriptive line under the headline - e.g. the invite button's
+   *  "A quick DNS → TCP → HTTP probe from where Radar runs." */
   subtitle?: string
   notTested: number
   ctaLabel: string
 }
 
 // The drawer never runs active probes (that emits real traffic — deliberate, see
-// client.ts useTrace). So a config-only glance must INVITE the test, never imply
-// one ran ("See test detail →" is dishonest with nothing tested).
-const RUN_CTA = 'Run reachability test →'
-const CONFIG_ONLY = 'Config check only — not tested from live traffic'
+// client.ts useTrace), so before a run it only INVITES the test, never implies one
+// ran. The "Reachability · Network Path" section header already carries the word
+// "reachability", so the button drops it ("Run test →") to avoid the echo.
+const RUN_CTA_SHORT = 'Run test →'
 
 export function summarizeTrace(trace: Trace): TraceSummaryView {
   const coverage = trace.coverage
   const routes = trace.routes ?? []
 
-  // 1. PROBED — actual probe results exist (tested > 0) → the route-coverage
-  //    glance. A coverage projection with tested === 0 is NOT a tested result
-  //    (the drawer never probes); it falls through to the config-only states
-  //    below so the operator gets real config value, not "not yet tested".
+  // PROBED - actual probe results exist (tested > 0) → the route-coverage glance.
+  // A coverage projection with tested === 0 is NOT a tested result (the drawer never
+  // probes), so it falls through to the invite-to-test button below.
   if (coverage && coverage.tested > 0 && trace.headline) {
     const tone = coverageBannerTone(coverage, routes)
     const failing = coverage.failed > 0
@@ -78,105 +76,32 @@ export function summarizeTrace(trace: Trace): TraceSummaryView {
     }
   }
 
-  // Everything below is CONFIG-ONLY (nothing actively tested). The rule: lead
-  // with what the config SAYS, in config language ("wired", "would block") —
-  // never traffic language ("reachable", "verified") — and invite the run.
-
-  // 2. CONFIG PROBLEM IN THE VERDICT — the static trace already found a break
-  //    (down pod, no ready endpoints, wrong targetPort, a default-deny that
-  //    flipped the verdict). Name the cause in plain English; broken=red,
-  //    degraded=amber honors the definitive-vs-heuristic nuance.
-  if (trace.verdict === 'broken' || trace.verdict === 'degraded') {
-    return {
-      kind: 'glance',
-      // Prefer the worst finding's plain one-line message over diagnosis.summary
-      // (which can be a paragraph of forensics) — the headline slot is a glance,
-      // the full cause lives on the tab. Same message-first rule as state 3.
-      headline:
-        staticWorstFinding(trace)?.message ||
-        trace.diagnosis?.summary ||
-        (trace.verdict === 'broken' ? 'Reachability broken (config check)' : 'Reachability issue (config check)'),
-      tone: trace.verdict === 'broken' ? 'error' : 'warning',
-      subtitle: CONFIG_ONLY,
-      notTested: 0,
-      ctaLabel: RUN_CTA,
-    }
-  }
-
-  // 3. CONFIG RED FLAG NOT IN THE VERDICT — a warning/critical finding the
-  //    verdict didn't escalate (e.g. a caller-independent policy note). Surface
-  //    the worst one rather than letting a clean verdict swallow it.
-  const wf = staticWorstFinding(trace)
-  if (wf) {
-    return {
-      kind: 'glance',
-      // The plain-language message is the operator-facing one-liner; the cause
-      // (which may carry kind names like "NetworkPolicy") stays for the full tab.
-      headline: wf.message || wf.cause || 'A configuration issue was found',
-      tone: wf.severity === 'critical' ? 'error' : 'warning',
-      subtitle: CONFIG_ONLY,
-      notTested: 0,
-      ctaLabel: RUN_CTA,
-    }
-  }
-
-  // 4. UNKNOWN — the trace couldn't determine reachability (RBAC denied, cache
-  //    not synced, the API isn't installed). NOT clean: surface the uncertainty.
-  if (trace.verdict === 'unknown') {
-    return {
-      kind: 'glance',
-      headline: trace.reason || "Couldn't read the config to map the path",
-      tone: 'info',
-      subtitle: CONFIG_ONLY,
-      notTested: 0,
-      ctaLabel: RUN_CTA,
-    }
-  }
-
-  // 5. NO RUNNING BACKENDS — config-only, but the service has zero ready pods.
-  //    "Wired" would overclaim (there's nothing to route to). Surface it amber as
-  //    dormant — the probed path treats scale-to-0 as amber too, so config must.
-  const pods = podReadiness(trace)
-  if (pods.ready === 0 && pods.selected !== undefined) {
-    return {
-      kind: 'glance',
-      headline:
-        pods.selected === 0
-          ? hasScaleToZeroFinding(trace)
-            ? 'No running pods behind this service (scaled to zero)'
-            : "No pods match this service's selector (0 selected)"
-          : `No running pods behind this service (0 of ${pods.selected} ready)`,
-      tone: 'warning',
-      subtitle: CONFIG_ONLY,
-      notTested: 0,
-      ctaLabel: RUN_CTA,
-    }
-  }
-
-  // 6. WIRED CLEAN — the path resolves end to end to running pods, no red flag.
-  //    For a PATH-OWNING subject (Ingress/Gateway/Route) the host→backend wiring
-  //    is already shown by the resource's own Rules section, AND "routes to N
-  //    pods" describes only the BACKEND — it skips the front-door (controller)
-  //    question entirely, so as a headline it both REPEATS and OVERCLAIMS (it
-  //    reads as "the entry works" when the controller was never verified). Lead
-  //    with the honest "not tested" + the live-test CTA, nothing asserted.
+  // Nothing actively tested. The drawer does NOT detect config issues - those are
+  // owned by the resource's Operational Issues section (main's central detector). The
+  // reachability glance is purely the invitation to run the live path test; it never
+  // re-states anything the config already shows above it.
+  //
+  // For a PATH-OWNING subject (Ingress/Gateway/Route) it frames the front door;
+  // the host→backend wiring is already in the resource's own Rules section.
   if (PATH_OWNING_KINDS.has(trace.subject.kind)) {
     return {
       kind: 'minimal',
-      headline: 'Reachability not tested yet',
-      subtitle: 'Run the live test to check the path in through the front door.',
+      headline: 'Verify the path in through the front door',
+      subtitle: 'A quick probe of the declared host and path (DNS → TCP → HTTP).',
       notTested: 0,
-      ctaLabel: RUN_CTA,
+      ctaLabel: RUN_CTA_SHORT,
     }
   }
-  //    For a Service/Pod subject there's no Rules section, so this glance is the
-  //    ONLY place the wiring appears — keep it (it's not a restatement there).
+  //    For a Service/Pod subject the Ports section already shows the port →
+  //    running-pod wiring, so restating it here ("routes to N pods on :80") just
+  //    duplicates it. Frame the empty state around the VALUE of the live test
+  //    (positive, action-first) - never a negative "not tested yet".
   return {
     kind: 'minimal',
-    headline: staticGlance(trace),
-    subtitle: CONFIG_ONLY,
+    headline: 'Verify the live path to these pods',
+    subtitle: 'A quick DNS → TCP → HTTP probe from where Radar runs.',
     notTested: 0,
-    ctaLabel: RUN_CTA,
+    ctaLabel: RUN_CTA_SHORT,
   }
 }
 
@@ -184,66 +109,6 @@ export function summarizeTrace(trace: Trace): TraceSummaryView {
 // so the reachability glance must NOT restate the wiring — and "routes to N
 // pods" would overclaim a front door it never verified.
 const PATH_OWNING_KINDS = new Set(['Ingress', 'Gateway', 'HTTPRoute', 'GRPCRoute'])
-
-/** Whether any hop carries the intentional scale-to-0 finding (mirrors the Go
- *  markBenignScaleZero / isScaleZeroFinding). Only then is "scaled to zero" an
- *  honest cause for 0 selected pods — otherwise it could be a bad/stale selector. */
-function hasScaleToZeroFinding(trace: Trace): boolean {
-  const all = [...(trace.upstreams ?? []), ...(trace.downstream ?? [])].flatMap((h) => h.findings ?? [])
-  return all.some((f) => (f.code ?? '') === 'svc:scaled-to-zero' || (f.code ?? '').endsWith('Backing workload scaled to 0'))
-}
-
-/** Ready / selected pod counts from the Pods hop, the numbers behind "is there
- *  anything running to route to". Either may be undefined when the trace can't
- *  read pod state. */
-function podReadiness(trace: Trace): { ready?: number; selected?: number } {
-  const pods = [...(trace.upstreams ?? []), ...(trace.downstream ?? [])].find((h) => h.resource.kind === 'Pods')
-  if (!pods) return {}
-  const ready = typeof pods.meta?.ready === 'number' ? (pods.meta.ready as number) : undefined
-  const selected = typeof pods.meta?.selected === 'number' ? (pods.meta.selected as number) : pods.config?.podNames?.length
-  return { ready, selected }
-}
-
-/** The worst caller-independent config finding (critical first, then warning),
- *  scanned across every hop. Drives state 3 so a real red flag the verdict
- *  didn't escalate (a policy would-deny, a targetPort mismatch) still surfaces
- *  in the drawer instead of being swallowed by a clean verdict. */
-function staticWorstFinding(trace: Trace): Finding | undefined {
-  const downstream = (trace.downstream ?? []).flatMap((h) => h.findings ?? [])
-  // An upstream missing_ref finding is about a SIBLING backend route, not this
-  // subject — including it would condemn an otherwise-healthy Service from a
-  // broken sibling (mirrors TracePanel HopRow's upstream scoping). Downstream
-  // findings are scanned unconditionally.
-  const upstream = (trace.upstreams ?? []).flatMap((h) => h.findings ?? []).filter((f) => !(f.code ?? '').startsWith('missing_ref:'))
-  const all = [...downstream, ...upstream]
-  return all.find((f) => f.severity === 'critical') ?? all.find((f) => f.severity === 'warning')
-}
-
-/** A one-line static-config glance for the wired-clean drawer, in PLAIN language a
- *  non-k8s operator owns — "Routes to N running pods on port X", optionally led by
- *  the external host. Deliberately drops k8s idioms (port→targetPort arrows,
- *  "N/M ready"); the precise wiring lives on the Reachability tab. States what the
- *  config IS in config language — never the empty "not yet tested". */
-function staticGlance(trace: Trace): string {
-  const hops = [...(trace.upstreams ?? []), ...(trace.downstream ?? [])]
-  const svc = hops.find((h) => h.resource.kind === 'Service')
-  const host = hops.map((h) => h.config?.hostnames?.[0]).find(Boolean)
-  const port = svc?.config?.ports?.[0]?.port
-  const { ready, selected } = podReadiness(trace)
-  const podN = ready ?? selected
-  // Only say "running" when readiness was actually OBSERVED. When only the
-  // selector-match count is known, the pods may not be ready — say "matching" so
-  // the glance never asserts liveness it didn't see.
-  const noun = typeof ready === 'number' ? 'running pod' : 'matching pod'
-
-  let core: string
-  if (typeof podN === 'number' && port !== undefined) core = `Routes to ${podN} ${noun}${podN === 1 ? '' : 's'} on port ${port}`
-  else if (typeof podN === 'number') core = `Routes to ${podN} ${noun}${podN === 1 ? '' : 's'}`
-  else if (port !== undefined) core = `Configured on port ${port}`
-  else core = 'Configuration looks valid'
-
-  return host ? `${host} · ${core.charAt(0).toLowerCase()}${core.slice(1)}` : core
-}
 
 /**
  * TraceSummary is the PASSIVE drawer glance for the network-reachability path:
@@ -296,7 +161,7 @@ function OpenButton({ onClick, label }: { onClick: () => void; label: string }) 
     <button
       type="button"
       onClick={onClick}
-      className="mt-2 text-xs px-2 py-1 rounded border border-current/30 hover:bg-current/10 transition-colors"
+      className="mt-2 text-xs px-2 py-1 rounded border border-theme-border bg-theme-surface text-theme-text-primary hover:bg-theme-hover transition-colors"
     >
       {label}
     </button>

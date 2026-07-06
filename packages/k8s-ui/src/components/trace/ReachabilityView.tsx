@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ResourceRef, Trace, Hop, ProbeResult, ProbeLayer, Finding } from './types'
 import { ReachActions, JustTestedNote, FindingRow, VerdictCaveat, RequestIndicator, type TracePanelProps } from './TracePanel'
-import { ReachabilityTree } from './ReachabilityTree'
-import { reachVerdict } from './reachVerdict'
+import { reachVerdict, directLaneLabel } from './reachVerdict'
 import { ReachabilityExplainer } from './ReachabilityExplainer'
 import { TopologyGraph } from '../topology/TopologyGraph'
 import type { TopologyNode } from '../../types/core'
@@ -10,22 +9,15 @@ import { traceToSubgraph } from './traceToSubgraph'
 import { StatusDot, type StatusTone } from '../ui/status-tone'
 import { AlertBanner } from '../ui/drawer-components'
 
-type ViewKind = 'tree' | 'diagram'
-
 /**
- * ReachabilityView is the full-screen Reachability tab body. It offers two honest
- * renderings of the same trace, switchable with a toggle:
- *   • Diagram — the same path on the app's network graph: per-route truth on the
- *               EDGES (a router node stays neutral), nothing reached past a break.
- *   • Tree    — the detailed, scannable hop/route view (TracePanel).
- * Diagram is the default (the graph is the headline view); the toggle switches to Tree.
- * A single honest verdict line tops both. Drawer <TraceSummary>, the tab rename, the
- * ?tab=reachability deeplink, and all backend stay untouched.
+ * ReachabilityView is the full-screen Reachability tab body. It renders the trace
+ * as the same path on the app's network graph: per-route truth on the EDGES (a
+ * router node stays neutral), nothing reached past a break. A single honest verdict
+ * line tops it. Drawer <TraceSummary>, the ?tab=reachability deeplink, and all
+ * backend stay untouched.
  */
 export function ReachabilityView(props: TracePanelProps) {
   const { trace, isLoading, error, inClusterError, probeError, onRunProbes, onRefresh } = props
-  const [view, setView] = useState<ViewKind | null>(null)
-  const effective: ViewKind = view ?? 'diagram'
   // A fetch that is still loading or has FAILED must not read as a definitive
   // "No reachability data." negative (ReachabilityDiagram's empty-trace fallback).
   // Mirror TracePanel: surface the loading state, and an error with a retry, so an
@@ -41,7 +33,7 @@ export function ReachabilityView(props: TracePanelProps) {
             <button
               type="button"
               onClick={onRefresh}
-              className="mt-2 text-xs px-2 py-1 rounded border border-current/30 hover:bg-current/10 transition-colors"
+              className="mt-2 text-xs px-2 py-1 rounded border border-theme-border bg-theme-surface text-theme-text-primary hover:bg-theme-hover transition-colors"
             >
               Retry
             </button>
@@ -52,18 +44,15 @@ export function ReachabilityView(props: TracePanelProps) {
   }
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-end">
-        <ViewToggle view={effective} onChange={setView} />
-      </div>
       {/* A failed reachability-probe run must never be a silent no-op — surface it
-          here so it shows in BOTH the Tree and Diagram views (mirrors TracePanel). */}
+          here (mirrors TracePanel). */}
       {probeError && (
         <AlertBanner variant="error" title="Reachability test failed" message={probeError.message}>
           {onRunProbes && (
             <button
               type="button"
               onClick={onRunProbes}
-              className="mt-2 text-xs px-2 py-1 rounded border border-current/30 hover:bg-current/10 transition-colors"
+              className="mt-2 text-xs px-2 py-1 rounded border border-theme-border bg-theme-surface text-theme-text-primary hover:bg-theme-hover transition-colors"
             >
               Try again
             </button>
@@ -75,48 +64,19 @@ export function ReachabilityView(props: TracePanelProps) {
           <span className="font-medium text-theme-text-primary">In-cluster test:</span> {inClusterError}
         </div>
       )}
-      {effective === 'tree' ? <ReachabilityTree {...props} /> : (
-        <ReachabilityDiagram
-          trace={trace}
-          onNavigate={props.onNavigateToResource}
-          onRunProbes={props.onRunProbes}
-          probeRequested={props.probeRequested}
-          probed={props.probed}
-          onRunInCluster={props.onRunInCluster}
-          inClusterRunning={props.inClusterRunning}
-          inClusterAllowed={props.inClusterAllowed}
-          probePath={props.probePath}
-          onApplyProbePath={props.onApplyProbePath}
-          runNonce={props.runNonce}
-        />
-      )}
-    </div>
-  )
-}
-
-function ViewToggle({ view, onChange }: { view: ViewKind; onChange: (v: ViewKind) => void }) {
-  const opts: { id: ViewKind; label: string }[] = [
-    { id: 'tree', label: 'Tree' },
-    { id: 'diagram', label: 'Diagram' },
-  ]
-  return (
-    <div role="tablist" aria-label="Reachability view" className="inline-flex rounded-md border border-theme-border bg-theme-surface p-0.5">
-      {opts.map((o) => {
-        const active = view === o.id
-        return (
-          <button
-            key={o.id}
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(o.id)}
-            className={`px-3 py-1 text-xs rounded transition-colors ${
-              active ? 'bg-theme-elevated text-theme-text-primary shadow-theme-sm' : 'text-theme-text-secondary hover:text-theme-text-primary'
-            }`}
-          >
-            {o.label}
-          </button>
-        )
-      })}
+      <ReachabilityDiagram
+        trace={trace}
+        onNavigate={props.onNavigateToResource}
+        onRunProbes={props.onRunProbes}
+        probeRequested={props.probeRequested}
+        probed={props.probed}
+        onRunInCluster={props.onRunInCluster}
+        inClusterRunning={props.inClusterRunning}
+        inClusterAllowed={props.inClusterAllowed}
+        probePath={props.probePath}
+        onApplyProbePath={props.onApplyProbePath}
+        runNonce={props.runNonce}
+      />
     </div>
   )
 }
@@ -163,14 +123,16 @@ function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, p
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3 rounded-lg border border-theme-border bg-theme-surface px-3 py-2">
         <div className="flex items-start gap-2 min-w-0">
-          <span className="mt-0.5 shrink-0"><StatusDot tone={v.tone} size="sm" /></span>
+          {/* Nudge the dot to the optical center of the headline's first line (text-sm,
+              ~20px line-box) so it reads as a status marker, not a stray bullet. */}
+          <span className="mt-[7px] shrink-0"><StatusDot tone={v.tone} size="sm" /></span>
           <div className="min-w-0">
             <div className="text-sm font-medium text-theme-text-primary">
               {v.icon ? v.icon + ' ' : ''}{v.text}
               <JustTestedNote nonce={runNonce} />
             </div>
             <VerdictCaveat caveat={v.caveat} detail={v.detail} />
-            {probed && <RequestIndicator path={probePath} />}
+            {probed && <RequestIndicator path={probePath} onApplyProbePath={onApplyProbePath} />}
           </div>
         </div>
         <ReachActions
@@ -218,7 +180,7 @@ function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, p
 const LAYER_SEQ: ProbeLayer[] = ['dns', 'tcp', 'tls', 'http']
 const LAYER_NAME: Record<ProbeLayer, string> = { dns: 'DNS', tcp: 'TCP', tls: 'TLS', http: 'HTTP' }
 type Dir = 'direct' | 'proxy' | 'real'
-const DIR_NAME: Record<Dir, string> = { direct: 'From your machine', proxy: 'Via API server', real: 'In-cluster' }
+const DIR_NAME: Record<Dir, string> = { direct: 'From Radar', proxy: 'Via API server', real: 'In-cluster' }
 function dirOf(p: ProbeResult): Dir {
   if (p.path === 'apiserver') return 'proxy'
   return p.vantage === 'in-cluster' ? 'real' : 'direct'
@@ -318,6 +280,10 @@ function HopDetailPanel({ node, onNavigate, onClose, inClusterRunning }: { node:
     byDir.set(d, arr)
   }
   const dirs = (['direct', 'proxy', 'real'] as Dir[]).filter((d) => byDir.has(d))
+  // Direct column is always the local dial (directionOf routes in-cluster → 'real'), so
+  // take the vantage from a direct-lane probe - not any probe, which after an in-cluster
+  // run could be an in-cluster one and mislabel the direct column.
+  const directVantage = byDir.get('direct')?.find((p) => p.vantage)?.vantage
   // This node gets dialed in-cluster only if it's a Service/Pods/ExternalName (not an
   // Ingress/Gateway entry) — so only those show the live "testing…" state, mirroring
   // the matrix's In-cluster column.
@@ -349,7 +315,7 @@ function HopDetailPanel({ node, onNavigate, onClose, inClusterRunning }: { node:
       )}
       {/* While the in-cluster Job runs, the In-cluster section reads "testing…" in
           place — don't show a stale prior In-cluster stack underneath it. */}
-      {dirs.filter((d) => !(d === 'real' && showTesting)).map((d) => <DirectionStack key={d} label={DIR_NAME[d]} probes={byDir.get(d)!} />)}
+      {dirs.filter((d) => !(d === 'real' && showTesting)).map((d) => <DirectionStack key={d} label={d === 'direct' ? directLaneLabel(directVantage) : DIR_NAME[d]} probes={byDir.get(d)!} />)}
       {showTesting && (
         <div className="flex flex-col gap-0.5">
           <div className="text-[10px] uppercase tracking-wide text-theme-text-tertiary">{DIR_NAME.real}</div>

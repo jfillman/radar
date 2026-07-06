@@ -1,6 +1,5 @@
 export { TracePanel, inClusterOutcome, inClusterEligible } from './TracePanel'
 export { ReachabilityView } from './ReachabilityView'
-export { ReachabilityTree } from './ReachabilityTree'
 export { traceToSubgraph } from './traceToSubgraph'
 export { TraceSummary } from './TraceSummary'
 export type { InClusterRunner, InClusterCapability, InClusterRunResult } from './TracePanel'

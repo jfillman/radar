@@ -52,9 +52,8 @@ Every hop has:
 
 - A **resource reference** (kind, namespace, name) and an **edge label** (e.g. `HTTPRoute->Service`) so the path reads top-to-bottom in the traffic direction.
 - **Findings** — the detections that already exist in the issues pipeline, attached to the hop where the failure is observable. The Phase 0 additions to this pipeline:
-  - **`gwroute:backend-port-mismatch`** — an HTTPRoute / GRPCRoute references a Service port that doesn't exist; the message names the Service's actual ports for actionability.
+  - **`gwroute:backend-port-mismatch`** - an HTTPRoute / GRPCRoute references a Service port that doesn't exist.
   - **Gateway-API route parent conditions** (`Accepted=False`, `ResolvedRefs=False`, `Programmed=False`) — read directly from `status.parents[]` so the controller's own verdict is the source of truth.
-  - **`svc:probe-port-mismatch`** — a selected pod's readiness probe targets a port the Service does not route to, which explains why a Service may show no ready endpoints even when processes are listening.
 - **Meta** — pod counts (`selected` / `ready`), `endpointSource: pod-readiness`, `headless`, and `selectorless` flags so the UI can render the right shape without re-deriving them.
 
 For each finding the trace populates a **kubectl reproducer command** — a one-liner the operator can paste to see the raw state behind the finding. Examples:

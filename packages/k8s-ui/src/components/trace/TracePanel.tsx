@@ -369,7 +369,9 @@ const ALERT_ICON: Record<AlertTone, React.ComponentType<{ className?: string }>>
   success: CheckCircle2,
   warning: AlertTriangle,
   error: ShieldAlert,
-  info: AlertTriangle,
+  // info is the calm "reached / not yet tested" state, not an alarm - match
+  // TraceSummary's info icon so the same state reads the same on both surfaces.
+  info: Info,
 }
 
 // coverageBannerTone derives the SINGLE banner tone from what we actually
@@ -739,7 +741,9 @@ export function CoverageSection({ trace, runner, collapseHealthy }: { trace: Tra
             {r.target && <span className="text-theme-text-tertiary break-all">→ {r.target}</span>}
             <Badge severity={routeBadgeSeverity(r)} size="sm">{routeOutcomeLabel(r)}</Badge>
             {r.confidence === 'indirect' && (
-              <Badge severity="info" size="sm" title="Reached through the Kubernetes API server proxy — proves a pod answers, not that in-cluster workload-to-pod traffic takes this path">from your machine</Badge>
+              <Tooltip content={<span className="block max-w-xs leading-snug">Reached through the Kubernetes API server proxy - proves a pod answers, not that in-cluster workload-to-pod traffic takes this path</span>} position="bottom">
+                <Badge severity="info" size="sm">from Radar</Badge>
+              </Tooltip>
             )}
           </div>
           {r.evidence && <div className="text-[11px] text-theme-text-tertiary break-words">{r.evidence}</div>}
@@ -815,12 +819,12 @@ export function CoverageSection({ trace, runner, collapseHealthy }: { trace: Tra
 // CoverageSummary is the compact, ALWAYS-VISIBLE counts strip that sits ABOVE the
 // persistent path. It states the verified / reached-via-proxy / failed / not-tested
 // tallies in one line so a glance gives the headline, while the path below keeps every
-// hop's config + live probe outcome inline. It renders NO per-route rows and collapses
-// nothing — the regression it fixes was the probed view hiding the path behind a fold.
+// hop's config + live probe outcome inline. It renders no per-route rows and collapses
+// nothing, so the path is always visible rather than hidden behind a fold.
 // JustTestedNote shows a brief "✓ updated just now" next to the verdict whenever a
-// test completes — closure even when the result is IDENTICAL to before (a fast probe
-// otherwise looks like nothing happened, since only the button moved). Driven by a
-// run nonce the host bumps on every completed run, so it fires even with no value change.
+// test completes, giving closure even when the result is identical to the prior run (a
+// fast probe otherwise looks like nothing happened, since only the button moved). Driven
+// by a run nonce the host bumps on every completed run, so it fires even with no value change.
 function useFreshFlag(nonce?: number): boolean {
   const [fresh, setFresh] = useState(false)
   const prev = useRef<number | undefined>(nonce)
@@ -868,12 +872,49 @@ export function VerdictCaveat({ caveat, detail }: { caveat?: string; detail?: st
 }
 
 // RequestIndicator names the exact HTTP request the probes made — shown in the
-// verdict bar (always visible after a run) so the operator knows what was tested
-// and that it's changeable. Default GET /.
-export function RequestIndicator({ path }: { path?: string }) {
+// verdict bar (always visible after a run) so the operator knows what was tested. A
+// pencil toggles an inline editor so the path is changeable in place (no digging
+// through the ⋯ menu); Enter or blur applies + re-runs, Escape cancels. Default GET /.
+export function RequestIndicator({ path, onApplyProbePath }: { path?: string; onApplyProbePath?: (p: string) => void }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(path ?? '/')
+  useEffect(() => { setDraft(path ?? '/') }, [path])
+  const apply = () => {
+    const t = draft.trim()
+    onApplyProbePath?.(!t ? '/' : t.startsWith('/') ? t : '/' + t)
+    setEditing(false)
+  }
+  if (editing) {
+    return (
+      <div className="mt-1 flex items-center gap-1.5 text-[11px] text-theme-text-tertiary">
+        <span>tested with <span className="font-mono text-theme-text-secondary">GET</span></span>
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') apply(); else if (e.key === 'Escape') { setDraft(path ?? '/'); setEditing(false) } }}
+          onBlur={apply}
+          placeholder="/"
+          className="w-36 rounded border border-theme-border bg-theme-base px-1.5 py-0.5 font-mono text-[11px] text-theme-text-primary"
+        />
+        <span>↵ applies · esc cancels</span>
+      </div>
+    )
+  }
   return (
-    <div className="mt-1 text-[11px] text-theme-text-tertiary" title="The request these tests make — change it via the ⋯ menu">
-      tested with <span className="font-mono text-theme-text-secondary">GET {path || '/'}</span>
+    <div className="mt-1 flex items-center gap-1 text-[11px] text-theme-text-tertiary">
+      <span>tested with <span className="font-mono text-theme-text-secondary">GET {path || '/'}</span></span>
+      {onApplyProbePath && (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          title="Edit the request path"
+          aria-label="Edit the request path"
+          className="rounded p-0.5 text-theme-text-tertiary transition-colors hover:bg-theme-hover hover:text-theme-text-secondary"
+        >
+          <Pencil className="h-3 w-3" />
+        </button>
+      )}
     </div>
   )
 }

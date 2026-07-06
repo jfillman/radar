@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { reachVerdict, hostFromTarget, VIA_API_SERVER } from './reachVerdict'
+import { reachVerdict, hostFromTarget, VIA_API_SERVER, directLaneLabel } from './reachVerdict'
 import type { Trace, RouteResult, Hop, ProbeResult } from './types'
 
 // Anti-drift pin: the one operator-facing name for the apiserver-proxy vantage
@@ -8,6 +8,18 @@ import type { Trace, RouteResult, Hop, ProbeResult } from './types'
 describe('VIA_API_SERVER — single vantage name, must match the Go const', () => {
   it('is exactly "via API server"', () => {
     expect(VIA_API_SERVER).toBe('via API server')
+  })
+})
+
+describe('directLaneLabel - position-aware "From Radar"', () => {
+  it('local vantage → your machine', () => {
+    expect(directLaneLabel('local')).toBe('From Radar · your machine')
+  })
+  it('in-cluster vantage → in-cluster', () => {
+    expect(directLaneLabel('in-cluster')).toBe('From Radar · in-cluster')
+  })
+  it('unknown vantage (no probe yet) → bare "From Radar"', () => {
+    expect(directLaneLabel(undefined)).toBe('From Radar')
   })
 })
 
@@ -35,6 +47,38 @@ describe('hostFromTarget — host extraction (linear, no ReDoS-prone regex)', ()
     expect(hostFromTarget('plainhost')).toBe('plainhost')
     expect(hostFromTarget('')).toBe('')
     expect(hostFromTarget(undefined)).toBe('')
+  })
+})
+
+describe('reachVerdict - a front-door 502/504 is a network fault, never "check app logs"', () => {
+  it('a degraded HTTP front door (502/504) says it could not reach the backend, and never asserts the network is fine or points at app logs', () => {
+    const v = reachVerdict(
+      ingressTrace([probe({ layer: 'http', ok: true, tone: 'degraded', detail: "HTTP 502 · the front door couldn't reach the backend" })]),
+      true,
+    )
+    expect(v.tone).toBe('degraded')
+    expect(v.text).toContain("couldn't reach the backend")
+    // The 5xx reclassification (app 5xx = reached) leaves only 502/504/cert here, so
+    // these old-bucket assertions must never appear on a real network-path fault.
+    expect(v.text).not.toContain('the app returned a server error')
+    expect(v.text).not.toContain('network path is fine')
+    expect(v.text).not.toContain("check the app's logs")
+  })
+})
+
+describe('reachVerdict - a degraded route names the layer that failed (per-layer model)', () => {
+  it('failedLayer "tls" reads as a TLS/certificate failure, never a generic "server error"', () => {
+    const v = reachVerdict(trace({ verdict: 'degraded', routes: [route({ outcome: 'server-error', confidence: 'real', failedLayer: 'tls' })] }), true)
+    expect(v.tone).toBe('degraded')
+    expect(v.text).toMatch(/TLS|certificate/i)
+    expect(v.text).not.toContain('server error')
+    expect(v.text).not.toContain('app')
+  })
+  it('failedLayer "upstream" (a 502/504) reads as HTTP-reached but the backend/upstream unreachable', () => {
+    const v = reachVerdict(trace({ verdict: 'degraded', routes: [route({ outcome: 'server-error', confidence: 'real', failedLayer: 'upstream' })] }), true)
+    expect(v.tone).toBe('degraded')
+    expect(v.text).toContain("couldn't reach its backend")
+    expect(v.text).not.toContain('server error')
   })
 })
 
@@ -71,17 +115,17 @@ describe('reachVerdict — no live backend leads with the cause, not "via API se
       routes: [route({ outcome: 'unreachable', confidence: 'indirect', evidence: 'No ready backend endpoints' })],
     })
 
-  it('pods wired but 0 ready (crashloop) → names the cause, credits the wiring, never says "management API"', () => {
+  it('pods wired but 0 ready (crashloop) → headline NAMES the failing container from the pod diagnosis, not a generic "backend app"', () => {
     const v = reachVerdict(backendDownTrace([
       { code: 'problem:CrashLoopBackOff', severity: 'critical', message: 'CrashLoopBackOff', cause: 'container "c" is crashlooping after exit code 1.', resource: { kind: 'Pod', name: 'crashloop-x' } },
     ], 1), true)
     expect(v.tone).toBe('unhealthy')
-    expect(v.text).toBe('No healthy backend — the backend app keeps crashing (CrashLoopBackOff)')
+    expect(v.text).toBe('No healthy backend - container "c" is crashlooping after exit code 1.')
     expect(v.text).not.toContain('management API')
+    expect(v.text).not.toContain('the backend app')
     expect(v.caveat).toContain('wired')
-    expect(v.caveat).toContain('the break is the backend')
+    expect(v.caveat).toContain('the break is in the pods')
     expect(v.caveat).toContain('0/1 pod ready')
-    expect(v.detail).toContain('exit code 1')
   })
 
   it('image-pull failure reads plainly + pluralizes the pod count', () => {
@@ -101,7 +145,24 @@ describe('reachVerdict — no live backend leads with the cause, not "via API se
     expect(v.caveat).toContain('starting')
   })
 
-  it('partial-ready floored (1/2 pods, one crashing) → the headline LEADS with the problem, never the optimistic "Reached"', () => {
+  it('partial-ready floored (1/2 pods, one crashing) → headline LEADS with the "N of M ready" count + the problem, never the optimistic "Reached"', () => {
+    const v = reachVerdict(trace({
+      verdict: 'degraded',
+      downstream: [
+        { resource: { kind: 'Service', name: 's' }, edge: 'entry:Service', findings: [] } as Hop,
+        { resource: { kind: 'Pods', name: '' }, edge: 'Service->Pods', meta: { ready: 1, selected: 2 }, findings: [
+          { code: 'problem:CrashLoopBackOff', severity: 'critical', message: 'Container "web" is crash-looping (CrashLoopBackOff)' },
+        ] } as Hop,
+      ],
+      routes: [route({ outcome: 'reached', confidence: 'indirect' })],
+    }), true)
+    expect(v.tone).toBe('degraded')
+    // The readiness split leads the warning message.
+    expect(v.text).toBe('1 of 2 pods ready - Container "web" is crash-looping (CrashLoopBackOff)')
+    expect(v.text).not.toContain('Reached')
+  })
+
+  it('partial-ready count is NOT doubled when the finding already carries one', () => {
     const v = reachVerdict(trace({
       verdict: 'degraded',
       downstream: [
@@ -112,9 +173,58 @@ describe('reachVerdict — no live backend leads with the cause, not "via API se
       ],
       routes: [route({ outcome: 'reached', confidence: 'indirect' })],
     }), true)
-    expect(v.tone).toBe('degraded')
     expect(v.text).toBe('A pod is crash-looping (1 of 2 down)')
-    expect(v.text).not.toContain('Reached')
+  })
+
+  it('pod-state finding headlines the clean `cause`, not the raw kubelet `message` (no back-off/pod-UID noise)', () => {
+    const v = reachVerdict(trace({
+      verdict: 'degraded',
+      downstream: [
+        { resource: { kind: 'Service', name: 's' }, edge: 'entry:Service', findings: [] } as Hop,
+        { resource: { kind: 'Pods', name: '' }, edge: 'Service->Pods', meta: { ready: 1, selected: 2 }, findings: [
+          { code: 'problem:CrashLoopBackOff', severity: 'critical',
+            message: 'CrashLoopBackOff - back-off 5m0s restarting failed container=c pod=dual-bad-844665666-9tl6z_radar-netdiag(7fd8a1c5)',
+            cause: 'Container "c" is crash-looping (CrashLoopBackOff)' },
+        ] } as Hop,
+      ],
+      routes: [route({ outcome: 'reached', confidence: 'indirect' })],
+    }), true)
+    expect(v.text).toBe('1 of 2 pods ready - Container "c" is crash-looping (CrashLoopBackOff)')
+    expect(v.text).not.toContain('back-off')
+    expect(v.text).not.toContain('pod=')
+  })
+
+  it('does NOT prepend "N of M pods ready" when the headline is a NON-pod concern (partial pods, but a config finding leads)', () => {
+    const v = reachVerdict(trace({
+      verdict: 'degraded',
+      downstream: [
+        { resource: { kind: 'Service', name: 's' }, edge: 'entry:Service', findings: [
+          { code: 'netpol:would-deny', severity: 'critical', message: 'A cluster network rule would block traffic to these pods on :80 - no rule allows it.' },
+        ] } as Hop,
+        { resource: { kind: 'Pods', name: '' }, edge: 'Service->Pods', meta: { ready: 1, selected: 2 }, findings: [] } as Hop,
+      ],
+      routes: [route({ outcome: 'reached', confidence: 'indirect' })],
+    }), true)
+    expect(v.text).not.toContain('pods ready')
+    expect(v.text).not.toMatch(/1 of 2/)
+  })
+
+  it('multi-backend: the "N of M ready" count comes from the DIAGNOSED hop, not the first Pods hop', () => {
+    const v = reachVerdict(trace({
+      verdict: 'degraded',
+      downstream: [
+        { resource: { kind: 'Service', name: 's' }, edge: 'entry:Service', findings: [] } as Hop,
+        // First Pods hop: a different backend, partially up, NO finding.
+        { resource: { kind: 'Pods', name: 'a' }, edge: 'Service->Pods', meta: { ready: 1, selected: 2 }, findings: [] } as Hop,
+        // Second Pods hop: the DIAGNOSED backend - carries the critical finding + its own count.
+        { resource: { kind: 'Pods', name: 'b' }, edge: 'Service->Pods', meta: { ready: 1, selected: 3 }, findings: [
+          { code: 'problem:CrashLoopBackOff', severity: 'critical', message: 'Container "c" is crash-looping (CrashLoopBackOff)' },
+        ] } as Hop,
+      ],
+      routes: [route({ outcome: 'reached', confidence: 'indirect' })],
+    }), true)
+    expect(v.text).toBe('1 of 3 pods ready - Container "c" is crash-looping (CrashLoopBackOff)')
+    expect(v.text).not.toContain('1 of 2')
   })
 
   it('multi-backend with ONE healthy backend does NOT condemn "No healthy backend" — a serving sibling means the entry can still serve', () => {

@@ -1,4 +1,4 @@
-import type { Trace, ResourceRef } from './types'
+import type { Trace, ResourceRef, ProbeVantage, Finding } from './types'
 import type { StatusTone } from '../ui/status-tone'
 
 // VIA_API_SERVER is the ONE operator-facing name for the apiserver-proxy vantage
@@ -66,8 +66,11 @@ function frontDoorStatus(trace: Trace): { state: 'reached' | 'partial' | 'partia
   // Only an HTTP 2xx (tone 'healthy') is a CONFIRMED front door. A bare TCP/TLS
   // connect or a 5xx is not — an LB can answer the SYN or return 502 while the
   // app is down, so claiming "confirmed" off transport would overclaim health.
-  const failed = live.find((p) => !p.ok)
   const http2xx = live.find((p) => p.layer === 'http' && p.ok && p.tone === 'healthy')
+  // A failure on a DIFFERENT host is a real partial; a not-ok probe on the SAME host as
+  // the 2xx (a lower-layer retry that flapped) must not invent a second failed host.
+  // When there is no 2xx, every failure still counts (the no-2xx branches below).
+  const failed = live.find((p) => !p.ok && (!http2xx || hostOf(p) !== hostOf(http2xx)))
   if (http2xx) {
     // A 2xx confirms ONE host, but a multi-host entry can have a sibling host fail
     // (connection-refused on another hostname). Don't claim a blanket "confirmed"
@@ -116,15 +119,30 @@ function frontDoorStatus(trace: Trace): { state: 'reached' | 'partial' | 'partia
 // worstFindingMessage returns the plain one-line message of the worst static
 // finding (critical first, then warning) across all hops — the operator-facing
 // sentence, not the forensic cause/summary.
-function worstFindingMessage(trace: Trace): string | undefined {
+// A finding that describes a backend pod's own runtime state (crash/OOM/pull/init/
+// readiness), as opposed to a config, controller, or front-door concern.
+function isPodStateFinding(f: Finding): boolean {
+  const c = f.code ?? ''
+  return c.startsWith('problem:') || c.startsWith('pods:') || c.startsWith('svc:no-ready') || f.resource?.kind === 'Pod'
+}
+
+function worstFinding(trace: Trace): Finding | undefined {
   const downstream = (trace.downstream ?? []).flatMap((h) => h.findings ?? [])
   // Upstream missing_ref findings concern a SIBLING backend route, not this
   // subject — drop them so a sibling's broken backend doesn't headline an
   // otherwise-healthy path (mirrors TracePanel HopRow's upstream scoping).
   const upstream = (trace.upstreams ?? []).flatMap((h) => h.findings ?? []).filter((x) => !(x.code ?? '').startsWith('missing_ref:'))
   const all = [...downstream, ...upstream]
-  const f = all.find((x) => x.severity === 'critical') ?? all.find((x) => x.severity === 'warning')
-  return f?.message
+  return all.find((x) => x.severity === 'critical') ?? all.find((x) => x.severity === 'warning')
+}
+
+function worstFindingMessage(trace: Trace): string | undefined {
+  const f = worstFinding(trace)
+  if (!f) return undefined
+  // Pod-state findings carry a raw kubelet message ("back-off 5m0s restarting failed
+  // container=c pod=…(uid)"); podDiagnosis put a clean, container-naming string in
+  // `cause` - prefer it so the headline reads in plain English, not kubelet noise.
+  return isPodStateFinding(f) && f.cause ? f.cause : f.message
 }
 
 // entryControllerProblem returns the plain message of an ingress-controller
@@ -167,9 +185,6 @@ function backendDown(trace: Trace): { reason: string; raw?: string; cause?: stri
   // Ingress/Gateway with one healthy backend must NOT be condemned — that path can
   // still serve, so fall through to the partial-route logic below.
   if (backendHops.some((h) => typeof h.meta?.ready === 'number' && (h.meta.ready as number) > 0)) return undefined
-  const podsHop = backendHops[0]
-  const ready = (podsHop.meta?.ready as number) ?? 0
-  const selected = (podsHop.meta?.selected as number) ?? 0
   // Pick the most SPECIFIC cause for the headline. The "0/N selected pods ready"
   // symptom now carries a Pod ref too (linkNoReadyToCulprit), so it must be ranked
   // BELOW the real pod-failure findings (CrashLoopBackOff, ImagePullBackOff, …) —
@@ -190,6 +205,13 @@ function backendDown(trace: Trace): { reason: string; raw?: string; cause?: stri
   // an outage). A real failure finding makes it definitive.
   const transitional = !realCause
   const culprit = realCause ?? problems.find((f) => f.severity === 'critical')
+  // Read the pod count from the SAME hop that owns the named culprit, so a
+  // multi-backend trace never prints one backend's "M selected" beside another
+  // backend's pod name. Falls back to the first backend hop when the culprit is the
+  // hop-agnostic "0/N selected" symptom (which lives on the Service entry hop).
+  const culpritHop = (culprit && backendHops.find((h) => (h.findings ?? []).includes(culprit))) || backendHops[0]
+  const ready = (culpritHop.meta?.ready as number) ?? 0
+  const selected = (culpritHop.meta?.selected as number) ?? 0
   const raw = culprit ? (culprit.code ?? '').replace(/^problem:/, '') : undefined
   return { reason: plainPodReason(raw), raw, cause: culprit?.cause, pod: culprit?.resource, ready, selected, transitional }
 }
@@ -199,13 +221,13 @@ function backendDown(trace: Trace): { reason: string; raw?: string; cause?: stri
 function plainPodReason(raw?: string): string {
   switch (raw) {
     case 'CrashLoopBackOff':
-      return 'the backend app keeps crashing'
+      return 'a backend container keeps crashing'
     case 'ImagePullBackOff':
     case 'ErrImagePull':
     case 'InvalidImageName':
       return "the backend pod can't pull its image"
     case 'OOMKilled':
-      return 'the backend app ran out of memory'
+      return 'a backend container ran out of memory'
     default:
       return "the backend pods aren't ready"
   }
@@ -227,6 +249,7 @@ export function reachVerdict(trace: Trace, probed?: boolean): ReachVerdictView {
   // not be floored to a hard ✗ by a static 'broken' verdict; cap it at degraded so
   // the honest "may be starting" amber survives (a fresh rollout isn't an outage).
   if (floor === 'unhealthy' && backendDown(trace)?.transitional) floor = 'degraded'
+  let result = view
   if (floor && (REACH_TONE_RANK[view.tone] ?? 0) < REACH_TONE_RANK[floor]) {
     const why = worstFindingMessage(trace)
     const icon = floor === 'unhealthy' ? '✗' : '⚠'
@@ -234,12 +257,39 @@ export function reachVerdict(trace: Trace, probed?: boolean): ReachVerdictView {
     // observe must HEADLINE the verdict, not sit as a footnote under an optimistic
     // "reached" line. Lead with the problem; demote the probe read to a caveat so
     // the headline never reads "reached/healthy" on a broken/degraded path.
-    if (why && why !== view.text) {
-      return { ...view, tone: floor, icon, text: why, caveat: view.text, detail: view.caveat ?? view.detail }
-    }
-    return { ...view, tone: floor, icon, caveat: why ?? view.caveat }
+    result = why && why !== view.text
+      ? { ...view, tone: floor, icon, text: why, caveat: view.text, detail: view.caveat ?? view.detail }
+      : { ...view, tone: floor, icon, caveat: why ?? view.caveat }
   }
-  return view
+  // Partial readiness (some pods up, some down) is a degraded-but-reached state. Lead
+  // the headline with "N of M pods ready", but only when the headline is itself the
+  // backend-pod concern (0-ready is handled by backendDown). If the headline is a
+  // controller, front-door, or config concern, prefixing a pod count would misdirect,
+  // so require result.text to be exactly the pod finding's message.
+  const wf = worstFinding(trace)
+  const podLed = !!wf && isPodStateFinding(wf) && result.text === worstFindingMessage(trace)
+  // Read the count from the SAME hop that owns the headline finding - a multi-backend
+  // trace has >1 Pods hop, and the first hop's count could mismatch the diagnosed one.
+  const wfHop = wf ? [...(trace.downstream ?? []), ...(trace.upstreams ?? [])].find((h) => (h.findings ?? []).includes(wf)) : undefined
+  const ready = typeof wfHop?.meta?.ready === 'number' ? (wfHop.meta.ready as number) : undefined
+  const selected = typeof wfHop?.meta?.selected === 'number' ? (wfHop.meta.selected as number) : wfHop?.config?.podNames?.length
+  // Skip when the headline already carries a count ("N of M ready", "N/M") so it's never doubled.
+  const alreadyCounted = /pods? ready/i.test(result.text) || /\b\d+\s*(?:of|\/)\s*\d+\b/.test(result.text)
+  if (podLed && ready !== undefined && selected !== undefined && ready > 0 && ready < selected && !alreadyCounted) {
+    result = { ...result, text: `${ready} of ${selected} pods ready - ${result.text}` }
+  }
+  return result
+}
+
+/** The "direct dial" lane names Radar as the prober, but WHERE Radar sits changes
+ *  what a direct result proves - a laptop dial is out-of-cluster (a ClusterIP can
+ *  read red while the Service is fine); an in-cluster Radar dials from a pod. Suffix
+ *  the position when a probe vantage is known so "From Radar" self-describes rather
+ *  than meaning opposite things on the two deployments. */
+export function directLaneLabel(vantage?: ProbeVantage): string {
+  if (vantage === 'local') return 'From Radar · your machine'
+  if (vantage === 'in-cluster') return 'From Radar · in-cluster'
+  return 'From Radar'
 }
 
 function reachVerdictBase(trace: Trace, probed?: boolean): ReachVerdictView {
@@ -249,7 +299,7 @@ function reachVerdictBase(trace: Trace, probed?: boolean): ReachVerdictView {
   // through to the normal route-based verdict (which reflects the live result).
   const ext = externalNameHost(trace)
   if (ext && !probed && (trace.routes ?? []).length === 0) {
-    return { icon: '', tone: 'neutral', text: `Resolves to ${ext} — external DNS alias`, caveat: 'run the test to check reachability to it' }
+    return { icon: '', tone: 'neutral', text: `Resolves to ${ext} - external DNS alias`, caveat: 'run the test to check its reachability' }
   }
   const routes = trace.routes ?? []
   const okCount = routes.filter((r) => r.outcome === 'verified' || r.outcome === 'reached').length
@@ -277,7 +327,7 @@ function reachVerdictBase(trace: Trace, probed?: boolean): ReachVerdictView {
   // No live backend (pods wired but none ready) — lead with the real cause and
   // credit what IS confirmed, instead of "unreachable via API server"
   // (which frames a diagnosed backend failure as an untested route). The path is
-  // wired correctly up to the workload; the break is the app, not the network.
+  // wired correctly up to the workload; the break is in the pods, not the network.
   const bd = backendDown(trace)
   if (bd) {
     const noun = bd.selected === 1 ? 'pod' : 'pods'
@@ -291,13 +341,19 @@ function reachVerdictBase(trace: Trace, probed?: boolean): ReachVerdictView {
         caveat: 'No failure detected on the pods — they may still be starting (a fresh rollout or pending pods). Re-run once they settle.',
       }
     }
+    // Lead with the pod diagnosis (bd.cause) - it names the EXACT failing container
+    // and reason (a crashing sidecar, a stalled init container, a failing readiness
+    // probe), so the headline can't assert "the backend app" when a side component is
+    // the real culprit. Fall back to the generic reason only when the pod state was
+    // unclassifiable (cause empty).
     const tag = bd.raw && !bd.raw.includes('ready') ? ` (${bd.raw})` : ''
+    const lead = bd.cause || `${bd.reason}${tag}`
     return {
       icon: '✗',
       tone: 'unhealthy',
-      text: `No healthy backend — ${bd.reason}${tag}`,
-      caveat: `The Service is wired to its workload (selector matches); the break is the backend, not the network. ${bd.ready}/${bd.selected} ${noun} ready.`,
-      detail: bd.cause,
+      text: `No healthy backend - ${lead}`,
+      caveat: `The Service is wired to its workload (selector matches), so the break is in the pods, not the network. ${bd.ready}/${bd.selected} ${noun} ready.`,
+      detail: lead === bd.cause ? undefined : bd.cause,
     }
   }
 
@@ -351,9 +407,12 @@ function reachVerdictBase(trace: Trace, probed?: boolean): ReachVerdictView {
     return { icon: '', tone: 'neutral', text: `Front door: one host confirmed, another reached but not verified${fd.host ? ` — ${fd.host}` : ''}`, caveat: fd.detail ? `another declared host returned ${fd.detail} (3xx/4xx) — reachable, but not verified end-to-end` : 'another declared host returned an HTTP 3xx/4xx — reachable, but not verified end-to-end', detail: backendUntested ? undefined : backendCaveat }
   }
   if (fd.state === 'server-error') {
-    // The front door answered with a 5xx — the path reached the app, but it's
-    // erroring. Reached, not confirmed healthy.
-    return { icon: '⚠', tone: 'degraded', text: `Front door reached but returned a server error${fd.host ? ` — ${fd.host}` : ''}${fd.detail ? ` (${fd.detail})` : ''}` }
+    // This fires only for a front-door 502/504 (HTTP-layer degraded). An app's own
+    // 5xx now reads as "reached" (classifyHTTPStatus), so a degraded HTTP front door
+    // means the front door answered but could NOT reach its backend - a network-path
+    // fault, not an app error. Do not send the operator to app logs; fd.detail
+    // ("the front door couldn't reach the backend") names the hop.
+    return { icon: '⚠', tone: 'degraded', text: `Front door reached but couldn't reach the backend${fd.host ? `, ${fd.host}` : ''}${fd.detail ? ` (${fd.detail})` : ''}` }
   }
   if (fd.state === 'http-reached') {
     // The front door RETURNED an HTTP response (3xx/4xx — e.g. a 301 redirect to https,
@@ -378,7 +437,15 @@ function reachVerdictBase(trace: Trace, probed?: boolean): ReachVerdictView {
     // host that only resolves elsewhere — test it from where it resolves, NOT the
     // self-contradicting "from outside" when it may be cluster-internal.
     const host = fd.host || 'the host'
-    const how = allReal ? 'confirmed by real in-cluster traffic' : 'reached through the API server, not the real ingress path'
+    // "Confirmed" requires a real-traffic route that actually VERIFIED (2xx), not
+    // just any real-confidence reach: a real in-cluster dial that got 3xx/4xx is
+    // reached, not verified end-to-end, so it must not claim confirmation.
+    const realVerified = routes.some((r) => r.confidence === 'real' && r.outcome === 'verified')
+    const how = realVerified
+      ? 'confirmed by real in-cluster traffic'
+      : allReal
+      ? 'reached over real in-cluster traffic but not verified end-to-end'
+      : 'reached through the API server, not the real ingress path'
     // The skip has two distinct causes: DNS didn't resolve here (split-horizon),
     // OR DNS resolved but TCP/HTTP were skipped (e.g. the ingress IP isn't routable
     // from a laptop). Only say "didn't resolve" when the DNS layer was the skip —
@@ -436,9 +503,19 @@ function reachVerdictBase(trace: Trace, probed?: boolean): ReachVerdictView {
   if (realUnreach.length > 0 && okCount > 0) {
     return { icon: '⚠', tone: 'degraded', text: trace.headline || `${okCount} of ${total} routes reachable · ${realUnreach.length} unreachable` }
   }
-  // Server error — reached, but the app is erroring (a real problem → ⚠ honest).
+  // A degraded route is named by the layer that failed: "upstream" is a front-door
+  // 502/504 (HTTP was reached, but the gateway couldn't reach its backend), "tls" is
+  // a certificate failure. It is NEVER an app's own 5xx (that reads "reached"). Name
+  // the exact layer; prefer the Go headline when it already wrote the specific fault.
   if (any5xx) {
-    return { icon: '⚠', tone: 'degraded', text: trace.headline || 'Reached, but the app returned a server error — network ok, the app is erroring' }
+    const degraded = routes.filter((r) => r.outcome === 'server-error')
+    const tls = degraded.some((r) => r.failedLayer === 'tls')
+    const upstream = degraded.some((r) => r.failedLayer === 'upstream')
+    const fallback =
+      tls && !upstream ? 'Reached, but the TLS handshake failed (certificate problem) - check the certificate.'
+      : upstream && !tls ? "Reached the front door, but it couldn't reach its backend (502/504) - the upstream is unavailable."
+      : 'Reached, but a route is degraded (a TLS certificate or a front-door 502/504) - see the detail.'
+    return { icon: '⚠', tone: 'degraded', text: trace.headline || fallback }
   }
   // Reachable. A proxy-only reach is NEUTRAL, not a green ✓ — the green check makes a
   // non-expert read "it works, done" and skip the real limitation. It is still NEVER a

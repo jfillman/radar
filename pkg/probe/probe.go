@@ -446,9 +446,6 @@ func certExpiryNote(c *x509.Certificate) string {
 	}
 	return fmt.Sprintf("cert expires in %dd", days)
 }
-func certExpiringSoon(c *x509.Certificate) bool {
-	return time.Until(c.NotAfter) <= certExpiryWarnDays*24*time.Hour
-}
 
 // classifyCertError names WHY a cert didn't verify - expired vs name-mismatch vs
 // untrusted CA are three different fixes. Derived from the x509 error type, so no

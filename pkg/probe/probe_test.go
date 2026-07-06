@@ -105,15 +105,9 @@ func TestCertExpiryNote(t *testing.T) {
 	if got := certExpiryNote(soon); !strings.Contains(got, "EXPIRES in 3d") {
 		t.Errorf("3-day cert → %q, want 'EXPIRES in 3d' (warns, uppercase)", got)
 	}
-	if !certExpiringSoon(soon) {
-		t.Errorf("3-day cert should be expiring-soon")
-	}
 	far := &x509.Certificate{NotAfter: time.Now().Add(90*24*time.Hour + 2*time.Hour)}
 	if got := certExpiryNote(far); !strings.Contains(got, "expires in 90d") || strings.Contains(got, "EXPIRES") {
 		t.Errorf("90-day cert → %q, want lowercase 'expires in 90d' (no warn)", got)
-	}
-	if certExpiringSoon(far) {
-		t.Errorf("90-day cert should NOT be expiring-soon")
 	}
 }
 

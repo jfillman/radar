@@ -112,24 +112,24 @@ func extractIsDiagnoseKindBody(src string) string {
 	return ""
 }
 
-// tracePanelPath holds the TS component that mirrors missingRefCodePrefix to
-// scope upstream rows (B1: a sibling route's broken backend must not paint a
-// healthy subject's upstream chip red).
-const tracePanelPath = "../../packages/k8s-ui/src/components/trace/TracePanel.tsx"
+// missingRefPrefixTSPath holds the TS module that mirrors missingRefCodePrefix
+// to exclude a sibling route's broken backend from an upstream entry's findings
+// (a sibling break must not paint a healthy subject's verdict red).
+const missingRefPrefixTSPath = "../../packages/k8s-ui/src/components/trace/reachVerdict.ts"
 
-// TestMissingRefPrefixMirrored fails when the UI's MISSING_REF_CODE_PREFIX
-// drifts from the Go missingRefCodePrefix. Both partition an upstream entry's
-// findings into "reaches this subject" vs "sibling route"; a mismatch would let
-// the UI fold a sibling break into the subject row (or vice versa) while the
-// verdict excludes it, putting a red chip next to a green banner.
+// TestMissingRefPrefixMirrored fails when the UI's missing-ref prefix drifts
+// from the Go missingRefCodePrefix. Both partition an upstream entry's findings
+// into "reaches this subject" vs "sibling route"; a mismatch would let the UI
+// fold a sibling break into the subject verdict (or vice versa) while the Go
+// verdict excludes it.
 func TestMissingRefPrefixMirrored(t *testing.T) {
-	raw, err := os.ReadFile(tracePanelPath)
+	raw, err := os.ReadFile(missingRefPrefixTSPath)
 	if err != nil {
-		t.Fatalf("read %s: %v", tracePanelPath, err)
+		t.Fatalf("read %s: %v", missingRefPrefixTSPath, err)
 	}
-	want := "const MISSING_REF_CODE_PREFIX = '" + missingRefCodePrefix + "'"
+	want := "startsWith('" + missingRefCodePrefix + "')"
 	if !strings.Contains(string(raw), want) {
-		t.Fatalf("TS MISSING_REF_CODE_PREFIX out of sync with Go missingRefCodePrefix (%q).\nExpected %s to contain:\n  %s\nUpdate the TS constant OR internal/trace/trace.go so both use the same code prefix.",
-			missingRefCodePrefix, tracePanelPath, want)
+		t.Fatalf("TS missing-ref prefix out of sync with Go missingRefCodePrefix (%q).\nExpected %s to contain:\n  %s\nUpdate the TS literal OR internal/trace/trace.go so both use the same code prefix.",
+			missingRefCodePrefix, missingRefPrefixTSPath, want)
 	}
 }

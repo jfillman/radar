@@ -1,4 +1,4 @@
-export { TracePanel, inClusterOutcome, inClusterEligible } from './TracePanel'
+export { inClusterOutcome, inClusterEligible } from './TracePanel'
 export { ReachabilityView } from './ReachabilityView'
 export { traceToSubgraph } from './traceToSubgraph'
 export { TraceSummary } from './TraceSummary'

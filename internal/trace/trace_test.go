@@ -108,7 +108,7 @@ func TestBuildTrace_ServiceHealthy(t *testing.T) {
 func TestBuildTrace_ShippedVerdictIsCoverageHonest(t *testing.T) {
 	defer k8s.ResetTestState()
 	t.Setenv("KUBERNETES_SERVICE_HOST", "") // local vantage: only the apiserver path probes
-	stubProxyProbes(t)                       // apiserver proxy returns 2xx (indirect success)
+	stubProxyProbes(t)                      // apiserver proxy returns 2xx (indirect success)
 
 	labelsMap := map[string]string{"app": "api"}
 	svc := &corev1.Service{
@@ -1138,4 +1138,48 @@ func TestRouteParentGateways_RedactsCrossNamespaceGateway(t *testing.T) {
 		}
 	}
 	assertRedactedHop(t, redacted)
+}
+
+// Defect 3: a DOWN drained (weight-0) backend must not drag the verdict to
+// broken/degraded - it carries zero traffic by design.
+func TestComputeVerdict_DrainedBackendExcluded(t *testing.T) {
+	tr := &Trace{
+		Subject: ResourceRef{Group: "gateway.networking.k8s.io", Kind: "HTTPRoute", Namespace: "prod", Name: "r"},
+		Verdict: VerdictHealthy,
+		Downstream: []Hop{
+			{Resource: ResourceRef{Group: "gateway.networking.k8s.io", Kind: "HTTPRoute", Namespace: "prod", Name: "r"}, Edge: "entry:HTTPRoute"},
+			{Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "stable"}, Edge: "HTTPRoute->Service"},
+			{Resource: ResourceRef{Kind: "Pods", Namespace: "prod"}, Edge: "Service->Pods"},
+			{Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "canary"}, Edge: "HTTPRoute->Service",
+				Meta:     map[string]any{"drained": true},
+				Findings: []Finding{{Code: "route:drained-weight-zero", Severity: SeverityInfo}}},
+			{Resource: ResourceRef{Kind: "Pods", Namespace: "prod"}, Edge: "Service->Pods",
+				Findings: []Finding{{Code: "svc:no-ready-endpoints", Severity: SeverityCritical, Message: "0/0 ready"}}},
+		},
+	}
+	if v, _ := computeVerdict(tr); v != VerdictHealthy {
+		t.Errorf("verdict = %q, want healthy - a down DRAINED backend must not condemn the path", v)
+	}
+}
+
+// Defect 13: an upstream missing_ref critical (about a sibling backend route)
+// must NOT block the broken→degraded benign softening for a scale-to-0 here.
+func TestHasNonBenignCriticalFinding_ScopesUpstreamMissingRef(t *testing.T) {
+	tr := &Trace{
+		Downstream: []Hop{
+			{Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "api"}, Edge: "entry:Service"},
+		},
+		Upstreams: []Hop{
+			{Resource: ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "shop"}, Edge: "entry:Ingress",
+				Findings: []Finding{{Code: "missing_ref:ghost", Severity: SeverityCritical, Message: "/other references ghost"}}},
+		},
+	}
+	if hasNonBenignCriticalFinding(tr) {
+		t.Error("upstream missing_ref critical must be scoped out (sibling route), not block softening")
+	}
+	// A downstream critical IS scanned unconditionally.
+	tr.Downstream[0].Findings = []Finding{{Code: "svc:no-controller", Severity: SeverityCritical}}
+	if !hasNonBenignCriticalFinding(tr) {
+		t.Error("a downstream critical must still register")
+	}
 }

@@ -295,3 +295,22 @@ func TestEffectivePolicyTypes(t *testing.T) {
 		t.Errorf("explicit egress-only: got %+v, want egress-only", got)
 	}
 }
+
+// Defect 1: a kube-system-resident workload whose egress rule allows port 53 to a
+// same-namespace podSelector matching CoreDNS DOES reach DNS - the gap must not
+// false-fire. A non-kube-system source keeps the prior "gap fires" behavior.
+func TestRuleDestCoversDNS_KubeSystemSource(t *testing.T) {
+	coreDNS := rule(nil, peerPod(sel("k8s-app", "kube-dns")))
+	if got := ruleDestCoversDNS(&coreDNS, metav1.NamespaceSystem); got != triYes {
+		t.Errorf("kube-system source + CoreDNS podSelector: dest cover = %v, want triYes", got)
+	}
+	// A kube-system source whose peer is NOT CoreDNS stays uncovered (gap may fire).
+	other := rule(nil, peerPod(sel("app", "other")))
+	if got := ruleDestCoversDNS(&other, metav1.NamespaceSystem); got == triYes {
+		t.Errorf("kube-system source + non-CoreDNS podSelector: dest cover = %v, want not-triYes", got)
+	}
+	// A normal namespace source: same-namespace podSelector does not reach CoreDNS.
+	if got := ruleDestCoversDNS(&coreDNS, "prod"); got == triYes {
+		t.Errorf("non-kube-system source: same-ns podSelector must not cover DNS, got %v", got)
+	}
+}

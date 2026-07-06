@@ -6,6 +6,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/probe"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // TestVantageAPIServerName pins the ONE operator-facing name for the apiserver-
@@ -100,7 +101,9 @@ func TestUpgradeDefinitiveBackendDown(t *testing.T) {
 			Routes:     routes,
 		}
 	}
-	ind := func(id string) RouteResult { return RouteResult{Route: id, Outcome: OutcomeUnreachable, Confidence: ConfidenceIndirect} }
+	ind := func(id string) RouteResult {
+		return RouteResult{Route: id, Outcome: OutcomeUnreachable, Confidence: ConfidenceIndirect}
+	}
 
 	cases := []struct {
 		name     string
@@ -972,5 +975,221 @@ func TestApplyInClusterResults_LeavesBenignUntouched(t *testing.T) {
 	ApplyInClusterResults(tr, results)
 	if tr.Routes[0].Outcome != OutcomeUnreachable || !tr.Routes[0].Benign {
 		t.Errorf("benign scale-to-0 route must be left untouched, got %+v", tr.Routes[0])
+	}
+}
+
+// Defect 3: routeBackendDrained marks an explicit weight-0 backend with a live
+// sibling as drained; a traffic-carrying or weight-omitted backend is not.
+func TestRouteBackendDrained(t *testing.T) {
+	route := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "gateway.networking.k8s.io/v1",
+		"kind":       "HTTPRoute",
+		"metadata":   map[string]any{"name": "r", "namespace": "prod"},
+		"spec": map[string]any{
+			"rules": []any{map[string]any{"backendRefs": []any{
+				map[string]any{"name": "stable", "weight": int64(100)},
+				map[string]any{"name": "canary", "weight": int64(0)},
+			}}},
+		},
+	}}
+	if !routeBackendDrained(route, "prod", "canary") {
+		t.Error("canary (weight 0, live sibling) must be drained")
+	}
+	if routeBackendDrained(route, "prod", "stable") {
+		t.Error("stable (weight 100) must NOT be drained")
+	}
+
+	// Weight omitted on the zero-candidate → defaults to traffic-carrying.
+	noWeight := &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"name": "r", "namespace": "prod"},
+		"spec": map[string]any{"rules": []any{map[string]any{"backendRefs": []any{
+			map[string]any{"name": "stable", "weight": int64(100)},
+			map[string]any{"name": "canary"},
+		}}}},
+	}}
+	if routeBackendDrained(noWeight, "prod", "canary") {
+		t.Error("weight-omitted backend must NOT be drained")
+	}
+
+	// All-zero (no live sibling) → not drained (no traffic anywhere, not a cutover).
+	allZero := &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"name": "r", "namespace": "prod"},
+		"spec": map[string]any{"rules": []any{map[string]any{"backendRefs": []any{
+			map[string]any{"name": "a", "weight": int64(0)},
+			map[string]any{"name": "b", "weight": int64(0)},
+		}}}},
+	}}
+	if routeBackendDrained(allZero, "prod", "a") {
+		t.Error("all-zero weights (no live sibling) must NOT be drained")
+	}
+}
+
+// Defect 3: a drained backend hop folds into coverage as a benign skip (no
+// coverage lost), never a failed route or a coverage gap.
+func TestBuildRoutes_DrainedBackendBenignSkip(t *testing.T) {
+	tr := &Trace{
+		Subject: ResourceRef{Group: "gateway.networking.k8s.io", Kind: "HTTPRoute", Namespace: "prod", Name: "r"},
+		Downstream: []Hop{
+			{Resource: ResourceRef{Group: "gateway.networking.k8s.io", Kind: "HTTPRoute", Namespace: "prod", Name: "r"}, Edge: "entry:HTTPRoute",
+				Config: &HopConfig{Rules: []RouteRule{{Backends: []BackendRef{{Name: "stable"}}}, {Backends: []BackendRef{{Name: "canary"}}}}}},
+			{Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "stable"}, Edge: "HTTPRoute->Service", Config: &HopConfig{Ports: []PortMap{{Port: 80}}}},
+			{Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "canary"}, Edge: "HTTPRoute->Service",
+				Config:   &HopConfig{Ports: []PortMap{{Port: 80}}},
+				Meta:     map[string]any{"drained": true},
+				Findings: []Finding{{Code: "route:drained-weight-zero", Severity: SeverityInfo}}},
+		},
+	}
+	_, skips := buildRoutes(tr)
+	var benignDrained bool
+	for _, s := range skips {
+		if s.ReasonClass == SkipClassBenign && strings.Contains(s.Reason, "drained") {
+			benignDrained = true
+		}
+	}
+	if !benignDrained {
+		t.Errorf("drained backend must yield a benign skip, got skips=%+v", skips)
+	}
+}
+
+// Defect 1: a multi-route headline whose every passing route was reached ONLY via
+// the apiserver proxy must say proxy-only - not a bare "All N routes reachable"
+// that contradicts CoverageVerdict (which returns unknown on !anyRealPass).
+func TestCoverageHeadline_MultiRouteProxyOnly(t *testing.T) {
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "shop"},
+		Verdict: VerdictHealthy, // internal verdict; CoverageVerdict corrects it to unknown
+		Routes: []RouteResult{
+			{Route: "a.example.com/", Target: "a:80", Outcome: OutcomeReached, Confidence: ConfidenceIndirect},
+			{Route: "b.example.com/", Target: "b:80", Outcome: OutcomeVerified, Confidence: ConfidenceIndirect},
+		},
+		Coverage: &Coverage{Tested: 2, Passed: 2},
+	}
+	h := CoverageHeadline(tr)
+	if strings.Contains(h, "routes reachable") && !strings.Contains(h, "API server") {
+		t.Errorf("headline = %q, want a proxy-only qualifier, not a bare 'reachable'", h)
+	}
+	if !strings.Contains(h, "API server") {
+		t.Errorf("headline = %q, want it to name the API server (real path not confirmed)", h)
+	}
+	if CoverageVerdict(tr) != VerdictUnknown {
+		t.Errorf("CoverageVerdict = %q, want unknown for proxy-only - headline must agree", CoverageVerdict(tr))
+	}
+}
+
+// A multi-route headline with at least one REAL pass keeps the confident wording.
+func TestCoverageHeadline_MultiRouteRealStaysReachable(t *testing.T) {
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "shop"},
+		Routes: []RouteResult{
+			{Route: "a/", Target: "a:80", Outcome: OutcomeVerified, Confidence: ConfidenceReal},
+			{Route: "b/", Target: "b:80", Outcome: OutcomeVerified, Confidence: ConfidenceReal},
+		},
+		Coverage: &Coverage{Tested: 2, Passed: 2},
+	}
+	if h := CoverageHeadline(tr); !strings.Contains(h, "All 2 routes reachable") {
+		t.Errorf("headline = %q, want the confident 'All 2 routes reachable'", h)
+	}
+}
+
+// Defect 12: a shared (Port==0) front-door HTTP 2xx must NOT, on its own, VERIFY a
+// backend port route whose own probes didn't independently succeed - it caps at
+// "reached", never a false green "verified · real".
+func TestRoutesByPort_SharedFrontDoorDoesNotVerifyPort(t *testing.T) {
+	shared := []probe.Result{
+		{Layer: probe.LayerHTTP, Target: "http://shop/", Port: 0, OK: true, Tone: probe.ToneHealthy, Vantage: probe.VantageLocal},
+	}
+	// The backend's own :9090 probe skipped (non-HTTP from a laptop) - only the
+	// shared front-door / 2xx is live for this port.
+	skipped := probe.Skipped(probe.LayerHTTP, "port 9090", probe.VantageLocal, "non-HTTP port - can't verify from here")
+	skipped.Port = 9090
+	probes := append(append([]probe.Result{}, shared...), skipped)
+	routes := routesByPort("api/", "api", "api:9090", probes, []int32{9090}, nil)
+	if len(routes) != 1 {
+		t.Fatalf("want 1 route, got %d", len(routes))
+	}
+	if routes[0].Outcome == OutcomeVerified {
+		t.Errorf("outcome = verified - a port-agnostic front-door 2xx must not verify a backend port route")
+	}
+	if routes[0].Outcome != OutcomeReached {
+		t.Errorf("outcome = %q, want reached (front door reached, this port not independently verified)", routes[0].Outcome)
+	}
+}
+
+// A port's OWN healthy HTTP probe still wins to verified even alongside the shared
+// front-door context.
+func TestRoutesByPort_OwnHealthyStillVerifies(t *testing.T) {
+	shared := []probe.Result{
+		{Layer: probe.LayerHTTP, Target: "http://shop/", Port: 0, OK: true, Tone: probe.ToneHealthy, Vantage: probe.VantageLocal},
+	}
+	own := probe.Result{Layer: probe.LayerHTTP, Target: "port 80", Port: 80, OK: true, Tone: probe.ToneHealthy, Vantage: probe.VantageInCluster}
+	probes := append(append([]probe.Result{}, shared...), own)
+	routes := routesByPort("api/", "api", "api:80", probes, []int32{80}, nil)
+	if len(routes) != 1 || routes[0].Outcome != OutcomeVerified {
+		t.Fatalf("want a verified route from the port's own healthy probe, got %+v", routes)
+	}
+}
+
+// Defect 4: a single-host Ingress route's label is path-only ("/api"), so
+// routeHostKey returns "" and a NotTested route both counts its own skipped
+// transport probe (under the host key) AND itself - inflating Coverage.Skipped.
+// recountCoverage must recover the host from a host-bearing field (the declared
+// host on InClusterRequest) so the dedup fires.
+func TestRecountCoverage_SingleHostNotTestedNoDoubleCount(t *testing.T) {
+	tr := &Trace{
+		Routes: []RouteResult{{
+			Route:            "/api", // path-only label (single-host Ingress)
+			Target:           "shop:80",
+			Outcome:          OutcomeNotTested,
+			InClusterRequest: &ProbeRequest{Host: "shop.example.com", Path: "/api"},
+		}},
+		// The route's own skipped transport probe, keyed by host in NotTested.
+		NotTested: []RouteSkip{{
+			Route:       "shop.example.com:443",
+			Reason:      "the entry path couldn't be reached from where Radar ran",
+			ReasonClass: SkipClassVantage,
+		}},
+	}
+	recountCoverage(tr)
+	if tr.Coverage == nil {
+		t.Fatal("Coverage nil")
+	}
+	if tr.Coverage.Skipped != 1 {
+		t.Errorf("Coverage.Skipped = %d, want 1 - the not-tested route and its skip row are the SAME gap, not two", tr.Coverage.Skipped)
+	}
+}
+
+// Regression: the multi-host case (route label carries the host) still dedups.
+func TestRecountCoverage_MultiHostNotTestedDedup(t *testing.T) {
+	tr := &Trace{
+		Routes: []RouteResult{{
+			Route:   "shop.example.com/api", // host-qualified (multi-host Ingress)
+			Target:  "shop:80",
+			Outcome: OutcomeNotTested,
+		}},
+		NotTested: []RouteSkip{{
+			Route:       "shop.example.com:443",
+			Reason:      "the entry path couldn't be reached from where Radar ran",
+			ReasonClass: SkipClassVantage,
+		}},
+	}
+	recountCoverage(tr)
+	if tr.Coverage.Skipped != 1 {
+		t.Errorf("Coverage.Skipped = %d, want 1 (host-qualified label dedups)", tr.Coverage.Skipped)
+	}
+}
+
+// A host-less not-tested route (subject/port identity, no front-door host) with no
+// matching skip row is still its own genuine gap - counted once.
+func TestRecountCoverage_HostlessNotTestedCountsOnce(t *testing.T) {
+	tr := &Trace{
+		Routes: []RouteResult{{
+			Route:   ":8080",
+			Target:  "svc:8080",
+			Outcome: OutcomeNotTested,
+		}},
+	}
+	recountCoverage(tr)
+	if tr.Coverage.Skipped != 1 {
+		t.Errorf("Coverage.Skipped = %d, want 1 (genuine gap, no dedup partner)", tr.Coverage.Skipped)
 	}
 }

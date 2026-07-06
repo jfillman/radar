@@ -57,3 +57,28 @@ func TestDetectMesh_AdvisoryIsInfoOnly(t *testing.T) {
 		t.Errorf("mesh advisory severity = %q, want INFO (it must never escalate the verdict)", found.Severity)
 	}
 }
+
+// Defect 1: selectedPods must distinguish "genuinely nothing to read" (no svc /
+// no selector → readable-empty) from "can't read pod state" (Pods lister
+// unavailable, e.g. Pods kind RBAC-disabled at startup → unreadable). Lumping the
+// uncertain case in with the empty case stamps a confident "0 ready pods" under
+// uncertainty, contradicting the function's documented contract.
+func TestSelectedPods_NilListerIsUnreadable(t *testing.T) {
+	withSelector := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "shop"},
+		Spec:       corev1.ServiceSpec{Selector: map[string]string{"app": "shop"}},
+	}
+	// A selector exists but Deps.Cache is nil → can't read pods → unreadable.
+	if pods, unreadable := selectedPods(Deps{}, withSelector); !unreadable || pods != nil {
+		t.Errorf("selector + nil cache: got pods=%v unreadable=%v, want nil/true (uncertain, not a confident empty)", pods, unreadable)
+	}
+	// No selector → headless/selectorless Service, genuinely nothing to enumerate.
+	noSelector := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "db"}}
+	if pods, unreadable := selectedPods(Deps{}, noSelector); unreadable || pods != nil {
+		t.Errorf("no selector: got pods=%v unreadable=%v, want nil/false (nothing to read)", pods, unreadable)
+	}
+	// nil Service → nothing to read.
+	if pods, unreadable := selectedPods(Deps{}, nil); unreadable || pods != nil {
+		t.Errorf("nil svc: got pods=%v unreadable=%v, want nil/false", pods, unreadable)
+	}
+}

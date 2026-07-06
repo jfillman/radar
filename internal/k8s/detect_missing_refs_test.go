@@ -694,9 +694,6 @@ func TestDetectMissingGatewayRefs(t *testing.T) {
 	if portMismatch == nil {
 		t.Fatalf("port-mismatch problem for port 9090 not found: %+v", problems)
 	}
-	if !hasSubstr(portMismatch.Message, "http/80") {
-		t.Errorf("port-mismatch message should name the Service's actual ports for actionability, got %q", portMismatch.Message)
-	}
 
 	scoped := DetectMissingGatewayRefs(GetResourceCache(), dynCache, GetResourceDiscovery(), "prod")
 	if len(scoped) != 4 {

@@ -1,0 +1,97 @@
+package cloudinstall
+
+import (
+	"context"
+	"testing"
+
+	authv1 "k8s.io/api/authorization/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
+)
+
+// fakeWithSSAR returns a fake clientset whose SelfSubjectAccessReview creates are
+// answered by allow(); everything else denied.
+func fakeWithSSAR(allow func(authv1.ResourceAttributes) bool) *fake.Clientset {
+	cs := fake.NewSimpleClientset()
+	cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		ssar := action.(k8stesting.CreateAction).GetObject().(*authv1.SelfSubjectAccessReview)
+		out := ssar.DeepCopy()
+		out.Status.Allowed = allow(*ssar.Spec.ResourceAttributes)
+		return true, out, nil
+	})
+	return cs
+}
+
+func TestInstallPreflight_ClusterAdmin(t *testing.T) {
+	cs := fakeWithSSAR(func(authv1.ResourceAttributes) bool { return true })
+	res, err := InstallPreflight(context.Background(), cs, "radar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK() || len(res.Blocking) != 0 || len(res.Advisory) != 0 {
+		t.Fatalf("cluster-admin should pass clean, got %+v", res)
+	}
+}
+
+func TestInstallPreflight_PlainUser(t *testing.T) {
+	// A namespace-scoped editor: can create namespaced objects, but no
+	// cluster-scoped RBAC and no escalate/bind.
+	cs := fakeWithSSAR(func(a authv1.ResourceAttributes) bool {
+		return a.Namespace != "" && a.Verb == "create"
+	})
+	res, err := InstallPreflight(context.Background(), cs, "radar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK() {
+		t.Fatal("plain user must be blocked (can't create cluster RBAC)")
+	}
+	// ClusterRole + ClusterRoleBinding create are the blocking denials.
+	if !containsSubstr(res.Blocking, "create ClusterRoles") || !containsSubstr(res.Blocking, "create ClusterRoleBindings") {
+		t.Errorf("expected cluster-RBAC create in Blocking, got %v", res.Blocking)
+	}
+	// escalate/bind land in Advisory, never Blocking.
+	if len(res.Advisory) == 0 {
+		t.Errorf("expected escalate/bind in Advisory, got none")
+	}
+	for _, b := range res.Blocking {
+		if b == "escalate ClusterRoles (for the impersonation role)" {
+			t.Errorf("escalate must be advisory, not blocking")
+		}
+	}
+}
+
+func TestInstallPreflight_CanCreateButCannotEscalate(t *testing.T) {
+	// Edge case: caller can create every object (incl. cluster RBAC) but lacks
+	// escalate/bind. Not blocked (the install attempt is the authoritative gate);
+	// the missing escalate/bind surface as advisory.
+	cs := fakeWithSSAR(func(a authv1.ResourceAttributes) bool {
+		return a.Verb == "create"
+	})
+	res, err := InstallPreflight(context.Background(), cs, "radar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK() {
+		t.Fatalf("create-capable caller must not be blocked, got Blocking=%v", res.Blocking)
+	}
+	if len(res.Advisory) != 4 { // escalate + bind admin/edit/view
+		t.Errorf("expected 4 advisory (escalate + 3 binds), got %v", res.Advisory)
+	}
+}
+
+func TestInstallPreflight_NilClient(t *testing.T) {
+	if _, err := InstallPreflight(context.Background(), nil, "radar"); err == nil {
+		t.Fatal("expected error on nil client")
+	}
+}
+
+func containsSubstr(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}

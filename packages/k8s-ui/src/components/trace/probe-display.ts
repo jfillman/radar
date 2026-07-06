@@ -2,7 +2,7 @@ import type { ProbeResult } from './types'
 
 // collapseSkipRows folds identical (layer, path, reason, command) skip rows
 // into a single row labelled with the collapsed count. Real probe outcomes
-// (success, failure, partial latency rows) pass through unchanged — only
+// (success, failure, partial latency rows) pass through unchanged - only
 // "didn't run, here's why" rows get deduped. Driving case: a Pods hop
 // with three replicas and one non-HTTP port produces three skip rows
 // with identical reasons; the operator only needs to read it once. The

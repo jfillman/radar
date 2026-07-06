@@ -10,7 +10,7 @@ import (
 // Defect 1: nonHTTPSkipReason must only append "Reachability still checked at the
 // TCP level." when a data-path TCP probe ACTUALLY ran for this hop. In-cluster only
 // dials a routable address, so a headless Service (no ClusterIP) or a pods hop with
-// names but no IPs runs no TCP probe even in-cluster — claiming TCP was checked there
+// names but no IPs runs no TCP probe even in-cluster - claiming TCP was checked there
 // overclaims a check that did not happen.
 func TestNonHTTPSkipReason_TCPClaimGatedOnTCPRan(t *testing.T) {
 	const tcpClaim = " Reachability still checked at the TCP level."
@@ -54,7 +54,7 @@ func TestApplyInClusterResults_PrunesResolvedVantageSkip(t *testing.T) {
 		}},
 		NotTested: []RouteSkip{{
 			Route:       "api:80",
-			Reason:      "couldn't reach an internal address from your machine — run radar in-cluster",
+			Reason:      "couldn't reach an internal address from your machine - run radar in-cluster",
 			ReasonClass: SkipClassVantage,
 		}},
 	}
@@ -79,7 +79,7 @@ func TestApplyInClusterResults_PrunesResolvedVantageSkip(t *testing.T) {
 		t.Fatalf("route Confidence = %q, want real", tr.Routes[0].Confidence)
 	}
 	if len(tr.NotTested) != 0 {
-		t.Errorf("NotTested = %+v, want empty — the live pass satisfied the run-in-cluster advice", tr.NotTested)
+		t.Errorf("NotTested = %+v, want empty - the live pass satisfied the run-in-cluster advice", tr.NotTested)
 	}
 	if tr.Coverage == nil {
 		t.Fatal("Coverage nil")
@@ -93,7 +93,7 @@ func TestApplyInClusterResults_PrunesResolvedVantageSkip(t *testing.T) {
 }
 
 // Regression: a vantage skip whose route did NOT get a live in-cluster pass must
-// survive — pruning must be scoped to routes the live pass actually resolved.
+// survive - pruning must be scoped to routes the live pass actually resolved.
 func TestApplyInClusterResults_KeepsUnresolvedVantageSkip(t *testing.T) {
 	tr := &Trace{
 		Verdict: VerdictUnknown,
@@ -106,7 +106,7 @@ func TestApplyInClusterResults_KeepsUnresolvedVantageSkip(t *testing.T) {
 		}},
 		NotTested: []RouteSkip{{
 			Route:       "other:80",
-			Reason:      "couldn't reach an internal address from your machine — run radar in-cluster",
+			Reason:      "couldn't reach an internal address from your machine - run radar in-cluster",
 			ReasonClass: SkipClassVantage,
 		}},
 	}

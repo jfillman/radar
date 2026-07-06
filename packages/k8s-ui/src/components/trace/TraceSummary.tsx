@@ -13,7 +13,7 @@ const ICON: Record<Tone, ComponentType<{ className?: string }>> = {
   info: Info,
 }
 
-/** The passive drawer view-model — extracted as a pure function so the decision
+/** The passive drawer view-model - extracted as a pure function so the decision
  *  logic (tone, worst-offender-when-failing, CTA label) is unit-testable without
  *  a DOM. `minimal` = no coverage projection yet (static/config-only); `glance` =
  *  a coverage headline with its single honest tone. */
@@ -22,7 +22,7 @@ export interface TraceSummaryView {
   headline: string
   tone?: Tone
   /** The failing route to spotlight under the headline, with a count of how many
-   *  routes failed in total — so the label can read honestly ("Failing route"
+   *  routes failed in total - so the label can read honestly ("Failing route"
    *  for one, "Worst of N failing routes" when there are more). */
   worst?: { route: string; target?: string; evidence?: string; failingCount: number }
   /** A muted descriptive line under the headline - e.g. the invite button's
@@ -32,7 +32,7 @@ export interface TraceSummaryView {
   ctaLabel: string
 }
 
-// The drawer never runs active probes (that emits real traffic — deliberate, see
+// The drawer never runs active probes (that emits real traffic - deliberate, see
 // client.ts useTrace), so before a run it only INVITES the test, never implies one
 // ran. The "Reachability · Network Path" section header already carries the word
 // "reachability", so the button drops it ("Run test →") to avoid the echo.
@@ -53,7 +53,7 @@ export function summarizeTrace(trace: Trace): TraceSummaryView {
     const failingRoutes = failing
       ? [...routes]
           // An apiserver-proxy-only (indirect) unreachable never confirmed the real
-          // path — it's amber in coverageBannerTone, so it must NOT be spotlighted as
+          // path - it's amber in coverageBannerTone, so it must NOT be spotlighted as
           // a definitive "Failing route" here. A genuinely-down backend is upgraded to
           // confidence 'real' upstream (definitive 0-ready endpoints), so it still shows.
           .filter((r) => (r.outcome === 'server-error' || (r.outcome === 'unreachable' && r.confidence !== 'indirect')) && !r.benign)
@@ -106,15 +106,15 @@ export function summarizeTrace(trace: Trace): TraceSummaryView {
 }
 
 // Subjects whose own renderer already prints their routing rules (host→backend),
-// so the reachability glance must NOT restate the wiring — and "routes to N
+// so the reachability glance must NOT restate the wiring - and "routes to N
 // pods" would overclaim a front door it never verified.
 const PATH_OWNING_KINDS = new Set(['Ingress', 'Gateway', 'HTTPRoute', 'GRPCRoute'])
 
 /**
  * TraceSummary is the PASSIVE drawer glance for the network-reachability path:
- * one honest headline (tone from coverageBannerTone — the SAME single tone source
+ * one honest headline (tone from coverageBannerTone - the SAME single tone source
  * the full panel uses), a worst-offender line ONLY when something failed, a muted
- * not-tested count, and ONE CTA into the full Reachability tab. It never nags — a
+ * not-tested count, and ONE CTA into the full Reachability tab. It never nags - a
  * healthy verified path reads as a calm one-liner. The full route matrix, per-route
  * localization, path topology, and the in-cluster test all live on the tab
  * (TracePanel), reachable via the CTA. The drawer stays a glance, not a console.

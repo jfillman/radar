@@ -8,7 +8,7 @@ import (
 )
 
 // Defect 1: a multi-route headline whose every passing route was reached ONLY via
-// the apiserver proxy must say proxy-only — not a bare "All N routes reachable"
+// the apiserver proxy must say proxy-only - not a bare "All N routes reachable"
 // that contradicts CoverageVerdict (which returns unknown on !anyRealPass).
 func TestCoverageHeadline_MultiRouteProxyOnly(t *testing.T) {
 	tr := &Trace{
@@ -28,7 +28,7 @@ func TestCoverageHeadline_MultiRouteProxyOnly(t *testing.T) {
 		t.Errorf("headline = %q, want it to name the API server (real path not confirmed)", h)
 	}
 	if CoverageVerdict(tr) != VerdictUnknown {
-		t.Errorf("CoverageVerdict = %q, want unknown for proxy-only — headline must agree", CoverageVerdict(tr))
+		t.Errorf("CoverageVerdict = %q, want unknown for proxy-only - headline must agree", CoverageVerdict(tr))
 	}
 }
 
@@ -48,15 +48,15 @@ func TestCoverageHeadline_MultiRouteRealStaysReachable(t *testing.T) {
 }
 
 // Defect 12: a shared (Port==0) front-door HTTP 2xx must NOT, on its own, VERIFY a
-// backend port route whose own probes didn't independently succeed — it caps at
+// backend port route whose own probes didn't independently succeed - it caps at
 // "reached", never a false green "verified · real".
 func TestRoutesByPort_SharedFrontDoorDoesNotVerifyPort(t *testing.T) {
 	shared := []probe.Result{
 		{Layer: probe.LayerHTTP, Target: "http://shop/", Port: 0, OK: true, Tone: probe.ToneHealthy, Vantage: probe.VantageLocal},
 	}
-	// The backend's own :9090 probe skipped (non-HTTP from a laptop) — only the
+	// The backend's own :9090 probe skipped (non-HTTP from a laptop) - only the
 	// shared front-door / 2xx is live for this port.
-	skipped := probe.Skipped(probe.LayerHTTP, "port 9090", probe.VantageLocal, "non-HTTP port — can't verify from here")
+	skipped := probe.Skipped(probe.LayerHTTP, "port 9090", probe.VantageLocal, "non-HTTP port - can't verify from here")
 	skipped.Port = 9090
 	probes := append(append([]probe.Result{}, shared...), skipped)
 	routes := routesByPort("api/", "api", "api:9090", probes, []int32{9090}, nil)
@@ -64,7 +64,7 @@ func TestRoutesByPort_SharedFrontDoorDoesNotVerifyPort(t *testing.T) {
 		t.Fatalf("want 1 route, got %d", len(routes))
 	}
 	if routes[0].Outcome == OutcomeVerified {
-		t.Errorf("outcome = verified — a port-agnostic front-door 2xx must not verify a backend port route")
+		t.Errorf("outcome = verified - a port-agnostic front-door 2xx must not verify a backend port route")
 	}
 	if routes[0].Outcome != OutcomeReached {
 		t.Errorf("outcome = %q, want reached (front door reached, this port not independently verified)", routes[0].Outcome)
@@ -93,7 +93,7 @@ func TestApplyInClusterResults_ClearsStaleReasonAndBrokenRoute(t *testing.T) {
 	tr := &Trace{
 		Subject:     ResourceRef{Kind: "Service", Namespace: "prod", Name: "api"},
 		Verdict:     VerdictBroken,
-		Reason:      "the entry is unreachable — traffic can't pass through it",
+		Reason:      "the entry is unreachable - traffic can't pass through it",
 		BrokenAt:    1,
 		BrokenRoute: &podRef,
 		Downstream: []Hop{

@@ -24,12 +24,12 @@ func TestRunProbes_BudgetExhausted(t *testing.T) {
 			{Resource: ResourceRef{Kind: "Service"}, Config: &HopConfig{ClusterIP: "10.0.0.1", Ports: []PortMap{{Port: 80}}}},
 		},
 	}
-	// Already-canceled context — runProbes must bail without panicking.
+	// Already-canceled context - runProbes must bail without panicking.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	runProbes(ctx, tr, Options{Probe: true}, nil)
 	// No panic and we got here: pass. The Probes slice may be empty or
-	// contain a skip — either is acceptable for an already-dead context.
+	// contain a skip - either is acceptable for an already-dead context.
 }
 
 // TestRunProbes_ServiceNoClientNoTCP pins that a Service without a usable
@@ -65,7 +65,7 @@ func TestRunProbes_PodsNoClientNoIPs(t *testing.T) {
 			Resource: ResourceRef{Kind: "Pods", Namespace: "ns"},
 			Config: &HopConfig{
 				ContainerPorts: []ContainerPortRef{{Container: "main", Port: 8080}},
-				// No PodIPs and no PodNames, no client — nothing to probe.
+				// No PodIPs and no PodNames, no client - nothing to probe.
 			},
 		}},
 	}
@@ -80,7 +80,7 @@ func TestRunProbes_PodsNoClientNoIPs(t *testing.T) {
 }
 
 // TestRunProbes_IngressNoHostsSkips: an Ingress with empty hostnames
-// produces a structured DNS skip rather than a silent no-op — operators
+// produces a structured DNS skip rather than a silent no-op - operators
 // reading the trace would otherwise wonder if the probe ran.
 func TestRunProbes_IngressNoHostsSkips(t *testing.T) {
 	tr := &Trace{
@@ -114,7 +114,7 @@ func TestRunProbes_GatewayNoAddressesSkips(t *testing.T) {
 }
 
 // TestRunProbes_RouteAlwaysSkips: HTTPRoute/GRPCRoute have no own
-// routable address — they explicitly defer reachability to the upstream
+// routable address - they explicitly defer reachability to the upstream
 // Gateway and downstream Service. Test pins that we never accidentally
 // probe a Route directly.
 func TestRunProbes_RouteAlwaysSkips(t *testing.T) {
@@ -190,8 +190,8 @@ func TestProbeService_DualPathInCluster(t *testing.T) {
 }
 
 // TestProbeService_SkipsUDPAndSCTP pins that a UDP/SCTP Service port is skipped
-// honestly — a TCP dial can't test it and would falsely condemn a healthy
-// non-TCP service — while a TCP port on the SAME Service is still probed.
+// honestly - a TCP dial can't test it and would falsely condemn a healthy
+// non-TCP service - while a TCP port on the SAME Service is still probed.
 func TestProbeService_SkipsUDPAndSCTP(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
 	stubProxyProbes(t)
@@ -301,7 +301,7 @@ func TestProbePods_DualPathInCluster(t *testing.T) {
 		}},
 	}
 	// Budget must exceed the data-path TCP timeout so both paths get a
-	// chance to record a Result — even when the data dial times out
+	// chance to record a Result - even when the data dial times out
 	// against a non-routable test IP, the apiserver path still runs.
 	runProbes(context.Background(), tr, Options{Probe: true, ProbeBudget: 2 * time.Second}, fake.NewClientset())
 	var sawData, sawAPI bool
@@ -319,7 +319,7 @@ func TestProbePods_DualPathInCluster(t *testing.T) {
 }
 
 // TestProbeService_LaptopAPIServerOnly pins that laptop vantage with a client
-// runs only the apiserver path — there's no in-cluster TCP route to a
+// runs only the apiserver path - there's no in-cluster TCP route to a
 // ClusterIP from a laptop, so emitting a data-path result would be a lie.
 func TestProbeService_LaptopAPIServerOnly(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
@@ -341,8 +341,8 @@ func TestProbeService_LaptopAPIServerOnly(t *testing.T) {
 // TestIsHTTPProbablePort pins the signal hierarchy: appProtocol (if set) is
 // authoritative; port name is the next signal; well-known port numbers cover
 // the no-metadata case (Helm charts that ship Redis on 6379 without setting
-// either field). No-signal default is optimistic — most Service ports are
-// HTTP-shaped — so an unannotated web service still gets probed.
+// either field). No-signal default is optimistic - most Service ports are
+// HTTP-shaped - so an unannotated web service still gets probed.
 func TestIsHTTPProbablePort(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -351,23 +351,23 @@ func TestIsHTTPProbablePort(t *testing.T) {
 		port        int32
 		want        bool
 	}{
-		// appProtocol authoritative — HTTP family
+		// appProtocol authoritative - HTTP family
 		{"appProto http", "", "http", 0, true},
 		{"appProto HTTP uppercase", "", "HTTP", 0, true},
 		{"appProto https", "", "https", 0, true},
 		// gRPC and HTTP/2 are HTTP-shaped but our probe speaks HTTP/1.1,
 		// so they're excluded to avoid a false fail.
-		{"appProto grpc skipped — HTTP/2-only", "", "grpc", 0, false},
-		{"appProto h2c skipped — HTTP/2-only", "", "h2c", 0, false},
-		{"appProto k8s h2c skipped — HTTP/2-only", "", "kubernetes.io/h2c", 0, false},
+		{"appProto grpc skipped - HTTP/2-only", "", "grpc", 0, false},
+		{"appProto h2c skipped - HTTP/2-only", "", "h2c", 0, false},
+		{"appProto k8s h2c skipped - HTTP/2-only", "", "kubernetes.io/h2c", 0, false},
 		{"appProto wss", "", "wss", 0, true},
-		// appProtocol authoritative — explicit non-HTTP
+		// appProtocol authoritative - explicit non-HTTP
 		{"appProto tcp", "", "tcp", 0, false},
 		{"appProto postgresql", "", "postgresql", 0, false},
 		{"appProto mysql", "", "mysql", 0, false},
 		{"appProto with whitespace", "", "  tcp  ", 0, false},
 		{"appProto wins over web-ish port name", "http", "tcp", 80, false},
-		// no appProtocol — port name signals non-HTTP
+		// no appProtocol - port name signals non-HTTP
 		{"name postgres", "postgres", "", 0, false},
 		{"name postgresql", "postgresql", "", 0, false},
 		{"name redis", "redis", "", 0, false},
@@ -375,23 +375,23 @@ func TestIsHTTPProbablePort(t *testing.T) {
 		{"name mongo", "mongo", "", 0, false},
 		{"name MYSQL uppercase", "MYSQL", "", 0, false},
 		{"name memcached", "memcached", "", 0, false},
-		// no appProtocol — port name signals HTTP / optimistic default
+		// no appProtocol - port name signals HTTP / optimistic default
 		{"name http", "http", "", 0, true},
 		{"name https", "https", "", 0, true},
 		{"name web", "web", "", 0, true},
 		{"name api", "api", "", 0, true},
-		{"name grpc skipped — HTTP/2-only", "grpc", "", 0, false},
+		{"name grpc skipped - HTTP/2-only", "grpc", "", 0, false},
 		{"name unknown", "metrics", "", 0, true},
-		// no metadata — well-known port numbers
+		// no metadata - well-known port numbers
 		{"port 6379 redis no-name", "", "", 6379, false},
 		{"port 5432 postgres no-name", "", "", 5432, false},
 		{"port 3306 mysql no-name", "", "", 3306, false},
 		{"port 27017 mongo no-name", "", "", 27017, false},
 		{"port 53 dns no-name", "", "", 53, false},
 		{"port 22 ssh no-name", "", "", 22, false},
-		{"port 80 unknown name — HTTP", "", "", 80, true},
-		{"port 8080 unknown name — HTTP", "", "", 8080, true},
-		{"port 9000 unknown name — optimistic", "", "", 9000, true},
+		{"port 80 unknown name - HTTP", "", "", 80, true},
+		{"port 8080 unknown name - HTTP", "", "", 8080, true},
+		{"port 9000 unknown name - optimistic", "", "", 9000, true},
 		{"empty everything zero port", "", "", 0, true},
 	}
 	for _, tc := range tests {
@@ -454,7 +454,7 @@ func wouldDenyHop(probes []probe.Result, divergence bool) Hop {
 	findings := []Finding{{
 		Code:     codePolicyWouldDeny,
 		Severity: SeverityWarning,
-		Message:  "Blocked by a cluster network rule — no rule allows traffic to these pods on :80.",
+		Message:  "Blocked by a cluster network rule - no rule allows traffic to these pods on :80.",
 		Command:  "kubectl describe networkpolicy deny -n ns",
 	}}
 	if divergence {
@@ -505,7 +505,7 @@ func TestReconcilePolicy_OtherPortSuccessDoesntDowngrade(t *testing.T) {
 }
 
 // TestReconcilePolicy_BothPathsFail pins that when the data path AND the
-// apiserver path both fail, we do NOT assert the rule as confirmed — the
+// apiserver path both fail, we do NOT assert the rule as confirmed - the
 // backend could be down. The finding stays a warning, worded as unconfirmed.
 func TestReconcilePolicy_BothPathsFail(t *testing.T) {
 	tr := &Trace{Downstream: []Hop{wouldDenyHop([]probe.Result{
@@ -545,7 +545,7 @@ func TestReconcilePolicy_ConfirmedDrop(t *testing.T) {
 
 // TestReconcilePolicy_MixedApiserverDoesntConfirm pins that a data-path drop +
 // MIXED apiserver result (one target reached, another refused) is NOT a clean
-// divergence — we must not "confirm" the policy on it, only keep the prediction.
+// divergence - we must not "confirm" the policy on it, only keep the prediction.
 func TestReconcilePolicy_MixedApiserverDoesntConfirm(t *testing.T) {
 	tr := &Trace{Downstream: []Hop{wouldDenyHop([]probe.Result{
 		{Layer: probe.LayerTCP, Target: "10.0.0.5:80", Port: 80, Path: probe.PathData, OK: false},
@@ -563,7 +563,7 @@ func TestReconcilePolicy_MixedApiserverDoesntConfirm(t *testing.T) {
 }
 
 // TestReconcilePolicy_MixedDataPathDoesntDowngrade pins that a partial in-cluster
-// success (one pod through, one dropped) does NOT over-reassure — the would-deny
+// success (one pod through, one dropped) does NOT over-reassure - the would-deny
 // stays a warning, not the "not enforcing" downgrade.
 func TestReconcilePolicy_MixedDataPathDoesntDowngrade(t *testing.T) {
 	tr := &Trace{Downstream: []Hop{wouldDenyHop([]probe.Result{
@@ -596,10 +596,10 @@ func TestReconcilePolicy_NoLiveProbe(t *testing.T) {
 // some findings and randomise which one survived between requests.
 func TestPathDivergenceFindings_MultiPortDeterministic(t *testing.T) {
 	probes := []probe.Result{
-		// port 443 — apiserver-only broken (info)
+		// port 443 - apiserver-only broken (info)
 		{Layer: probe.LayerTCP, Target: "10.0.0.5:443", Path: probe.PathData, OK: true},
 		{Layer: probe.LayerHTTP, Target: "port 443", Path: probe.PathAPIServer, OK: false},
-		// port 80 — data-only broken (warning)
+		// port 80 - data-only broken (warning)
 		{Layer: probe.LayerTCP, Target: "10.0.0.5:80", Path: probe.PathData, OK: false},
 		{Layer: probe.LayerHTTP, Target: "port 80", Path: probe.PathAPIServer, OK: true},
 	}
@@ -616,7 +616,7 @@ func TestPathDivergenceFindings_MultiPortDeterministic(t *testing.T) {
 	}
 }
 
-// TestPathDivergenceFinding_DataOKApiFail pins the inverse — when the
+// TestPathDivergenceFinding_DataOKApiFail pins the inverse - when the
 // data path is healthy but the apiserver-relayed probe fails, that's
 // almost always a non-impacting issue (RBAC denied or non-HTTP port);
 // the finding is severity:info so it doesn't flag the trace as broken.
@@ -639,7 +639,7 @@ func TestPathDivergenceFinding_DataOKApiFail(t *testing.T) {
 
 // TestPathDivergenceFinding_NoDivergence pins the silent case: when
 // both paths agree (both OK or both fail) on every port, no finding
-// is emitted — the divergence detector is only the asymmetry signal.
+// is emitted - the divergence detector is only the asymmetry signal.
 func TestPathDivergenceFinding_NoDivergence(t *testing.T) {
 	bothOK := []probe.Result{
 		{Layer: probe.LayerTCP, Target: "10.0.0.5:80", Path: probe.PathData, OK: true},
@@ -750,7 +750,7 @@ func TestVerdict_DegradeUnknownOnUnreadablePods(t *testing.T) {
 
 // TestReviseVerdictWithProbes_HealthyEscalatesOnAllFailed pins that a hop
 // whose every non-skipped probe failed promotes the verdict from healthy to
-// broken — the panel was previously rendering "looks healthy" above red
+// broken - the panel was previously rendering "looks healthy" above red
 // probe-failed rows because verdict was computed before probes attached.
 func TestReviseVerdictWithProbes_HealthyEscalatesOnAllFailed(t *testing.T) {
 	tr := &Trace{
@@ -808,7 +808,7 @@ func TestReviseVerdictWithProbes_PartlySkippedEntryNotBroken(t *testing.T) {
 }
 
 // TestReviseVerdictWithProbes_PartialFailureDegrades pins that mixed probe
-// results escalate healthy → degraded (not broken) — some replicas reachable
+// results escalate healthy → degraded (not broken) - some replicas reachable
 // means traffic isn't fully dropped.
 func TestReviseVerdictWithProbes_PartialFailureDegrades(t *testing.T) {
 	tr := &Trace{
@@ -907,7 +907,7 @@ func TestReviseVerdictWithProbes_SkipOnlyUpstreamDoesNotPoisonAllBroken(t *testi
 	if v != VerdictBroken {
 		t.Errorf("reviseVerdictWithProbes(all real upstreams broken + 1 skip-only) = %q, want %q", v, VerdictBroken)
 	}
-	// The break is in the entry paths, not the subject — must NOT anchor on
+	// The break is in the entry paths, not the subject - must NOT anchor on
 	// the (healthy) subject row, which would render "Service api is broken".
 	if brokenAt == 0 {
 		t.Errorf("brokenAt = %d, must not anchor on the healthy subject row", brokenAt)
@@ -918,7 +918,7 @@ func TestReviseVerdictWithProbes_SkipOnlyUpstreamDoesNotPoisonAllBroken(t *testi
 }
 
 // TestReviseVerdictWithProbes_DegradedTonePromotesFromHealthy pins that an
-// HTTP 3xx/4xx (tone=degraded, ok:true) is a real signal — it shouldn't
+// HTTP 3xx/4xx (tone=degraded, ok:true) is a real signal - it shouldn't
 // leave the verdict reading "healthy" while the chip below says "probe
 // degraded".
 func TestReviseVerdictWithProbes_DegradedTonePromotesFromHealthy(t *testing.T) {
@@ -939,7 +939,7 @@ func TestReviseVerdictWithProbes_DegradedTonePromotesFromHealthy(t *testing.T) {
 }
 
 // TestReviseVerdictWithProbes_BrokenStaysBroken pins that a critical static
-// finding outranks any probe outcome — a successful probe against a
+// finding outranks any probe outcome - a successful probe against a
 // statically-broken trace could be an external bystander, and downgrading
 // would lose the actionable signal.
 func TestReviseVerdictWithProbes_BrokenStaysBroken(t *testing.T) {
@@ -964,7 +964,7 @@ func TestReviseVerdictWithProbes_BrokenStaysBroken(t *testing.T) {
 }
 
 // TestReviseVerdictWithProbes_SkippedRowsIgnored pins that probe rows with
-// Skipped: true don't count toward failure tallies — a port that couldn't be
+// Skipped: true don't count toward failure tallies - a port that couldn't be
 // reached for a documented reason isn't evidence the path is broken.
 func TestReviseVerdictWithProbes_SkippedRowsIgnored(t *testing.T) {
 	tr := &Trace{
@@ -1052,7 +1052,7 @@ func TestClassifyUnknown_SelectorlessIsByDesign(t *testing.T) {
 
 // TestClassifyUnknown_EndpointSourceUnknownIsInvestigate pins that a hop
 // whose endpoint state couldn't be read (pod lister error, RBAC denial,
-// cache cold) classifies the unknown verdict as investigate — the trace
+// cache cold) classifies the unknown verdict as investigate - the trace
 // tried and couldn't, which merits operator attention.
 func TestClassifyUnknown_EndpointSourceUnknownIsInvestigate(t *testing.T) {
 	tr := &Trace{
@@ -1067,7 +1067,7 @@ func TestClassifyUnknown_EndpointSourceUnknownIsInvestigate(t *testing.T) {
 
 // TestClassifyUnknown_InvestigateBeatsByDesign pins that when both signals
 // are present (e.g. selectorless Service whose endpoint lister also failed),
-// investigate wins — the operator needs to know about the lister failure
+// investigate wins - the operator needs to know about the lister failure
 // regardless of the by-design shape.
 func TestClassifyUnknown_InvestigateBeatsByDesign(t *testing.T) {
 	tr := &Trace{
@@ -1250,7 +1250,7 @@ func TestHTTPPortAssumed(t *testing.T) {
 }
 
 // TestSoftenAssumedHTTP: a failure on a port we only *assumed* was HTTP must
-// not be presented as a confident break — it becomes an honest "couldn't
+// not be presented as a confident break - it becomes an honest "couldn't
 // verify" skip. Successes and non-assumed failures pass through untouched.
 func TestSoftenAssumedHTTP(t *testing.T) {
 	const gapCmd = "kubectl port-forward svc/x -n ns 7777:7777"
@@ -1391,7 +1391,7 @@ func TestProbeGateway_UDPListenerSkipped(t *testing.T) {
 }
 
 // TestProbeIngress_LocalDNSFailSkips: from a laptop, a host that doesn't
-// resolve may be cluster-internal DNS — must skip (with a fill-the-gap hint),
+// resolve may be cluster-internal DNS - must skip (with a fill-the-gap hint),
 // NOT render a confident "broken" on a valid Ingress.
 func TestProbeIngress_LocalDNSFailSkips(t *testing.T) {
 	h := &Hop{Resource: ResourceRef{Kind: "Ingress"}, Config: &HopConfig{Hostnames: []string{"nope.invalid"}}}
@@ -1405,7 +1405,7 @@ func TestProbeIngress_LocalDNSFailSkips(t *testing.T) {
 }
 
 // TestProbeIngress_InClusterDNSFailIsEvidence: in-cluster, an unresolvable host
-// IS real evidence (cluster DNS should resolve cluster hosts) — keep the
+// IS real evidence (cluster DNS should resolve cluster hosts) - keep the
 // failure rather than skipping.
 func TestProbeIngress_InClusterDNSFailIsEvidence(t *testing.T) {
 	h := &Hop{Resource: ResourceRef{Kind: "Ingress"}, Config: &HopConfig{Hostnames: []string{"nope.invalid"}}}
@@ -1449,7 +1449,7 @@ func TestIsInternalAddr(t *testing.T) {
 }
 
 // TestProbeGateway_LocalInternalAddrSkips: a TCP failure to an internal address
-// from a laptop is "can't reach from here", not a broken Gateway — skip it.
+// from a laptop is "can't reach from here", not a broken Gateway - skip it.
 func TestProbeGateway_LocalInternalAddrSkips(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 	h := &Hop{Resource: ResourceRef{Kind: "Gateway"}, Config: &HopConfig{

@@ -15,7 +15,7 @@ import (
 // TestDiagnoseDoc_ProxyProbeAutoRunWording guards the honesty fix: the proxy
 // reachability probe auto-runs on Diagnose-tab mount (WorkloadView.tsx), so the
 // doc must not claim the active test "Runs only when the operator clicks Run
-// test" — that was true only of the in-cluster Job test. Pins the corrected
+// test" - that was true only of the in-cluster Job test. Pins the corrected
 // copy so the false claim can't be reintroduced.
 func TestDiagnoseDoc_ProxyProbeAutoRunWording(t *testing.T) {
 	b, err := os.ReadFile("../../docs/diagnose.md")
@@ -24,7 +24,7 @@ func TestDiagnoseDoc_ProxyProbeAutoRunWording(t *testing.T) {
 	}
 	doc := string(b)
 	if strings.Contains(doc, "Runs only when the operator clicks") {
-		t.Errorf("diagnose.md still claims the active test runs only on click — proxy probe auto-runs on tab open")
+		t.Errorf("diagnose.md still claims the active test runs only on click - proxy probe auto-runs on tab open")
 	}
 	if !strings.Contains(doc, "runs automatically once when the **Diagnose** tab opens") {
 		t.Errorf("diagnose.md should describe the proxy probe auto-running once on tab open")
@@ -35,7 +35,7 @@ func TestDiagnoseDoc_ProxyProbeAutoRunWording(t *testing.T) {
 // UDP/SCTP container ports the same way probePodsByIP and probeService do.
 // A UDP port whose name/number trips the HTTP heuristic (e.g. UDP 8080 named
 // "metrics", or a UDP port named "web") must NOT be sent to the apiserver
-// pod-proxy HTTP probe — no TCP listener exists, "connection refused" would
+// pod-proxy HTTP probe - no TCP listener exists, "connection refused" would
 // falsely condemn a healthy non-TCP pod. Laptop vantage runs the apiserver
 // path only, so a missing skip would surface as a real broken row.
 func TestProbePodsByName_SkipsUDPAndSCTP(t *testing.T) {

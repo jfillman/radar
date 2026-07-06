@@ -10,7 +10,7 @@ import (
 
 // TestVantageAPIServerName pins the ONE operator-facing name for the apiserver-
 // proxy vantage and asserts the headline generator actually uses it. The TS side
-// (reachVerdict.test.ts) pins the identical literal on VIA_API_SERVER — the two
+// (reachVerdict.test.ts) pins the identical literal on VIA_API_SERVER - the two
 // pins are the anti-drift gate that keeps the Go + TS headline generators from
 // diverging on this term.
 func TestVantageAPIServerName(t *testing.T) {
@@ -60,7 +60,7 @@ func TestComputeCoverage_GatewayAttachedRoutesNotCondemned(t *testing.T) {
 	}
 }
 
-// Test 1 — a single Service route verified over the real-traffic (data) path.
+// Test 1 - a single Service route verified over the real-traffic (data) path.
 func TestComputeCoverage_SingleRouteVerifiedReal(t *testing.T) {
 	tr := &Trace{
 		Subject:  ResourceRef{Kind: "Service", Namespace: "prod", Name: "api"},
@@ -90,7 +90,7 @@ func TestComputeCoverage_SingleRouteVerifiedReal(t *testing.T) {
 
 // A 0-ready-endpoints break is an authoritative cache fact, so a Service route
 // that's only "unreachable via the apiserver proxy" (indirect) must be promoted
-// to a DEFINITIVE (real) failure — it reads red, not the soft proxy-vantage amber.
+// to a DEFINITIVE (real) failure - it reads red, not the soft proxy-vantage amber.
 func TestUpgradeDefinitiveBackendDown(t *testing.T) {
 	svc := func(sev, code string, routes ...RouteResult) *Trace {
 		return &Trace{
@@ -133,7 +133,7 @@ func TestUpgradeDefinitiveBackendDown(t *testing.T) {
 // An ExternalName Service is honestly testable: the Service hop has no
 // ClusterIP/ports (no own probes), but the alias-host hop carries the real
 // DNS-resolve + HTTP-reach probes. Those must produce ONE verified route to the
-// external host — not an empty "configuration only" coverage.
+// external host - not an empty "configuration only" coverage.
 func TestComputeCoverage_ExternalNameRouteFromAliasHop(t *testing.T) {
 	tr := &Trace{
 		Subject:  ResourceRef{Kind: "Service", Namespace: "prod", Name: "extname"},
@@ -164,7 +164,7 @@ func TestComputeCoverage_ExternalNameRouteFromAliasHop(t *testing.T) {
 	}
 }
 
-// A laptop dials the external host from Radar's own network — that is NOT proof of
+// A laptop dials the external host from Radar's own network - that is NOT proof of
 // real in-cluster reachability, so the route must be INDIRECT (never a green "real").
 func TestComputeCoverage_ExternalNameLocalVantageIsIndirect(t *testing.T) {
 	tr := &Trace{
@@ -188,7 +188,7 @@ func TestComputeCoverage_ExternalNameLocalVantageIsIndirect(t *testing.T) {
 	}
 }
 
-// An un-probed ExternalName stays config-only — no route fabricated without probes.
+// An un-probed ExternalName stays config-only - no route fabricated without probes.
 func TestComputeCoverage_ExternalNameUnprobedHasNoRoute(t *testing.T) {
 	tr := &Trace{
 		Subject:  ResourceRef{Kind: "Service", Namespace: "prod", Name: "extname"},
@@ -204,7 +204,7 @@ func TestComputeCoverage_ExternalNameUnprobedHasNoRoute(t *testing.T) {
 	}
 }
 
-// Test 2 — multi-route Ingress, one route reachable, one unreachable.
+// Test 2 - multi-route Ingress, one route reachable, one unreachable.
 func TestComputeCoverage_MultiRoutePartial(t *testing.T) {
 	tr := &Trace{
 		Subject:  ResourceRef{Kind: "Ingress", Name: "shop"},
@@ -242,7 +242,7 @@ func TestComputeCoverage_MultiRoutePartial(t *testing.T) {
 	}
 }
 
-// Test 3 — apiserver-only success must read INDIRECT, never real-traffic verified.
+// Test 3 - apiserver-only success must read INDIRECT, never real-traffic verified.
 func TestComputeCoverage_ApiserverOnlyIsIndirect(t *testing.T) {
 	tr := &Trace{
 		Subject:  ResourceRef{Kind: "Service", Name: "api"},
@@ -270,14 +270,14 @@ func TestComputeCoverage_ApiserverOnlyIsIndirect(t *testing.T) {
 	}
 }
 
-// Test 4 — skips are listed and classified: coverage gap vs benign vs vantage.
+// Test 4 - skips are listed and classified: coverage gap vs benign vs vantage.
 func TestComputeCoverage_NotTestedClassification(t *testing.T) {
 	tr := &Trace{
 		Subject:  ResourceRef{Kind: "Ingress", Name: "x"},
 		BrokenAt: -1,
 		Downstream: []Hop{
 			{Resource: ResourceRef{Kind: "Ingress", Name: "x"}, Edge: "entry:Ingress", Probes: []probe.Result{
-				{Layer: probe.LayerDNS, Target: "*.example.com", Skipped: true, Reason: "wildcard host — test a concrete hostname to check reachability", Command: "curl https://YOUR-SUB.example.com/"},
+				{Layer: probe.LayerDNS, Target: "*.example.com", Skipped: true, Reason: "wildcard host - test a concrete hostname to check reachability", Command: "curl https://YOUR-SUB.example.com/"},
 			}},
 			{Resource: ResourceRef{Kind: "Pods"}, Edge: "Service->Pods", Probes: []probe.Result{
 				{Layer: probe.LayerTCP, Skipped: true, Reason: "sampled 2 of 5 ready pods"},
@@ -307,14 +307,14 @@ func TestComputeCoverage_NotTestedClassification(t *testing.T) {
 		t.Errorf("internal-address skip class = %q, want vantage", byReason["internal"])
 	}
 	// Benign skips (the "sampled 2 of 5 ready pods" row) lose no coverage, so they
-	// are excluded from the Skipped gap tally — only the coverage + vantage skips
+	// are excluded from the Skipped gap tally - only the coverage + vantage skips
 	// count. Otherwise a fully-tested route would be downgraded to footnote-green.
 	if tr.Coverage == nil || tr.Coverage.Skipped != 2 {
 		t.Errorf("coverage.skipped = %v, want 2 (benign excluded)", tr.Coverage)
 	}
 }
 
-// CoverageHeadline — the agent/UI primary read. Invariant: indirect never "verified".
+// CoverageHeadline - the agent/UI primary read. Invariant: indirect never "verified".
 func TestCoverageHeadline(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -322,7 +322,7 @@ func TestCoverageHeadline(t *testing.T) {
 		want    string
 		notWant string
 	}{
-		{"single verified real", &Trace{Coverage: &Coverage{Tested: 1, Passed: 1}, Routes: []RouteResult{{Outcome: OutcomeVerified, Confidence: ConfidenceReal, Evidence: "HTTP 200"}}}, "Reachable — verified", ""},
+		{"single verified real", &Trace{Coverage: &Coverage{Tested: 1, Passed: 1}, Routes: []RouteResult{{Outcome: OutcomeVerified, Confidence: ConfidenceReal, Evidence: "HTTP 200"}}}, "Reachable - verified", ""},
 		{"single indirect is NOT verified", &Trace{Coverage: &Coverage{Tested: 1, Passed: 1}, Routes: []RouteResult{{Outcome: OutcomeVerified, Confidence: ConfidenceIndirect, Evidence: "HTTP 200"}}}, "API server", "verified"},
 		{"single unreachable", &Trace{Coverage: &Coverage{Tested: 1, Failed: 1}, Routes: []RouteResult{{Outcome: OutcomeUnreachable, Confidence: ConfidenceReal, Evidence: "connection refused"}}}, "Unreachable", ""},
 		{"multi all pass", &Trace{Coverage: &Coverage{Tested: 3, Passed: 3}, Routes: make([]RouteResult, 3)}, "All 3 routes reachable", ""},
@@ -338,7 +338,7 @@ func TestCoverageHeadline(t *testing.T) {
 		// trailing separator ("... reachable · ").
 		{"multi mixed pass + benign scaled-to-0", &Trace{Coverage: &Coverage{Tested: 2, Passed: 1, Failed: 1}, Routes: []RouteResult{{Outcome: OutcomeVerified}, {Benign: true, Outcome: OutcomeUnreachable}}}, "1 of 2 routes reachable · 1 scaled to 0", ""},
 		{"zero tested with skips AFTER probing (all skipped from this vantage)", &Trace{Coverage: &Coverage{Tested: 0, Skipped: 2}, Downstream: []Hop{{Probes: []probe.Result{{Layer: probe.LayerHTTP, Skipped: true}}}}}, "Couldn't actively test any route from here", ""},
-		{"zero tested with skips but UN-PROBED (static drawer) reads not-yet-tested, never couldn't-test", &Trace{Coverage: &Coverage{Tested: 0, Skipped: 1}}, "Configuration only — not yet tested", ""},
+		{"zero tested with skips but UN-PROBED (static drawer) reads not-yet-tested, never couldn't-test", &Trace{Coverage: &Coverage{Tested: 0, Skipped: 1}}, "Configuration only - not yet tested", ""},
 		{"not probed", &Trace{}, "not yet tested", ""},
 	}
 	for _, c := range cases {
@@ -352,7 +352,7 @@ func TestCoverageHeadline(t *testing.T) {
 	}
 }
 
-// Test 5 — computeCoverage is ADDITIVE: Verdict + BrokenAt are byte-identical
+// Test 5 - computeCoverage is ADDITIVE: Verdict + BrokenAt are byte-identical
 // after it runs, and a broken hop is named in BrokenRoute.
 func TestComputeCoverage_AdditiveNoVerdictChange(t *testing.T) {
 	tr := &Trace{
@@ -376,7 +376,7 @@ func TestComputeCoverage_AdditiveNoVerdictChange(t *testing.T) {
 	}
 }
 
-// B1 — a declared route whose backend is MISSING must appear as a FAILED route
+// B1 - a declared route whose backend is MISSING must appear as a FAILED route
 // (counted in Coverage.Failed, honest headline), never vanish into a green-ish summary.
 func TestComputeCoverage_MissingBackendIsFailedRoute(t *testing.T) {
 	tr := &Trace{
@@ -416,7 +416,7 @@ func TestComputeCoverage_MissingBackendIsFailedRoute(t *testing.T) {
 	}
 }
 
-// B4 — a Service subject's NotTested must list ONLY its intended-route (downstream)
+// B4 - a Service subject's NotTested must list ONLY its intended-route (downstream)
 // skips; upstream-context skips (the Ingresses pointing AT it) must be excluded.
 func TestComputeCoverage_UpstreamSkipsExcludedFromNotTested(t *testing.T) {
 	tr := &Trace{
@@ -430,7 +430,7 @@ func TestComputeCoverage_UpstreamSkipsExcludedFromNotTested(t *testing.T) {
 		},
 		Upstreams: []Hop{
 			{Resource: ResourceRef{Kind: "Ingress", Name: "shop"}, Edge: "Ingress->Service",
-				Probes: []probe.Result{{Layer: probe.LayerDNS, Target: "shop.example.com", Skipped: true, Reason: "wildcard host — test a concrete hostname"}}},
+				Probes: []probe.Result{{Layer: probe.LayerDNS, Target: "shop.example.com", Skipped: true, Reason: "wildcard host - test a concrete hostname"}}},
 		},
 	}
 	computeCoverage(tr)
@@ -441,7 +441,7 @@ func TestComputeCoverage_UpstreamSkipsExcludedFromNotTested(t *testing.T) {
 	}
 }
 
-// Test 6 — a multiport Service reports EACH port honestly, not a collapsed
+// Test 6 - a multiport Service reports EACH port honestly, not a collapsed
 // total failure. :80 works, :9090 (nothing listening) is dead → 2 routes, 2/1/1,
 // and a "1 of 2 ports reachable" headline rather than "unreachable".
 func TestComputeCoverage_MultiportServicePerPort(t *testing.T) {
@@ -480,9 +480,9 @@ func TestComputeCoverage_MultiportServicePerPort(t *testing.T) {
 	}
 }
 
-// Test 7 — an Ingress route to a specific backend port must NOT read off a
+// Test 7 - an Ingress route to a specific backend port must NOT read off a
 // healthy/dead sibling port. /api → checkout:8080 (ok); checkout also serves
-// :9090 (dead) — the route reflects only :8080.
+// :9090 (dead) - the route reflects only :8080.
 func TestComputeCoverage_IngressRouteScopedToDeclaredPort(t *testing.T) {
 	tr := &Trace{
 		Subject:  ResourceRef{Kind: "Ingress", Name: "shop"},
@@ -510,13 +510,13 @@ func TestComputeCoverage_IngressRouteScopedToDeclaredPort(t *testing.T) {
 		t.Errorf("route = %s/%s, want verified/checkout:8080 (the :9090 sibling must not leak)", r.Outcome, r.Target)
 	}
 	if tr.Coverage.Failed != 0 {
-		t.Errorf("coverage.failed = %d, want 0 — the dead :9090 is not this route's declared port", tr.Coverage.Failed)
+		t.Errorf("coverage.failed = %d, want 0 - the dead :9090 is not this route's declared port", tr.Coverage.Failed)
 	}
 }
 
 // CoverageVerdict reconciles the agent-facing tier with coverage (bug B3):
 // broken/degraded/unknown pass through the internal verdict; only a HEALTHY that
-// was reached ONLY via the apiserver proxy (indirect) downgrades — indirect is
+// was reached ONLY via the apiserver proxy (indirect) downgrades - indirect is
 // never a confident green.
 func TestCoverageVerdict_RealVerifiedIsHealthy(t *testing.T) {
 	tr := &Trace{Verdict: VerdictHealthy, Coverage: &Coverage{Tested: 1, Passed: 1},
@@ -530,7 +530,7 @@ func TestCoverageVerdict_IndirectOnlyIsNotHealthy(t *testing.T) {
 	tr := &Trace{Verdict: VerdictHealthy, Coverage: &Coverage{Tested: 1, Passed: 1},
 		Routes: []RouteResult{{Outcome: OutcomeVerified, Confidence: ConfidenceIndirect}}}
 	if v := CoverageVerdict(tr); v != VerdictUnknown {
-		t.Errorf("indirect-only all-pass = %q, want unknown (must NOT read confident healthy — B3/#1a)", v)
+		t.Errorf("indirect-only all-pass = %q, want unknown (must NOT read confident healthy - B3/#1a)", v)
 	}
 }
 
@@ -597,7 +597,7 @@ func TestWorstOutcome_FailedLayerNamesTheBrokenLayer(t *testing.T) {
 }
 
 func TestCoverageVerdict_ZeroTestedIsNotHealthy(t *testing.T) {
-	// Healthy internal verdict but nothing actually tested (all skipped) — the
+	// Healthy internal verdict but nothing actually tested (all skipped) - the
 	// "couldn't test any route" headline must not sit beside a confident healthy.
 	tr := &Trace{Verdict: VerdictHealthy, Coverage: &Coverage{Tested: 0, Skipped: 2}}
 	if v := CoverageVerdict(tr); v != VerdictUnknown {
@@ -607,7 +607,7 @@ func TestCoverageVerdict_ZeroTestedIsNotHealthy(t *testing.T) {
 
 func TestSingleRouteHeadline_IndirectFailureIsNotReached(t *testing.T) {
 	// An UNREACHABLE route observed via the apiserver proxy must NOT read
-	// "Reached via API server" — that contradicts the failure.
+	// "Reached via API server" - that contradicts the failure.
 	h := singleRouteHeadline(RouteResult{Outcome: OutcomeUnreachable, Confidence: ConfidenceIndirect, Evidence: "Connection refused"}, 0)
 	if strings.Contains(h, "Reached") {
 		t.Errorf("indirect unreachable headline = %q, must not say 'Reached'", h)
@@ -618,7 +618,7 @@ func TestSingleRouteHeadline_IndirectFailureIsNotReached(t *testing.T) {
 }
 
 // An intentionally scaled-to-0 Service is unreachable by DESIGN (deliberate
-// dormancy) — the route is flagged benign, the verdict softens broken→degraded,
+// dormancy) - the route is flagged benign, the verdict softens broken→degraded,
 // and the headline reads "scaled to 0", not a red "Unreachable".
 func TestComputeCoverage_ScaledToZeroIsBenign(t *testing.T) {
 	tr := &Trace{
@@ -648,7 +648,7 @@ func TestComputeCoverage_ScaledToZeroIsBenign(t *testing.T) {
 	}
 }
 
-// A Service at replicas>0 with 0 ready (crashloop) is a REAL break — no scale-0
+// A Service at replicas>0 with 0 ready (crashloop) is a REAL break - no scale-0
 // finding → not benign, verdict stays broken/red.
 func TestComputeCoverage_CrashloopStaysRed(t *testing.T) {
 	tr := &Trace{
@@ -674,7 +674,7 @@ func TestComputeCoverage_CrashloopStaysRed(t *testing.T) {
 // ── Diagnosis: the hoisted cause/culprit/next-action (PROMOTED, never synthesized) ──
 
 // A crashloop pod is the culprit: the Diagnosis must name the actual Pod, carry
-// the honest prose Summary, and the logs --previous command — but it must NOT
+// the honest prose Summary, and the logs --previous command - but it must NOT
 // emit a structured cause code (the pod-state code would mislabel the cause).
 func TestDiagnosis_CrashloopProseNotCoded(t *testing.T) {
 	pod := ResourceRef{Kind: "Pod", Namespace: "prod", Name: "app-xyz"}
@@ -703,7 +703,7 @@ func TestDiagnosis_CrashloopProseNotCoded(t *testing.T) {
 		t.Fatal("Diagnosis must be set for a crashloop break")
 	}
 	if d.CauseCode != "" {
-		t.Errorf("Cause = %q, want EMPTY — a pod-state code must not be promoted as a structured cause", d.CauseCode)
+		t.Errorf("Cause = %q, want EMPTY - a pod-state code must not be promoted as a structured cause", d.CauseCode)
 	}
 	if d.Summary != "Container 'app' keeps crashing (exit code 1)" {
 		t.Errorf("Summary = %q, want the finding's honest Cause prose", d.Summary)
@@ -817,7 +817,7 @@ func TestDiagnosis_IndirectReachReRunInCluster(t *testing.T) {
 	}
 }
 
-// HONESTY INVARIANT: every promoted field traces to a real finding — the
+// HONESTY INVARIANT: every promoted field traces to a real finding - the
 // Summary is byte-equal to the finding's own Cause/Message, never invented.
 func TestDiagnosis_SummaryIsPromotedNeverSynthesized(t *testing.T) {
 	const cause = "Container 'app' keeps crashing (exit code 1)"
@@ -851,7 +851,7 @@ func TestDiagnosis_AllVerifiedRealIsNil(t *testing.T) {
 	}
 	computeCoverage(tr)
 	if tr.Diagnosis != nil {
-		t.Errorf("Diagnosis = %+v, want nil — a fully-verified real path has nothing to diagnose", tr.Diagnosis)
+		t.Errorf("Diagnosis = %+v, want nil - a fully-verified real path has nothing to diagnose", tr.Diagnosis)
 	}
 }
 
@@ -871,7 +871,7 @@ func TestDiagnosis_BenignScaleZeroIsNil(t *testing.T) {
 	}
 	computeCoverage(tr)
 	if tr.Diagnosis != nil {
-		t.Errorf("Diagnosis = %+v, want nil — benign scale-to-0 reads via its route, not a diagnosis", tr.Diagnosis)
+		t.Errorf("Diagnosis = %+v, want nil - benign scale-to-0 reads via its route, not a diagnosis", tr.Diagnosis)
 	}
 }
 
@@ -957,7 +957,7 @@ func TestApplyInClusterResults_UpgradesIndirectToReal(t *testing.T) {
 }
 
 // TestApplyInClusterResults_LeavesBenignUntouched: a deliberately scaled-to-0
-// route is dormant by design, not a path to confirm — the fold must skip it.
+// route is dormant by design, not a path to confirm - the fold must skip it.
 func TestApplyInClusterResults_LeavesBenignUntouched(t *testing.T) {
 	tr := &Trace{
 		Routes: []RouteResult{{

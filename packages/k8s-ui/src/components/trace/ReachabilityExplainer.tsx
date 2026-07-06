@@ -15,7 +15,7 @@ export interface ReachabilityExplainerProps {
   /** A live probe completed (≥1 non-skipped result). This block is the post-test
    *  read; before that the static path speaks for itself, so it renders nothing. */
   probed?: boolean
-  /** The in-cluster Job is running right now — the "Real in-cluster traffic" column
+  /** The in-cluster Job is running right now - the "Real in-cluster traffic" column
    *  shows a live "testing…" state so the work is visible IN the table, not just on
    *  the button. */
   inClusterRunning?: boolean
@@ -25,7 +25,7 @@ export interface ReachabilityExplainerProps {
 }
 
 // A DIRECTION is one way traffic was (or could be) sent to a target. The same path
-// can be tested several ways at once, and they can DISAGREE — that disagreement is
+// can be tested several ways at once, and they can DISAGREE - that disagreement is
 // the signal (e.g. reachable via the proxy but a real pod can't reach it).
 type Direction = 'direct' | 'proxy' | 'real'
 const DIRS: Direction[] = ['direct', 'proxy', 'real']
@@ -59,18 +59,18 @@ function hasRealProbes(trace: Trace): boolean {
 // Entry/router kinds: their probed "path" is an EXTERNAL front-door host (the URL a
 // user hits), which is only meaningful from OUTSIDE the cluster. The API proxy can't
 // dial a hostname and an in-cluster dial of it is a hairpin (not the real flow), so
-// those vantages are n/a for an entry — never "not tested", never a green real cell.
+// those vantages are n/a for an entry - never "not tested", never a green real cell.
 const ENTRY_KINDS = new Set(['Ingress', 'Gateway', 'HTTPRoute', 'GRPCRoute'])
 
 interface MatrixRow {
-  /** Namespace-qualified unique key (matches the rowMap key) — distinct even for
+  /** Namespace-qualified unique key (matches the rowMap key) - distinct even for
    *  two same-named cross-namespace backends, so React reconciliation and the
    *  change-flash never collide on a shared label. */
   key: string
   label: string
   cells: Partial<Record<Direction, ProbeResult>>
   /** Whether the in-cluster test actually dials this path (a downstream Service/
-   *  ExternalName) — entry hosts are NOT dialed, so they must never show a "testing…"
+   *  ExternalName) - entry hosts are NOT dialed, so they must never show a "testing…"
    *  state that then reverts to blank. */
   inClusterTestable: boolean
   /** This row is an external front-door host (Ingress/Gateway/Route), not a backend.
@@ -83,7 +83,7 @@ interface MatrixRow {
 // direction it was tried from. A path appears once even though it's probed at several
 // layers; the highest-information layer (http > tls > tcp > dns) represents each cell.
 // pathLabel gives ONE stable identity per logical path so a hop's DNS/TCP/HTTP
-// probes (which carry differently-shaped targets — "host", "host:80",
+// probes (which carry differently-shaped targets - "host", "host:80",
 // "http://host/") collapse into a single row, and a port-less skip on one service
 // never collides with another's: the hop name always anchors the key.
 function pathLabel(name: string, p: ProbeResult): string {
@@ -96,7 +96,7 @@ function buildMatrix(trace: Trace): { dirs: Direction[]; rows: MatrixRow[] } {
   const rowMap = new Map<string, MatrixRow>()
   const seen = new Set<Direction>()
   // Downstream Services/ExternalName are what the in-cluster Job dials; upstream entry
-  // hosts are NOT — so only downstream rows may show a "testing…" state.
+  // hosts are NOT - so only downstream rows may show a "testing…" state.
   const addHop = (h: NonNullable<Trace['downstream']>[number], testable: boolean) => {
     const name = h.resource?.name || h.resource?.kind || ''
     const ns = h.resource?.namespace ?? ''
@@ -113,7 +113,7 @@ function buildMatrix(trace: Trace): { dirs: Direction[]; rows: MatrixRow[] } {
       let row = rowMap.get(key)
       if (!row) {
         // An entry host is never in-cluster-testable, regardless of whether it sits in
-        // downstream (Ingress subject) or upstreams (Service subject) — this is also
+        // downstream (Ingress subject) or upstreams (Service subject) - this is also
         // what kills the "testing…" flicker on an Ingress-subject host row.
         row = { key, label, cells: {}, inClusterTestable: testable && !entry, isEntry: entry }
         rowMap.set(key, row)
@@ -124,7 +124,7 @@ function buildMatrix(trace: Trace): { dirs: Direction[]; rows: MatrixRow[] } {
       // higher-information layer wins. (Never let a skipped TLS hide a live TCP.)
       // On a SAME-layer tie (e.g. a Pods fan-out: multiple pods, same http layer),
       // prefer the WORSE outcome so a failing member is never masked by a passing
-      // one — never hide a failure (fail toward silence).
+      // one - never hide a failure (fail toward silence).
       const cur = row.cells[dir]
       const take = !cur
         ? true
@@ -139,7 +139,7 @@ function buildMatrix(trace: Trace): { dirs: Direction[]; rows: MatrixRow[] } {
   for (const h of (trace.downstream ?? []).filter((h) => h.resource?.kind !== 'Pods')) addHop(h, true)
   for (const h of trace.upstreams ?? []) addHop(h, false)
   // Always include the "real in-cluster traffic" column even when this run couldn't
-  // test it (e.g. from a laptop): its ABSENCE is the point — it tells the operator the
+  // test it (e.g. from a laptop): its ABSENCE is the point - it tells the operator the
   // gold-standard check is still missing, instead of hiding it.
   seen.add('real')
   const dirs = DIRS.filter((d) => seen.has(d))
@@ -147,7 +147,7 @@ function buildMatrix(trace: Trace): { dirs: Direction[]; rows: MatrixRow[] } {
 }
 
 // cellSeverity ranks a probe outcome so a same-layer tie keeps the WORSE one.
-// Only real problems (5xx degraded / unhealthy failure) outrank an ok result —
+// Only real problems (5xx degraded / unhealthy failure) outrank an ok result -
 // two oks tie and the first-arrived stays.
 function cellSeverity(p?: ProbeResult): number {
   const t = cellTone(p)
@@ -163,23 +163,23 @@ function cellTone(p?: ProbeResult): StatusTone {
   return 'healthy'
 }
 
-// cellLabel says WHAT was actually attempted + how it ended — never a bare "not
+// cellLabel says WHAT was actually attempted + how it ended - never a bare "not
 // tested here" that hides a real DNS/TCP attempt. A skip names the layer and the
 // concise reason (the full reason + any command is on the tooltip); a genuinely
 // un-attempted direction is a faint dash, visually distinct from an attempted skip.
 function cellLabel(p?: ProbeResult): string {
-  if (!p) return '—'
+  if (!p) return '-'
   const L = (p.layer || '').toUpperCase()
   if (p.skipped) {
     const r = (p.reason || '').toLowerCase()
     // Only claim a resolution FAILURE when the reason actually says so. A bare
     // DNS-layer skip (wildcard host, vantage, not-attempted) isn't a resolve
-    // failure — neutral copy, with the full reason on the tooltip.
+    // failure - neutral copy, with the full reason on the tooltip.
     if (/resolve|nxdomain|no such host/.test(r)) return 'DNS didn’t resolve from here'
     if (p.layer === 'dns') return 'DNS not tested here'
-    if (/https|tls|plain http/.test(r)) return 'HTTPS — needs a direct test'
-    if (/non-http|doesn.t speak http|not http/.test(r)) return `${L} — not HTTP`
-    if (/udp|sctp/.test(r)) return `${L} — needs a ${/(udp|sctp)/.exec(r)?.[1].toUpperCase()} client`
+    if (/https|tls|plain http/.test(r)) return 'HTTPS - needs a direct test'
+    if (/non-http|doesn.t speak http|not http/.test(r)) return `${L} - not HTTP`
+    if (/udp|sctp/.test(r)) return `${L} - needs a ${/(udp|sctp)/.exec(r)?.[1].toUpperCase()} client`
     return `${L || 'probe'} not run here`
   }
   if (!p.ok) return p.detail || p.error || `${L} failed`
@@ -250,7 +250,7 @@ function ReachPill({ state }: { state: ReachPillState }) {
 
 /**
  * ReachabilityExplainer states, in plain language for a non-k8s operator, exactly
- * what a probe run DID and — the part operators miss — what it did NOT prove. The
+ * what a probe run DID and - the part operators miss - what it did NOT prove. The
  * core is a MATRIX: every tested path (each port / host) as a row, and each DIRECTION
  * it was tried from (direct, API proxy, real in-cluster) as a column, so the reader
  * sees the multi-path / multi-direction reality and any disagreement between
@@ -261,7 +261,7 @@ export function ReachabilityExplainer({ trace, probed, inClusterRunning, probePa
   const { dirs, rows } = buildMatrix(trace)
   // Flash-on-change: snapshot every cell's value each render; when a value differs
   // from last time, briefly highlight it so a fast/identical-looking result still
-  // reads as "new". Hooks must run unconditionally — before the early returns below.
+  // reads as "new". Hooks must run unconditionally - before the early returns below.
   const sigs = new Map<string, string>()
   for (const r of rows) for (const d of dirs) sigs.set(`${r.key}|${d}`, `${cellLabel(r.cells[d])}|${cellTone(r.cells[d])}`)
   const sigKey = Array.from(sigs.entries()).map(([k, v]) => `${k}=${v}`).join(';')
@@ -288,7 +288,7 @@ export function ReachabilityExplainer({ trace, probed, inClusterRunning, probePa
   // The matrix earns its space only when it shows something the path rows don't:
   // MULTIPLE paths, or more than one direction actually tested (so you can read them
   // agreeing/disagreeing). A single path tested one way is a 1-cell table restating
-  // the verdict + path — suppress it there. EXCEPTION: while the in-cluster test runs,
+  // the verdict + path - suppress it there. EXCEPTION: while the in-cluster test runs,
   // show it so the "testing…" column is visible (and so the new column's arrival is felt).
   const testedDirs = dirs.filter((d) => rows.some((r) => r.cells[d]))
   if (!inClusterRunning && rows.length <= 1 && testedDirs.length <= 1) return null

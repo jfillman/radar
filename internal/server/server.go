@@ -325,10 +325,10 @@ func (s *Server) setupRoutes() {
 			r.Get("/audit", s.handleAudit)
 			r.Get("/audit/resource/{kind}/{namespace}/{name}", s.handleAuditResource)
 
-			// Network path trace — path-shaped diagnosis for Service /
+			// Network path trace - path-shaped diagnosis for Service /
 			// Ingress / HTTPRoute / GRPCRoute / Gateway. See internal/trace.
 			r.Get("/trace/{kind}/{namespace}/{name}", s.handleTrace)
-			// Active "test from inside the cluster" — creates a short-lived,
+			// Active "test from inside the cluster" - creates a short-lived,
 			// restricted, self-destructing probe Job as the caller's RBAC.
 			r.Post("/trace/{kind}/{namespace}/{name}/probe-in-cluster", s.handleProbeInCluster)
 			r.Get("/trace/{kind}/{namespace}/{name}/probe-in-cluster/capability", s.handleProbeInClusterCapability)

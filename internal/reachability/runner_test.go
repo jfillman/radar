@@ -85,8 +85,8 @@ func TestBuildProbeJob_OmitsEmptyFlags(t *testing.T) {
 	}
 }
 
-// The Job command must carry the exact request the user chose — host/scheme/path
-// — so the in-cluster probe tests the intended route, not a hardcoded http://svc/.
+// The Job command must carry the exact request the user chose - host/scheme/path
+// - so the in-cluster probe tests the intended route, not a hardcoded http://svc/.
 func TestBuildProbeJob_PassesRouteRequest(t *testing.T) {
 	job := buildProbeJob(RunOptions{
 		Namespace: "ns", Image: "img",
@@ -156,7 +156,7 @@ func TestProbeTimeoutError_NamesTheCause(t *testing.T) {
 }
 
 // TestProbeContainerTerminated_NameScoped pins that completion gates on the
-// "probe" container only — a sidecar that runs forever (mesh) or terminates must
+// "probe" container only - a sidecar that runs forever (mesh) or terminates must
 // never be read as the probe's own completion signal.
 func TestProbeContainerTerminated_NameScoped(t *testing.T) {
 	probeDone := &corev1.Pod{Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{
@@ -320,7 +320,7 @@ func TestResolveImage_Precedence(t *testing.T) {
 	}
 
 	// The configured --reachability-image override (recorded at startup) wins over
-	// self-read / RADAR_IMAGE / default even with an EMPTY per-call override arg —
+	// self-read / RADAR_IMAGE / default even with an EMPTY per-call override arg -
 	// this is the MCP path, which must honor the operator's override too.
 	SetConfiguredImage("configured/radar:flag")
 	defer SetConfiguredImage("")

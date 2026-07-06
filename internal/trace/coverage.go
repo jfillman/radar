@@ -11,7 +11,7 @@ import (
 )
 
 // Coverage-honest projection of a trace. This is a server-authoritative VIEW
-// computed alongside the verdict (computeCoverage) — it never changes the
+// computed alongside the verdict (computeCoverage) - it never changes the
 // verdict; it describes only what was actually tested. The invariant: the
 // per-route Outcome+Confidence reflect REAL-TRAFFIC evidence; behind-the-gate
 // / apiserver / direct-pod facts live on Localization, structurally apart, so
@@ -20,8 +20,8 @@ import (
 // Route outcome vocabulary (coverage-honest; pairs with a Confidence).
 const (
 	OutcomeVerified    = "verified"     // real HTTP 2xx
-	OutcomeReached     = "reached"      // 3xx/4xx, or transport-only (TCP/TLS) — reached, route not verified
-	OutcomeServerError = "server-error" // 5xx — reached, backend erroring
+	OutcomeReached     = "reached"      // 3xx/4xx, or transport-only (TCP/TLS) - reached, route not verified
+	OutcomeServerError = "server-error" // 5xx - reached, backend erroring
 	OutcomeUnreachable = "unreachable"  // transport failure
 	OutcomeNotTested   = "not-tested"   // no non-skipped probe ran for this route
 )
@@ -29,13 +29,13 @@ const (
 // Confidence qualifies an outcome by HOW it was learned.
 const (
 	ConfidenceReal     = "real"     // tested the way real traffic flows (direct dial / in-cluster data path)
-	ConfidenceIndirect = "indirect" // only the apiserver proxy reached it — annotates, never sets the headline
+	ConfidenceIndirect = "indirect" // only the apiserver proxy reached it - annotates, never sets the headline
 )
 
 // VantageAPIServer is the ONE operator-facing name for the apiserver-proxy
 // vantage: a real request that took the CONTROL-PLANE path (API server →
 // endpoint/kubelet → pod), bypassing kube-proxy (ClusterIP routing) and
-// NetworkPolicy. Named by path, not real/fake — it proves the backend answers,
+// NetworkPolicy. Named by path, not real/fake - it proves the backend answers,
 // not that the Service's real data path delivers. MUST stay identical to the TS
 // const VIA_API_SERVER (reachVerdict.ts); pinned by TestVantageAPIServerName and
 // the TS counterpart so the two headline generators can't drift.
@@ -46,7 +46,7 @@ const VantageAPIServer = "via API server"
 const (
 	SkipClassCoverage = "coverage" // a declared path we genuinely couldn't test (UDP/wildcard/no-SNI/non-HTTP/truncated)
 	SkipClassBenign   = "benign"   // no coverage lost (sampled identical pods, duplicate default backend)
-	SkipClassVantage  = "vantage"  // couldn't reach the front door from HERE (laptop + internal) — a gap, not an outage
+	SkipClassVantage  = "vantage"  // couldn't reach the front door from HERE (laptop + internal) - a gap, not an outage
 )
 
 // Coverage counts intended routes: Tested = routes that got any non-skipped
@@ -77,7 +77,7 @@ type RouteResult struct {
 	Target string `json:"target,omitempty"` // backend svc:port
 	// TargetNamespace is the backend Service's namespace. For a cross-namespace
 	// Gateway API backendRef this differs from the subject namespace, so the
-	// in-cluster probe must dial an FQDN (name.ns.svc) rather than the bare name —
+	// in-cluster probe must dial an FQDN (name.ns.svc) rather than the bare name -
 	// otherwise it resolves in the probe pod's namespace and hits the wrong
 	// Service or NXDOMAIN.
 	TargetNamespace string `json:"targetNamespace,omitempty"`
@@ -90,7 +90,7 @@ type RouteResult struct {
 	Confidence      string `json:"confidence,omitempty"`
 	Evidence        string `json:"evidence,omitempty"`
 	Command         string `json:"command,omitempty"`
-	// Benign marks a route that is unreachable by DESIGN — the backing workload is
+	// Benign marks a route that is unreachable by DESIGN - the backing workload is
 	// intentionally scaled to 0 (deliberate dormancy, not an outage). The Outcome
 	// stays unreachable (factually true) but the headline/tone read amber-benign,
 	// not red.
@@ -101,7 +101,7 @@ type RouteResult struct {
 	Localization []ProbeFact `json:"localization,omitempty"`
 	// InClusterRequest is the best-guess concrete request to test this route
 	// from inside the cluster (the runner dials the Service directly, bypassing
-	// the Ingress). It is a STARTING POINT the user can edit before running —
+	// the Ingress). It is a STARTING POINT the user can edit before running -
 	// when the route's path is a pattern (regex/wildcard) there is no single
 	// faithful request, so PathGuessed marks it as a guess. nil for routes that
 	// aren't testable that way (a known static break with no backend).
@@ -147,9 +147,9 @@ func computeCoverage(t *Trace) {
 	t.NotTested = append(buildNotTested(t), unprobed...)
 
 	// A static-only trace (no probing) leaves Coverage nil; the headline below
-	// still resolves ("Configuration only — not yet tested").
+	// still resolves ("Configuration only - not yet tested").
 	recountCoverage(t)
-	// Single source of truth for the banner sentence — UI and MCP both read this.
+	// Single source of truth for the banner sentence - UI and MCP both read this.
 	t.Headline = CoverageHeadline(t)
 	t.Diagnosis = computeDiagnosis(t)
 }
@@ -157,7 +157,7 @@ func computeCoverage(t *Trace) {
 // upgradeDefinitiveBackendDown promotes a Service route's unreachability from
 // indirect (apiserver-proxy-only) to a DEFINITIVE real failure when the backend
 // has zero ready endpoints. Zero ready endpoints is an authoritative cache fact
-// (pod / EndpointSlice readiness), not a vantage limitation — so the proxy's "no
+// (pod / EndpointSlice readiness), not a vantage limitation - so the proxy's "no
 // ready endpoints" IS the real answer, and every coverage-tone surface should
 // read it as a genuine break (red), never the soft "couldn't confirm via the
 // proxy" amber that indirect normally earns. Scoped to a single-Service subject,
@@ -171,7 +171,7 @@ func upgradeDefinitiveBackendDown(t *Trace) {
 	}
 	// Definitive only: a CRITICAL no-ready-endpoints finding means zero ready pods
 	// (authoritative). The WARNING variant ("couldn't verify whether the workload
-	// is scaled to 0", Rollout lookup failed) is genuinely uncertain — leave it
+	// is scaled to 0", Rollout lookup failed) is genuinely uncertain - leave it
 	// soft so an unverifiable state is never condemned as a hard break.
 	definitive := false
 	for _, h := range t.Downstream {
@@ -204,7 +204,7 @@ func recountCoverage(t *Trace) {
 	skippedRouteKeys := map[string]bool{}
 	for _, s := range t.NotTested {
 		// Benign skips (sampled identical pods, duplicate default backend) lose no
-		// coverage by design — counting them would downgrade a fully-tested route
+		// coverage by design - counting them would downgrade a fully-tested route
 		// to footnote-green "· 1 not tested", contradicting SkipClassBenign.
 		if s.ReasonClass == SkipClassBenign {
 			continue
@@ -228,7 +228,7 @@ func recountCoverage(t *Trace) {
 			cov.Failed++
 		case OutcomeNotTested:
 			// A route whose only evidence was a DNS resolve (transport probes
-			// skipped from this vantage) is a coverage gap. Count it once — if its
+			// skipped from this vantage) is a coverage gap. Count it once - if its
 			// skipped transport-probe rows are already in NotTested (matched by host),
 			// the route is already represented, so don't double-count it here.
 			if h := routeResultHostKey(r); h == "" || !skippedRouteKeys[h] {
@@ -256,10 +256,10 @@ func InClusterResultKey(route, target, targetNamespace string) string {
 // ApplyInClusterResults folds in-cluster probe results (keyed by InClusterResultKey)
 // into the finalized trace. The in-cluster data path IS real traffic, so a route
 // the apiserver proxy could only reach INDIRECTLY is re-derived from the live
-// result and earns ConfidenceReal when reached/verified — closing the honesty gap
+// result and earns ConfidenceReal when reached/verified - closing the honesty gap
 // the proxy vantage leaves open. Counts, headline, and diagnosis are recomputed so
 // the whole projection stays consistent. Benign (intentional scale-to-0) routes
-// are left untouched — they are deliberately dormant, not a path to confirm.
+// are left untouched - they are deliberately dormant, not a path to confirm.
 // Routes with no in-cluster result keep their prior (proxy/static) outcome.
 func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 	if t == nil {
@@ -322,7 +322,7 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 	// downgrade the surviving svc:targetport-no-listener WARNING before computeDiagnosis
 	// can re-promote a static guess the confirmed live success contradicts. The static
 	// reconcileTargetPortAdvisory reads h.Probes, which the in-cluster flow stamps only
-	// after this recompute — so the fold must happen off the passed-backend ports here.
+	// after this recompute - so the fold must happen off the passed-backend ports here.
 	reconcileInClusterTargetPort(t)
 	// Re-derive the verdict over the updated findings, mirroring BuildTraceWithOptions:
 	// a would-deny WARNING that reconcileInClusterPolicy just downgraded to info must
@@ -341,7 +341,7 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 	}
 	// BrokenAt may have moved (a live confirmation cleared an earlier break);
 	// recountCoverage never refreshes BrokenRoute, so re-derive it the same way
-	// computeCoverage does — nil when nothing is broken — or a healthy/degraded
+	// computeCoverage does - nil when nothing is broken - or a healthy/degraded
 	// trace ships a stale brokenRoute ref pointing at the now-contradicted hop.
 	if t.BrokenAt >= 0 && t.BrokenAt < len(t.Downstream) {
 		ref := t.Downstream[t.BrokenAt].Resource
@@ -388,7 +388,7 @@ func reconcileInClusterPolicy(t *Trace) {
 			h.Findings[idx] = Finding{
 				Code:     codePolicyWouldDeny,
 				Severity: SeverityInfo,
-				Message:  "Traffic got through from inside the cluster. A network rule here would block it, but live in-cluster traffic actually reached the backend — so the rule isn't blocking this path.",
+				Message:  "Traffic got through from inside the cluster. A network rule here would block it, but live in-cluster traffic actually reached the backend - so the rule isn't blocking this path.",
 				Command:  h.Findings[idx].Command,
 			}
 			sortFindingsBySeverity(h.Findings)
@@ -413,7 +413,7 @@ func reconcileInClusterPolicy(t *Trace) {
 // all covered by REAL in-cluster traffic. The static path reconciles this off the
 // hop's own probes (reconcileTargetPortAdvisory), but the in-cluster flow stamps
 // those probes onto the hops only AFTER ApplyInClusterResults re-derives the
-// verdict/diagnosis — so the suspect-port suspicion must be cleared here, off the
+// verdict/diagnosis - so the suspect-port suspicion must be cleared here, off the
 // passed-backend ports, or the route reads verified-over-real-traffic while the hop
 // still condemns the targetPort the live traffic just proved has a listener.
 // Mirrors reconcileInClusterPolicy: only a real pass on the exact suspect port
@@ -493,7 +493,7 @@ func branchPassedPorts(passed map[string]map[int32]bool, res ResourceRef) (map[i
 	return p, ok
 }
 
-// anyPassedPorts unions every passed-port set — used for the single-chain Service
+// anyPassedPorts unions every passed-port set - used for the single-chain Service
 // subject where the one route's pass covers the whole downstream.
 func anyPassedPorts(passed map[string]map[int32]bool) map[int32]bool {
 	out := map[int32]bool{}
@@ -507,7 +507,7 @@ func anyPassedPorts(passed map[string]map[int32]bool) map[int32]bool {
 
 // realPassCoversDenyPort reports whether a real pass clears a would-deny scoped
 // to denyPort. An all-ports deny (denyPort 0) is cleared by any pass; a
-// port-specific deny is cleared only by a pass on that exact port — a pass whose
+// port-specific deny is cleared only by a pass on that exact port - a pass whose
 // port we couldn't pin must not clear a specific-port prediction.
 func realPassCoversDenyPort(ports map[int32]bool, denyPort int32) bool {
 	if ports == nil {
@@ -545,7 +545,7 @@ func hopDenyPort(meta map[string]any) int32 {
 
 // Diagnosis is the one-finding-that-matters, hoisted from the path so an agent
 // (or the UI) doesn't have to hunt through path[].findings for the cause. Every
-// field is PROMOTED from a real finding (or a coverage state) — never
+// field is PROMOTED from a real finding (or a coverage state) - never
 // synthesized. CauseCode is the structured code, but ONLY for the trustworthy
 // structural fingerprints (missing-ref / svc:*); a pod-state code (e.g.
 // "problem:Completed" on a crashloop) would mislabel, so it is omitted and the
@@ -562,7 +562,7 @@ type Diagnosis struct {
 // computeDiagnosis promotes the primary problem on the intended route into a
 // Diagnosis, or describes the coverage state when there is no failure to
 // explain (reachable only via the proxy, or nothing testable from here).
-// Returns nil when every route was verified over real traffic — nothing to
+// Returns nil when every route was verified over real traffic - nothing to
 // diagnose. Benign (intentional scale-to-0) routes are NOT treated as a problem
 // here; their route already reads amber-benign with its own evidence.
 func computeDiagnosis(t *Trace) *Diagnosis {
@@ -596,7 +596,7 @@ func computeDiagnosis(t *Trace) *Diagnosis {
 		}
 		return d
 	}
-	// A failed route with no classified finding — e.g. a backend that didn't
+	// A failed route with no classified finding - e.g. a backend that didn't
 	// resolve (branchKnownBreak synthesizes evidence from absence, no Finding).
 	// Promote the route's own real evidence; do NOT invent a cause code.
 	if r, ok := worstNonBenignFailedRoute(t.Routes); ok {
@@ -610,24 +610,24 @@ func computeDiagnosis(t *Trace) *Diagnosis {
 	if t.Coverage == nil {
 		return nil
 	}
-	// Reachable, but only the apiserver proxy reached it — the real-traffic path
+	// Reachable, but only the apiserver proxy reached it - the real-traffic path
 	// was never confirmed. The action is to test from inside the cluster.
 	if t.Coverage.Tested > 0 && !anyRealPass(t.Routes) && anyIndirectReach(t.Routes) {
 		return &Diagnosis{
-			Summary:    "reachable via API server — the real-traffic path wasn't confirmed from here",
+			Summary:    "reachable via API server - the real-traffic path wasn't confirmed from here",
 			NextAction: "run the in-cluster reachability test to confirm the real path",
 		}
 	}
 	// Probing happened but nothing could actually be tested from this vantage. Lead
-	// with the REAL reason there was nothing to test — a generic "couldn't test"
+	// with the REAL reason there was nothing to test - a generic "couldn't test"
 	// reads like a tool failure when the actual cause is actionable. Only when a probe
-	// ACTUALLY ran — a static glance (the drawer) hasn't tried anything, so it gets no
+	// ACTUALLY ran - a static glance (the drawer) hasn't tried anything, so it gets no
 	// "couldn't test" diagnosis.
 	if t.Coverage.Tested == 0 && t.Coverage.Skipped > 0 && anyProbeRan(t) {
 		// Nothing is RUNNING: the dominant fact is the workload, not the vantage.
 		if hopsHaveScaleZero(t.Downstream) {
 			return &Diagnosis{
-				Summary:    "no running pods — the backing workload is scaled to 0, so there's nothing to reach",
+				Summary:    "no running pods - the backing workload is scaled to 0, so there's nothing to reach",
 				NextAction: "scale the workload up to test it (e.g. kubectl scale --replicas=1), or leave it if it's intentionally idle",
 			}
 		}
@@ -635,7 +635,7 @@ func computeDiagnosis(t *Trace) *Diagnosis {
 		// name the reason and hand over the exact command, not a vague in-cluster nudge.
 		if len(t.NotTested) > 0 && t.NotTested[0].Command != "" {
 			return &Diagnosis{
-				Summary:    "couldn't verify from here — " + t.NotTested[0].Reason,
+				Summary:    "couldn't verify from here - " + t.NotTested[0].Reason,
 				NextAction: t.NotTested[0].Command,
 			}
 		}
@@ -679,7 +679,7 @@ func realPassByBranch(t *Trace) map[int]map[int32]bool {
 // the intended route, with the hop resource it hangs on. Anchors on the break
 // hop (BrokenAt) and its downstream when one is set, else scans the whole
 // downstream (a missing-ref break is expressed on the entry hop). Benign
-// scale-to-0 findings are skipped — they are not a problem to diagnose.
+// scale-to-0 findings are skipped - they are not a problem to diagnose.
 func primaryProblemFinding(t *Trace) (Finding, ResourceRef, bool) {
 	type cand struct {
 		f     Finding
@@ -697,7 +697,7 @@ func primaryProblemFinding(t *Trace) (Finding, ResourceRef, bool) {
 				// A static would-deny is a PREDICTION, not ground truth. Once real
 				// traffic actually passed this branch ON THE DENIED PORT (direct dial
 				// or in-cluster data path), the prediction is contradicted and must not
-				// lead the diagnosis — demote it out of the candidates. A pass on a
+				// lead the diagnosis - demote it out of the candidates. A pass on a
 				// different port leaves the prediction standing.
 				if f.Code == codePolicyWouldDeny && realPassCoversDenyPort(passed[base+i], hopDenyPort(h.Meta)) {
 					continue
@@ -725,7 +725,7 @@ func primaryProblemFinding(t *Trace) (Finding, ResourceRef, bool) {
 		return Finding{}, ResourceRef{}, false
 	}
 	// Rank: worst severity first; then prefer a finding that names a specific
-	// object (a Pod-level root cause) over a hop-level SYMPTOM — a crashloop pod
+	// object (a Pod-level root cause) over a hop-level SYMPTOM - a crashloop pod
 	// is the real culprit, the Service's "no ready endpoints" is just its shadow;
 	// then the deepest hop (root cause sits downstream of the symptom); then code
 	// for a stable tiebreak.
@@ -748,10 +748,10 @@ func primaryProblemFinding(t *Trace) (Finding, ResourceRef, bool) {
 
 // trustworthyCauseCode reports whether a finding code is a structural fingerprint
 // safe to surface as the Diagnosis.CauseCode. Only the network-shape detectors
-// qualify (missing-ref, svc:* — scaled-to-zero, no-ready-endpoints,
+// qualify (missing-ref, svc:* - scaled-to-zero, no-ready-endpoints,
 // targetport-no-listener, …). A pod-state issue code ("problem:Completed",
 // "problem:CrashLoopBackOff") reflects transient runtime state and would
-// mislabel the cause, so it is excluded — the honest prose Summary stands alone.
+// mislabel the cause, so it is excluded - the honest prose Summary stands alone.
 func trustworthyCauseCode(code string) bool {
 	if code == "" {
 		return false
@@ -761,7 +761,7 @@ func trustworthyCauseCode(code string) bool {
 
 // isScaleZeroFinding matches the intentional scale-to-0 marker in either form
 // (the raw detection fingerprint, or the "<source>:<reason>" code that issue
-// grouping leaves) — mirrors hopsHaveScaleZero.
+// grouping leaves) - mirrors hopsHaveScaleZero.
 func isScaleZeroFinding(f Finding) bool {
 	return f.Code == k8s.ScaledToZeroFingerprint || strings.HasSuffix(f.Code, k8s.ScaledToZeroReason)
 }
@@ -775,7 +775,7 @@ func worstNonBenignFailedRoute(routes []RouteResult) (RouteResult, bool) {
 		}
 		switch r.Outcome {
 		case OutcomeUnreachable:
-			return r, true // worst failure — return immediately
+			return r, true // worst failure - return immediately
 		case OutcomeServerError:
 			if !found {
 				best, found = r, true
@@ -786,7 +786,7 @@ func worstNonBenignFailedRoute(routes []RouteResult) (RouteResult, bool) {
 }
 
 // allPassesIndirect reports whether every reachable (verified/reached) route was
-// reached ONLY via the apiserver proxy — at least one such pass exists and none
+// reached ONLY via the apiserver proxy - at least one such pass exists and none
 // over the real-traffic path. When true the multi-route headline must say
 // proxy-only, mirroring singleRouteHeadline, instead of bare "All N reachable".
 func allPassesIndirect(routes []RouteResult) bool {
@@ -840,7 +840,7 @@ func CoverageVerdict(t *Trace) string {
 	}
 	// broken / degraded / unknown from the internal verdict are already honest,
 	// EXCEPT: an intentional scale-to-0 reads as broken via the probe (no ready
-	// endpoints), but it's deliberate dormancy, not an outage — soften
+	// endpoints), but it's deliberate dormancy, not an outage - soften
 	// broken → degraded when every failed route is benign.
 	if t.Verdict != VerdictHealthy {
 		// Soften broken → degraded ONLY when the broken-ness is attributable to the
@@ -855,24 +855,24 @@ func CoverageVerdict(t *Trace) string {
 	c := t.Coverage
 	if c == nil {
 		// No active probing was attempted (e.g. probe=false, or a config-only
-		// shape like ExternalName) — the static config assessment stands.
+		// shape like ExternalName) - the static config assessment stands.
 		return VerdictHealthy
 	}
 	if c.Tested == 0 {
 		// Probing happened but nothing was actually tested (every intended route
-		// was skipped / unreachable from here) — not a confident green; the
+		// was skipped / unreachable from here) - not a confident green; the
 		// "couldn't test any route" headline must not sit beside "healthy".
 		return VerdictUnknown
 	}
 	if !anyRealPass(t.Routes) {
-		// Every reachable route was reached ONLY via the apiserver proxy — the
+		// Every reachable route was reached ONLY via the apiserver proxy - the
 		// real-traffic path was never confirmed (#1a/B3).
 		return VerdictUnknown
 	}
 	if c.Failed > 0 {
 		// A real pass exists, but other ports/routes failed. The internal verdict
 		// can read healthy while a dead secondary port leaves Coverage.Failed>0 and
-		// the headline says "1 of 2 ports reachable · 1 unreachable" — green here
+		// the headline says "1 of 2 ports reachable · 1 unreachable" - green here
 		// would contradict the headline (the B3 contradiction this guard prevents).
 		if c.Passed == 0 {
 			return VerdictBroken
@@ -883,7 +883,7 @@ func CoverageVerdict(t *Trace) string {
 }
 
 // anyRealPass reports whether at least one intended route was reached over the
-// REAL-traffic path (direct dial / in-cluster data path) — not merely via the
+// REAL-traffic path (direct dial / in-cluster data path) - not merely via the
 // apiserver proxy. Indirect-only evidence never earns a confident healthy.
 // allFailuresBenign reports whether there is at least one failed route and EVERY
 // failed (unreachable/server-error) route is benign (intentional scale-to-0).
@@ -901,7 +901,7 @@ func allFailuresBenign(routes []RouteResult) bool {
 }
 
 // hasNonBenignCriticalFinding reports whether any hop carries a critical finding
-// that isn't a benign scale-to-0 marker — i.e. a real structural break that must
+// that isn't a benign scale-to-0 marker - i.e. a real structural break that must
 // not be softened away just because the failed ROUTES happen to be benign.
 func hasNonBenignCriticalFinding(t *Trace) bool {
 	for _, hop := range t.Downstream {
@@ -910,7 +910,7 @@ func hasNonBenignCriticalFinding(t *Trace) bool {
 		}
 	}
 	// An upstream missing-ref critical is about a SIBLING backend route, not the
-	// path into this subject (which exists as a backend) — scope it out exactly as
+	// path into this subject (which exists as a backend) - scope it out exactly as
 	// computeVerdict's nonMissingRefFindings does, so a broken sibling doesn't block
 	// the broken→degraded softening for a benign scale-to-0 here.
 	for _, hop := range t.Upstreams {
@@ -946,7 +946,7 @@ func anyRealPass(routes []RouteResult) bool {
 // entry it walks downstreamBranches; for a Service/single-chain subject it
 // yields a single route over the whole downstream. Returns the routes plus the
 // branches that were genuinely un-probed with no break (surfaced as NotTested)
-// — a declared route must never silently vanish.
+// - a declared route must never silently vanish.
 // externalNameHop returns the alias-host hop of an ExternalName Service path (a
 // DNS CNAME to a host outside the cluster), or nil. That hop carries the real
 // reachability probes; the Service hop above it has no ClusterIP/ports to dial.
@@ -962,7 +962,7 @@ func externalNameHop(hops []Hop) *Hop {
 // anyProbeRan reports whether any active probe actually executed on this trace. A
 // STATIC (un-probed) trace still produces skipped routes (buildRoutes marks them
 // "not actively tested"), which must NOT read as "Couldn't actively test any route
-// from here" — that wording is for a trace that DID probe and found everything
+// from here" - that wording is for a trace that DID probe and found everything
 // unprobeable from this vantage. No probes at all = "not tested yet", not "couldn't".
 func anyProbeRan(t *Trace) bool {
 	for _, h := range t.Downstream {
@@ -979,7 +979,7 @@ func anyProbeRan(t *Trace) bool {
 }
 
 // probesHaveInClusterVantage reports whether any non-skipped probe actually ran
-// from inside the cluster — the only vantage that proves real in-cluster reachability.
+// from inside the cluster - the only vantage that proves real in-cluster reachability.
 func probesHaveInClusterVantage(probes []probe.Result) bool {
 	for _, p := range probes {
 		if !p.Skipped && p.Vantage == probe.VantageInCluster {
@@ -1000,12 +1000,12 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 
 	if len(branches) == 0 {
 		// ExternalName Service: the alias-host hop (below the Service) carries the
-		// real reachability test — DNS-resolve + HTTP-reach the external host. The
+		// real reachability test - DNS-resolve + HTTP-reach the external host. The
 		// Service hop itself has no ClusterIP/ports to dial, so its OWN probes are
 		// empty; the route's outcome IS the external host's reachability.
 		if ext := externalNameHop(t.Downstream); ext != nil && len(ext.Probes) > 0 {
 			if r, ok := routeFromProbes(subjectRouteLabel(t.Subject, entry), ext.Resource.Name, ext.Probes); ok {
-				// A laptop dials the external host from Radar's OWN network — that is
+				// A laptop dials the external host from Radar's OWN network - that is
 				// NOT proof of real in-cluster reachability (split-horizon DNS, egress
 				// rules, and routing can all differ inside the cluster). Only an
 				// in-cluster vantage earns ConfidenceReal; otherwise it's indirect, so
@@ -1030,7 +1030,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 	for _, b := range branches {
 		backend := t.Downstream[b.start]
 		// A Gateway's attached route is a parallel ENTRY path, traced as its own
-		// subject — NOT a resolvable Service backend of this Gateway. It carries no
+		// subject - NOT a resolvable Service backend of this Gateway. It carries no
 		// Config/probes here, so condemning it as an unreachable backend (the
 		// Config==nil arm of branchKnownBreak) would false-condemn every healthy
 		// attached route. Exclude it from routes; its own skipped probe surfaces as
@@ -1043,13 +1043,13 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 		if routeID == "" {
 			routeID = backend.Resource.Name
 		}
-		// A drained (explicit weight-0) backend carries no traffic by design — it
+		// A drained (explicit weight-0) backend carries no traffic by design - it
 		// was traced informationally and never probed. Record it as a benign skip
 		// (no coverage lost) instead of a coverage gap or a failed route.
 		if isDrainedBackendHop(backend) {
 			unprobed = append(unprobed, RouteSkip{
 				Route:       routeID,
-				Reason:      "backend is weighted to 0 (drained / canary-cutover) — serves no traffic by design",
+				Reason:      "backend is weighted to 0 (drained / canary-cutover) - serves no traffic by design",
 				ReasonClass: SkipClassBenign,
 			})
 			continue
@@ -1059,7 +1059,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 			target = fmt.Sprintf("%s:%d", backend.Resource.Name, backend.Config.Ports[0].Port)
 		}
 		// A KNOWN static break (missing backend, critical finding) is a FAILED
-		// route REGARDLESS of whether the shared front door dialed OK — a working
+		// route REGARDLESS of whether the shared front door dialed OK - a working
 		// front door doesn't make a route to a non-existent backend reachable.
 		if ev, broken := branchKnownBreak(t, entry, b); broken {
 			out = append(out, RouteResult{Route: routeID, Target: target, Outcome: OutcomeUnreachable, Evidence: ev})
@@ -1069,7 +1069,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 		// backend's routes; the backend Service hop's probes carry the per-port
 		// outcome; the Pods hop sits behind the Service → localization. Scope to
 		// the port(s) the rules declare for this backend (an Ingress route targets
-		// a specific port) — empty/unresolvable scope means all probed ports.
+		// a specific port) - empty/unresolvable scope means all probed ports.
 		end := b.end
 		if end > len(t.Downstream) {
 			end = len(t.Downstream)
@@ -1110,7 +1110,7 @@ func setTargetNamespace(routes []RouteResult, namespace string) {
 }
 
 // markBenignScaleZero flags an unreachable route as benign when a contributing
-// hop carries the intentional-scale-to-0 finding — deliberate dormancy, not an
+// hop carries the intentional-scale-to-0 finding - deliberate dormancy, not an
 // outage. The Outcome stays unreachable (factually true); only the framing softens.
 func markBenignScaleZero(routes []RouteResult, hops ...Hop) {
 	if !hopsHaveScaleZero(hops) {
@@ -1141,7 +1141,7 @@ func hopsHaveScaleZero(hops []Hop) bool {
 
 // routesByPort emits one RouteResult per (backend, port), the unit of coverage:
 // a port is part of the intended-route identity (svc:80 = the app, svc:9090 =
-// metrics — different listeners). Port-0 probes (host-level DNS / front-door
+// metrics - different listeners). Port-0 probes (host-level DNS / front-door
 // dials) are shared context applied to every port. scope, when non-empty,
 // restricts output to those ports (an Ingress route targets a declared port);
 // empty scope means every probed port is an intended route (a Service subject's
@@ -1187,7 +1187,7 @@ func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Re
 	}
 
 	if len(order) == 0 {
-		// No per-port probe ran — a single host-level route (DNS-only / front door).
+		// No per-port probe ran - a single host-level route (DNS-only / front door).
 		if r, ok := emit(routeID, fallbackTarget, shared); ok {
 			return []RouteResult{r}
 		}
@@ -1196,7 +1196,7 @@ func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Re
 	// A host-level (Port==0) front-door probe is port-agnostic CONTEXT: its "/" 2xx
 	// says the front door is reachable, NOT that THIS backend port's declared
 	// path/protocol is. So when combined with a specific port's probes it must not,
-	// on its own, VERIFY that port — cap a front-door HTTP 2xx at "reached" here, so
+	// on its own, VERIFY that port - cap a front-door HTTP 2xx at "reached" here, so
 	// a port whose own probes all skipped reads "reached, route not verified" instead
 	// of a false green "verified". The port's OWN healthy probe still wins to verified.
 	demotedShared := demoteSharedFrontDoor(shared)
@@ -1247,7 +1247,7 @@ func downstreamProbes(hops []Hop) []probe.Result {
 }
 
 // dedupeFacts removes exact-duplicate Localization facts (same layer, target,
-// ok, tone, detail, path) — the pod-fanout and per-port projections can append
+// ok, tone, detail, path) - the pod-fanout and per-port projections can append
 // the identical apiserver fact twice. It dedupes on EVERY field rather than
 // normalizing the target, so a pod-level confirmation is never collapsed into a
 // service-level one (that would hide which pod answered).
@@ -1282,7 +1282,7 @@ func factsFromProbes(probes []probe.Result) []ProbeFact {
 
 // backendDeclaredPorts returns the resolved Service ports the entry's rules
 // declare for a backend (an Ingress/route backendRef names a specific port).
-// Empty when no rule names a resolvable port — the caller then covers all
+// Empty when no rule names a resolvable port - the caller then covers all
 // probed ports.
 func backendDeclaredPorts(entry Hop, backendName, backendNS string, cfg *HopConfig) []int32 {
 	if entry.Config == nil || backendName == "" {
@@ -1326,7 +1326,7 @@ func resolveBackendPort(portStr string, cfg *HopConfig) int32 {
 // branchKnownBreak reports whether a branch that produced no probe result is
 // nonetheless a KNOWN static break, with evidence for the failed route. Signals:
 // a missing-backend ref on the entry naming this backend (reuses the shared
-// missingRefCodePrefix — no prose-sniffing), a critical finding on the branch,
+// missingRefCodePrefix - no prose-sniffing), a critical finding on the branch,
 // or a backend Service that didn't resolve (no Config).
 func branchKnownBreak(t *Trace, entry Hop, b branchSpan) (string, bool) {
 	backend := t.Downstream[b.start]
@@ -1336,7 +1336,7 @@ func branchKnownBreak(t *Trace, entry Hop, b branchSpan) (string, bool) {
 		}
 	}
 	for i := b.start; i < b.end && i < len(t.Downstream); i++ {
-		// A backend that still has ready endpoints is reachable — a per-pod crash
+		// A backend that still has ready endpoints is reachable - a per-pod crash
 		// among serving replicas is a degradation, not a known break. Skip it so a
 		// 1-of-2-ready Service isn't condemned unreachable (mirrors hopReachSeverity).
 		if hopHasReadyEndpoints(t.Downstream[i]) {
@@ -1352,7 +1352,7 @@ func branchKnownBreak(t *Trace, entry Hop, b branchSpan) (string, bool) {
 		// A backend we merely couldn't READ (RBAC-redacted cross-namespace, or a
 		// transient API failure marked endpointSource=unknown) has no Config but is
 		// NOT a confirmed break. Condemning it as unreachable would false-condemn a
-		// route the caller can't see — fall through to the unprobed/NotTested path
+		// route the caller can't see - fall through to the unprobed/NotTested path
 		// so it reads as not-tested/unknown, matching the verdict layer.
 		if src, _ := backend.Meta["endpointSource"].(string); src == "unknown" {
 			return "", false
@@ -1393,7 +1393,7 @@ func MissingRefNamesSubject(msg, name, namespace string) bool {
 }
 
 // containsResourceName reports whether name appears in s as a whole Kubernetes
-// resource name — bounded by characters that can't be part of a DNS-1123 name,
+// resource name - bounded by characters that can't be part of a DNS-1123 name,
 // so backend "api" does NOT match inside a missing-ref message about "api-v2" or
 // "my-api". A raw substring match would condemn a healthy same-prefixed sibling.
 func containsResourceName(s, name string) bool {
@@ -1435,7 +1435,7 @@ func routeFromProbes(routeID, target string, probes []probe.Result) (RouteResult
 		}
 		if p.Path == probe.PathAPIServer {
 			// Behind-the-gate evidence: it confirms a component answers, but not
-			// via real traffic. Localization-only — never the route's outcome.
+			// via real traffic. Localization-only - never the route's outcome.
 			indirect = append(indirect, p)
 			localization = append(localization, toFact(p))
 		} else {
@@ -1497,7 +1497,7 @@ func worstOutcome(probes []probe.Result) (outcome, evidence, failedLayer string)
 		}
 		if p.Layer == probe.LayerDNS {
 			// A name resolving is not transport reachability. Record it as evidence
-			// but never let a DNS-only success read as "server reached" — that
+			// but never let a DNS-only success read as "server reached" - that
 			// overclaims reachability from a name lookup (the host may be internal /
 			// split-horizon with TCP/TLS/HTTP skipped from this vantage).
 			if evidence == "" {
@@ -1527,7 +1527,7 @@ func worstOutcome(probes []probe.Result) (outcome, evidence, failedLayer string)
 }
 
 // buildNotTested lists every distinct skip on the intended route (DOWNSTREAM
-// only — upstreams are context, not the subject's routes), classified. A
+// only - upstreams are context, not the subject's routes), classified. A
 // truncated fan-out is itself a coverage gap.
 func buildNotTested(t *Trace) []RouteSkip {
 	var out []RouteSkip
@@ -1644,7 +1644,7 @@ func routeLabelsForBackend(entry Hop, backendName, backendNS string) []string {
 		// Gateway-API routes keep hostnames at Config.Hostnames, not per-rule
 		// (ingressConfig sets rule.Hosts; routeConfig does not). Fall back to the
 		// entry's hostnames so a multi-host route still emits host-qualified
-		// labels — otherwise hostsOf() reads empty and every front-door host dial
+		// labels - otherwise hostsOf() reads empty and every front-door host dial
 		// folds into each backend, cross-contaminating sibling hosts' outcomes.
 		ruleHosts := rule.Hosts
 		if len(ruleHosts) == 0 {
@@ -1675,7 +1675,7 @@ func attachInClusterRequest(routes []RouteResult, host, path string, cfg *HopCon
 
 // guessInClusterRequest derives a concrete, runnable request from a declared
 // route. Pattern paths (regex/wildcard) have no single faithful request, so it
-// guesses the leading literal and flags PathGuessed — the UI surfaces that and
+// guesses the leading literal and flags PathGuessed - the UI surfaces that and
 // lets the user correct it before running.
 func guessInClusterRequest(host, path string, port PortMap) ProbeRequest {
 	req := ProbeRequest{Scheme: schemeForPort(port), Host: concreteHost(host)}
@@ -1724,7 +1724,7 @@ func guessConcretePath(path string) (string, bool) {
 	path = strings.TrimSpace(path)
 	// Gateway-API routes carry the match type as a display prefix
 	// ("Exact:/foo", "RegularExpression:/foo.*"). Strip it so the request path is
-	// the real URL, not "/Exact:/foo", and mark the result a guess — a typed
+	// the real URL, not "/Exact:/foo", and mark the result a guess - a typed
 	// match (exact/regex) isn't a plain prefix the direct dial necessarily
 	// exercises identically.
 	typed := false
@@ -1818,7 +1818,7 @@ func firstRuleHostPath(entry Hop, backendName, backendNS string) (host, path str
 
 // backendRefMatches reports whether a route BackendRef points at the given
 // backend hop. Names must match; namespaces must match too once the backend's
-// namespace is known — a BackendRef with no namespace defaults to the route's
+// namespace is known - a BackendRef with no namespace defaults to the route's
 // (entry's) namespace. Without the namespace guard two same-named Services in
 // different namespaces (legal via a Gateway-API ReferenceGrant) would merge
 // their labels/ports and could verify/condemn the wrong route. When either
@@ -1866,7 +1866,7 @@ func hostsOf(labels []string) map[string]bool {
 }
 
 // entryProbesForHosts returns the entry hop's front-door probes whose target
-// host is in the given set — the real-traffic dials that belong to a backend's
+// host is in the given set - the real-traffic dials that belong to a backend's
 // routes. When the entry serves a single host (hosts empty), all entry probes
 // apply.
 func entryProbesForHosts(entry Hop, hosts map[string]bool) []probe.Result {
@@ -1889,7 +1889,7 @@ func entryProbesForHosts(entry Hop, hosts map[string]bool) []probe.Result {
 // (scheme://host[:port]/path) while DNS/TCP/TLS probes carry host[:port]; without
 // stripping the scheme+path an HTTP target like "http://host/path" parses to
 // "http" and every front-door HTTP probe is dropped from the backend outcome
-// (a 5xx/2xx silently lost — a false-clear on multi-host entries).
+// (a 5xx/2xx silently lost - a false-clear on multi-host entries).
 func targetHost(target string) string {
 	if i := strings.Index(target, "://"); i >= 0 {
 		target = target[i+3:]
@@ -1898,7 +1898,7 @@ func targetHost(target string) string {
 		}
 	}
 	if i := strings.LastIndexByte(target, ':'); i > 0 {
-		// Only strip when the suffix is a port (no other ':' — i.e. not IPv6).
+		// Only strip when the suffix is a port (no other ':' - i.e. not IPv6).
 		if !strings.Contains(target[:i], ":") {
 			return target[:i]
 		}
@@ -1914,7 +1914,7 @@ func targetHost(target string) string {
 // deduping a NotTested route against its own skipped probe rows (keyed by probe
 // Target host). A single-host route's Route label is path-only ("/api") because
 // routeLabelsForBackend omits the host when the entry serves one host, so
-// reading the host off the label yields "" and the dedup misfires — counting the
+// reading the host off the label yields "" and the dedup misfires - counting the
 // route AND its skip rows. The declared host lives on InClusterRequest (the same
 // concretized host the front-door probe dialed), so fall back to it.
 func routeResultHostKey(r RouteResult) string {
@@ -1961,11 +1961,11 @@ func subjectTarget(entry Hop) string {
 // CoverageHeadline renders the coverage-honest one-line summary from the
 // computed Coverage + Routes. It is the agent/UI primary read and counts only
 // INTENDED routes. Invariant: it NEVER claims "verified" for an indirect
-// (apiserver) route — behind-the-gate evidence is reported as "reached via the
+// (apiserver) route - behind-the-gate evidence is reported as "reached via the
 // management API", never as real-traffic verification.
 func CoverageHeadline(t *Trace) string {
 	if t == nil || t.Coverage == nil {
-		return "Configuration only — not yet tested"
+		return "Configuration only - not yet tested"
 	}
 	c := t.Coverage
 	// A bare Service subject's intended routes ARE its ports, so the headline
@@ -1981,7 +1981,7 @@ func CoverageHeadline(t *Trace) string {
 		if c.Skipped > 0 && anyProbeRan(t) {
 			return "Couldn't actively test any route from here"
 		}
-		return "Configuration only — not yet tested"
+		return "Configuration only - not yet tested"
 	}
 	// Single intended route/port: speak in the singular, no fraction.
 	if c.Tested == 1 && len(t.Routes) == 1 {
@@ -1999,25 +1999,25 @@ func CoverageHeadline(t *Trace) string {
 	if unreachable < 0 {
 		unreachable = 0
 	}
-	// A proxy-only (indirect) unreachable never condemns the real path — qualify
+	// A proxy-only (indirect) unreachable never condemns the real path - qualify
 	// the multi-route headline the same way singleRouteHeadline does, instead of
 	// a bare "unreachable" that false-condemns a laptop-vantage failure.
 	indirectUnreach := unreachable > 0 && allUnreachableIndirect(t.Routes)
 	// When every passing route was reached ONLY via the apiserver proxy, the
-	// real-traffic path was never confirmed — say so, mirroring singleRouteHeadline,
+	// real-traffic path was never confirmed - say so, mirroring singleRouteHeadline,
 	// instead of a bare "reachable" that CoverageVerdict (gating on !anyRealPass)
 	// would contradict with unknown (the B3 headline/verdict contradiction).
 	proxyOnly := allPassesIndirect(t.Routes)
 	switch {
 	case c.Failed == 0 && c.Skipped == 0:
 		if proxyOnly {
-			return fmt.Sprintf("All %d %s reached — checked only via API server, real path not confirmed", c.Tested, noun)
+			return fmt.Sprintf("All %d %s reached - checked only via API server, real path not confirmed", c.Tested, noun)
 		}
 		return fmt.Sprintf("All %d %s reachable", c.Tested, noun)
 	case c.Failed == 0:
 		// All tested routes passed, but a real coverage gap exists (1A footnote-green).
 		if proxyOnly {
-			return fmt.Sprintf("All %d tested %s reached — checked only via API server, real path not confirmed%s", c.Tested, noun, notTested)
+			return fmt.Sprintf("All %d tested %s reached - checked only via API server, real path not confirmed%s", c.Tested, noun, notTested)
 		}
 		return fmt.Sprintf("All %d tested %s reachable%s", c.Tested, noun, notTested)
 	case c.Passed == 0 && allFailuresBenign(t.Routes):
@@ -2026,12 +2026,12 @@ func CoverageHeadline(t *Trace) string {
 		// CoverageVerdict, which softens this to amber degraded.
 		return fmt.Sprintf("All %d %s intentionally scaled to 0 (no running backends)%s", c.Tested, noun, notTested)
 	case c.Passed == 0 && errored > 0:
-		// At least one route answered (5xx) — "none reachable" would be dishonest.
+		// At least one route answered (5xx) - "none reachable" would be dishonest.
 		return fmt.Sprintf("0 of %d %s reachable · %s%s", c.Tested, noun, failClause(unreachable, errored, indirectUnreach), notTested)
 	case c.Passed == 0 && indirectUnreach:
-		// Every unreachable route was seen only via the apiserver proxy — the real
+		// Every unreachable route was seen only via the apiserver proxy - the real
 		// path was never confirmed, so don't bare-condemn the whole entry.
-		return fmt.Sprintf("None of %d %s confirmed reachable — checked only via API server, real path not confirmed%s", c.Tested, noun, notTested)
+		return fmt.Sprintf("None of %d %s confirmed reachable - checked only via API server, real path not confirmed%s", c.Tested, noun, notTested)
 	case c.Passed == 0:
 		return fmt.Sprintf("None of %d %s reachable%s", c.Tested, noun, notTested)
 	default:
@@ -2091,7 +2091,7 @@ func failClause(unreachable, errored int, indirectUnreach bool) string {
 
 // allUnreachableIndirect reports whether every genuinely-unreachable route
 // (non-benign, transport-unreachable) was observed ONLY via the apiserver proxy.
-// When true the headline must qualify "unreachable" — a proxy-only failure never
+// When true the headline must qualify "unreachable" - a proxy-only failure never
 // condemns the real path.
 func allUnreachableIndirect(routes []RouteResult) bool {
 	any := false
@@ -2116,34 +2116,34 @@ func singleRouteHeadline(r RouteResult, skipped int) string {
 	if r.Evidence != "" {
 		ev = " (" + r.Evidence + ")"
 	}
-	// Intentional scale-to-0: deliberate dormancy, not an outage — never "Unreachable".
+	// Intentional scale-to-0: deliberate dormancy, not an outage - never "Unreachable".
 	if r.Benign {
 		return "No running backends (scaled to 0)" + suffix
 	}
 	switch r.Outcome {
 	case OutcomeVerified, OutcomeReached:
 		// A SUCCESS reached only via the apiserver proxy is not the live-traffic
-		// path — never "verified". (Only successes get this prefix; a failure is a
-		// failure regardless of which path observed it — see below.)
+		// path - never "verified". (Only successes get this prefix; a failure is a
+		// failure regardless of which path observed it - see below.)
 		if r.Confidence == ConfidenceIndirect {
-			return "Reached " + VantageAPIServer + " — not live traffic" + ev + suffix
+			return "Reached " + VantageAPIServer + " - not live traffic" + ev + suffix
 		}
 		if r.Outcome == OutcomeVerified {
-			return "Reachable — verified" + ev + suffix
+			return "Reachable - verified" + ev + suffix
 		}
-		return "Reachable — server reached, route not verified" + ev + suffix
+		return "Reachable - server reached, route not verified" + ev + suffix
 	case OutcomeServerError:
 		if r.Confidence == ConfidenceIndirect {
-			return "Server error " + VantageAPIServer + " — not live traffic" + ev + suffix
+			return "Server error " + VantageAPIServer + " - not live traffic" + ev + suffix
 		}
-		return "Reached — server error" + ev + suffix
+		return "Reached - server error" + ev + suffix
 	case OutcomeUnreachable:
 		// A failure observed ONLY through the apiserver proxy isolates the symptom
 		// to that path, not the real-traffic path. Stating a bare "Unreachable"
-		// would headline a condemnation from proxy-only evidence — never honest
+		// would headline a condemnation from proxy-only evidence - never honest
 		// about the live path. Qualify it symmetrically with the success case.
 		if r.Confidence == ConfidenceIndirect {
-			return "Unreachable " + VantageAPIServer + " — real path not confirmed" + ev + suffix
+			return "Unreachable " + VantageAPIServer + " - real path not confirmed" + ev + suffix
 		}
 		return "Unreachable" + ev + suffix
 	default:

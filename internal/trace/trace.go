@@ -1,5 +1,5 @@
 // Package trace composes a path-shaped diagnostic over a network entry kind
-// (Service, Ingress, HTTPRoute, GRPCRoute, Gateway) — answering "if traffic
+// (Service, Ingress, HTTPRoute, GRPCRoute, Gateway) - answering "if traffic
 // is sent toward this resource, does it reach a healthy process, and if not
 // which hop breaks first?"
 //
@@ -12,7 +12,7 @@
 // This package is deliberately the declared-axis only: pure functions over the
 // informer cache, zero per-check API calls, zero RBAC asks, zero user
 // configuration. Active probes, EndpointSlice on-demand reads, and
-// NetworkPolicy rule evaluation are out of scope — they would force this
+// NetworkPolicy rule evaluation are out of scope - they would force this
 // feature out of the local-first zero-config envelope. NetworkPolicies that
 // select the subject's pods are noted as an advisory only.
 //
@@ -57,7 +57,7 @@ type Deps struct {
 	Discovery *k8s.ResourceDiscovery
 	Issues    *issues.CacheProvider
 	// Client is the live K8s clientset used by reachability probes that go
-	// through the API server proxy (Service/Pod /proxy). Optional — when
+	// through the API server proxy (Service/Pod /proxy). Optional - when
 	// nil, probes fall back to direct TCP only.
 	Client kubernetes.Interface
 	// AllowedNamespaces is the per-request namespace allow-list derived
@@ -65,7 +65,7 @@ type Deps struct {
 	// (single-user / auth-disabled / cluster-wide caller); a non-nil
 	// empty slice denies every namespace. When the list scopes a hop
 	// out, that hop is rendered as a referenced ResourceRef without
-	// config or probes, and flagged unverifiable in the verdict — the
+	// config or probes, and flagged unverifiable in the verdict - the
 	// caller can see that a cross-namespace dependency exists without
 	// leaking the dependent's shape or live state. See NamespaceAllowed.
 	AllowedNamespaces []string
@@ -107,7 +107,7 @@ type ResourceRef struct {
 // classified the failure (CrashLoopBackOff exit codes, ImagePullBackOff
 // registry/auth/not-found, PVC provisioning failures). When present, Cause
 // is the plain-English root cause and Action is the next step the operator
-// should take. Both empty for detectors without a parser — the UI falls back
+// should take. Both empty for detectors without a parser - the UI falls back
 // to Message + Remediation in that case.
 type Finding struct {
 	Code        string `json:"code"`
@@ -118,19 +118,19 @@ type Finding struct {
 	Remediation string `json:"remediation,omitempty"`
 	Command     string `json:"command,omitempty"`
 	// Chips is a renderable strip of small tags carrying structured detail a
-	// flat sentence can't hold — today the egress-note's allowed destinations.
+	// flat sentence can't hold - today the egress-note's allowed destinations.
 	// On-chip text stays jargon-free; the jargon lives in each chip's Title.
 	Chips []FindingChip `json:"chips,omitempty"`
 	// ChipsLabel is the tiny field label printed before the chip strip
 	// ("Allowed out"). Empty when the chips read on their own (deny-all,
 	// allow-all).
 	ChipsLabel string `json:"chipsLabel,omitempty"`
-	// ChipNotes are quiet tertiary caveats printed under the chips — the
+	// ChipNotes are quiet tertiary caveats printed under the chips - the
 	// declared-vs-enforced reminder and the gated DNS observation. Kept
 	// subordinate so an info side-note never outshouts the inbound verdict.
 	ChipNotes []string `json:"chipNotes,omitempty"`
 	// Resource names the specific object this finding is about when it differs
-	// from the hop it hangs on — a pod-fanout hop carries one finding per code
+	// from the hop it hangs on - a pod-fanout hop carries one finding per code
 	// but the culprit is a named Pod, not the "Pods" collection. Set so the
 	// coverage Diagnosis can point at the actual pod. Empty = the hop's own
 	// resource is the subject.
@@ -176,10 +176,10 @@ type HopConfig struct {
 	// PodIPs lists the IPs of selected pods at trace time (capped to keep
 	// the JSON bounded on large fleets). Drives the in-cluster TCP probe
 	// against pod-level reachability; from a local vantage this is
-	// informational only — operators reading the trace can see "these are
+	// informational only - operators reading the trace can see "these are
 	// the pods that would receive traffic if the vantage were inside".
 	PodIPs []string `json:"podIPs,omitempty"`
-	// PodNames is the same set as PodIPs but by name — used by the API
+	// PodNames is the same set as PodIPs but by name - used by the API
 	// server proxy probe (which addresses pods by name, not IP). Kept
 	// separate from PodIPs because the in-cluster TCP path needs IPs and
 	// the local kube-proxy path needs names.
@@ -190,7 +190,7 @@ type HopConfig struct {
 	Rules     []RouteRule `json:"rules,omitempty"`
 	// TLSHosts are the Ingress hosts that declare TLS (spec.tls[].hosts).
 	// Only these serve HTTPS on 443, so the probe must not test 443 against a
-	// plain-HTTP host — that would dial a port the Ingress doesn't serve and
+	// plain-HTTP host - that would dial a port the Ingress doesn't serve and
 	// report a false "unreachable" / cert failure.
 	TLSHosts []string `json:"tlsHosts,omitempty"`
 
@@ -201,7 +201,7 @@ type HopConfig struct {
 	// Ingress hops: who serves this Ingress (the ingress controller). ServedBy
 	// is a short pill label ("ingress-nginx"); ServedByTitle is its tooltip.
 	// Quiet/healthy cases live here as a pill so they don't light up the hop as
-	// a finding — only a controller PROBLEM (none / unready) is a finding.
+	// a finding - only a controller PROBLEM (none / unready) is a finding.
 	ServedBy      string `json:"servedBy,omitempty"`
 	ServedByTitle string `json:"servedByTitle,omitempty"`
 }
@@ -209,7 +209,7 @@ type HopConfig struct {
 // PortMap describes a Service port mapping: the Service-side port + the
 // targetPort on the pod side (numeric or named). Protocol defaults to TCP
 // when omitted by the Service spec. AppProtocol (when set) is the
-// authoritative L7 hint — drives whether the laptop-vantage probe can
+// authoritative L7 hint - drives whether the laptop-vantage probe can
 // reach it via the HTTP-only API server proxy.
 type PortMap struct {
 	Name        string `json:"name,omitempty"`
@@ -250,7 +250,7 @@ type RouteRule struct {
 	Backends []BackendRef `json:"backends,omitempty"`
 }
 
-// BackendRef points at a route's destination — almost always a Service in
+// BackendRef points at a route's destination - almost always a Service in
 // scope, but Kind is included so the UI can show non-Service backends as
 // "out of scope" without misrendering them as Services.
 type BackendRef struct {
@@ -272,7 +272,7 @@ type GatewayListener struct {
 
 // Trace is the diagnosis. Downstream is the chain FROM the subject TOWARD
 // pods; this is where BrokenAt applies. Upstreams are the parallel hops INTO
-// the subject (e.g. multiple Ingresses pointing at one Service) — they are
+// the subject (e.g. multiple Ingresses pointing at one Service) - they are
 // judged independently because a single broken Ingress does not condemn the
 // other delivery paths.
 type Trace struct {
@@ -287,26 +287,26 @@ type Trace struct {
 	// UnknownClass distinguishes the two flavors of an unknown verdict so
 	// the UI can pick the right visual register. by-design covers Services
 	// whose shape inherently can't be auto-verified (selectorless,
-	// manually-managed endpoints) — these read as informational because
+	// manually-managed endpoints) - these read as informational because
 	// nothing is broken. investigate covers cases where the trace tried
 	// and couldn't read state (cache cold, RBAC denied, lookup error,
-	// transient API failure) — these read as warning because something
+	// transient API failure) - these read as warning because something
 	// merits operator attention. Empty for non-unknown verdicts.
 	UnknownClass string `json:"unknownClass,omitempty"`
 	// Truncated is set when fan-out (e.g. Gateway attached routes) exceeded
 	// the cap, so the UI can surface "showing N of M".
 	Truncated bool `json:"truncated,omitempty"`
 	// RunVantage names WHERE Radar itself ran the inline probes from: "in-cluster"
-	// (Radar is a pod — its direct probes are real pod-to-pod, the in-cluster data
+	// (Radar is a pod - its direct probes are real pod-to-pod, the in-cluster data
 	// path is already covered, and it CANNOT test an external ingress front door) or
-	// "local" (a laptop — the direct probes are the external client's view, and the
+	// "local" (a laptop - the direct probes are the external client's view, and the
 	// in-cluster data path needs the manual in-cluster Job). The UI labels columns,
 	// gates the in-cluster button, and words the verdict honestly per architecture.
 	RunVantage string `json:"runVantage,omitempty"`
 
 	// Coverage-honest projection of the trace, computed server-side alongside
 	// the verdict (computeCoverage). These describe ONLY what was actually
-	// tested — the intended routes and their outcomes, plus the routes we
+	// tested - the intended routes and their outcomes, plus the routes we
 	// couldn't test and why. Localization (behind-the-gate / apiserver /
 	// direct-pod facts) is kept on each RouteResult as a structurally separate
 	// field so it can never feed the headline. Additive: consumers that read
@@ -318,8 +318,8 @@ type Trace struct {
 	// Headline is the single coverage-honest sentence both the UI banner and the
 	// MCP summary render, set in computeCoverage so the two can never drift.
 	Headline string `json:"headline,omitempty"`
-	// Diagnosis hoists the one finding that matters — cause, the named culprit,
-	// and the next action — by PROMOTING an existing path finding (never
+	// Diagnosis hoists the one finding that matters - cause, the named culprit,
+	// and the next action - by PROMOTING an existing path finding (never
 	// synthesizing). Set in computeCoverage; nil when there is nothing to
 	// diagnose (every route verified over real traffic). See Diagnosis.
 	Diagnosis *Diagnosis `json:"diagnosis,omitempty"`
@@ -335,7 +335,7 @@ const (
 
 // Options shape what BuildTrace does beyond the static walk. Probe is opt-in
 // because active checks cost wall time and generate traffic external systems
-// can see — repeating them every poll cycle would create observability noise.
+// can see - repeating them every poll cycle would create observability noise.
 // Defaults are the cheapest sensible answer: static only.
 type Options struct {
 	// Probe controls active reachability checks. When true, BuildTrace
@@ -347,7 +347,7 @@ type Options struct {
 	ProbeBudget time.Duration
 	// TotalBudget caps total wall time for the WHOLE diagnose (static build +
 	// probes). Zero means the package default (3s). The probe phase runs within
-	// the remaining budget — context propagation picks the earlier deadline — so
+	// the remaining budget - context propagation picks the earlier deadline - so
 	// the whole call returns within TotalBudget on success, a hanging backend,
 	// or an unknown/slow path alike.
 	TotalBudget time.Duration
@@ -363,7 +363,7 @@ type Options struct {
 const defaultTotalBudget = 3 * time.Second
 
 // BuildTraceWithOptions dispatches by entry kind. Kinds outside the accepted
-// set return an empty trace with VerdictUnknown — the caller should validate
+// set return an empty trace with VerdictUnknown - the caller should validate
 // input before reaching here; the guard exists only to avoid panics on
 // frontend/MCP misuse. Callers that want a static-only trace pass Options{}.
 func BuildTraceWithOptions(ctx context.Context, deps Deps, kind, namespace, name string, opts Options) (*Trace, error) {
@@ -421,7 +421,7 @@ func BuildTraceWithOptions(ctx context.Context, deps Deps, kind, namespace, name
 	}
 	normalizeHopFindings(t)
 	// If the total budget expired while building the static trace, the trace is
-	// incomplete — say so honestly rather than computing a verdict over a
+	// incomplete - say so honestly rather than computing a verdict over a
 	// partial walk or hanging. A partial-unknown beats a confident wrong answer
 	// or a stalled response.
 	if ctx.Err() != nil {
@@ -432,7 +432,7 @@ func BuildTraceWithOptions(ctx context.Context, deps Deps, kind, namespace, name
 		return t, nil
 	}
 	// Entry handlers may set Verdict directly (NotFound, RBAC denied,
-	// missing API). Treat that as authoritative — computing "healthy" over
+	// missing API). Treat that as authoritative - computing "healthy" over
 	// an empty Downstream after a failed resource lookup would be a lie.
 	if t.Verdict == "" {
 		t.Verdict, t.BrokenAt = computeVerdict(t)
@@ -454,13 +454,13 @@ func BuildTraceWithOptions(ctx context.Context, deps Deps, kind, namespace, name
 	// probe against a statically broken trace could be an external
 	// bystander. A hop whose every non-skipped probe failed is evidence
 	// of a real break on that hop, so fold probe state into the verdict
-	// after probes attach. Escalation only — broken stays broken (a
+	// after probes attach. Escalation only - broken stays broken (a
 	// critical static finding outranks probe state) and unknown stays
 	// unknown (an unverifiable path can't be honestly resolved by probe
 	// outcomes).
 	if opts.Probe {
 		runProbes(ctx, t, opts, deps.Client)
-		// The probe pass can reconcile a static finding away — e.g. a NetworkPolicy
+		// The probe pass can reconcile a static finding away - e.g. a NetworkPolicy
 		// would-deny that the live in-cluster probe disproved is downgraded to an
 		// info note, or a targetPort "no listener" suspicion a live reach disproves.
 		// Refresh the static verdict from the updated findings so a resolved warning
@@ -475,9 +475,9 @@ func BuildTraceWithOptions(ctx context.Context, deps Deps, kind, namespace, name
 		// Honesty: a healthy verdict that wasn't FULLY verified (an HTTP 2xx on
 		// a real path) must say what it actually proved, so neither the banner
 		// nor the MCP output overclaims. Two distinct under-verifications:
-		// (a) only the apiserver proxy returned 2xx — the route works via the
+		// (a) only the apiserver proxy returned 2xx - the route works via the
 		//     proxy but the in-cluster data path wasn't exercised;
-		// (b) only "reached" (3xx/4xx) or a port (TCP/TLS) — route unverified.
+		// (b) only "reached" (3xx/4xx) or a port (TCP/TLS) - route unverified.
 		if t.Verdict == VerdictHealthy && t.Reason == "" && anyProbeReached(t) && !hasVerifiedProbe(t) {
 			if hasApiserverVerified(t) {
 				if hasDataProbe(t) {
@@ -505,7 +505,7 @@ func BuildTraceWithOptions(ctx context.Context, deps Deps, kind, namespace, name
 }
 
 // anyProbeReached reports whether any hop carries a probe that actually REACHED
-// a server (p.OK — a TCP/TLS port answered, or HTTP returned a status). A probe
+// a server (p.OK - a TCP/TLS port answered, or HTTP returned a status). A probe
 // that FAILED (connection refused, cluster API down) has OK==false and does NOT
 // count: otherwise the "reached a server but didn't verify" reason would fire on
 // a path where nothing was reached at all (false-heal). Skipped probes never
@@ -521,7 +521,7 @@ func anyProbeReached(t *Trace) bool {
 	return false
 }
 
-// hasVerifiedProbe reports whether any probe FULLY verified a target — an HTTP
+// hasVerifiedProbe reports whether any probe FULLY verified a target - an HTTP
 // 2xx on a REAL path (direct Ingress/Gateway dial or in-cluster data path).
 // An apiserver-proxy 2xx does NOT count (it proves a backend answers, not the
 // data path); "reached" (3xx/4xx) and transport-only (TCP/TLS) don't either.
@@ -552,7 +552,7 @@ func hasDataProbe(t *Trace) bool {
 }
 
 // hasApiserverVerified reports whether the only HTTP 2xx came through the
-// apiserver proxy — the route works, but the in-cluster data path is untested.
+// apiserver proxy - the route works, but the in-cluster data path is untested.
 func hasApiserverVerified(t *Trace) bool {
 	for _, h := range append(append([]Hop{}, t.Downstream...), t.Upstreams...) {
 		for _, p := range h.Probes {
@@ -568,7 +568,7 @@ func hasApiserverVerified(t *Trace) bool {
 // A hop whose every non-skipped probe failed escalates to broken (same
 // weight as a critical static finding); a hop with at least one failed or
 // degraded non-skipped probe escalates to degraded. Broken and unknown
-// verdicts are left alone — a critical static finding outranks probe state,
+// verdicts are left alone - a critical static finding outranks probe state,
 // and unknown means we can't honestly read the path either way.
 func reviseVerdictWithProbes(t *Trace) (string, int) {
 	if t.Verdict == VerdictBroken || t.Verdict == VerdictUnknown {
@@ -608,12 +608,12 @@ func reviseVerdictWithProbes(t *Trace) (string, int) {
 		if er > 0 && ef == er && !hopHasSkippedProbe(t.Downstream[0]) {
 			t.Verdict, t.BrokenAt = VerdictBroken, 0
 			if t.Reason == "" {
-				t.Reason = "the entry is unreachable — traffic can't pass through it"
+				t.Reason = "the entry is unreachable - traffic can't pass through it"
 			}
 			return VerdictBroken, 0
 		}
 		// A degraded or partially-failing entry (e.g. HTTP 5xx, or 1 of N host
-		// probes failed) is real evidence too — fold it in after the backends
+		// probes failed) is real evidence too - fold it in after the backends
 		// so a broken backend still takes precedence, but a degraded entry
 		// upgrades a would-be-healthy verdict.
 		entryDegraded := er > 0 && hopVotesDegraded(ef, ed, er)
@@ -645,7 +645,7 @@ func reviseVerdictWithProbes(t *Trace) (string, int) {
 				brokenAt = firstBroken
 			}
 			if t.Reason == "" {
-				t.Reason = fmt.Sprintf("all %d probed routes unreachable — traffic can't pass through this entry", probedBranches)
+				t.Reason = fmt.Sprintf("all %d probed routes unreachable - traffic can't pass through this entry", probedBranches)
 			}
 		case brokenBranches > 0:
 			if verdict != VerdictBroken {
@@ -656,7 +656,7 @@ func reviseVerdictWithProbes(t *Trace) (string, int) {
 			}
 			if t.Reason == "" {
 				ref := t.Downstream[firstBroken].Resource
-				t.Reason = fmt.Sprintf("%d of %d probed routes unreachable — backend %s %s failed; other routes still deliver", brokenBranches, probedBranches, ref.Kind, ref.Name)
+				t.Reason = fmt.Sprintf("%d of %d probed routes unreachable - backend %s %s failed; other routes still deliver", brokenBranches, probedBranches, ref.Kind, ref.Name)
 			}
 		case firstDegraded >= 0 && verdict == VerdictHealthy:
 			verdict = VerdictDegraded
@@ -702,7 +702,7 @@ func reviseVerdictWithProbes(t *Trace) (string, int) {
 		if realUpstreams > 0 && allRealUpstreamBroken {
 			verdict = VerdictBroken
 			// The break is in the entry paths (upstreams), not the subject's
-			// own downstream chain. Do NOT anchor brokenAt to downstream[0] —
+			// own downstream chain. Do NOT anchor brokenAt to downstream[0] -
 			// that makes the banner say "Service X is broken" when the Service
 			// and its Pods are healthy and only the Ingress/Gateway entry paths
 			// failed. Leave brokenAt unanchored and name the real situation.
@@ -742,10 +742,10 @@ func hopVotesDegraded(failed, degraded, real int) bool {
 // Layers are DEPENDENT, not independent: a successful TCP is a prerequisite of
 // the HTTP probe above it on the same target, so counting every layer equally
 // lets a DNS+TCP success dilute a genuine HTTP 5xx ("server error") on that
-// path — the banner reads "healthy" while the chip says "server error". HTTP is
+// path - the banner reads "healthy" while the chip says "server error". HTTP is
 // the authoritative application-reachability layer, so when any non-skipped
 // HTTP probe ran the hop verdict is driven by the HTTP results (replica
-// dilution still applies among them — 1 of N pods failing is transient);
+// dilution still applies among them - 1 of N pods failing is transient);
 // otherwise we fall back to the highest transport layer actually probed.
 //
 // Tone is load-bearing: HTTP 5xx carries tone=degraded with ok=true; 3xx/4xx
@@ -754,7 +754,7 @@ func hopVotesDegraded(failed, degraded, real int) bool {
 // PATH is authoritative before layer: the real traffic path (pod-to-pod direct
 // dial / Ingress-Gateway direct) wins over the apiserver proxy. An apiserver
 // failure (RBAC denied, non-HTTP backend) must NOT condemn a hop whose data
-// path succeeded — that divergence is surfaced as an info finding, not a broken
+// path succeeded - that divergence is surfaced as an info finding, not a broken
 // verdict. From a laptop where only the apiserver path ran, it is the verdict.
 // hopHasSkippedProbe reports whether any of the hop's probes was skipped: a
 // listener or port that could not be tested from here (no SNI, non-HTTP, wildcard
@@ -796,7 +796,7 @@ func classifyHopProbes(hop Hop) (failed, degraded, real int) {
 	if len(counted) == 0 {
 		// Only the apiserver-proxy path ran (laptop vantage, no real path). The
 		// proxy bypasses the real dataplane (NetworkPolicy / mesh mTLS / internal
-		// routing), so a proxy-only result must NEVER set the headline — it can
+		// routing), so a proxy-only result must NEVER set the headline - it can
 		// localize a symptom but can't escalate the verdict. Fail toward silence:
 		// return no verdict vote (real=0). The coverage layer carries the honest
 		// indirect outcome ("reached / unreachable via API server").
@@ -809,7 +809,7 @@ func classifyHopProbes(hop Hop) (failed, degraded, real int) {
 	// refused) can be hidden in the one-line verdict when a higher layer
 	// succeeded on the primary port (HTTP:80 OK). The per-probe ROW always
 	// shows that failure; only the summary verdict is coarse. A precise fix
-	// needs a per-(host,port) target model — see must-finish-later.
+	// needs a per-(host,port) target model - see must-finish-later.
 	var http, tls, tcp, dns []probe.Result
 	for _, p := range counted {
 		switch p.Layer {
@@ -875,7 +875,7 @@ func computeVerdict(t *Trace) (string, int) {
 	branches := downstreamBranches(t.Downstream)
 	if len(branches) == 0 {
 		// Single linear chain (Service/Pod subject, or a one-backend entry):
-		// any critical hop breaks the whole path — EXCEPT a backend that still has
+		// any critical hop breaks the whole path - EXCEPT a backend that still has
 		// ready endpoints (a per-pod crash among serving replicas is degraded, not
 		// broken; see hopReachSeverity).
 		for i, hop := range t.Downstream {
@@ -893,14 +893,14 @@ func computeVerdict(t *Trace) (string, int) {
 		}
 	} else {
 		// Multi-backend entry (Ingress/Route): the entry hop is authoritative
-		// — a critical there means nothing can enter, so the whole path is
+		// - a critical there means nothing can enter, so the whole path is
 		// broken. But a broken backend branch only breaks ITS route; other
 		// routes still deliver, so partial breakage is degraded, not the
 		// confident-wrong "traffic can't pass". Reserve broken for entry
 		// failure or EVERY route broken.
 		// A per-backend missing-ref (a route pointing at a Service that doesn't
 		// exist) is reported as a critical on the ENTRY hop, but it only breaks
-		// THAT route — so split it out: it counts as a broken route below, not
+		// THAT route - so split it out: it counts as a broken route below, not
 		// a total-entry failure. True entry-level criticals (no controller
 		// address, host unresolvable) remain authoritative.
 		var entryReal []Finding
@@ -909,7 +909,7 @@ func computeVerdict(t *Trace) (string, int) {
 			// Only a CRITICAL missing-ref (route → nonexistent Service) is split out
 			// as a broken route. A warning-severity missing-ref (e.g. a missing TLS
 			// secret, where the controller falls back to the default cert) is a real
-			// entry-level degrade — keep it in entryReal so worstSeverity degrades.
+			// entry-level degrade - keep it in entryReal so worstSeverity degrades.
 			if strings.HasPrefix(f.Code, missingRefCodePrefix) && f.Severity == SeverityCritical {
 				entryMissingRefBroken++
 				continue
@@ -924,7 +924,7 @@ func computeVerdict(t *Trace) (string, int) {
 			verdict = VerdictDegraded
 		}
 		if verdict != VerdictBroken {
-			// Drained (weight-0) backends carry no traffic by design — exclude them
+			// Drained (weight-0) backends carry no traffic by design - exclude them
 			// from both the failure tally and the route denominator so a down drained
 			// backend neither counts as broken nor blocks the "all routes broken"
 			// verdict for the routes that DO carry traffic.
@@ -961,11 +961,11 @@ func computeVerdict(t *Trace) (string, int) {
 			}
 			switch {
 			case broken > 0 && broken == len(liveBranches):
-				// Every traffic-carrying route is broken — traffic genuinely can't pass.
+				// Every traffic-carrying route is broken - traffic genuinely can't pass.
 				verdict = VerdictBroken
 				brokenAt = brokenAnchor
 				if t.Reason == "" {
-					t.Reason = fmt.Sprintf("all %d routes broken — traffic can't pass through this entry", len(liveBranches))
+					t.Reason = fmt.Sprintf("all %d routes broken - traffic can't pass through this entry", len(liveBranches))
 				}
 			case broken > 0:
 				// Some routes broken, others deliver: degraded, anchored on the
@@ -974,7 +974,7 @@ func computeVerdict(t *Trace) (string, int) {
 				verdict = VerdictDegraded
 				brokenAt = brokenAnchor
 				if t.Reason == "" {
-					t.Reason = fmt.Sprintf("%d of %d routes broken — other routes still deliver", broken, len(liveBranches))
+					t.Reason = fmt.Sprintf("%d of %d routes broken - other routes still deliver", broken, len(liveBranches))
 				}
 			case firstDegraded >= 0:
 				if verdict == VerdictHealthy {
@@ -992,7 +992,7 @@ func computeVerdict(t *Trace) (string, int) {
 		warnUp := 0
 		for _, hop := range t.Upstreams {
 			// A missing-backend ref on an upstream entry is about a DIFFERENT
-			// route than the one reaching this subject — the subject is itself
+			// route than the one reaching this subject - the subject is itself
 			// a backend of that entry, so it demonstrably exists. Such a finding
 			// must not degrade this subject (e.g. an Ingress with /web→here and
 			// /api→ghost: the broken /api doesn't make `here` unhealthy).
@@ -1006,7 +1006,7 @@ func computeVerdict(t *Trace) (string, int) {
 		if brokenUp == len(t.Upstreams) && verdict != VerdictBroken {
 			verdict = VerdictBroken
 			// All upstream entries are broken: traffic can't reach the subject at
-			// all. The break is in the entry paths, not the subject's own chain —
+			// all. The break is in the entry paths, not the subject's own chain -
 			// mirror the probe path (reviseVerdictWithProbes) and do NOT anchor
 			// brokenAt to the healthy subject row, which would make the banner say
 			// "Service X is broken" while the Service and its Pods are clean. Name
@@ -1023,7 +1023,7 @@ func computeVerdict(t *Trace) (string, int) {
 	// resolution itself was unverifiable. Selectorless Services (manual
 	// endpoints, no proof a target is wired up) and any hop that flagged
 	// endpointSource=unknown (pod lister failed; RBAC or cache sync the
-	// likely cause) downgrade to unknown — including over a degraded
+	// likely cause) downgrade to unknown - including over a degraded
 	// verdict, since we can't be confident the warning describes the
 	// whole story. Broken stays broken: a critical finding is a known
 	// problem the operator can act on regardless of endpoint visibility.
@@ -1036,11 +1036,11 @@ func computeVerdict(t *Trace) (string, int) {
 
 // classifyUnknown decides whether an unknown verdict is by-design (the
 // resource shape inherently can't be auto-verified, e.g. selectorless
-// Service) or investigate (the trace tried and couldn't read state — RBAC
+// Service) or investigate (the trace tried and couldn't read state - RBAC
 // denied, lister error, cache cold, lookup failure). The two classes ride
 // the same verdict word but get different visual register in the UI:
 // by-design reads as informational; investigate reads as warning.
-// When the trace contains both signals, investigate wins — a cold cache
+// When the trace contains both signals, investigate wins - a cold cache
 // behind a selectorless Service still wants operator attention.
 func classifyUnknown(t *Trace) string {
 	hasByDesign := false
@@ -1067,7 +1067,7 @@ func classifyUnknown(t *Trace) string {
 // (the route → parent-Gateway path) and left the verdict reading clean
 // while the trace explicitly carried an unverifiable hop.
 // isDrainedBackendHop reports whether a backend hop is an explicit weight-0
-// (drained / canary-cutover) Gateway-API backend — traced informationally and
+// (drained / canary-cutover) Gateway-API backend - traced informationally and
 // excluded from the verdict/coverage failure tally.
 func isDrainedBackendHop(h Hop) bool {
 	v, _ := h.Meta["drained"].(bool)
@@ -1128,7 +1128,7 @@ type branchSpan struct{ start, end int }
 // downstreamBranches segments a flat downstream into backend branches. A hop
 // whose Edge ends in "->Service" opens a branch; a following "Service->Pods"
 // hop joins it. The entry hop (index 0) is never a branch, and a Service/Pod
-// subject (no "->Service" hop) yields no branches — callers fall back to flat
+// subject (no "->Service" hop) yields no branches - callers fall back to flat
 // single-chain handling. This lets a multi-backend Ingress/Route be judged
 // per-route without any tree or new Hop field: the Edge labels the fan-out
 // already writes are the grouping key.
@@ -1145,7 +1145,7 @@ func downstreamBranches(hops []Hop) []branchSpan {
 			spans = append(spans, branchSpan{i, end})
 		case strings.HasPrefix(hops[i].Edge, "Gateway->") && hops[i].Resource.Name != "":
 			// A Gateway attached route (Gateway->HTTPRoute/GRPCRoute/...): each
-			// is a parallel entry path, so one broken route degrades — it
+			// is a parallel entry path, so one broken route degrades - it
 			// doesn't break the whole Gateway. The synthetic "Gateway->Routes"
 			// truncation hop carries no name and is excluded.
 			spans = append(spans, branchSpan{i, i + 1})
@@ -1172,7 +1172,7 @@ func branchContaining(hops []Hop, idx int) (branchSpan, bool) {
 // TestMissingRefPrefixMirrored.
 var missingRefCodePrefix = string(issues.SourceMissingRef) + ":"
 
-// IsMissingRefCode reports whether a finding code marks a missing-backend ref —
+// IsMissingRefCode reports whether a finding code marks a missing-backend ref -
 // a specific route's backend Service that doesn't exist. Exported so the MCP
 // upstream scoping reuses the one definition instead of mirroring the prefix.
 func IsMissingRefCode(code string) bool {
@@ -1206,7 +1206,7 @@ func branchSeverity(hops []Hop, b branchSpan) string {
 }
 
 // hopHasReadyEndpoints reports whether a backend hop still has ready endpoints
-// (meta ready > 0) — i.e. the Service can serve traffic to the ready pods.
+// (meta ready > 0) - i.e. the Service can serve traffic to the ready pods.
 func hopHasReadyEndpoints(hop Hop) bool {
 	r, ok := hop.Meta["ready"].(int)
 	return ok && r > 0
@@ -1214,7 +1214,7 @@ func hopHasReadyEndpoints(hop Hop) bool {
 
 // hopReachSeverity returns a hop's severity for the REACHABILITY verdict, capping
 // a critical at warning when the hop still has READY endpoints. A backend with
-// live endpoints IS reachable — traffic flows to the ready pods — so a per-pod
+// live endpoints IS reachable - traffic flows to the ready pods - so a per-pod
 // critical (one replica crashlooping while siblings serve) is a DEGRADATION, not
 // a break. Without this a 1-of-2-ready Service false-condemns as broken/unreachable
 // even though it serves. A 0-ready hop keeps its critical (genuinely no backend).

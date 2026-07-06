@@ -11,7 +11,7 @@ import (
 
 // TestRunInClusterTests_NilClientIsHonest: with no impersonated client in context,
 // the in-cluster run must report an honest per-route status + a copyable fallback
-// command — never panic, never silently drop the request.
+// command - never panic, never silently drop the request.
 func TestRunInClusterTests_NilClientIsHonest(t *testing.T) {
 	tr := &trace.Trace{
 		Routes: []trace.RouteResult{{
@@ -36,7 +36,7 @@ func TestRunInClusterTests_NilClientIsHonest(t *testing.T) {
 
 // TestRunInClusterTests_NilClientDoesNotConsumeCap: a nil client fails auth for
 // EVERY route and creates no probe pod, so it must not burn the per-call probe
-// cap — routes past the cap must still report the auth failure, never "capped".
+// cap - routes past the cap must still report the auth failure, never "capped".
 func TestRunInClusterTests_NilClientDoesNotConsumeCap(t *testing.T) {
 	var routes []trace.RouteResult
 	for i := 0; i < MaxInClusterProbes+2; i++ {

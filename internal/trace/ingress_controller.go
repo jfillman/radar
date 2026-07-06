@@ -13,10 +13,10 @@ import (
 
 // An Ingress is only routing RULES; the traffic is actually served by an ingress
 // CONTROLLER (e.g. ingress-nginx pods behind a LoadBalancer/NodePort Service).
-// This file surfaces that tier on the Ingress hop — the entry address plus a
-// plain-language "who serves this" finding — WITHOUT inventing a separate node.
+// This file surfaces that tier on the Ingress hop - the entry address plus a
+// plain-language "who serves this" finding - WITHOUT inventing a separate node.
 //
-// Honesty invariants (these are the whole point — see the design review):
+// Honesty invariants (these are the whole point - see the design review):
 //   - FAIL TOWARD SILENCE. "couldn't find the controller", "couldn't read its
 //     namespace", and "it's a cloud LB" must NEVER render as "no controller /
 //     broken". Most production is cloud-LB or cross-namespace-RBAC.
@@ -28,7 +28,7 @@ import (
 
 // ingressEntryAddress returns the external entry address(es) a controller
 // published for the Ingress (status.loadBalancer.ingress[]). Empty ≠ "no
-// controller" — many valid setups (bare NodePort, hostNetwork, on-prem) never
+// controller" - many valid setups (bare NodePort, hostNetwork, on-prem) never
 // populate it.
 func ingressEntryAddress(ing *networkingv1.Ingress) []string {
 	if ing == nil {
@@ -49,7 +49,7 @@ func ingressEntryAddress(ing *networkingv1.Ingress) []string {
 type controllerInfo struct {
 	name   string            // operator-facing name
 	labels map[string]string // label set to find its pods (empty = cloud, no pods)
-	cloud  bool              // served by a cloud LB — no in-cluster pods by design
+	cloud  bool              // served by a cloud LB - no in-cluster pods by design
 }
 
 // knownControllers maps an IngressClass spec.controller string to how to find /
@@ -69,16 +69,16 @@ var knownControllers = map[string]controllerInfo{
 
 // resolveIngressClass returns the name + controller string of the IngressClass
 // governing the Ingress: the named class, else the cluster's default class.
-// found=false when neither resolves — a POSITIVE signal that nothing is
+// found=false when neither resolves - a POSITIVE signal that nothing is
 // configured to serve it. The default-class path is the primary one in practice
 // (Ingresses commonly omit ingressClassName).
 //
 // Reads from the DYNAMIC cache (IngressClasses isn't a typed informer in Radar)
-// — already synced and RBAC-respecting, so a cluster where the caller can't
+// - already synced and RBAC-respecting, so a cluster where the caller can't
 // watch ingressclasses simply yields "not found" → fail-soft, never "broken".
 func resolveIngressClass(deps Deps, ing *networkingv1.Ingress) (name, controller string, found, couldRead bool) {
 	// couldRead reports only the read-ERROR case (RBAC-denied / cold cache). An
-	// UNWIRED dynamic/discovery client (nil at runtime — cold start / init
+	// UNWIRED dynamic/discovery client (nil at runtime - cold start / init
 	// failure) is exactly that: we couldn't read the classes, so it must fall to
 	// the soft "couldn't identify the controller" pill, never the no-controller
 	// condemnation. couldRead=false keeps a possibly-healthy Ingress safe.
@@ -96,7 +96,7 @@ func resolveIngressClass(deps Deps, ing *networkingv1.Ingress) (name, controller
 	classes, err := deps.Dynamic.ListWatched(gvr)
 	// couldRead distinguishes "read the classes, none matched" (a positive
 	// no-controller signal) from "couldn't read them at all" (RBAC-denied / cold
-	// cache) — the latter must never condemn a possibly-healthy Ingress.
+	// cache) - the latter must never condemn a possibly-healthy Ingress.
 	couldRead = err == nil
 	if err != nil || len(classes) == 0 {
 		if c2, e2 := deps.Dynamic.List(gvr, ""); e2 == nil {
@@ -105,7 +105,7 @@ func resolveIngressClass(deps Deps, ing *networkingv1.Ingress) (name, controller
 		}
 	}
 	if len(classes) == 0 {
-		// A cold/unsynced dynamic informer returns empty WITHOUT error —
+		// A cold/unsynced dynamic informer returns empty WITHOUT error -
 		// indistinguishable from "synced and genuinely empty". Treat an empty
 		// result as unverifiable so a just-created Ingress (informer not yet
 		// synced) with no published LB address isn't false-condemned
@@ -149,7 +149,7 @@ func legacyIngressClass(ing *networkingv1.Ingress) string {
 	return strings.TrimSpace(ing.Annotations["kubernetes.io/ingress.class"])
 }
 
-// hasCloudLBAnnotations reports cloud load-balancer ingress annotations — a
+// hasCloudLBAnnotations reports cloud load-balancer ingress annotations - a
 // signal the Ingress is fronted by a cloud LB (no in-cluster controller pods)
 // even when the controller string isn't in the known set.
 func hasCloudLBAnnotations(ing *networkingv1.Ingress) bool {
@@ -167,7 +167,7 @@ func hasCloudLBAnnotations(ing *networkingv1.Ingress) bool {
 }
 
 // findControllerPods locates a controller's pods cluster-wide by its known label
-// set. found=false means the labels matched nothing — which could be a different
+// set. found=false means the labels matched nothing - which could be a different
 // controller OR RBAC hiding the namespace, so the caller must treat it as
 // "couldn't see", never "broken".
 func findControllerPods(deps Deps, info controllerInfo) (pods []*corev1.Pod, found bool) {
@@ -182,8 +182,8 @@ func findControllerPods(deps Deps, info controllerInfo) (pods []*corev1.Pod, fou
 }
 
 // controllerStatus is the controller-tier readout for an Ingress hop. The quiet
-// cases (a controller IS serving it) become a config PILL — servedBy + its
-// tooltip — so a healthy Ingress doesn't light up as a finding. Only a real
+// cases (a controller IS serving it) become a config PILL - servedBy + its
+// tooltip - so a healthy Ingress doesn't light up as a finding. Only a real
 // PROBLEM (no controller / pods unready) is a Finding. This keeps the common
 // healthy path silent and reserves findings for things to act on.
 type controllerStatus struct {
@@ -216,12 +216,12 @@ func ingressControllerStatus(deps Deps, ing *networkingv1.Ingress) controllerSta
 				name = info.name
 			}
 			st.servedBy = "via " + name
-			st.servedByTitle = fmt.Sprintf("Served by %s (a cloud load balancer) — no in-cluster controller pods to check.", name)
+			st.servedByTitle = fmt.Sprintf("Served by %s (a cloud load balancer) - no in-cluster controller pods to check.", name)
 			return st
 		}
 		if known {
 			if pods, found := findControllerPods(deps, info); found {
-				// Terminal (Succeeded/Failed) or being-deleted pods aren't serving —
+				// Terminal (Succeeded/Failed) or being-deleted pods aren't serving -
 				// exclude them so a healthy controller isn't reported as e.g. "1/3 ready"
 				// because old/crashed pods linger under the same label (a rolling update
 				// leaves a Terminating old pod; a crash can leave Failed pods).
@@ -232,7 +232,7 @@ func ingressControllerStatus(deps Deps, ing *networkingv1.Ingress) controllerSta
 					st.finding = Finding{
 						Code:     "ingress:controller-unready",
 						Severity: SeverityWarning,
-						Message:  fmt.Sprintf("The ingress controller (%s) has no ready pods — traffic to this Ingress can’t be served right now.", info.name),
+						Message:  fmt.Sprintf("The ingress controller (%s) has no ready pods - traffic to this Ingress can’t be served right now.", info.name),
 						Cause:    fmt.Sprintf("An ingress controller is the component that actually serves Ingress traffic; %d of %d %s pods are Ready.", 0, total, info.name),
 						Action:   "Check the ingress controller’s pods:",
 						Command:  fmt.Sprintf("kubectl get pods -A -l %s", labels.SelectorFromSet(labels.Set(info.labels)).String()),
@@ -244,13 +244,13 @@ func ingressControllerStatus(deps Deps, ing *networkingv1.Ingress) controllerSta
 				st.servedByTitle = fmt.Sprintf("Handled by the cluster’s %s ingress controller (%d/%d pods ready). %s", info.name, ready, total, sharedControllerNote)
 				return st
 			}
-			// Known in-cluster controller, pods not found — almost always a
+			// Known in-cluster controller, pods not found - almost always a
 			// namespace Radar's RBAC can't read. Name it, never condemn.
 			st.servedBy = info.name
-			st.servedByTitle = fmt.Sprintf("Served by the %s ingress controller — Radar can’t read its pods (they may be in a namespace it can’t access). %s", info.name, sharedControllerNote)
+			st.servedByTitle = fmt.Sprintf("Served by the %s ingress controller - Radar can’t read its pods (they may be in a namespace it can’t access). %s", info.name, sharedControllerNote)
 			return st
 		}
-		// Class resolves to an unrecognized controller — name it, don't guess pods.
+		// Class resolves to an unrecognized controller - name it, don't guess pods.
 		st.servedBy = "via a controller"
 		st.servedByTitle = fmt.Sprintf("Served by ingress controller %q. %s", ctrlStr, sharedControllerNote)
 		return st
@@ -259,27 +259,27 @@ func ingressControllerStatus(deps Deps, ing *networkingv1.Ingress) controllerSta
 	// No IngressClass resolved.
 	if cloudAnno {
 		st.servedBy = "via a cloud LB"
-		st.servedByTitle = "Served by a cloud load balancer — no in-cluster controller pods to check."
+		st.servedByTitle = "Served by a cloud load balancer - no in-cluster controller pods to check."
 		return st
 	}
 	if len(addr) > 0 {
-		// An address was published, so a controller IS serving it — just couldn't
+		// An address was published, so a controller IS serving it - just couldn't
 		// identify which. Reachable, not broken. The @addr pill already shows it,
 		// so no extra servedBy pill.
 		st.servedBy = "via a controller"
-		st.servedByTitle = fmt.Sprintf("Reachable at %s — an ingress controller serves this, but Radar couldn’t identify which one.", strings.Join(addr, ", "))
+		st.servedByTitle = fmt.Sprintf("Reachable at %s - an ingress controller serves this, but Radar couldn’t identify which one.", strings.Join(addr, ", "))
 		return st
 	}
 	if legacy := legacyIngressClass(ing); legacy != "" {
 		// Class declared only via the legacy kubernetes.io/ingress.class annotation
-		// (still honored by ingress-nginx). A class IS specified — name it, don't
+		// (still honored by ingress-nginx). A class IS specified - name it, don't
 		// condemn it as "no controller".
 		st.servedBy = "via a controller"
 		st.servedByTitle = fmt.Sprintf("Class %q is set via the legacy kubernetes.io/ingress.class annotation. %s", legacy, sharedControllerNote)
 		return st
 	}
 	if !classReadable {
-		// Couldn't read IngressClasses at all (RBAC-denied / cold cache) — that is
+		// Couldn't read IngressClasses at all (RBAC-denied / cold cache) - that is
 		// not the same as "none configured". Fail toward silence: a soft pill, never
 		// a no-controller condemnation of a possibly-healthy Ingress.
 		st.servedBy = "via a controller"
@@ -291,14 +291,14 @@ func ingressControllerStatus(deps Deps, ing *networkingv1.Ingress) controllerSta
 	// serves it.
 	cause := "An ingress controller is the component that actually serves Ingress traffic. None is configured here: no IngressClass resolves (none set, no default installed) and no controller has assigned it an address."
 	if ing.Spec.IngressClassName != nil && *ing.Spec.IngressClassName != "" {
-		// A class IS named, but no IngressClass object by that name resolved —
+		// A class IS named, but no IngressClass object by that name resolved -
 		// "none set" would be factually wrong and mildly condemn a configured class.
 		cause = fmt.Sprintf("An ingress controller is the component that actually serves Ingress traffic. This Ingress names class %q, but no IngressClass by that name was found (it may be misspelled, not installed, or not yet synced) and no controller has assigned it an address.", *ing.Spec.IngressClassName)
 	}
 	st.finding = Finding{
 		Code:     "ingress:no-controller",
 		Severity: SeverityWarning,
-		Message:  "No ingress controller is handling this — the routing rules exist but nothing is serving them.",
+		Message:  "No ingress controller is handling this - the routing rules exist but nothing is serving them.",
 		Cause:    cause,
 		Action:   "Install an ingress controller, or set the Ingress’s class to one that’s installed. See what’s available:",
 		Command:  "kubectl get ingressclass",

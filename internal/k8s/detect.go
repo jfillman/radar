@@ -33,7 +33,7 @@ const ScaledToZeroFingerprint = "svc:scaled-to-zero"
 
 // ScaledToZeroReason is the detection reason for the benign scale-to-0 case,
 // shared so the trace coverage layer can recognise the GROUPED issue (whose
-// code is "<source>:<reason>" — issue grouping does not preserve the
+// code is "<source>:<reason>" - issue grouping does not preserve the
 // per-detection fingerprint) without hardcoding the literal.
 const ScaledToZeroReason = "Backing workload scaled to 0"
 
@@ -642,14 +642,14 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					// Couldn't read the Rollout CRD to confirm whether this is a
 					// deliberate scale-down (transient discovery/RBAC/cache error).
 					// Don't escalate to the red "routing break" framing on
-					// unverifiable state — warn and let the next poll settle it.
+					// unverifiable state - warn and let the next poll settle it.
 					problems = append(problems, Detection{
 						Kind:            "Service",
 						Namespace:       svc.Namespace,
 						Name:            svc.Name,
 						Severity:        "warning",
 						Reason:          fmt.Sprintf("0/%d selected pods ready", len(selected)),
-						Message:         "no ready endpoints; couldn't verify whether the backing workload is intentionally scaled to 0 (Rollout lookup failed) — re-check shortly",
+						Message:         "no ready endpoints; couldn't verify whether the backing workload is intentionally scaled to 0 (Rollout lookup failed) - re-check shortly",
 						Fingerprint:     "svc:no-ready-endpoints",
 						Age:             FormatAge(ageDur),
 						AgeSeconds:      int64(ageDur.Seconds()),
@@ -1778,17 +1778,17 @@ func selectorMatchesSucceededPod(svc *corev1.Service, pods []*corev1.Pod) bool {
 // workload (Deployment, StatefulSet, or Argo Rollout) that is intentionally
 // scaled to 0 replicas. Such a Service has no endpoints by design (a disabled
 // managed component, a dormant environment, a KEDA target idled to 0), which is
-// a different — benign — state than a selector that matches nothing in the
+// a different - benign - state than a selector that matches nothing in the
 // cluster. Only called on the rare zero-endpoint branch, so the per-Service
 // workload scan is not a hot path.
 //
 // The gate is the workload's CURRENT replicas == 0, never a mere "can scale to
 // 0" capability: a KEDA/Rollout target at replicas>0 with 0 ready pods is a real
-// break and must stay critical. KEDA needs no special case here — it sets its
+// break and must stay critical. KEDA needs no special case here - it sets its
 // target Deployment/Rollout's replicas to 0 when idle, which the checks below
 // already see; minReplicaCount alone proves nothing about current state.
 // Returns uncertain=true when the Argo Rollout lookup failed for a reason OTHER
-// than the CRD being absent (transient discovery/RBAC/cache-not-synced) — the
+// than the CRD being absent (transient discovery/RBAC/cache-not-synced) - the
 // caller must not escalate a possibly-dormant Service to the red critical framing
 // on unverifiable state.
 func scaledToZeroBackingWorkload(cache *ResourceCache, svc *corev1.Service) (scaledZero, uncertain bool) {
@@ -1816,7 +1816,7 @@ func scaledToZeroBackingWorkload(cache *ResourceCache, svc *corev1.Service) (sca
 	// Best-effort via the dynamic cache: an absent CRD comes back as
 	// ErrUnknownDynamicKind and is correctly read as no-match. Any OTHER error
 	// (transient discovery/RBAC/cache-not-synced) is NOT a definitive "not scaled
-	// to zero" — flag uncertain so the caller doesn't escalate to red. The dynamic
+	// to zero" - flag uncertain so the caller doesn't escalate to red. The dynamic
 	// List is a cache read, so a background context is sufficient.
 	rollouts, err := cache.ListDynamicWithGroup(context.Background(), "Rollout", svc.Namespace, "argoproj.io")
 	if err != nil {
@@ -1842,7 +1842,7 @@ func scaledToZeroBackingWorkload(cache *ResourceCache, svc *corev1.Service) (sca
 	// An empty Rollout list with no error is ambiguous: DynamicResourceCache.List
 	// doesn't gate on HasSynced, so the first read of a not-yet-watched Rollout GVR
 	// returns ([], nil) even when a scaled-to-zero Rollout exists. Verify the cache
-	// actually synced before concluding no-match — otherwise stay uncertain so the
+	// actually synced before concluding no-match - otherwise stay uncertain so the
 	// caller keeps the warning framing until the next poll.
 	if len(rollouts) == 0 {
 		if disc := GetResourceDiscovery(); disc != nil {

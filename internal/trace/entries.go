@@ -83,13 +83,13 @@ func traceServiceEntry(ctx context.Context, deps Deps, t *Trace) {
 	// cluster. The standing detector also flags this, but only after a 5-minute
 	// grace (so the global Problems list doesn't flap during normal provisioning);
 	// in the diagnose context the operator is looking right now, so surface it
-	// immediately — unless the detector's finding is already present (avoid a dup).
+	// immediately - unless the detector's finding is already present (avoid a dup).
 	if svc.Spec.Type == corev1.ServiceTypeLoadBalancer && len(svc.Status.LoadBalancer.Ingress) == 0 &&
 		!hasLoadBalancerFinding(svcHop.Findings) {
 		svcHop.Findings = append(svcHop.Findings, Finding{
 			Code:     "svc:loadbalancer-pending",
 			Severity: SeverityWarning,
-			Message:  "LoadBalancer has no external address yet — traffic from outside the cluster can't reach it (the in-cluster ClusterIP path is unaffected)",
+			Message:  "LoadBalancer has no external address yet - traffic from outside the cluster can't reach it (the in-cluster ClusterIP path is unaffected)",
 			Command:  fmt.Sprintf("kubectl get service %s -n %s", svc.Name, svc.Namespace),
 		})
 	}
@@ -161,7 +161,7 @@ func isNoReadyEndpointsFinding(f *Finding) bool {
 // reason about "what port does traffic actually target" without leaving
 // the trace.
 // servicePortMaps resolves a Service's port mappings to the PortMap shape the
-// trace carries — each port plus the targetPort the pods actually receive on
+// trace carries - each port plus the targetPort the pods actually receive on
 // (numeric or named, defaulting to the Service port). Shared by serviceConfig
 // and the NetworkPolicy evaluator so port identity is resolved one way.
 func servicePortMaps(svc *corev1.Service) []PortMap {
@@ -214,8 +214,8 @@ func serviceConfig(svc *corev1.Service) *HopConfig {
 
 // targetPortAdvisory flags a likely-misconfigured numeric targetPort: the
 // Service routes to a container port number that NO ready pod declares, while
-// the pods DO declare other ports. A containerPort is informational — kube-proxy
-// forwards to the targetPort number whether or not the container declares it —
+// the pods DO declare other ports. A containerPort is informational - kube-proxy
+// forwards to the targetPort number whether or not the container declares it -
 // so this can never be proof of a break, only a warning worth verifying. The
 // positive-evidence guard (pods declare ports, but none match) keeps it off the
 // common case where pods declare no container ports at all, where a mismatch
@@ -295,7 +295,7 @@ func appendTargetPortAdvisory(hop *Hop, svc *corev1.Service, pods []*corev1.Pod)
 
 // reconcileTargetPortAdvisory downgrades the static "targetPort matches no
 // declared container port" WARNING to an info note once live probes prove every
-// suspect Service port is reachable — a containerPort is optional and kube-proxy
+// suspect Service port is reachable - a containerPort is optional and kube-proxy
 // forwards regardless, so a reachable port means SOMETHING listens and the
 // static suspicion is contradicted. Only downgrade when EVERY suspect port saw a
 // non-skipped success and none failed; a failed/absent probe keeps the warning
@@ -340,7 +340,7 @@ func reconcileTargetPortAdvisory(t *Trace) {
 // in-cluster fold (reconcileInClusterTargetPort) so the two can't drift.
 func downgradeTargetPortFinding(f *Finding) {
 	f.Severity = SeverityInfo
-	f.Message = "The Service targetPort matches no port the ready pods DECLARE, but a live probe reached it — a containerPort is optional, so the listener simply isn't declared. Nothing to fix; declaring the containerPort would make the wiring self-documenting."
+	f.Message = "The Service targetPort matches no port the ready pods DECLARE, but a live probe reached it - a containerPort is optional, so the listener simply isn't declared. Nothing to fix; declaring the containerPort would make the wiring self-documenting."
 	f.Cause = ""
 	f.Action = ""
 }
@@ -429,10 +429,10 @@ func buildPodsHop(deps Deps, svc *corev1.Service, pods []*corev1.Pod, unreadable
 		hop.Findings = append(hop.Findings, Finding{
 			Code:     "mesh:probe-may-fail-mtls",
 			Severity: SeverityInfo,
-			Message:  fmt.Sprintf("These pods run in a %s service mesh. A reachability probe from outside the mesh can fail TLS/HTTP (mTLS) even when real in-mesh traffic is healthy — trust in-mesh traffic, or run the in-cluster test.", mesh),
+			Message:  fmt.Sprintf("These pods run in a %s service mesh. A reachability probe from outside the mesh can fail TLS/HTTP (mTLS) even when real in-mesh traffic is healthy - trust in-mesh traffic, or run the in-cluster test.", mesh),
 		})
 	}
-	// Pods are selected but none are Ready, and nothing above named a cause —
+	// Pods are selected but none are Ready, and nothing above named a cause -
 	// surface the real blocking pod state (OOM / stuck init / failing readiness)
 	// so the operator isn't left with a bare "not reached". Warning-tier, matching
 	// the present-but-not-ready calibration; a critical no-ready-endpoints issue,
@@ -463,7 +463,7 @@ func buildPodsHop(deps Deps, svc *corev1.Service, pods []*corev1.Pod, unreadable
 // Linkerd / Consul), or "" when none is detected. An injected sidecar enforces
 // mTLS, so a probe from outside the mesh can fail TLS/HTTP even when real
 // sidecar-to-sidecar traffic is healthy; buildPodsHop surfaces this as an INFO
-// advisory only — it must never escalate the verdict. The injected sidecar
+// advisory only - it must never escalate the verdict. The injected sidecar
 // container name is the strongest signal (the proxy is actually running);
 // labels/annotations are the injection request and catch the pre-Running case.
 func detectMesh(pods []*corev1.Pod) string {
@@ -503,7 +503,7 @@ const maxPodIPsInConfig = 10
 
 // podsConfig folds the selected pods into a deduplicated container-port +
 // probe summary. We dedupe on (container, name, port) so a 50-replica
-// Deployment doesn't produce 50 identical rows — every replica declares the
+// Deployment doesn't produce 50 identical rows - every replica declares the
 // same ports. Probes from sidecars matter (multi-container readiness is
 // AND'ed) so they're listed per container. Pod IPs/names are captured up
 // to maxPodIPsInConfig (10) so the in-cluster probe orchestrator can sample
@@ -522,7 +522,7 @@ func podsConfig(pods []*corev1.Pod, svc *corev1.Service) *HopConfig {
 	}
 	// The Pods lister returns slice order from a map-backed store, so the
 	// "first N" we sample for the IP/name pool can differ across Radar
-	// instances — two operators viewing the same Service would probe
+	// instances - two operators viewing the same Service would probe
 	// different replicas. Sort by Name first so the sample is stable.
 	sorted := make([]*corev1.Pod, len(pods))
 	copy(sorted, pods)
@@ -607,7 +607,7 @@ func podsConfig(pods []*corev1.Pod, svc *corev1.Service) *HopConfig {
 // annotateServiceTerminal applies the same terminal-case meta+finding the
 // Service-entry path attaches, when a backend Service is reached from an
 // Ingress / Route fan-out. ExternalName and selectorless backends are
-// terminal — there's no Pods hop to add and the verdict downgrade in
+// terminal - there's no Pods hop to add and the verdict downgrade in
 // hasUnverifiableEndpoints needs the selectorless flag to fire. Without
 // this, an Ingress backed by a selectorless Service would silently report
 // `healthy` while a direct Service trace of the same backend would
@@ -696,7 +696,7 @@ func portIsServiceTargeted(t servicePortTargets, name string, port int32) bool {
 }
 
 // isPodReadyForTrace returns true if the pod's Ready condition is True.
-// Only ready pods are surfaced as probe targets — probing a NotReady pod
+// Only ready pods are surfaced as probe targets - probing a NotReady pod
 // reports "TCP connect failed", but kube-proxy was already routing around
 // it, so the trace would be reporting a non-issue.
 func isPodReadyForTrace(pod *corev1.Pod) bool {
@@ -757,7 +757,7 @@ func describeProbe(container, kind string, probe *corev1.Probe, ports []corev1.C
 
 // podFanoutFindings collapses the per-pod issue fan-out into hop-level
 // findings. We deliberately surface the worst-severity representative per
-// distinct code instead of every pod's copy — the diagnosis is "this hop is
+// distinct code instead of every pod's copy - the diagnosis is "this hop is
 // broken", not "here are 47 identical alerts".
 func podFanoutFindings(deps Deps, pods []*corev1.Pod) []Finding {
 	if deps.Issues == nil {
@@ -777,7 +777,7 @@ func podFanoutFindings(deps Deps, pods []*corev1.Pod) []Finding {
 				f.Resource = &podRef
 				// Promote the kubelet's own container state: a clean, state-true
 				// command (logs --previous for a crash loop, describe for a
-				// never-started pod) and — only when the detector left it blank —
+				// never-started pod) and - only when the detector left it blank -
 				// a plain-English cause that leads with the real blocking state
 				// instead of the raw issue Message ("Completed - back-off…").
 				if command != "" {
@@ -799,11 +799,11 @@ func podFanoutFindings(deps Deps, pods []*corev1.Pod) []Finding {
 
 // podDiagnosis reads a pod's real container state and returns a plain-English
 // cause + the single most useful read-only command for it. It is honest by
-// construction — every string is derived from the kubelet's own reported state
+// construction - every string is derived from the kubelet's own reported state
 // (waiting reason, phase, readiness), never inferred. Returns ("","") when the
 // pod has no clear blocking state, so the caller keeps the describe fallback.
 // The command is deliberately ONE runnable line (not a describe+logs jam), and
-// --previous is emitted ONLY for a crash loop — a never-started container
+// --previous is emitted ONLY for a crash loop - a never-started container
 // (ImagePull/Pending) has no previous instance to read.
 func podDiagnosis(pod *corev1.Pod) (cause, command string) {
 	if pod == nil {
@@ -842,7 +842,7 @@ func podDiagnosis(pod *corev1.Pod) (cause, command string) {
 		}
 	}
 	// An init container that hasn't completed blocks the main containers from
-	// ever starting — name it instead of the generic "Pending" below.
+	// ever starting - name it instead of the generic "Pending" below.
 	for _, cs := range pod.Status.InitContainerStatuses {
 		if cs.State.Terminated != nil && cs.State.Terminated.ExitCode == 0 {
 			continue
@@ -850,7 +850,7 @@ func podDiagnosis(pod *corev1.Pod) (cause, command string) {
 		if cs.State.Waiting != nil {
 			continue // its waiting reason was already handled above
 		}
-		return fmt.Sprintf("Init container %q hasn't completed — the main containers won't start until it does", cs.Name), describe
+		return fmt.Sprintf("Init container %q hasn't completed - the main containers won't start until it does", cs.Name), describe
 	}
 	if pod.Status.Phase == corev1.PodPending {
 		return "Pod is Pending (not scheduled, or its containers haven't started)", describe
@@ -912,7 +912,7 @@ func selectedPods(deps Deps, svc *corev1.Service) (pods []*corev1.Pod, unreadabl
 	if deps.Cache == nil || deps.Cache.Pods() == nil {
 		// A selector exists but the Pods lister is unavailable (Pods kind
 		// RBAC-disabled at startup, or cache not wired). We can't read pod
-		// state, so this is uncertain — mark unreadable like the err path
+		// state, so this is uncertain - mark unreadable like the err path
 		// rather than reporting a confident "0 ready pods".
 		return nil, true
 	}
@@ -922,7 +922,7 @@ func selectedPods(deps Deps, svc *corev1.Service) (pods []*corev1.Pod, unreadabl
 	}
 	// A namespace-scoped Pods informer (narrow pod RBAC) returns an EMPTY slice with
 	// no error for a namespace it doesn't watch. That empty is "out of scope", not
-	// "0 pods" — reporting a confident "no backends / 0 ready" for a Service whose
+	// "0 pods" - reporting a confident "no backends / 0 ready" for a Service whose
 	// namespace falls outside pod scope would false-condemn it. Trust an empty list
 	// only when the informer actually covers this namespace.
 	if len(got) == 0 && !deps.Cache.KindCoversNamespace("pods", svc.Namespace) {
@@ -931,8 +931,8 @@ func selectedPods(deps Deps, svc *corev1.Service) (pods []*corev1.Pod, unreadabl
 	return got, false
 }
 
-// livePods drops pods that aren't serving — terminal (Succeeded/Failed) or being
-// deleted — so counts reflect actually-running pods, not stale/old ones lingering
+// livePods drops pods that aren't serving - terminal (Succeeded/Failed) or being
+// deleted - so counts reflect actually-running pods, not stale/old ones lingering
 // under the same selector (e.g. a controller "ready/total" inflated by old pods).
 func livePods(pods []*corev1.Pod) []*corev1.Pod {
 	out := make([]*corev1.Pod, 0, len(pods))
@@ -1032,7 +1032,7 @@ func routeUpstreamsForService(deps Deps, svc *corev1.Service, kind string) []Hop
 	routes, err := deps.Dynamic.ListWatched(gvr)
 	if err != nil || len(routes) == 0 {
 		// Some clusters only have the GVR namespaced. Try cluster-wide first
-		// — backendRefs in HTTPRoute / GRPCRoute can be cross-namespace
+		// - backendRefs in HTTPRoute / GRPCRoute can be cross-namespace
 		// (with ReferenceGrant), so a Service-namespace-only fallback would
 		// silently miss routes attaching from other namespaces. Fall back to
 		// the Service's namespace only when cluster-wide fails too.
@@ -1112,7 +1112,7 @@ func routeReferencesService(route *unstructured.Unstructured, svcNS, svcName str
 // traceIngressEntry: Ingress is the external entry point; no upstreams. We
 // walk every unique backend Service the rules name and emit a Service +
 // Pods hop pair for each one. Without that, a multi-backend Ingress where
-// backend B is broken but backend A is healthy would look healthy — the
+// backend B is broken but backend A is healthy would look healthy - the
 // trace would only show A's pods. Capped at maxBackends to bound fan-out;
 // Truncated is set when the cap kicks in.
 //
@@ -1143,7 +1143,7 @@ func traceIngressEntry(ctx context.Context, deps Deps, t *Trace) {
 		Findings: hopFindings(deps.Issues, ingRef),
 		Config:   ingressConfig(ing),
 	}}
-	// An Ingress is only routing rules — surface WHO actually serves them (the
+	// An Ingress is only routing rules - surface WHO actually serves them (the
 	// ingress controller). Quiet cases ride as a config pill (servedBy); only a
 	// controller PROBLEM (none / unready) is a finding that lights up the hop.
 	st := ingressControllerStatus(deps, ing)
@@ -1174,7 +1174,7 @@ func traceIngressEntry(ctx context.Context, deps Deps, t *Trace) {
 	}
 	for _, name := range backends {
 		if ctx.Err() != nil {
-			break // total budget exhausted — stop fanning out, return what we have
+			break // total budget exhausted - stop fanning out, return what we have
 		}
 		svcRef := ResourceRef{Kind: "Service", Namespace: ing.Namespace, Name: name}
 		svcHop := Hop{
@@ -1186,7 +1186,7 @@ func traceIngressEntry(ctx context.Context, deps Deps, t *Trace) {
 		if svcErr == nil {
 			svcHop.Config = serviceConfig(svc)
 		} else if !apierrors.IsNotFound(svcErr) {
-			// RBAC denial / transient API failure — we can't read the backend, so
+			// RBAC denial / transient API failure - we can't read the backend, so
 			// don't let the path read healthy. Mark endpointSource=unknown (mirrors
 			// buildPodsHop's lister-error handling) so the verdict degrades to
 			// unknown rather than hiding an unreadable backend. A confirmed
@@ -1255,7 +1255,7 @@ const maxBackendsTraced = 5
 // ingressConfig captures the spec.rules[] shape (hosts + paths + backend
 // service+port) so the trace's Ingress hop names the URLs and ports it
 // actually owns. Hostnames are flattened to a top-level field for fast
-// scanning — operators usually ask "which hosts does this Ingress serve"
+// scanning - operators usually ask "which hosts does this Ingress serve"
 // before they ask "for each host, what paths".
 func ingressConfig(ing *networkingv1.Ingress) *HopConfig {
 	if ing == nil {
@@ -1320,7 +1320,7 @@ func ingressConfig(ing *networkingv1.Ingress) *HopConfig {
 		// the UI renders it as a chip next to the type/clusterIP set.
 		c.Selector = map[string]string{"ingressClass": *ing.Spec.IngressClassName}
 	}
-	// The external entry address a controller published (status.loadBalancer) —
+	// The external entry address a controller published (status.loadBalancer) -
 	// the single most useful "front door" fact. Reuses Addresses (Gateway's
 	// field) so the UI renders it without new geometry.
 	c.Addresses = ingressEntryAddress(ing)
@@ -1368,7 +1368,7 @@ func ingressBackendNames(ing *networkingIngress) []string {
 
 // traceRouteEntry: HTTPRoute or GRPCRoute. Downstream is Route → (Service +
 // Pods) per backend; upstreams are the route's parent Gateways via
-// parentRefs. Every backend is walked, not just the first — a route fanning
+// parentRefs. Every backend is walked, not just the first - a route fanning
 // out to N services where one is broken must surface that backend's hop or
 // the verdict lies. Cross-namespace backends respect the BackendRef's own
 // namespace.
@@ -1413,7 +1413,7 @@ func traceRouteEntry(ctx context.Context, deps Deps, t *Trace, kind string) {
 	}
 	for _, b := range backends {
 		if ctx.Err() != nil {
-			break // total budget exhausted — stop fanning out, return what we have
+			break // total budget exhausted - stop fanning out, return what we have
 		}
 		svcRef := ResourceRef{Kind: "Service", Namespace: b.Namespace, Name: b.Name}
 		// A backendRef pointing at a Service the caller can't read must
@@ -1444,7 +1444,7 @@ func traceRouteEntry(ctx context.Context, deps Deps, t *Trace, kind string) {
 		if svcErr == nil {
 			svcHop.Config = serviceConfig(svc)
 		} else if !apierrors.IsNotFound(svcErr) {
-			// RBAC denial / transient API failure — mark the backend unreadable so
+			// RBAC denial / transient API failure - mark the backend unreadable so
 			// the verdict degrades to unknown instead of reading healthy. A
 			// confirmed NotFound stays a real break for the verdict layer.
 			if svcHop.Meta == nil {
@@ -1453,7 +1453,7 @@ func traceRouteEntry(ctx context.Context, deps Deps, t *Trace, kind string) {
 			svcHop.Meta["endpointSource"] = "unknown"
 		}
 		// A backend explicitly weighted to 0 while a sibling carries traffic is
-		// drained by design — it serves no requests, so trace it informationally
+		// drained by design - it serves no requests, so trace it informationally
 		// (no pod fan-out, no probes) and keep it out of the verdict/coverage
 		// failure tally. Folding a down weight-0 backend in would false-condemn a
 		// path that intentionally carries zero traffic.
@@ -1465,7 +1465,7 @@ func traceRouteEntry(ctx context.Context, deps Deps, t *Trace, kind string) {
 			svcHop.Findings = append(svcHop.Findings, Finding{
 				Code:     "route:drained-weight-zero",
 				Severity: SeverityInfo,
-				Message:  fmt.Sprintf("Backend Service %q is weighted to 0 while a sibling backend carries traffic — drained / canary-cutover. It serves no requests by design, so it was not probed.", b.Name),
+				Message:  fmt.Sprintf("Backend Service %q is weighted to 0 while a sibling backend carries traffic - drained / canary-cutover. It serves no requests by design, so it was not probed.", b.Name),
 			})
 			hops = append(hops, svcHop)
 			continue
@@ -1488,7 +1488,7 @@ func traceRouteEntry(ctx context.Context, deps Deps, t *Trace, kind string) {
 }
 
 // routeConfig captures the route's hostnames + per-rule match/backend
-// shape. Unlike Ingress, HTTPRoute paths can be regex/prefix/exact — we
+// shape. Unlike Ingress, HTTPRoute paths can be regex/prefix/exact - we
 // flatten to a single display string per match (the matcher type is shown
 // as a prefix like "PathPrefix:") so the UI doesn't need a sub-tab.
 func routeConfig(route *unstructured.Unstructured) *HopConfig {
@@ -1834,7 +1834,7 @@ func routeParentGateways(deps Deps, route *unstructured.Unstructured) []Hop {
 
 // traceGatewayEntry: a Gateway's downstream is its attached routes as
 // parallel hops (capped at gatewayRouteCap to keep the response bounded on
-// shared gateways). We don't recurse into each route's own pods — the Diagnose
+// shared gateways). We don't recurse into each route's own pods - the Diagnose
 // tab on the route does that. The Gateway is the subject of its own posture;
 // upstreams (which controller manages it) are not modeled here.
 func traceGatewayEntry(ctx context.Context, deps Deps, t *Trace) {
@@ -1873,7 +1873,7 @@ func traceGatewayEntry(ctx context.Context, deps Deps, t *Trace) {
 	// behind the RBAC boundary.
 	for _, ref := range attached {
 		if ctx.Err() != nil {
-			break // total budget exhausted — stop fanning out, return what we have
+			break // total budget exhausted - stop fanning out, return what we have
 		}
 		if !deps.NamespaceAllowed(ref.Namespace) {
 			hops = append(hops, Hop{
@@ -1910,7 +1910,7 @@ func traceGatewayEntry(ctx context.Context, deps Deps, t *Trace) {
 }
 
 // gatewayConfig captures listeners (port/protocol/hostname/name) and the
-// status.addresses field — Gateway-API surfaces its routable identity via
+// status.addresses field - Gateway-API surfaces its routable identity via
 // addresses once the controller assigns them.
 func gatewayConfig(gw *unstructured.Unstructured) *HopConfig {
 	if gw == nil {
@@ -2078,7 +2078,7 @@ func hopKindPrecedence(kind string) int {
 }
 
 // sortRefs orders a slice of ResourceRef by (Kind, Namespace, Name) so the
-// trace's attached-routes / upstream lists are stable across polls — without
+// trace's attached-routes / upstream lists are stable across polls - without
 // it, map iteration order leaks into the rendered output.
 func sortRefs(refs []ResourceRef) {
 	sort.Slice(refs, func(i, j int) bool {

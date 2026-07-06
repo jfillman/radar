@@ -12,7 +12,7 @@ import (
 
 // hopFindings collects findings for a hop from the live issues stream. We
 // match the same way internal/mcp/tools_diagnose.go's RelatedIssues selection
-// does — by (group, kind, namespace, name) — so a Phase 0 detection that
+// does - by (group, kind, namespace, name) - so a Phase 0 detection that
 // fires for a Service shows up on that Service's hop with no special-casing.
 func hopFindings(p *issues.CacheProvider, ref ResourceRef) []Finding {
 	if p == nil {
@@ -73,7 +73,7 @@ func issueToFinding(iss issues.Issue, ref ResourceRef) Finding {
 }
 
 // issueCode derives a stable, agent-friendly code from an issue. Fingerprint
-// is preferred when set — it's the same identity the issues pipeline uses for
+// is preferred when set - it's the same identity the issues pipeline uses for
 // dedupe. Falling back to "SOURCE:reason" matches what an agent reading the
 // trace would write themselves: which detector + what it found.
 func issueCode(iss issues.Issue) string {
@@ -94,14 +94,14 @@ const (
 // policyFinding runs the static NetworkPolicy evaluator for a Service's ready
 // endpoint pods and turns the caller-INDEPENDENT verdict into a plain-language
 // finding. The operator-facing copy never says "NetworkPolicy", "ingress",
-// "egress", or "podSelector" — those live only in the kubectl command and the
+// "egress", or "podSelector" - those live only in the kubectl command and the
 // expert Cause line. notRestricted is suppressed (silence is correct on the
 // clear case). A wouldDeny is a WARNING, never a hard-red verdict: the CNI is
 // the only authority on enforcement, so the live in-cluster probe must confirm
 // it (the reconcile pass downgrades it when live traffic actually got through).
 // backendPorts narrows the evaluation to the Service port(s) an upstream
-// (Ingress/HTTPRoute backendRef) actually references. When empty — a bare
-// Service entrypoint — every Service port is evaluated. Restricting to the
+// (Ingress/HTTPRoute backendRef) actually references. When empty - a bare
+// Service entrypoint - every Service port is evaluated. Restricting to the
 // path's port stops a deny on an unused port from condemning the traced path
 // with a would-block warning the reconcile pass can never clear.
 func policyFinding(deps Deps, svc *corev1.Service, pods []*corev1.Pod, backendPorts ...string) (policyResult, Finding, bool) {
@@ -117,12 +117,12 @@ func policyFinding(deps Deps, svc *corev1.Service, pods []*corev1.Pod, backendPo
 	if err != nil || len(policies) == 0 {
 		return none, Finding{}, false
 	}
-	// Evaluate only ready endpoint pods — the ones that actually receive Service
+	// Evaluate only ready endpoint pods - the ones that actually receive Service
 	// traffic. A NotReady pod outside the data path must not add policy noise.
 	// Exception: a Service with publishNotReadyAddresses routes to NotReady
 	// endpoints too, so an allowed NotReady pod is reachable. Filtering it out
 	// could leave only default-denied ready pods and produce a would-deny
-	// false-condemn before any probe — so include every endpoint pod then.
+	// false-condemn before any probe - so include every endpoint pod then.
 	ready := make([]*corev1.Pod, 0, len(pods))
 	for _, p := range pods {
 		if svc.Spec.PublishNotReadyAddresses || isPodReadyForTrace(p) {
@@ -141,17 +141,17 @@ func policyFinding(deps Deps, svc *corev1.Service, pods []*corev1.Pod, backendPo
 
 	switch res.verdict {
 	case policyWouldDeny:
-		// A static would-deny is a PREDICTION, not a fact — the network plugin is
+		// A static would-deny is a PREDICTION, not a fact - the network plugin is
 		// the only authority on enforcement (kindnet writes the rule but enforces
 		// nothing). So the verb is "would block", and we say up front that the
 		// API-proxy check can't confirm it (the proxy bypasses network rules).
 		// The reconcile pass upgrades this to a confirmed cause on a live drop, or
 		// downgrades it to reassurance when in-cluster traffic actually flowed.
-		msg := fmt.Sprintf("A cluster network rule would block traffic to these pods on %s — no rule allows it.", res.port)
+		msg := fmt.Sprintf("A cluster network rule would block traffic to these pods on %s - no rule allows it.", res.port)
 		if res.wrongPort {
 			msg = fmt.Sprintf("A cluster network rule allows other ports but not %s, so traffic to these pods on %s would be blocked.", res.port, res.port)
 		}
-		// The in-cluster probe only tests TCP — UDP/SCTP are skipped — so for
+		// The in-cluster probe only tests TCP - UDP/SCTP are skipped - so for
 		// those protocols the test can never confirm or clear this prediction.
 		// Don't promise a verification the tool can't perform.
 		action := "Run the in-cluster test to confirm it's enforced, or add an ingress rule that allows this port. Check the rule manually:"
@@ -162,7 +162,7 @@ func policyFinding(deps Deps, svc *corev1.Service, pods []*corev1.Pod, backendPo
 			Code:     codePolicyWouldDeny,
 			Severity: SeverityWarning,
 			Message:  msg,
-			Cause:    fmt.Sprintf("A NetworkPolicy (%s) selects these pods and no ingress rule permits %s from any source. Whether it's actually enforced depends on the cluster's network plugin, which Radar can't check from here — and the API-proxy check bypasses network rules.", strings.Join(res.policyNames, ", "), res.port),
+			Cause:    fmt.Sprintf("A NetworkPolicy (%s) selects these pods and no ingress rule permits %s from any source. Whether it's actually enforced depends on the cluster's network plugin, which Radar can't check from here - and the API-proxy check bypasses network rules.", strings.Join(res.policyNames, ", "), res.port),
 			Action:   action,
 			Command:  cmd,
 		}, true
@@ -173,7 +173,7 @@ func policyFinding(deps Deps, svc *corev1.Service, pods []*corev1.Pod, backendPo
 		action := "If your client should be allowed, confirm its labels/namespace match the rule's allowed sources. Inspect the rule:"
 		switch res.advisory {
 		case advisoryHostNetwork:
-			msg = "A cluster network rule selects these pods, but they run on the host network — NetworkPolicy is CNI-specific there, so Radar can't tell whether it applies."
+			msg = "A cluster network rule selects these pods, but they run on the host network - NetworkPolicy is CNI-specific there, so Radar can't tell whether it applies."
 			cause = fmt.Sprintf("A NetworkPolicy (%s) selects these host-network pods. Whether NetworkPolicy governs host-network traffic depends on the CNI plugin, which Radar can't check from here.", names)
 			action = "Confirm whether your CNI enforces NetworkPolicy for host-network pods. Inspect the rule:"
 		case advisoryUnresolvedPort:
@@ -232,7 +232,7 @@ func policyVerdictKey(v policyVerdict) string {
 
 // reproducerForRef returns the kubectl-shaped one-liner an operator can paste
 // to see the raw state behind a finding. The command is intentionally
-// read-only — the trace explains, the operator decides.
+// read-only - the trace explains, the operator decides.
 func reproducerForRef(ref ResourceRef) string {
 	ns := ""
 	if ref.Namespace != "" {

@@ -9,7 +9,7 @@ import (
 )
 
 // Defect 1: a kube-system-resident workload whose egress rule allows port 53 to a
-// same-namespace podSelector matching CoreDNS DOES reach DNS — the gap must not
+// same-namespace podSelector matching CoreDNS DOES reach DNS - the gap must not
 // false-fire. A non-kube-system source keeps the prior "gap fires" behavior.
 func TestRuleDestCoversDNS_KubeSystemSource(t *testing.T) {
 	coreDNS := rule(nil, peerPod(sel("k8s-app", "kube-dns")))
@@ -74,7 +74,7 @@ func TestRouteBackendDrained(t *testing.T) {
 }
 
 // Defect 3: a DOWN drained (weight-0) backend must not drag the verdict to
-// broken/degraded — it carries zero traffic by design.
+// broken/degraded - it carries zero traffic by design.
 func TestComputeVerdict_DrainedBackendExcluded(t *testing.T) {
 	tr := &Trace{
 		Subject: ResourceRef{Group: "gateway.networking.k8s.io", Kind: "HTTPRoute", Namespace: "prod", Name: "r"},
@@ -91,7 +91,7 @@ func TestComputeVerdict_DrainedBackendExcluded(t *testing.T) {
 		},
 	}
 	if v, _ := computeVerdict(tr); v != VerdictHealthy {
-		t.Errorf("verdict = %q, want healthy — a down DRAINED backend must not condemn the path", v)
+		t.Errorf("verdict = %q, want healthy - a down DRAINED backend must not condemn the path", v)
 	}
 }
 
@@ -123,7 +123,7 @@ func TestBuildRoutes_DrainedBackendBenignSkip(t *testing.T) {
 }
 
 // Defects 2 & 12: ApplyInClusterResults re-derives the verdict over the updated
-// findings — a stale 'degraded' left after a would-deny downgrade must not sit
+// findings - a stale 'degraded' left after a would-deny downgrade must not sit
 // beside a now-healthy projection.
 func TestApplyInClusterResults_RederivesVerdict(t *testing.T) {
 	tr := &Trace{
@@ -138,7 +138,7 @@ func TestApplyInClusterResults_RederivesVerdict(t *testing.T) {
 	}
 	ApplyInClusterResults(tr, nil)
 	if tr.Verdict != VerdictHealthy {
-		t.Errorf("verdict = %q, want healthy — clean findings must re-derive over a stale degraded", tr.Verdict)
+		t.Errorf("verdict = %q, want healthy - clean findings must re-derive over a stale degraded", tr.Verdict)
 	}
 }
 

@@ -32,7 +32,7 @@ func speedDeps(t *testing.T) Deps {
 	return Deps{Cache: k8s.GetResourceCache(), Dynamic: k8s.GetDynamicResourceCache(), Discovery: k8s.GetResourceDiscovery(), Issues: issues.NewCacheProvider()}
 }
 
-// A cancelled/expired context must yield a FAST, honest unknown-partial — never a
+// A cancelled/expired context must yield a FAST, honest unknown-partial - never a
 // hang and never a confident verdict over an incomplete walk.
 func TestBuildTrace_TotalBudget_CancelledCtxReturnsHonestPartial(t *testing.T) {
 	deps := speedDeps(t)
@@ -45,7 +45,7 @@ func TestBuildTrace_TotalBudget_CancelledCtxReturnsHonestPartial(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if elapsed > time.Second {
-		t.Errorf("cancelled ctx took %v — must return fast, not hang", elapsed)
+		t.Errorf("cancelled ctx took %v - must return fast, not hang", elapsed)
 	}
 	if tr.Verdict != VerdictUnknown {
 		t.Errorf("verdict = %q, want unknown on timeout", tr.Verdict)
@@ -63,7 +63,7 @@ func TestBuildTrace_TotalBudget_BoundsTheWholeCall(t *testing.T) {
 	tr, _ := BuildTraceWithOptions(context.Background(), deps, "Service", "prod", "api", Options{Probe: true, TotalBudget: time.Millisecond})
 	elapsed := time.Since(start)
 	if elapsed > time.Second {
-		t.Errorf("1ms total budget took %v — the probe phase must inherit the total deadline", elapsed)
+		t.Errorf("1ms total budget took %v - the probe phase must inherit the total deadline", elapsed)
 	}
 	if tr == nil {
 		t.Fatal("nil trace")

@@ -33,14 +33,14 @@ func TestIsEntryKindMatchesUIPredicate(t *testing.T) {
 	}
 	body := extractIsDiagnoseKindBody(string(raw))
 	if body == "" {
-		t.Fatalf("isDiagnoseKind body not found in %s — did the function move or get renamed?", diagnoseKindPredicatePath)
+		t.Fatalf("isDiagnoseKind body not found in %s - did the function move or get renamed?", diagnoseKindPredicatePath)
 	}
 	tsKinds := map[string]bool{}
 	for _, m := range kindLiteralInPredicate.FindAllStringSubmatch(body, -1) {
 		tsKinds[m[1]] = true
 	}
 	if len(tsKinds) == 0 {
-		t.Fatalf("no kind literals parsed from isDiagnoseKind body — predicate format may have changed")
+		t.Fatalf("no kind literals parsed from isDiagnoseKind body - predicate format may have changed")
 	}
 
 	// The Go side accepts singular, capitalized canonical, and plural forms.
@@ -84,7 +84,7 @@ func TestIsEntryKindMatchesUIPredicate(t *testing.T) {
 
 // extractIsDiagnoseKindBody slices the TS function body between the opening
 // `export function isDiagnoseKind` and the next standalone `}` at the
-// matching brace depth. Simple-minded brace counting is enough — the body
+// matching brace depth. Simple-minded brace counting is enough - the body
 // is straightforward boolean logic with no nested functions.
 func extractIsDiagnoseKindBody(src string) string {
 	const marker = "export function isDiagnoseKind"

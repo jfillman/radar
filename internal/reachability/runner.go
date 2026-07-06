@@ -45,19 +45,19 @@ func SetConfiguredImage(img string) { configuredImage = img }
 
 // ResolveImage picks the image for the probe Job, most-trusted source first:
 //
-//  1. override — an explicit --reachability-image / config value (the per-call
+//  1. override - an explicit --reachability-image / config value (the per-call
 //     arg, or the startup-recorded configuredImage). The operator said exactly
 //     this, so it always wins, on every path.
-//  2. self-read — radar's OWN running pod image, read via selfClient (radar's
+//  2. self-read - radar's OWN running pod image, read via selfClient (radar's
 //     service-account client, NOT the caller's impersonated one). This is the
 //     honest in-cluster default: the probe runs the SAME image as radar itself,
 //     correct automatically for private registries, mirrors, and digest-pinned
 //     deploys because it reads the live container image.
-//  3. RADAR_IMAGE env — a no-RBAC fallback (the Helm chart sets it to radar's
+//  3. RADAR_IMAGE env - a no-RBAC fallback (the Helm chart sets it to radar's
 //     deployed image) for when self-read can't run (no get-pods, not a pod).
-//  4. DefaultImageRef — the version-matched published image.
+//  4. DefaultImageRef - the version-matched published image.
 //
-// selfClient may be nil (callers without a base client) — self-read is skipped.
+// selfClient may be nil (callers without a base client) - self-read is skipped.
 func ResolveImage(ctx context.Context, selfClient kubernetes.Interface, override string) string {
 	if override != "" {
 		return override
@@ -84,7 +84,7 @@ func DefaultImage() string {
 // selfPodImage reads radar's own pod (named by the MY_POD_NAME / MY_POD_NAMESPACE
 // downward-API env the chart injects) and returns the image of the "radar"
 // container, or the first container. Returns "" when the env is unset, the client
-// is nil, the Get fails (e.g. no get-pods RBAC), or the pod has no containers —
+// is nil, the Get fails (e.g. no get-pods RBAC), or the pod has no containers -
 // every such case falls through to the next image source.
 func selfPodImage(ctx context.Context, selfClient kubernetes.Interface) string {
 	name, namespace := os.Getenv("MY_POD_NAME"), os.Getenv("MY_POD_NAMESPACE")
@@ -102,7 +102,7 @@ func selfPodImage(ctx context.Context, selfClient kubernetes.Interface) string {
 	}
 	// No container named "radar": trust the first image ONLY when it is the SOLE
 	// container. A multi-container pod (injected mesh sidecar, or radar wrapped in
-	// another app) could put a non-radar image first — that image lacks /radar, so
+	// another app) could put a non-radar image first - that image lacks /radar, so
 	// fall through to RADAR_IMAGE / the version default instead of guessing wrong.
 	if len(pod.Spec.Containers) == 1 {
 		return pod.Spec.Containers[0].Image
@@ -142,10 +142,10 @@ type capabilityCheck struct {
 
 // Capability verifies the caller can do EVERY operation the runner performs:
 // create the Job, list the pods it spawns, AND read their logs. The gate is
-// all-or-nothing on purpose — a caller who can create a Job but not list pods or
+// all-or-nothing on purpose - a caller who can create a Job but not list pods or
 // read logs would otherwise watch the probe spin silently to a timeout with no
 // cause shown. When denied, the reason names the first missing verb. Runs as the
-// already-impersonated caller's client — the authoritative check.
+// already-impersonated caller's client - the authoritative check.
 func Capability(ctx context.Context, client kubernetes.Interface, namespace string) (allowed bool, reason string, err error) {
 	for _, c := range []capabilityCheck{
 		{group: "batch", resource: "jobs", verb: "create", label: "create Jobs"},
@@ -321,11 +321,11 @@ func waitAndReadProbeJob(ctx context.Context, client kubernetes.Interface, names
 		case <-ticker.C:
 			pods, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 			if err != nil {
-				// An RBAC denial will never resolve by polling — surface it now
+				// An RBAC denial will never resolve by polling - surface it now
 				// with the cause instead of spinning to a confusing timeout.
 				// Wrap with %w so apierrors.IsForbidden classifies it at the handler.
 				if apierrors.IsForbidden(err) {
-					return nil, fmt.Errorf("can't read the probe pod (RBAC denied) — run the command below: %w", err)
+					return nil, fmt.Errorf("can't read the probe pod (RBAC denied) - run the command below: %w", err)
 				}
 				// Keep the real error so a never-saw-a-pod timeout can name the
 				// transient read failure instead of asserting a cluster-config cause.
@@ -389,7 +389,7 @@ func probeFailedError(raw string, term *corev1.ContainerStateTerminated) error {
 // finish" is useless mid-incident; when the pod never ran its probe container the
 // cause is almost always one of three generic startup blocks, so name it.
 func probeTimeoutError(pod *corev1.Pod, listErr error) error {
-	const tail = " — try again, or run the command below"
+	const tail = " - try again, or run the command below"
 	if pod == nil {
 		// We only know we never observed the pod run. When a pod LIST failed, name
 		// that real error rather than asserting a cluster-config cause we can't
@@ -397,7 +397,7 @@ func probeTimeoutError(pod *corev1.Pod, listErr error) error {
 		if listErr != nil {
 			return fmt.Errorf("in-cluster probe timed out: Radar couldn't read the probe pod (%v)%s", listErr, tail)
 		}
-		return fmt.Errorf("in-cluster probe timed out: Radar never saw the probe pod run — it may have been blocked by an admission webhook, denied by quota, or left unschedulable%s", tail)
+		return fmt.Errorf("in-cluster probe timed out: Radar never saw the probe pod run - it may have been blocked by an admission webhook, denied by quota, or left unschedulable%s", tail)
 	}
 	if reason := podStartupBlock(pod); reason != "" {
 		return fmt.Errorf("in-cluster probe timed out: %s%s", reason, tail)
@@ -406,7 +406,7 @@ func probeTimeoutError(pod *corev1.Pod, listErr error) error {
 }
 
 // podStartupBlock names the generic reason a pod hasn't run its main container yet
-// — unschedulable, injected init containers still running (our probe Job declares
+// - unschedulable, injected init containers still running (our probe Job declares
 // none, so any are from an admission webhook), or image pull. Returns "" when
 // nothing specific stands out.
 func podStartupBlock(pod *corev1.Pod) string {
@@ -429,7 +429,7 @@ func podStartupBlock(pod *corev1.Pod) string {
 			// Certain by construction: our Job template declares ZERO init
 			// containers, so any present were added by a mutating admission
 			// webhook. Said with confidence because there is no other source.
-			return fmt.Sprintf("the probe container couldn't start — an admission webhook injected %d init container(s) into the probe pod and they hadn't finished", total-done)
+			return fmt.Sprintf("the probe container couldn't start - an admission webhook injected %d init container(s) into the probe pod and they hadn't finished", total-done)
 		}
 	}
 	for _, cs := range pod.Status.ContainerStatuses {
@@ -437,7 +437,7 @@ func podStartupBlock(pod *corev1.Pod) string {
 			continue
 		}
 		// Attribute by container name, consistent with probeContainerTerminated /
-		// readPodLogs. A waiting NON-probe container is an injected sidecar — its
+		// readPodLogs. A waiting NON-probe container is an injected sidecar - its
 		// ImagePullBackOff is not the probe's fault, so never blame the probe.
 		if cs.Name == "probe" {
 			return "the probe container couldn't start (" + cs.State.Waiting.Reason + ")"
@@ -487,7 +487,7 @@ func readPodLogs(ctx context.Context, client kubernetes.Interface, namespace, po
 // FallbackCommand is the copyable kubectl the caller runs themselves when they
 // can't create the Job. It MUST mirror the exact args the Job uses
 // (target/scheme/host/path/layers) so the manual run tests the same request the
-// runner would have — a fallback that tested a different request would mislead.
+// runner would have - a fallback that tested a different request would mislead.
 func FallbackCommand(opts RunOptions) string {
 	scheme := opts.Scheme
 	if scheme == "" {
@@ -498,7 +498,7 @@ func FallbackCommand(opts RunOptions) string {
 		image = DefaultImage()
 	}
 	// Mirror the Job's restricted security envelope so the manual run tests the
-	// SAME thing the runner would — and survives a restricted-PSA namespace, where
+	// SAME thing the runner would - and survives a restricted-PSA namespace, where
 	// a bare `kubectl run` is admission-rejected. Strategic merge keeps the
 	// container command (supplied after `--`) while layering on the securityContext
 	// + automountServiceAccountToken=false the probe Job declares.

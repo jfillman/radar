@@ -92,7 +92,7 @@ func TestHasCloudLBAnnotations(t *testing.T) {
 // address signals must read as served, not broken.
 func TestIngressControllerFinding_Honesty(t *testing.T) {
 	t.Run("unwired deps (couldn't read IngressClasses) → soft pill, NEVER condemn", func(t *testing.T) {
-		// Deps{} has a nil Dynamic/Discovery — Radar couldn't READ the classes,
+		// Deps{} has a nil Dynamic/Discovery - Radar couldn't READ the classes,
 		// which is not the same as "none configured". Fail toward silence: a soft
 		// "couldn't identify the controller" pill, never the no-controller condemn
 		// of a possibly-healthy Ingress.

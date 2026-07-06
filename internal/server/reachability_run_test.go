@@ -11,7 +11,7 @@ import (
 // TestResolveReachabilityImage_Precedence pins the server's image resolution:
 // --reachability-image config wins, then RADAR_IMAGE env, then the build default.
 // (The probe-Job build, capability gate, fallback command, and timeout diagnostics
-// are unit-tested in internal/reachability — the shared runner core.)
+// are unit-tested in internal/reachability - the shared runner core.)
 func TestResolveReachabilityImage_Precedence(t *testing.T) {
 	old := reachability.DefaultImageRef
 	reachability.DefaultImageRef = "ghcr.io/skyhook-io/radar:vtest"

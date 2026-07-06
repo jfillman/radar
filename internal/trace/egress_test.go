@@ -160,7 +160,7 @@ func TestSummarizeEgress_DenyAll(t *testing.T) {
 	if s.dnsGapFires() {
 		t.Error("deny-all must suppress the DNS gap (subsumed)")
 	}
-	// Deny-all is stated in the message, not a chip — nothing to "reach".
+	// Deny-all is stated in the message, not a chip - nothing to "reach".
 	if chips := s.chips(); len(chips) != 0 {
 		t.Errorf("deny-all wants no chips, got %+v", chips)
 	}
@@ -212,7 +212,7 @@ func TestSummarizeEgress_NotIsolated(t *testing.T) {
 }
 
 // A port RANGE covering 53 (e.g. UDP 1-65535) allows DNS, so the DNS gap must
-// NOT fire — rulePort53 must honor EndPort, not only the exact port.
+// NOT fire - rulePort53 must honor EndPort, not only the exact port.
 func TestEgress_PortRangeCovering53AllowsDNS(t *testing.T) {
 	start := intstr.FromInt32(1)
 	end := int32(65535)
@@ -223,7 +223,7 @@ func TestEgress_PortRangeCovering53AllowsDNS(t *testing.T) {
 	))
 	s := summarizeEgress([]*networkingv1.NetworkPolicy{p}, egressTestPods)
 	if s.dnsGapFires() {
-		t.Error("a UDP 1-65535 range covers port 53 — the DNS gap must not fire (no false 'no rule allows DNS')")
+		t.Error("a UDP 1-65535 range covers port 53 - the DNS gap must not fire (no false 'no rule allows DNS')")
 	}
 	if s.dnsCov != dnsCovered {
 		t.Errorf("dnsCov = %d, want dnsCovered (range covers 53 to kube-system)", s.dnsCov)
@@ -241,14 +241,14 @@ func TestEgress_PortRangeBelow53StillGaps(t *testing.T) {
 	))
 	s := summarizeEgress([]*networkingv1.NetworkPolicy{p}, egressTestPods)
 	if !s.dnsGapFires() {
-		t.Error("an 8000-9000 range does not cover 53 — the DNS gap should fire")
+		t.Error("an 8000-9000 range does not cover 53 - the DNS gap should fire")
 	}
 }
 
 func TestEgress_KubeSystemUnknownPodSelector53StaysSilent(t *testing.T) {
 	// Source pods live in kube-system and the only peer is a same-namespace
 	// podSelector on port 53 whose labels aren't the well-known CoreDNS set. The
-	// real CoreDNS labels aren't visible here, so this is unprovable — uncertain,
+	// real CoreDNS labels aren't visible here, so this is unprovable - uncertain,
 	// not a definite non-cover. The DNS gap must NOT fire (fail toward silence),
 	// mirroring the namespaceSelector branch.
 	pods := []*corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceSystem}}}

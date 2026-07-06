@@ -36,7 +36,7 @@ func main() {
 	startupStart := time.Now()
 
 	// Subcommand dispatch: `radar probe` runs a one-shot reachability probe and
-	// exits — no server, no cluster client. The in-cluster reachability runner
+	// exits - no server, no cluster client. The in-cluster reachability runner
 	// executes this binary in that mode. Intercept before the server flag
 	// parsing, since "probe" is a positional argument, not a flag.
 	if len(os.Args) > 1 && os.Args[1] == "probe" {
@@ -138,7 +138,7 @@ func main() {
 	// An explicit --reachability-image override applies to BOTH probe paths. It must
 	// win over the in-cluster self-read, so record it as the configured override
 	// (checked ABOVE self-read), not as DefaultImageRef (the last-resort fallback,
-	// below self-read — which would let radar's own pod image beat the operator's
+	// below self-read - which would let radar's own pod image beat the operator's
 	// explicit choice on the MCP path). REST passes the config as the override arg;
 	// MCP has no server config, so it relies on this. Air-gapped mirrors work on both.
 	if *reachabilityImage != "" {

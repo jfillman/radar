@@ -34,7 +34,7 @@ func TestSelectedPods_NilListerIsUnreadable(t *testing.T) {
 
 // Defect 4: a single-host Ingress route's label is path-only ("/api"), so
 // routeHostKey returns "" and a NotTested route both counts its own skipped
-// transport probe (under the host key) AND itself — inflating Coverage.Skipped.
+// transport probe (under the host key) AND itself - inflating Coverage.Skipped.
 // recountCoverage must recover the host from a host-bearing field (the declared
 // host on InClusterRequest) so the dedup fires.
 func TestRecountCoverage_SingleHostNotTestedNoDoubleCount(t *testing.T) {
@@ -57,7 +57,7 @@ func TestRecountCoverage_SingleHostNotTestedNoDoubleCount(t *testing.T) {
 		t.Fatal("Coverage nil")
 	}
 	if tr.Coverage.Skipped != 1 {
-		t.Errorf("Coverage.Skipped = %d, want 1 — the not-tested route and its skip row are the SAME gap, not two", tr.Coverage.Skipped)
+		t.Errorf("Coverage.Skipped = %d, want 1 - the not-tested route and its skip row are the SAME gap, not two", tr.Coverage.Skipped)
 	}
 }
 
@@ -82,7 +82,7 @@ func TestRecountCoverage_MultiHostNotTestedDedup(t *testing.T) {
 }
 
 // A host-less not-tested route (subject/port identity, no front-door host) with no
-// matching skip row is still its own genuine gap — counted once.
+// matching skip row is still its own genuine gap - counted once.
 func TestRecountCoverage_HostlessNotTestedCountsOnce(t *testing.T) {
 	tr := &Trace{
 		Routes: []RouteResult{{

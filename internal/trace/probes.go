@@ -51,7 +51,7 @@ var (
 
 // runProbes augments the static trace with reachability probes, sized to
 // the caller's budget. Hops are probed in parallel because they target
-// independent resources — a slow Gateway listener shouldn't delay the
+// independent resources - a slow Gateway listener shouldn't delay the
 // Service hop's TCP probe. Within each hop, probes stay sequential because
 // later layers depend on earlier ones (TLS only matters if TCP succeeded).
 // The overall budget enforces that even a misbehaving fanout cannot exceed
@@ -78,7 +78,7 @@ func runProbes(ctx context.Context, t *Trace, opts Options, client kubernetes.In
 	probeHops := func(hops []Hop) {
 		for i := range hops {
 			i := i
-			// A drained (weight-0) backend serves no traffic by design — dialing it
+			// A drained (weight-0) backend serves no traffic by design - dialing it
 			// would waste budget and could attach a misleading failure. Leave it
 			// unprobed; buildRoutes folds it in as a benign skip.
 			if drained, _ := hops[i].Meta["drained"].(bool); drained {
@@ -108,8 +108,8 @@ func runProbes(ctx context.Context, t *Trace, opts Options, client kubernetes.In
 	attachPathDivergenceFindings(t)
 
 	// Reconcile the static NetworkPolicy prior against what live traffic
-	// actually did. A static "would deny" is only a prior — kindnet creates the
-	// policy object but enforces nothing — so it must be downgraded when live
+	// actually did. A static "would deny" is only a prior - kindnet creates the
+	// policy object but enforces nothing - so it must be downgraded when live
 	// traffic got through, and only confirmed when the data path was dropped.
 	reconcilePolicyFindings(t)
 }
@@ -141,34 +141,34 @@ func reconcilePolicyFindings(t *Trace) {
 			case o.dataOK && !o.dataFail && port > 0:
 				// Real in-cluster traffic on the DENIED port got through UNANIMOUSLY.
 				// The apiserver proxy bypasses NetworkPolicy, but the DATA path does
-				// not — a clean data-path success is ground truth the prediction
+				// not - a clean data-path success is ground truth the prediction
 				// didn't hold. Gated on a KNOWN deny port: with port==0 the success
 				// could be on an unrelated port (portScopedOutcome falls back to all
-				// probes), so we must not over-reassure — keep the prediction.
+				// probes), so we must not over-reassure - keep the prediction.
 				// Mixed (some pods dropped) also falls through and stays a prediction.
 				h.Findings[idx] = Finding{
 					Code:     codePolicyWouldDeny,
 					Severity: SeverityInfo,
-					Message:  "Traffic got through. A network rule here would block it — but either this cluster's network plugin doesn't enforce NetworkPolicy, or the static read missed an allow rule for this port.",
+					Message:  "Traffic got through. A network rule here would block it - but either this cluster's network plugin doesn't enforce NetworkPolicy, or the static read missed an allow rule for this port.",
 					Command:  h.Findings[idx].Command,
 				}
 			case o.dataFail && !o.dataOK && o.apiOK && !o.apiFail:
 				// CLEAN divergence on the SAME port: the in-cluster data path
 				// dropped unanimously while the apiserver proxy (which bypasses the
 				// rule) reached it unanimously. That isolates the drop to the
-				// in-cluster path — the rule is the confirmed cause. A mixed
+				// in-cluster path - the rule is the confirmed cause. A mixed
 				// apiserver result is NOT a clean divergence, so don't confirm on it.
 				if enrichDivergenceWithPolicy(h, names) {
 					h.Findings = append(h.Findings[:idx], h.Findings[idx+1:]...)
 				} else {
-					h.Findings[idx].Cause = fmt.Sprintf("In-cluster traffic on this port was dropped while the API-proxy check (which bypasses network rules) reached it — consistent with the rule (%s) being the cause (the data-path drop could also be kube-proxy or a sidecar).", strings.Join(names, ", "))
+					h.Findings[idx].Cause = fmt.Sprintf("In-cluster traffic on this port was dropped while the API-proxy check (which bypasses network rules) reached it - consistent with the rule (%s) being the cause (the data-path drop could also be kube-proxy or a sidecar).", strings.Join(names, ", "))
 				}
 			case o.dataFail:
 				// Data path failed but there was no clean divergence (the apiserver
-				// path also failed, or results were mixed) — the backend may simply
+				// path also failed, or results were mixed) - the backend may simply
 				// be down or not listening. Don't assert the rule; keep the
 				// prediction, note it's consistent-but-unconfirmed.
-				h.Findings[idx].Cause = fmt.Sprintf("Consistent with a network rule (%s) denying this port — but the backend could also be down or not listening. Run the in-cluster test to tell them apart.", strings.Join(names, ", "))
+				h.Findings[idx].Cause = fmt.Sprintf("Consistent with a network rule (%s) denying this port - but the backend could also be down or not listening. Run the in-cluster test to tell them apart.", strings.Join(names, ", "))
 			}
 			sortFindingsBySeverity(h.Findings)
 		}
@@ -238,13 +238,13 @@ func enrichDivergenceWithPolicy(h *Hop, names []string) bool {
 	if idx < 0 {
 		return false
 	}
-	h.Findings[idx].Cause = fmt.Sprintf("In-cluster traffic on this port was dropped while the API-proxy check (which bypasses network rules) reached it — consistent with the rule (%s) being the cause (the data-path drop could also be kube-proxy or a sidecar).", strings.Join(names, ", "))
+	h.Findings[idx].Cause = fmt.Sprintf("In-cluster traffic on this port was dropped while the API-proxy check (which bypasses network rules) reached it - consistent with the rule (%s) being the cause (the data-path drop could also be kube-proxy or a sidecar).", strings.Join(names, ", "))
 	h.Findings[idx].Action = "Confirm the rule and add an ingress rule that allows this port if the traffic is intended."
 	return true
 }
 
 // budgetSkipIfExhausted converts a FAILED direct-dial result into a budget skip
-// when the overall probe budget (the parent ctx) expired during the dial — a
+// when the overall probe budget (the parent ctx) expired during the dial - a
 // context-deadline error from budget exhaustion is not a real "unreachable", so
 // it must degrade to a skip rather than a red row. A genuine per-probe timeout
 // (parent ctx still alive, only the per-probe ctx fired) passes through
@@ -313,7 +313,7 @@ func attachPathDivergenceFindings(t *Trace) {
 // disagree. Same-port same-result rows are silent. Returns an empty slice
 // when there's no divergence to flag.
 //
-// Bucket key is the port — the two paths label their targets differently
+// Bucket key is the port - the two paths label their targets differently
 // ("10.0.0.5:80" vs "port 80"), but a hop is one logical resource, so the
 // trailing port number is enough to pair up data-path vs apiserver-path
 // results that refer to the same backend.
@@ -323,7 +323,7 @@ func attachPathDivergenceFindings(t *Trace) {
 // surfaces between requests.
 //
 // On a multi-replica Pods hop, several probes share a port key. Mixed
-// results on one side (one pod OK, one pod fail) are NOT divergence —
+// results on one side (one pod OK, one pod fail) are NOT divergence -
 // that's a partial-fleet failure the per-row severities already surface.
 // Divergence requires unanimous failure on one side and unanimous success
 // on the other for the same port; anything else stays silent.
@@ -387,7 +387,7 @@ func pathDivergenceFindings(probes []probe.Result) []Finding {
 			out = append(out, Finding{
 				Code:     "probe:apiserver-path-only-broken",
 				Severity: SeverityInfo,
-				Message:  fmt.Sprintf("A direct workload-to-workload connection on port %s succeeded, but Radar's check through the Kubernetes API server could not reach the same target. Real workload traffic is probably fine — this usually reflects a limit of testing through the API server, not an outage.", k),
+				Message:  fmt.Sprintf("A direct workload-to-workload connection on port %s succeeded, but Radar's check through the Kubernetes API server could not reach the same target. Real workload traffic is probably fine - this usually reflects a limit of testing through the API server, not an outage.", k),
 				Cause:    "The API server's proxy was refused, or the port speaks a protocol the proxy can't relay (it only relays HTTP).",
 				Action:   "This usually needs no action. To make the API-server check work, confirm your identity has get services/proxy or get pods/proxy in this namespace, and that the port serves HTTP.",
 			})
@@ -397,7 +397,7 @@ func pathDivergenceFindings(probes []probe.Result) []Finding {
 }
 
 // probeHop dispatches by hop kind. The primitive used depends on what works
-// from the current vantage — in-cluster gets direct TCP for ClusterIPs;
+// from the current vantage - in-cluster gets direct TCP for ClusterIPs;
 // local falls back to the Kubernetes API server proxy when a kubeconfig is
 // available. The user never sees this distinction at the primary level;
 // it surfaces only in the Detail tag of each result.
@@ -422,10 +422,10 @@ func probeHop(ctx context.Context, h *Hop, vantage probe.Vantage, client kuberne
 	return nil
 }
 
-// probeExternalName tests an ExternalName Service's target — a host OUTSIDE the
+// probeExternalName tests an ExternalName Service's target - a host OUTSIDE the
 // cluster (a DNS alias; no pods, no ClusterIP). It IS reachability-testable, just
 // not in-cluster: does the alias host RESOLVE (DNS), and does it ANSWER (HTTP)?
-// Probed from the current vantage — "is <host> reachable from here". No port is
+// Probed from the current vantage - "is <host> reachable from here". No port is
 // declared on an ExternalName, so HTTP is best-effort over the common web port;
 // DNS is the definitive resolve check. External lookups are slower than in-cluster
 // DNS, so the timeouts are more generous than the in-cluster constants.
@@ -443,15 +443,15 @@ func probeExternalName(ctx context.Context, h *Hop, vantage probe.Vantage, path 
 	dcancel()
 	if !dns.OK && vantage == probe.VantageLocal {
 		// An ExternalName can alias a cluster-internal / split-horizon host a laptop
-		// can't resolve. A failed LOCAL lookup isn't proof the alias is broken —
+		// can't resolve. A failed LOCAL lookup isn't proof the alias is broken -
 		// demote to a skip with a run-in-cluster hint instead of a confident red row
 		// (mirrors probeIngress's local-vantage demotion).
 		return []probe.Result{probe.SkippedCmd(probe.LayerDNS, host, vantage,
-			"couldn't resolve this external alias from where Radar runs — it may be a split-horizon or cluster-internal name. Run the in-cluster test to check it from inside.", "")}
+			"couldn't resolve this external alias from where Radar runs - it may be a split-horizon or cluster-internal name. Run the in-cluster test to check it from inside.", "")}
 	}
 	dns.Path = probe.PathData
 	out = append(out, dns)
-	// If the name doesn't resolve, there's nothing to reach — don't add a noisy
+	// If the name doesn't resolve, there's nothing to reach - don't add a noisy
 	// HTTP failure on top of the real DNS answer.
 	if ctx.Err() != nil || !dns.OK {
 		return out
@@ -461,10 +461,10 @@ func probeExternalName(ctx context.Context, h *Hop, vantage probe.Vantage, path 
 	hcancel()
 	if !r.OK {
 		// No protocol/port is declared on an ExternalName, so this assumed plain
-		// HTTP on :80. An HTTPS-only or non-:80 dependency fails that assumption —
+		// HTTP on :80. An HTTPS-only or non-:80 dependency fails that assumption -
 		// don't condemn it; surface the assumption as a skip instead of a hard fail.
 		out = append(out, probe.SkippedCmd(probe.LayerHTTP, "http://"+host+path, vantage,
-			"assumed plain HTTP on port 80 (an ExternalName declares no protocol) and couldn't reach it that way — the real dependency may be HTTPS or on another port.",
+			"assumed plain HTTP on port 80 (an ExternalName declares no protocol) and couldn't reach it that way - the real dependency may be HTTPS or on another port.",
 			"curl -sS https://"+host+path))
 		return out
 	}
@@ -475,7 +475,7 @@ func probeExternalName(ctx context.Context, h *Hop, vantage probe.Vantage, path 
 
 // probeService runs every feasible path for each port. In-cluster + client
 // gets both direct TCP (the data path through kube-proxy) and ServiceProxy
-// (through the apiserver) — divergence between them isolates a NetworkPolicy
+// (through the apiserver) - divergence between them isolates a NetworkPolicy
 // or kube-proxy issue from an apiserver-side issue. From a laptop only the
 // apiserver path is reachable; in-cluster without a client falls back to
 // direct TCP only. The apiserver path is HTTP-only, so non-HTTP ports are
@@ -491,7 +491,7 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 		if ctx.Err() != nil {
 			break
 		}
-		// A UDP/SCTP Service port doesn't accept TCP — a TCP dial (and the
+		// A UDP/SCTP Service port doesn't accept TCP - a TCP dial (and the
 		// HTTP apiserver path below) would fail and falsely condemn a healthy
 		// non-TCP service. We can't test UDP/SCTP reachability honestly from
 		// here, so say so instead of guessing. Mirrors the Gateway-listener
@@ -499,10 +499,10 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 		if proto := strings.ToUpper(strings.TrimSpace(p.Protocol)); proto == "UDP" || proto == "SCTP" {
 			cmd := fmt.Sprintf("nc -u -vz %s.%s %d", h.Resource.Name, h.Resource.Namespace, p.Port)
 			if proto == "SCTP" {
-				cmd = fmt.Sprintf("# %s.%s:%d is SCTP — test with an SCTP-capable client (e.g. sctp_test)", h.Resource.Name, h.Resource.Namespace, p.Port)
+				cmd = fmt.Sprintf("# %s.%s:%d is SCTP - test with an SCTP-capable client (e.g. sctp_test)", h.Resource.Name, h.Resource.Namespace, p.Port)
 			}
 			skip := probe.SkippedCmd(probe.LayerTCP, fmt.Sprintf("port %d", p.Port), vantage,
-				fmt.Sprintf("port %d is %s — a TCP dial can't test it; reachability not verified. Test with a %s client.", p.Port, proto, proto),
+				fmt.Sprintf("port %d is %s - a TCP dial can't test it; reachability not verified. Test with a %s client.", p.Port, proto, proto),
 				cmd)
 			skip.Port = p.Port
 			out = append(out, skip)
@@ -520,7 +520,7 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 		if client != nil && ctx.Err() != nil {
 			// Budget expired during the data-path probe. Running the apiserver probe
 			// now would map a context-deadline error into a false "Timed out …
-			// unreachable" row — emit an honest budget skip instead.
+			// unreachable" row - emit an honest budget skip instead.
 			skip := probe.SkippedCmd(probe.LayerHTTP, fmt.Sprintf("port %d", p.Port), vantage,
 				"probe budget exhausted before the apiserver path could be tested", "")
 			skip.Path = probe.PathAPIServer
@@ -553,12 +553,12 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 				continue
 			}
 			// The API server proxy speaks plain HTTP to the backend, so it
-			// can't verify a TLS port — probing an HTTPS backend as plain HTTP
+			// can't verify a TLS port - probing an HTTPS backend as plain HTTP
 			// would falsely read "unreachable/broken". Skip honestly; the
 			// in-cluster TCP probe above still proves the port is open.
 			if isHTTPSPort(p.Name, p.AppProtocol, p.Port) {
 				skip := probe.SkippedCmd(probe.LayerHTTP, target, vantage,
-					"HTTPS backend — the API-server proxy speaks plain HTTP and can't verify TLS on this port. Test it directly.",
+					"HTTPS backend - the API-server proxy speaks plain HTTP and can't verify TLS on this port. Test it directly.",
 					portForwardCmd("svc", h.Resource.Namespace, h.Resource.Name, p.Port)+fmt.Sprintf("   # then: curl -k https://localhost:%d/", p.Port))
 				skip.Path = probe.PathAPIServer
 				out = append(out, skip)
@@ -584,7 +584,7 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 			reason := "Kubernetes API isn't reachable from here, so the apiserver path can't be tested."
 			// The in-cluster cause is RBAC, so hand the operator the exact
 			// can-i check to confirm it's permissions, not an outage. From a
-			// laptop the cause is a missing kubeconfig — auth can-i wouldn't run,
+			// laptop the cause is a missing kubeconfig - auth can-i wouldn't run,
 			// so no command there.
 			var cmd string
 			if vantage == probe.VantageInCluster {
@@ -602,17 +602,17 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 // isHTTPProbablePort decides whether the API server proxy is likely to
 // succeed against the given port. Signals checked in priority order:
 //
-//  1. appProtocol (k8s 1.20+) — authoritative when set.
-//  2. Conventional port name — many Helm charts label ports "http",
+//  1. appProtocol (k8s 1.20+) - authoritative when set.
+//  2. Conventional port name - many Helm charts label ports "http",
 //     "postgres", etc.
-//  3. Well-known port number — catches the common no-metadata case (a Helm
+//  3. Well-known port number - catches the common no-metadata case (a Helm
 //     chart that ships Redis on 6379 without setting name or appProtocol).
 //
 // gRPC and HTTP/2 (h2c/h2) are explicitly excluded: probe.HTTP uses the
 // standard net/http client which speaks HTTP/1.1, so an HTTP/2-only upstream
 // would report a false fail.
 //
-// No-signal default is true — most Service ports are HTTP-shaped — so an
+// No-signal default is true - most Service ports are HTTP-shaped - so an
 // unclassified web service still gets probed rather than unexplained-skipped.
 func isHTTPProbablePort(name, appProtocol string, port int32) bool {
 	if ap := strings.ToLower(strings.TrimSpace(appProtocol)); ap != "" {
@@ -662,7 +662,7 @@ func isHTTPProbablePort(name, appProtocol string, port int32) bool {
 }
 
 // hostResolvesInternalOnly reports whether every IP host resolves to is an
-// internal/private address — i.e. a laptop typically can't route to it even
+// internal/private address - i.e. a laptop typically can't route to it even
 // when in-cluster traffic is fine. Returns false if it doesn't resolve or any
 // resolved IP is public (a TCP failure to a public address IS real evidence).
 func hostResolvesInternalOnly(ctx context.Context, host string) bool {
@@ -679,7 +679,7 @@ func hostResolvesInternalOnly(ctx context.Context, host string) bool {
 }
 
 // isInternalAddr reports whether addr is a private/internal IP (RFC1918,
-// loopback, link-local, unique-local) — an address a laptop typically can't
+// loopback, link-local, unique-local) - an address a laptop typically can't
 // route to even when in-cluster traffic to it is fine. A non-IP hostname
 // returns false (it isn't a literal internal IP we can be sure about).
 func isInternalAddr(addr string) bool {
@@ -688,7 +688,7 @@ func isInternalAddr(addr string) bool {
 		return false
 	}
 	// IsUnspecified (0.0.0.0 / ::) is a common Gateway/Ingress status address when
-	// the controller hasn't published a routable one yet — it is not a real target
+	// the controller hasn't published a routable one yet - it is not a real target
 	// and the dial-time SSRF guard refuses it, so treat it as internal/untestable.
 	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
@@ -702,7 +702,7 @@ func isInternalGuardError(r probe.Result) bool {
 }
 
 // isHTTPSPort reports whether a port terminates TLS (HTTPS/WSS). The API
-// server proxy can't verify these — it speaks plain HTTP — so they're skipped
+// server proxy can't verify these - it speaks plain HTTP - so they're skipped
 // on the apiserver path rather than probed as plain HTTP (which would falsely
 // fail). Signals: appProtocol, then a telling port name, then well-known TLS
 // port numbers.
@@ -719,7 +719,7 @@ func isHTTPSPort(name, appProtocol string, port int32) bool {
 }
 
 // httpPortAssumed reports whether isHTTPProbablePort chose "probe as HTTP" only
-// by default — no appProtocol, no telling port name, no well-known port. In
+// by default - no appProtocol, no telling port name, no well-known port. In
 // that case an HTTP result is built on an assumption about the protocol, so a
 // failure is as likely "this port isn't HTTP" as a real outage and must not be
 // presented as a confident break.
@@ -747,13 +747,13 @@ func httpPortAssumed(name, appProtocol string, port int32) bool {
 // likely "this port isn't HTTP" as a real problem. Claiming the path is
 // broken/degraded on a guess would be the exact confident-but-wrong result this
 // feature must never produce. A verified 2xx or a reached 3xx/4xx passes
-// through — those genuinely reached an HTTP server, assumption or not.
+// through - those genuinely reached an HTTP server, assumption or not.
 func softenAssumedHTTP(r probe.Result, assumed bool, gapCmd string) probe.Result {
 	if !assumed || r.Skipped {
 		return r
 	}
 	// A connection-refused / no-listener is unambiguous: nothing is on the port,
-	// regardless of protocol. Don't soften that into "maybe not HTTP" — it's a
+	// regardless of protocol. Don't soften that into "maybe not HTTP" - it's a
 	// real dead port (a declared port nothing serves), and softening it would
 	// hide the failure behind a green verdict. Only soften signals that actually
 	// suggest a non-HTTP protocol (EOF / closed-before-response, or a proxied
@@ -771,7 +771,7 @@ func softenAssumedHTTP(r probe.Result, assumed bool, gapCmd string) probe.Result
 		detail = r.Detail
 	}
 	s := probe.SkippedCmd(r.Layer, r.Target, r.Vantage,
-		fmt.Sprintf("assumed HTTP (port has no protocol hint) but got: %s — the port may not speak HTTP. Test the real protocol to confirm.", detail),
+		fmt.Sprintf("assumed HTTP (port has no protocol hint) but got: %s - the port may not speak HTTP. Test the real protocol to confirm.", detail),
 		gapCmd)
 	s.Path = r.Path
 	return s
@@ -799,9 +799,9 @@ func curlReachCmd(scheme, host string) string {
 // "run in-cluster" hint they may assume TCP was checked when it wasn't.
 // tcpRan reports whether a data-path TCP probe actually ran for THIS hop:
 // in-cluster only dials a routable address, so a headless Service (no ClusterIP)
-// or a pods hop with names but no IPs gets no TCP probe even in-cluster — the
+// or a pods hop with names but no IPs gets no TCP probe even in-cluster - the
 // gRPC "still checked at the TCP level" line would overclaim there.
-// Avoid Kubernetes spec syntax — the reader is debugging connectivity,
+// Avoid Kubernetes spec syntax - the reader is debugging connectivity,
 // not editing YAML.
 func nonHTTPSkipReason(portName, appProtocol string, port int32, vantage probe.Vantage, tcpRan bool) string {
 	base := nonHTTPBaseReason(portName, appProtocol, port)
@@ -889,7 +889,7 @@ func classed(r probe.Result, class string) probe.Result {
 
 // probePods runs every feasible path against each sampled pod's container
 // ports. In-cluster + PodIPs gets direct TCP (data path); a client + pod
-// names gets PodProxy (apiserver path). Both run when both are feasible —
+// names gets PodProxy (apiserver path). Both run when both are feasible -
 // divergence shows whether kube-proxy / NetworkPolicy is blocking pod-to-pod
 // while the apiserver's proxy still reaches.
 func probePods(ctx context.Context, h *Hop, vantage probe.Vantage, client kubernetes.Interface, path string) []probe.Result {
@@ -923,12 +923,12 @@ func probePodsByIP(ctx context.Context, h *Hop, vantage probe.Vantage) []probe.R
 			if ctx.Err() != nil {
 				break
 			}
-			// A UDP/SCTP container port doesn't accept TCP — a TCP dial would
+			// A UDP/SCTP container port doesn't accept TCP - a TCP dial would
 			// falsely condemn a healthy non-TCP pod (e.g. CoreDNS :53/UDP). Skip
 			// honestly, mirroring probeService. Empty protocol defaults to TCP.
 			if proto := strings.ToUpper(strings.TrimSpace(cp.Protocol)); proto == "UDP" || proto == "SCTP" {
 				skip := probe.SkippedCmd(probe.LayerTCP, fmt.Sprintf("port %d", cp.Port), vantage,
-					fmt.Sprintf("port %d is %s — a TCP dial can't test it; reachability not verified.", cp.Port, proto), "")
+					fmt.Sprintf("port %d is %s - a TCP dial can't test it; reachability not verified.", cp.Port, proto), "")
 				skip.Port = cp.Port
 				out = append(out, skip)
 				continue
@@ -963,14 +963,14 @@ func probePodsByName(ctx context.Context, h *Hop, vantage probe.Vantage, client 
 			// ServiceProxy. Container ports don't carry appProtocol, so the
 			// port name is the only signal for non-HTTP detection.
 			target := fmt.Sprintf("%s port %d", name, cp.Port)
-			// A UDP/SCTP container port doesn't accept TCP — the apiserver
+			// A UDP/SCTP container port doesn't accept TCP - the apiserver
 			// pod-proxy HTTP probe would get "connection refused" and
 			// softenAssumedHTTP would falsely condemn a healthy non-TCP pod.
 			// Skip honestly, mirroring probePodsByIP / probeService. Empty
 			// protocol defaults to TCP and falls through.
 			if proto := strings.ToUpper(strings.TrimSpace(cp.Protocol)); proto == "UDP" || proto == "SCTP" {
 				skip := probe.SkippedCmd(probe.LayerHTTP, target, vantage,
-					fmt.Sprintf("port %d is %s — a TCP/HTTP dial can't test it; reachability not verified.", cp.Port, proto), "")
+					fmt.Sprintf("port %d is %s - a TCP/HTTP dial can't test it; reachability not verified.", cp.Port, proto), "")
 				skip.Path = probe.PathAPIServer
 				skip.Port = cp.Port
 				out = append(out, skip)
@@ -985,7 +985,7 @@ func probePodsByName(ctx context.Context, h *Hop, vantage probe.Vantage, client 
 			}
 			if isHTTPSPort(cp.Name, "", cp.Port) {
 				skip := probe.SkippedCmd(probe.LayerHTTP, target, vantage,
-					"HTTPS backend — the API-server proxy speaks plain HTTP and can't verify TLS on this port. Test it directly.",
+					"HTTPS backend - the API-server proxy speaks plain HTTP and can't verify TLS on this port. Test it directly.",
 					portForwardCmd("pod", h.Resource.Namespace, name, cp.Port)+fmt.Sprintf("   # then: curl -k https://localhost:%d/", cp.Port))
 				skip.Path = probe.PathAPIServer
 				out = append(out, skip)
@@ -1009,7 +1009,7 @@ func probePodsByName(ctx context.Context, h *Hop, vantage probe.Vantage, client 
 
 // probeIngress walks rules + spec hosts and runs the ladder against each
 // host. The interesting failure mode is "DNS resolves but TCP doesn't
-// connect" — that's a routing problem operators routinely chase by hand.
+// connect" - that's a routing problem operators routinely chase by hand.
 // Each host gets one DNS probe + one TCP+HTTP probe per port (80 + 443).
 func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path string) []probe.Result {
 	if h.Config == nil {
@@ -1040,13 +1040,13 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 		if ctx.Err() != nil {
 			break
 		}
-		// A wildcard host never resolves as written — the concrete subdomain
-		// is dynamic — so a DNS probe against "*.example.com" would report a
+		// A wildcard host never resolves as written - the concrete subdomain
+		// is dynamic - so a DNS probe against "*.example.com" would report a
 		// false "unreachable" on a perfectly valid Ingress. Skip and tell the
 		// user to test a concrete hostname rather than inventing a verdict.
 		if isWildcardHost(host) {
 			out = append(out, probe.SkippedCmd(probe.LayerDNS, host, vantage,
-				"wildcard host — test a concrete hostname to check reachability",
+				"wildcard host - test a concrete hostname to check reachability",
 				curlReachCmd("https", strings.Replace(host, "*", "YOUR-SUBDOMAIN", 1))+"   # or http:// for a plain-HTTP listener"))
 			continue
 		}
@@ -1055,15 +1055,15 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 		dcancel()
 		if !dnsRes.OK {
 			// A DNS failure from a laptop says nothing about in-cluster
-			// reachability — the host may resolve only via cluster-internal /
+			// reachability - the host may resolve only via cluster-internal /
 			// split-horizon DNS (very common). Condemning a valid Ingress as
 			// "broken" because the operator's machine can't resolve it is the
 			// worst kind of confident-wrong verdict, so skip (don't fail) and
 			// hand over a command to test from somewhere that can resolve it.
-			// In-cluster, an unresolvable host IS real evidence — keep it.
+			// In-cluster, an unresolvable host IS real evidence - keep it.
 			if vantage == probe.VantageLocal {
 				out = append(out, classed(probe.SkippedCmd(probe.LayerDNS, host, vantage,
-					fmt.Sprintf("%q doesn't resolve from your machine — it may be cluster-internal DNS. Run Radar in-cluster, or test from a host that resolves it.", host),
+					fmt.Sprintf("%q doesn't resolve from your machine - it may be cluster-internal DNS. Run Radar in-cluster, or test from a host that resolves it.", host),
 					curlReachCmd("https", host)+"   # from a host that resolves it; or http://"), SkipClassVantage))
 				continue
 			}
@@ -1073,7 +1073,7 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 		out = append(out, dnsRes)
 		// If the host resolves to internal-only IPs (RFC1918) a laptop usually
 		// can't route to, a TCP failure from local vantage is "can't reach from
-		// here", not a broken Ingress — same demotion the DNS-miss and the
+		// here", not a broken Ingress - same demotion the DNS-miss and the
 		// Gateway paths already apply. (If a VPN can reach it, the TCP simply
 		// succeeds and no demotion happens.)
 		internalOnly := vantage == probe.VantageLocal && hostResolvesInternalOnly(ctx, host)
@@ -1094,14 +1094,14 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 			tcpRes := probe.TCP(tctx, addr, vantage)
 			tcancel()
 			if !tcpRes.OK && ctx.Err() != nil {
-				// Budget exhausted mid-dial — a deadline error isn't a real
+				// Budget exhausted mid-dial - a deadline error isn't a real
 				// unreachable; degrade to a skip and stop (later ports can't run).
 				out = append(out, budgetSkipIfExhausted(ctx, tcpRes, vantage))
 				break
 			}
 			if !tcpRes.OK && internalOnly {
 				out = append(out, classed(probe.SkippedCmd(probe.LayerTCP, addr, vantage,
-					fmt.Sprintf("%q resolves to an internal address your machine can't reach — it may be cluster-internal. Run Radar in-cluster, or test from a host that routes to it.", host),
+					fmt.Sprintf("%q resolves to an internal address your machine can't reach - it may be cluster-internal. Run Radar in-cluster, or test from a host that routes to it.", host),
 					curlReachCmd("http", host)), SkipClassVantage))
 				continue
 			}
@@ -1128,7 +1128,7 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 
 // probeGateway probes each listener against the Gateway's status.addresses.
 // A Gateway with no addresses (controller hasn't programmed it) yields a
-// skip — the path is unreachable but that's already a critical static
+// skip - the path is unreachable but that's already a critical static
 // finding; the probe would just echo it.
 func probeGateway(ctx context.Context, h *Hop, vantage probe.Vantage, path string) []probe.Result {
 	if h.Config == nil {
@@ -1148,12 +1148,12 @@ func probeGateway(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 				break
 			}
 			target := net.JoinHostPort(addr, strconv.Itoa(int(l.Port)))
-			// A UDP listener (DNS, QUIC, etc.) doesn't accept TCP — a TCP probe
+			// A UDP listener (DNS, QUIC, etc.) doesn't accept TCP - a TCP probe
 			// would fail and falsely condemn a healthy UDP config. We can't do
 			// UDP reachability honestly here, so say so instead of guessing.
 			if strings.EqualFold(l.Protocol, "UDP") {
 				out = append(out, probe.SkippedCmd(probe.LayerTCP, target, vantage,
-					fmt.Sprintf("listener %q is UDP — TCP reachability doesn't apply; test with a UDP client.", l.Name),
+					fmt.Sprintf("listener %q is UDP - TCP reachability doesn't apply; test with a UDP client.", l.Name),
 					fmt.Sprintf("nc -u -vz %s %d   # or: dig @%s", addr, l.Port, addr)))
 				continue
 			}
@@ -1161,31 +1161,31 @@ func probeGateway(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 			tcpRes := probe.TCP(tctx, target, vantage)
 			tcancel()
 			if !tcpRes.OK && ctx.Err() != nil {
-				// Budget exhausted mid-dial — not a real unreachable; skip and stop.
+				// Budget exhausted mid-dial - not a real unreachable; skip and stop.
 				out = append(out, budgetSkipIfExhausted(ctx, tcpRes, vantage))
 				break
 			}
 			// The dial-time SSRF guard refused an internal/unspecified target (a
-			// Gateway/Ingress reporting 0.0.0.0, loopback, or link-local — common
+			// Gateway/Ingress reporting 0.0.0.0, loopback, or link-local - common
 			// before the controller publishes a routable address). Its raw "(SSRF
 			// guard)" string must never read as a red "unreachable" verdict at ANY
-			// vantage — demote to an honest skip naming the unpublished address.
+			// vantage - demote to an honest skip naming the unpublished address.
 			if !tcpRes.OK && isInternalGuardError(tcpRes) {
 				out = append(out, probe.SkippedCmd(probe.LayerTCP, target, vantage,
-					fmt.Sprintf("entry address %s is internal/unspecified (e.g. 0.0.0.0) — the controller hasn't published a routable external address yet, so it can't be probed.", addr),
+					fmt.Sprintf("entry address %s is internal/unspecified (e.g. 0.0.0.0) - the controller hasn't published a routable external address yet, so it can't be probed.", addr),
 					"kubectl get gateway,ingress -A -o wide  # check the published ADDRESS"))
 				continue
 			}
 			// A TCP failure from a laptop to an INTERNAL address (internal
 			// LoadBalancer / RFC1918) says nothing about in-cluster reachability
-			// — the laptop just can't route there. Condemning the Gateway as
+			// - the laptop just can't route there. Condemning the Gateway as
 			// "broken" would be the same confident-wrong verdict the DNS-from-
 			// laptop path already avoids, so skip with a fill-the-gap command.
 			// A public address failing from a laptop IS real, so only demote
 			// internal addresses; in-cluster failures stay real evidence.
 			if !tcpRes.OK && vantage == probe.VantageLocal && (isInternalAddr(addr) || hostResolvesInternalOnly(ctx, addr)) {
 				out = append(out, classed(probe.SkippedCmd(probe.LayerTCP, target, vantage,
-					fmt.Sprintf("couldn't reach internal address %s from your machine — it may be cluster-internal. Run Radar in-cluster, or test from a host that routes to it.", addr),
+					fmt.Sprintf("couldn't reach internal address %s from your machine - it may be cluster-internal. Run Radar in-cluster, or test from a host that routes to it.", addr),
 					fmt.Sprintf("nc -vz %s %d", addr, l.Port)), SkipClassVantage))
 				continue
 			}
@@ -1195,13 +1195,13 @@ func probeGateway(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 			}
 			// A wildcard listener host (e.g. "*.example.com") is a valid
 			// config, but sending it as TLS SNI fails cert verification and
-			// as a Host header hits a default backend — both would read as a
+			// as a Host header hits a default backend - both would read as a
 			// false failure. TCP above already proved the listener address is
 			// reachable; the host-specific layers are simply unprovable
 			// without a concrete name, so say that instead of guessing.
 			if l.Hostname != "" && isWildcardHost(l.Hostname) {
 				out = append(out, probe.Skipped(probe.LayerHTTP, l.Hostname, vantage,
-					fmt.Sprintf("listener host %q is a wildcard — test a concrete host to verify TLS/HTTP", l.Hostname)))
+					fmt.Sprintf("listener host %q is a wildcard - test a concrete host to verify TLS/HTTP", l.Hostname)))
 				continue
 			}
 			isHTTPS := strings.EqualFold(l.Protocol, "HTTPS")
@@ -1222,7 +1222,7 @@ func probeGateway(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 				out = append(out, budgetSkipIfExhausted(ctx, probe.TLS(lctx, target, l.Hostname, vantage), vantage))
 				lcancel()
 			}
-			// HTTP-level probe for HTTP/HTTPS listeners — TCP success
+			// HTTP-level probe for HTTP/HTTPS listeners - TCP success
 			// alone would let a Gateway whose controller returns 5xx
 			// read as verified at the chip level, while probeIngress
 			// on the same shape surfaces the failure. Dial the

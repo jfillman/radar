@@ -62,7 +62,7 @@ func withRollout(t *testing.T, replicas int64) *corev1.Service {
 }
 
 // TestScaledToZero_RolloutAtZeroIsSoftened: an Argo Rollout scaled to 0 is the
-// same deliberate-dormancy case as a Deployment at 0 — recognized so the trace
+// same deliberate-dormancy case as a Deployment at 0 - recognized so the trace
 // reads degraded/benign, not red "broken".
 func TestScaledToZero_RolloutAtZeroIsSoftened(t *testing.T) {
 	defer ResetTestState()
@@ -74,14 +74,14 @@ func TestScaledToZero_RolloutAtZeroIsSoftened(t *testing.T) {
 }
 
 // TestScaledToZero_RolloutAboveZeroStaysCritical: a Rollout at replicas>0 with no
-// ready pods is a REAL break (the workload wants pods but has none) — the guard
+// ready pods is a REAL break (the workload wants pods but has none) - the guard
 // must not soften it just because Rollouts can scale to 0.
 func TestScaledToZero_RolloutAboveZeroStaysCritical(t *testing.T) {
 	defer ResetTestState()
 	defer ResetTestDynamicState()
 	svc := withRollout(t, 2)
 	if zero, _ := scaledToZeroBackingWorkload(GetResourceCache(), svc); zero {
-		t.Error("Rollout at replicas>0 must NOT be softened — 0 ready under replicas>0 is a real break")
+		t.Error("Rollout at replicas>0 must NOT be softened - 0 ready under replicas>0 is a real break")
 	}
 }
 

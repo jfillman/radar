@@ -9,7 +9,7 @@ const trace = (o: Partial<Trace>): Trace => ({
 const cov = (o: Partial<Coverage>): Coverage => ({ tested: 0, passed: 0, failed: 0, skipped: 0, ...o })
 const route = (o: Partial<RouteResult>): RouteResult => ({ route: '/', outcome: 'verified', ...o })
 
-describe('summarizeTrace — the passive drawer glance', () => {
+describe('summarizeTrace - the passive drawer glance', () => {
   it('minimal when not probed (static / config-only): invites the run positively, no tone, no worst line', () => {
     const v = summarizeTrace(trace({}))
     expect(v.kind).toBe('minimal')
@@ -22,10 +22,10 @@ describe('summarizeTrace — the passive drawer glance', () => {
     expect(v.worst).toBeUndefined()
   })
 
-  it('a coverage projection with tested===0 is NOT a probed glance — falls through to config-only (never "not yet tested" headline + "See test detail")', () => {
+  it('a coverage projection with tested===0 is NOT a probed glance - falls through to config-only (never "not yet tested" headline + "See test detail")', () => {
     const v = summarizeTrace(trace({
       verdict: 'healthy',
-      headline: 'Configuration only — not yet tested',
+      headline: 'Configuration only - not yet tested',
       coverage: cov({ tested: 0, skipped: 1 }),
       notTested: [{}] as Trace['notTested'],
     }))
@@ -74,7 +74,7 @@ describe('summarizeTrace — the passive drawer glance', () => {
     }))
     expect(v.tone).toBe('error')
     expect(v.worst?.route).toBe('/')
-    // A single failing route is just "the failing route" — not "worst of N".
+    // A single failing route is just "the failing route" - not "worst of N".
     expect(v.worst?.failingCount).toBe(1)
   })
 
@@ -93,7 +93,7 @@ describe('summarizeTrace — the passive drawer glance', () => {
     expect(v.worst?.route).toBe('/admin')
   })
 
-  it('healthy verified: calm — success tone, NO worst line, "See test detail" CTA', () => {
+  it('healthy verified: calm - success tone, NO worst line, "See test detail" CTA', () => {
     const v = summarizeTrace(trace({
       headline: 'All 1 routes reachable',
       coverage: cov({ tested: 1, passed: 1 }),
@@ -145,7 +145,7 @@ describe('summarizeTrace — the passive drawer glance', () => {
   it('clean static (healthy, not probed) is a minimal entry point - the Ports section already shows the wiring, so the glance must NOT restate "routes to N pods on :80"', () => {
     const v = summarizeTrace(trace({
       verdict: 'healthy',
-      headline: 'Configuration only — not yet tested',
+      headline: 'Configuration only - not yet tested',
       downstream: [
         { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [], config: { ports: [{ port: 80, targetPort: '8080' }], hostnames: ['shop.example.com'] } },
         { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [], meta: { ready: 1, selected: 1 } },
@@ -160,11 +160,11 @@ describe('summarizeTrace — the passive drawer glance', () => {
     expect(v.ctaLabel).toBe('Run test →')
   })
 
-  it('path-owning subject (Ingress) clean+unprobed: NO wiring restatement — "routes to N pods" both repeats the Rules section and overclaims the unverified front door', () => {
+  it('path-owning subject (Ingress) clean+unprobed: NO wiring restatement - "routes to N pods" both repeats the Rules section and overclaims the unverified front door', () => {
     const v = summarizeTrace(trace({
       subject: { kind: 'Ingress', namespace: 'prod', name: 'wild' },
       verdict: 'healthy',
-      headline: 'Configuration only — not yet tested',
+      headline: 'Configuration only - not yet tested',
       downstream: [
         { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [], config: { ports: [{ port: 80 }], hostnames: ['shop.example.com'] } },
         { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [], meta: { ready: 1, selected: 1 } },

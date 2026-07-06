@@ -12,11 +12,11 @@ const baseTrace = (o: Partial<Trace>): Trace => ({
   ...o,
 })
 
-describe('outcomeToStatus — node = own health, NOT vantage', () => {
+describe('outcomeToStatus - node = own health, NOT vantage', () => {
   it('verified over REAL traffic is healthy (green)', () => {
     expect(outcomeToStatus('verified', 'real')).toBe('healthy')
   })
-  it('verified via the API proxy (indirect) is STILL healthy — the resource responded; the vantage caveat lives on the edge', () => {
+  it('verified via the API proxy (indirect) is STILL healthy - the resource responded; the vantage caveat lives on the edge', () => {
     expect(outcomeToStatus('verified', 'indirect')).toBe('healthy')
   })
   it('reached is healthy (it responded); server-error is degraded (app 5xx); unreachable is unhealthy; not-tested is unknown', () => {
@@ -52,7 +52,7 @@ describe('traceToSubgraph', () => {
     expect(topo.edges.filter((e) => e.target === svcId)).toHaveLength(2) // two ingresses converge
   })
 
-  it('a proxy-only reached service node stays HEALTHY — vantage lives on the edge, not the node', () => {
+  it('a proxy-only reached service node stays HEALTHY - vantage lives on the edge, not the node', () => {
     const t = baseTrace({
       verdict: 'unknown',
       downstream: [
@@ -102,11 +102,11 @@ describe('traceToSubgraph', () => {
       routes: [{ route: 'echo', target: 'echo:80', outcome: 'unreachable', confidence: 'indirect' }],
     })
     const topo = traceToSubgraph(t)
-    expect(topo.nodes.find((n) => n.kind === 'Service')?.status).toBe('degraded') // wired, no backend — NOT red
+    expect(topo.nodes.find((n) => n.kind === 'Service')?.status).toBe('degraded') // wired, no backend - NOT red
     expect(topo.nodes.find((n) => n.kind === 'Pods')?.status).toBe('unhealthy') // the real fault
   })
 
-  it('partial-ready backend (ready>0, one pod crashing) → Pods node amber, NOT red — it still serves traffic', () => {
+  it('partial-ready backend (ready>0, one pod crashing) → Pods node amber, NOT red - it still serves traffic', () => {
     const t = baseTrace({
       verdict: 'degraded',
       brokenAt: -1,
@@ -119,12 +119,12 @@ describe('traceToSubgraph', () => {
       routes: [{ route: 'dual', outcome: 'reached', confidence: 'indirect' }],
     })
     const topo = traceToSubgraph(t)
-    expect(topo.nodes.find((n) => n.kind === 'Pods')?.status).toBe('degraded') // serves via the ready pod — not the false red
+    expect(topo.nodes.find((n) => n.kind === 'Pods')?.status).toBe('degraded') // serves via the ready pod - not the false red
   })
 
   it('does NOT color the Pods node for a NetworkPolicy finding (path concern, not own-health)', () => {
     // A would-deny is a PATH restriction; the pod itself answered HTTP 200. The
-    // node must stay healthy — the policy lives in the hop detail + edge, never
+    // node must stay healthy - the policy lives in the hop detail + edge, never
     // the node dot. Painting it amber would over-claim the pod is unwell.
     const t = baseTrace({
       verdict: 'healthy',
@@ -140,7 +140,7 @@ describe('traceToSubgraph', () => {
   })
 })
 
-describe('traceToSubgraph — router (Ingress/Gateway) node = front-door OWN health', () => {
+describe('traceToSubgraph - router (Ingress/Gateway) node = front-door OWN health', () => {
   const router = (routes: Trace['routes']): Trace =>
     baseTrace({
       subject: { kind: 'Ingress', namespace: 'prod', name: 'gw' },
@@ -213,7 +213,7 @@ const multiTrace = (): Trace =>
     ],
   })
 
-describe('traceToSubgraph — multi-backend BRANCHES (no linear chaining)', () => {
+describe('traceToSubgraph - multi-backend BRANCHES (no linear chaining)', () => {
   it('a second backend hangs off the ENTRY, not after the pods', () => {
     const topo = traceToSubgraph(multiTrace())
     const subjId = topo.nodes.find((n) => n.kind === 'Ingress')!.id
@@ -241,8 +241,8 @@ describe('traceToSubgraph — multi-backend BRANCHES (no linear chaining)', () =
   })
 })
 
-describe('traceToSubgraph — frontier rule (no flow past a break)', () => {
-  it('a broken Service does NOT draw a reached edge to its pods — it is blocked', () => {
+describe('traceToSubgraph - frontier rule (no flow past a break)', () => {
+  it('a broken Service does NOT draw a reached edge to its pods - it is blocked', () => {
     const t = baseTrace({
       verdict: 'broken',
       brokenAt: 0,
@@ -262,12 +262,12 @@ describe('traceToSubgraph — frontier rule (no flow past a break)', () => {
   })
 })
 
-describe('traceToSubgraph — multi-upstream convergence (a broken sibling upstream must not block the subject)', () => {
+describe('traceToSubgraph - multi-upstream convergence (a broken sibling upstream must not block the subject)', () => {
   it('keeps a reached subject→pods edge + neutral upstream nodes when a sibling upstream has an unrelated broken route', () => {
     const t = baseTrace({
       subject: { kind: 'Service', namespace: 'prod', name: 'echo' },
       upstreams: [
-        // `multi` carries a critical from its OWN other route (/api→ghost) — it must NOT
+        // `multi` carries a critical from its OWN other route (/api→ghost) - it must NOT
         // paint the multi node red, nor cascade-block the shared echo→pods.
         { resource: { kind: 'Ingress', namespace: 'prod', name: 'multi' }, edge: 'Ingress->Service', findings: [{ code: 'missing_ref:x', severity: 'critical', message: 'ghost missing' }] },
         { resource: { kind: 'Ingress', namespace: 'prod', name: 'wild' }, edge: 'Ingress->Service', findings: [] },
@@ -280,7 +280,7 @@ describe('traceToSubgraph — multi-upstream convergence (a broken sibling upstr
       routes: [{ route: 'echo', target: 'echo:80', outcome: 'reached', confidence: 'indirect' }],
     })
     const topo = traceToSubgraph(t)
-    // upstream entry nodes are NEUTRAL — never colored by their own/other-route findings
+    // upstream entry nodes are NEUTRAL - never colored by their own/other-route findings
     expect(topo.nodes.find((n) => n.name === 'multi')?.status).toBe('unknown')
     expect(topo.nodes.find((n) => n.name === 'wild')?.status).toBe('unknown')
     const svc = topo.nodes.find((n) => n.kind === 'Service')!
@@ -296,11 +296,11 @@ describe('traceToSubgraph — multi-upstream convergence (a broken sibling upstr
   })
 })
 
-describe('reachVerdict — confidence is a level, not an alarm', () => {
+describe('reachVerdict - confidence is a level, not an alarm', () => {
   it('reached only via proxy → NEUTRAL (no green ✓ over-claim), but NEVER ⚠', () => {
     const v = reachVerdict(baseTrace({ verdict: 'unknown', routes: [{ route: 'echo', outcome: 'reached', confidence: 'indirect' }], headline: 'Reached via API server' }))
     // Proxy-only must not wear the green ✓ (a non-expert reads it as "works, done")
-    // — it's neutral with a caveat. It is also never a ⚠ alarm (the path did reach).
+    // - it's neutral with a caveat. It is also never a ⚠ alarm (the path did reach).
     expect(v.icon).toBe('')
     expect(v.icon).not.toBe('⚠')
     expect(v.tone).toBe('neutral')
@@ -317,8 +317,8 @@ describe('reachVerdict — confidence is a level, not an alarm', () => {
   })
 })
 
-describe('traceToSubgraph — cycle 5 honesty fixes', () => {
-  // Defect 8: a DNS-only live probe is not own-health — the node must read unknown.
+describe('traceToSubgraph - cycle 5 honesty fixes', () => {
+  // Defect 8: a DNS-only live probe is not own-health - the node must read unknown.
   it('a backend whose only live probe is a DNS success is unknown, not green healthy', () => {
     const t = baseTrace({
       subject: { kind: 'Ingress', namespace: 'prod', name: 'ing' },
@@ -337,7 +337,7 @@ describe('traceToSubgraph — cycle 5 honesty fixes', () => {
   })
 
   // Defect 9: worst-route coloring must not cascade-block pods another route reached.
-  it('two routes to one backend (port 80 verified, 9090 unreachable) — pods reached by port 80 are NOT blocked', () => {
+  it('two routes to one backend (port 80 verified, 9090 unreachable) - pods reached by port 80 are NOT blocked', () => {
     const t = baseTrace({
       subject: { kind: 'Ingress', namespace: 'prod', name: 'ing' },
       downstream: [
@@ -354,12 +354,12 @@ describe('traceToSubgraph — cycle 5 honesty fixes', () => {
     })
     const g = traceToSubgraph(t)
     const pods = g.nodes.find((n) => n.kind === 'Pods')
-    expect((pods?.data as { subtitleOverride?: string })?.subtitleOverride).not.toBe('not reached — break upstream')
+    expect((pods?.data as { subtitleOverride?: string })?.subtitleOverride).not.toBe('not reached - break upstream')
     expect(pods?.status).not.toBe('unknown')
   })
 })
 
-describe('traceToSubgraph — cycle 11 honesty fixes', () => {
+describe('traceToSubgraph - cycle 11 honesty fixes', () => {
   // Defect 3: routeMatchesRef's namespace guard only fired when targetNamespace was
   // SET. A same-ns route (no targetNamespace) could match a cross-ns same-named
   // backend hop, so routeFor's worst-match attached the same-ns route's unreachable
@@ -376,21 +376,21 @@ describe('traceToSubgraph — cycle 11 honesty fixes', () => {
       routes: [
         // Same-ns route (no targetNamespace → targets the subject ns 'prod').
         { route: 'api', target: 'api:80', outcome: 'unreachable', confidence: 'real' },
-        // Cross-ns backendRef route — actually verified.
+        // Cross-ns backendRef route - actually verified.
         { route: 'api', target: 'api:80', outcome: 'verified', confidence: 'real', targetNamespace: 'other' },
       ],
     })
     const g = traceToSubgraph(t)
     const crossNsEdge = g.edges.find((e) => e.target === 'Service/other/api')
     const sameNsEdge = g.edges.find((e) => e.target === 'Service/prod/api')
-    // The cross-ns backend is verified — its own route — never the same-ns unreachable.
+    // The cross-ns backend is verified - its own route - never the same-ns unreachable.
     expect(crossNsEdge?.reachOutcome).toBe('verified')
     // The same-ns backend keeps its own unreachable.
     expect(sameNsEdge?.reachOutcome).toBe('unreachable')
   })
 })
 
-describe('traceToSubgraph — overridden test path echoes on the route edge', () => {
+describe('traceToSubgraph - overridden test path echoes on the route edge', () => {
   const ingressTrace = (): Trace =>
     baseTrace({
       subject: { kind: 'Ingress', namespace: 'prod', name: 'wild' },

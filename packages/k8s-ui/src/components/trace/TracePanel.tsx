@@ -28,16 +28,16 @@ export interface TracePanelProps {
   isLoading?: boolean
   error?: Error | null
   /** A reachability-probe run that failed. Rendered inline (NOT as a
-   *  full-panel error) so the valid static trace stays visible — the user
+   *  full-panel error) so the valid static trace stays visible - the user
    *  clicked "run test", it failed, and they see why instead of nothing. */
   probeError?: Error | null
   /** Optional: parent-provided refetch action surfaced when the trace verdict
-   *  is unknown — gives the operator a way to retry after RBAC/cache changes
+   *  is unknown - gives the operator a way to retry after RBAC/cache changes
    *  without forcing a drawer close+reopen. */
   onRefresh?: () => void
   /** True when the next refetch should request reachability probes. The
    *  parent passes back the resulting Trace via the trace prop. Probes are
-   *  one-shot — the parent should reset this to false after results arrive. */
+   *  one-shot - the parent should reset this to false after results arrive. */
   probeRequested?: boolean
   /** Callback when the operator asks for a reachability test. The parent
    *  is expected to set probeRequested=true and trigger a refetch; results
@@ -58,7 +58,7 @@ export interface TracePanelProps {
    *  proxy) or that failed gain a "Test from inside the cluster" affordance that
    *  runs a real-dataplane probe Job. The host wires these to the backend. */
   inClusterRunner?: InClusterRunner
-  /** One-click "test every path from inside the cluster" — runs the in-cluster
+  /** One-click "test every path from inside the cluster" - runs the in-cluster
    *  probe for the whole subject and merges the real-traffic results back into the
    *  trace, filling the matrix's "Real in-cluster traffic" column + upgrading the
    *  verdict. Shown only when the in-cluster test is actually permitted. */
@@ -66,13 +66,13 @@ export interface TracePanelProps {
   inClusterRunning?: boolean
   inClusterAllowed?: boolean
   /** Set when the in-cluster test couldn't produce a result (e.g. a cold-start
-   *  timeout) — surfaced so the click is never a silent no-op. */
+   *  timeout) - surfaced so the click is never a silent no-op. */
   inClusterError?: string
   /** The HTTP path the probes request (default "/"); shown as the tested-request
    *  indicator. onApplyProbePath sets a new path and re-runs. */
   probePath?: string
   onApplyProbePath?: (path: string) => void
-  /** Bumped by the host every time a test run COMPLETES — drives the transient
+  /** Bumped by the host every time a test run COMPLETES - drives the transient
    *  "updated just now" confirmation so an identical-looking result still reads as fresh. */
   runNonce?: number
 }
@@ -100,9 +100,9 @@ export interface InClusterRunner {
 /**
  * TracePanel renders the path-shaped diagnosis for one network entry kind.
  *
- * Layout invariant — top to bottom mirrors traffic direction:
+ * Layout invariant - top to bottom mirrors traffic direction:
  *   1) Verdict banner (the one-sentence answer)
- *   2) Upstreams (parallel hops INTO the subject — judged independently)
+ *   2) Upstreams (parallel hops INTO the subject - judged independently)
  *   3) Subject + Downstream chain (where BrokenAt applies)
  *
  * The hop rail (dots + connector line) is the visual spine; the rail color at
@@ -111,7 +111,7 @@ export interface InClusterRunner {
  * before reading the message.
  */
 export function TracePanel({ trace, isLoading, error, probeError, onRefresh, probeRequested, onRunProbes, onNavigateToResource, inClusterRunner }: TracePanelProps) {
-  // All hooks must run unconditionally before any early return —
+  // All hooks must run unconditionally before any early return -
   // React's Rules of Hooks require a stable hook-call count between
   // renders, so a conditional return above any hook produces the
   // "Rendered more hooks than during the previous render" crash on
@@ -157,9 +157,9 @@ export function TracePanel({ trace, isLoading, error, probeError, onRefresh, pro
   }
   const hasPath = downstream.length > 0 || upstreams.length > 0
   // probesPresent gates the Reachability section header text ("Results
-  // shown beneath each hop" vs "Run reachability test") — true once the
+  // shown beneath each hop" vs "Run reachability test") - true once the
   // operator has triggered probes, even if every row came back skipped.
-  // liveEvidence gates the verdict banner's qualifier — it requires at
+  // liveEvidence gates the verdict banner's qualifier - it requires at
   // least one non-skipped probe result, since skipped rows carry no
   // evidence and would let "Configuration looks healthy" overclaim in
   // the laptop default scenario where every probe skips for lack of
@@ -172,7 +172,7 @@ export function TracePanel({ trace, isLoading, error, probeError, onRefresh, pro
   // A broken verdict always carries a brokenAt anchor. A degraded verdict
   // often does not: a single-chain warning, an upstream-only warning, or a
   // probe-induced 5xx leave brokenAt at -1, which would render an amber banner
-  // with no highlighted row and no "show me" — the operator can't find the hop
+  // with no highlighted row and no "show me" - the operator can't find the hop
   // the verdict is about. Fall back to the first hop carrying the degrade
   // signal so a degraded path is always navigable to its cause.
   const focusAt = trace.brokenAt >= 0 ? trace.brokenAt : degradeFocusIndex(downstream, trace.verdict)
@@ -221,8 +221,8 @@ export function TracePanel({ trace, isLoading, error, probeError, onRefresh, pro
 }
 
 /**
- * PathSection renders the STATIC path topology — upstream entries + the
- * downstream Service→Pods chain — with each hop's config (ports, port→targetPort,
+ * PathSection renders the STATIC path topology - upstream entries + the
+ * downstream Service→Pods chain - with each hop's config (ports, port→targetPort,
  * readiness, selector, ingress rules/backends) and its static findings. It needs
  * NO probes: it is the config / static-analysis layer the Reachability tab always
  * shows. Probing adds the live overlay (CoverageSection) on top of this same path.
@@ -285,20 +285,20 @@ function ProbeOriginNote({ origin, live }: { origin?: ProbeVantage; live?: boole
   if (!origin) return null
   const local = origin === 'local'
   const where = local ? 'your machine (out-of-cluster)' : 'Radar, in-cluster'
-  // When every probe skipped there's no live evidence to caveat — just say
+  // When every probe skipped there's no live evidence to caveat - just say
   // where it was attempted and that nothing completed, so the user doesn't
   // read the static verdict as probe-confirmed.
   if (!live) {
     return (
       <p className="text-[11px] text-theme-text-tertiary flex items-start gap-1.5 -mt-1">
         <Network className="w-3 h-3 mt-0.5 shrink-0" />
-        <span>Attempted from <span className="text-theme-text-secondary">{where}</span> — no live probe completed (all checks skipped). The verdict reflects declared config only.</span>
+        <span>Attempted from <span className="text-theme-text-secondary">{where}</span> - no live probe completed (all checks skipped). The verdict reflects declared config only.</span>
       </p>
     )
   }
   // Keep the caveat NEUTRAL and verdict-independent: a failure can have many
   // causes (5xx reached, missing backend, no endpoints) and is NOT always "your
-  // machine can't reach it" — asserting that would mislead. The per-probe rows
+  // machine can't reach it" - asserting that would mislead. The per-probe rows
   // and the verdict reason carry the actual cause; this line only frames the
   // probe's vantage and what it inherently can't speak for.
   const caveat = local
@@ -316,12 +316,12 @@ function normalizeHopFindings(hop: Hop): Hop {
   return hop.findings ? hop : { ...hop, findings: [] }
 }
 
-// Verdict banner — delegates to the shared AlertBanner so the trace surface
+// Verdict banner - delegates to the shared AlertBanner so the trace surface
 // matches the rest of Radar (Helm, GitOps, renderers all use AlertBanner).
 // The verdict→variant mapping keeps the operator's color vocabulary stable
 // across surfaces.
 
-// Canonical label for the apiserver-proxy path — used everywhere so the chip,
+// Canonical label for the apiserver-proxy path - used everywhere so the chip,
 // the probe-row path tag, and tooltips never drift into "via API" / "via
 // Kubernetes API" variants. Short form in rendered copy; tooltips spell out
 // "Kubernetes API server proxy".
@@ -338,7 +338,7 @@ const VERDICT_TITLE_BY_DESIGN = 'Auto-verification not applicable for this kind'
 
 // Default variant per verdict. The unknown case is overridden at render
 // time by unknownClass: by-design unknowns render as informational
-// rather than warning since nothing is broken — the shape just isn't
+// rather than warning since nothing is broken - the shape just isn't
 // auto-verifiable (ExternalName, selectorless, manually-managed
 // endpoints).
 const VERDICT_VARIANT: Record<Verdict, 'success' | 'warning' | 'error' | 'info'> = {
@@ -375,7 +375,7 @@ const ALERT_ICON: Record<AlertTone, React.ComponentType<{ className?: string }>>
 }
 
 // coverageBannerTone derives the SINGLE banner tone from what we actually
-// tested — never the legacy verdict word, which can over-claim a confident
+// tested - never the legacy verdict word, which can over-claim a confident
 // "healthy" on apiserver-only evidence. Honesty rules: indirect-only and
 // zero-tested are never green (the real-traffic path was not confirmed);
 // not-tested is never red.
@@ -383,11 +383,11 @@ export function coverageBannerTone(coverage: Coverage, routes: RouteResult[]): A
   if (coverage.tested === 0) return 'info' // nothing actively tested
   if (coverage.passed === 0 && coverage.failed > 0) {
     // Red ONLY when something is genuinely unreachable. Failures that still
-    // REACHED the server are amber, not red — a 5xx (degraded: traffic passed,
-    // the app errored) or an intentional scale-to-0 (benign dormancy) — which
+    // REACHED the server are amber, not red - a 5xx (degraded: traffic passed,
+    // the app errored) or an intentional scale-to-0 (benign dormancy) - which
     // keeps the banner consistent with the degraded verdict.
     const hardUnreach = routes.filter((r) => r.outcome === 'unreachable' && !r.benign)
-    // An apiserver-proxy-only (indirect) failure must NEVER set a red headline —
+    // An apiserver-proxy-only (indirect) failure must NEVER set a red headline -
     // the real path was never tested (mirrors reachVerdict's onlyIndirectUnreach).
     // When every unreachable route is indirect, warn, don't condemn.
     const anyRealUnreach = hardUnreach.some((r) => r.confidence !== 'indirect')
@@ -395,7 +395,7 @@ export function coverageBannerTone(coverage: Coverage, routes: RouteResult[]): A
     return 'warning'
   }
   if (coverage.failed > 0) return 'warning' // some reachable, some not
-  // Every tested route passed — green ONLY if a real-traffic path was VERIFIED.
+  // Every tested route passed - green ONLY if a real-traffic path was VERIFIED.
   // A route that only 'reached' a server (3xx/4xx, route not verified) is not
   // confirmation; including it would overclaim a green headline while the coverage
   // strip below stays neutral. Matches routeTone/CoverageSummary/probeChipFor.
@@ -406,13 +406,13 @@ export function coverageBannerTone(coverage: Coverage, routes: RouteResult[]): A
 export function VerdictBanner({ verdict, reason, brokenHop, unknownClass, liveEvidence, coverage, headline, routes, onRefresh, onJumpToBroken }: { verdict: Verdict; reason?: string; brokenHop?: Hop; unknownClass?: 'by-design' | 'investigate'; liveEvidence?: boolean; coverage?: Coverage; headline?: string; routes?: RouteResult[]; onRefresh?: () => void; onJumpToBroken?: () => void }) {
   // Coverage-honest banner: when active probing produced a coverage projection,
   // the coverage headline is THE single status surface, its tone derived from
-  // what we actually tested — not the legacy verdict word (which can show a
+  // what we actually tested - not the legacy verdict word (which can show a
   // confident "healthy" beside an honest "reached via management API"). Static-
   // only / config-shape traces (no coverage) fall through to the legacy banner.
   if (coverage && headline) {
     // The probe-coverage tone can only see what it probed. A static degrade/break
-    // the probe can't observe — a missing TLS secret, a pending LoadBalancer, any
-    // config-only finding — would otherwise let a backend the probe reached paint
+    // the probe can't observe - a missing TLS secret, a pending LoadBalancer, any
+    // config-only finding - would otherwise let a backend the probe reached paint
     // a green "healthy" over a real problem. Floor the tone at the static verdict
     // so degraded/broken always colors the banner (never downgrades; healthy and
     // by-design `unknown` keep the probe tone).
@@ -437,7 +437,7 @@ export function VerdictBanner({ verdict, reason, brokenHop, unknownClass, liveEv
     )
   }
   // When a single hop is the locus of the break/degrade, name it in the
-  // banner title — a generic "Traffic path is degraded" leaves the
+  // banner title - a generic "Traffic path is degraded" leaves the
   // operator without a starting point. Synthetic collection hops (Pods,
   // Routes) carry an empty Resource.Name; skip the rewrite for those
   // since "Pods is broken" is grammatically off and the row below
@@ -446,7 +446,7 @@ export function VerdictBanner({ verdict, reason, brokenHop, unknownClass, liveEv
   let variant = VERDICT_VARIANT[verdict]
   let icon = VERDICT_ICON[verdict]
   // When a specific reason is set (a multi-route partial break, or an upstream
-  // break), it is the authoritative honest sentence — keep the generic
+  // break), it is the authoritative honest sentence - keep the generic
   // "Traffic path is degraded" title and let the reason carry the specifics.
   // Rewriting the title to "${brokenHop} is degraded" would be wrong: in a
   // partial break the highlighted hop is the BROKEN backend, not a degraded
@@ -510,19 +510,19 @@ export function VerdictBanner({ verdict, reason, brokenHop, unknownClass, liveEv
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Coverage — the per-intended-route truth (what we tested vs couldn't)
+// Coverage - the per-intended-route truth (what we tested vs couldn't)
 // ────────────────────────────────────────────────────────────────────────────
 
 // routeOutcomeLabel: the honest per-route label. An INDIRECT route (reached only
-// via the apiserver proxy) is NEVER "verified" — the real-traffic path was not
+// via the apiserver proxy) is NEVER "verified" - the real-traffic path was not
 // confirmed. Exported for unit testing.
 export function routeOutcomeLabel(r: RouteResult): string {
   if (r.benign) return 'scaled to 0' // unreachable by design, not an outage
   if (r.confidence === 'indirect') {
-    // A proxy-only unreachable never tested the real path — carry the same
+    // A proxy-only unreachable never tested the real path - carry the same
     // qualifier the Go singleRouteHeadline does, don't bare-condemn it.
     if (r.outcome === 'unreachable') return 'unreachable via API server (real path not confirmed)'
-    // A proxy-observed 5xx still reached an erroring app — say so, don't flatten it
+    // A proxy-observed 5xx still reached an erroring app - say so, don't flatten it
     // to a calm "reached" that hides the failure and contradicts the amber dot.
     if (r.outcome === 'server-error') return 'server error'
     return 'reached'
@@ -539,12 +539,12 @@ export function routeOutcomeLabel(r: RouteResult): string {
 // routeTone maps a route outcome onto the shared StatusTone. An indirect success
 // is neutral (reachable, but not proven via real traffic), never green.
 export function routeTone(r: RouteResult): StatusTone {
-  if (r.benign) return 'degraded' // amber — deliberate dormancy, not red
+  if (r.benign) return 'degraded' // amber - deliberate dormancy, not red
   switch (r.outcome) {
     case 'verified': return r.confidence === 'indirect' ? 'neutral' : 'healthy'
     case 'reached': return 'neutral'
     case 'server-error': return 'degraded'
-    // A proxy-only (indirect) unreachable never tested the real path — neutral,
+    // A proxy-only (indirect) unreachable never tested the real path - neutral,
     // never red (mirrors reachVerdict onlyIndirectUnreach + the verified case above).
     case 'unreachable': return r.confidence === 'indirect' ? 'unknown' : 'unhealthy'
     default: return 'unknown'
@@ -554,7 +554,7 @@ export function routeTone(r: RouteResult): StatusTone {
 function routeBadgeSeverity(r: RouteResult): 'error' | 'warning' | 'info' | 'success' | 'neutral' {
   if (r.benign) return 'warning' // amber, not red
   if (r.confidence === 'indirect') {
-    // A proxy-only unreachable never tested the real path — info/neutral, not red.
+    // A proxy-only unreachable never tested the real path - info/neutral, not red.
     if (r.outcome === 'unreachable') return 'info'
     if (r.outcome === 'server-error') return 'warning' // amber, matches routeTone's degraded dot
     return 'info'
@@ -582,7 +582,7 @@ export function routeOutcomeRank(o: RouteResult['outcome']): number {
 // CoverageSection renders the coverage-honest read: the single headline, then the
 // per-intended-route matrix (tested, failures-first) and the routes we couldn't
 // test (reason + copyable command). Localization facts show as muted "checked
-// behind it" sub-lines — never labelled "localization" in the UI.
+// behind it" sub-lines - never labelled "localization" in the UI.
 type RouteTestState =
   | { state: 'running' }
   | { state: 'done'; results: ProbeResult[] }
@@ -593,9 +593,9 @@ type RouteTestState =
 let sessionSkipInClusterConsent = false
 
 // inClusterOutcome reduces real-dataplane probe results to a route label/tone.
-// A 2xx HERE is real-traffic verified — the payoff over the indirect API-proxy read.
+// A 2xx HERE is real-traffic verified - the payoff over the indirect API-proxy read.
 export function inClusterOutcome(results: ProbeResult[]): { label: string; tone: StatusTone; severity: 'error' | 'warning' | 'info' | 'success' | 'neutral' } {
-  // A SKIPPED probe has ok=false but is NOT a failure — classifying it would
+  // A SKIPPED probe has ok=false but is NOT a failure - classifying it would
   // false-condemn a port that actually connected. Drop skips first so a skipped
   // HTTP probe falls through to the TCP "port reachable" / "tested" branches.
   const real = results.filter((r) => !r.skipped)
@@ -665,14 +665,14 @@ function InClusterAffordance({ route, cap, test, onTest }: { route: RouteResult;
       <button type="button" onClick={() => onTest({ scheme, host, path })} className="px-2 py-0.5 rounded border border-current/30 text-theme-text-secondary hover:bg-theme-hover transition-colors">
         ▶ Test
       </button>
-      {guess?.pathGuessed && <span className="text-theme-text-tertiary italic" title="The route path is a pattern (regex/wildcard) — this is a guessed concrete path. Edit it to match a real request.">guessed path</span>}
+      {guess?.pathGuessed && <span className="text-theme-text-tertiary italic" title="The route path is a pattern (regex/wildcard) - this is a guessed concrete path. Edit it to match a real request.">guessed path</span>}
     </div>
   )
 }
 
 // inClusterDialTarget rewrites a "name:port" (or bare "name") target to its
 // cluster-FQDN form "name.ns.svc:port" when the backend is in a DIFFERENT
-// namespace than the subject — so the throwaway probe pod resolves the intended
+// namespace than the subject - so the throwaway probe pod resolves the intended
 // Service rather than a same-named one in its own namespace. Mirrors the Go
 // fqdnDialTarget; same-namespace targets pass through unchanged.
 function inClusterDialTarget(target: string, targetNamespace?: string, subjectNamespace?: string): string {
@@ -788,7 +788,7 @@ export function CoverageSection({ trace, runner, collapseHealthy }: { trace: Tra
       ))}
       {notTested.length > 0 && (
         <div className="mt-3 flex flex-col gap-2">
-          <div className="text-[11px] uppercase tracking-wide text-theme-text-tertiary">Not tested — we won't say these pass or fail</div>
+          <div className="text-[11px] uppercase tracking-wide text-theme-text-tertiary">Not tested - we won't say these pass or fail</div>
           {notTested.map((s, i) => (
             <CoverageSkipRow key={(s.route ?? '') + ':' + i} skip={s} />
           ))}
@@ -799,7 +799,7 @@ export function CoverageSection({ trace, runner, collapseHealthy }: { trace: Tra
           open
           variant="warning"
           title="Test from inside the cluster"
-          message={`Radar will run a short-lived probe pod in namespace "${cap?.namespace || consent.route.route}"${cap?.cluster ? ` on cluster "${cap.cluster}"` : ''}, as you — then delete it (~5s).`}
+          message={`Radar will run a short-lived probe pod in namespace "${cap?.namespace || consent.route.route}"${cap?.cluster ? ` on cluster "${cap.cluster}"` : ''}, as you - then delete it (~5s).`}
           details="The pod is non-root, has no privileges and no service-account token. It runs `radar probe` against this route over the real in-cluster network path, then self-destructs."
           confirmLabel="Run"
           cancelLabel="Cancel"
@@ -851,11 +851,11 @@ export function JustTestedNote({ nonce }: { nonce?: number }) {
 
 // ReachActions is the verdict card's action area: the primary "Run reachability
 // test" (proxy/laptop vantage) plus, once allowed, the secondary "Test inside the
-// cluster" (real pod-to-pod) — one grouped control instead of two split corners.
+// cluster" (real pod-to-pod) - one grouped control instead of two split corners.
 // Uses the design-system button classes (.btn-brand / .btn-brand-muted).
 // VerdictCaveat renders the verdict's muted second line: a short one-liner on
 // screen, with the full explanation tucked into the project Tooltip behind an
-// info icon — so a long "why + how to fix" never bloats the banner into a wall
+// info icon - so a long "why + how to fix" never bloats the banner into a wall
 // of text. Shared by the Diagram + Tree banners so they stay in parity.
 export function VerdictCaveat({ caveat, detail }: { caveat?: string; detail?: string }) {
   if (!caveat) return null
@@ -871,7 +871,7 @@ export function VerdictCaveat({ caveat, detail }: { caveat?: string; detail?: st
   )
 }
 
-// RequestIndicator names the exact HTTP request the probes made — shown in the
+// RequestIndicator names the exact HTTP request the probes made - shown in the
 // verdict bar (always visible after a run) so the operator knows what was tested. A
 // pencil toggles an inline editor so the path is changeable in place (no digging
 // through the ⋯ menu); Enter or blur applies + re-runs, Escape cancels. Default GET /.
@@ -919,7 +919,7 @@ export function RequestIndicator({ path, onApplyProbePath }: { path?: string; on
   )
 }
 
-// ProbeOptionsMenu is the "⋯ more options" overflow next to the run buttons —
+// ProbeOptionsMenu is the "⋯ more options" overflow next to the run buttons -
 // keeps the verdict bar clean and gives a home for power options. Today its one
 // item is "Customize what we test…", which opens a small form to change the HTTP
 // path the probes request (default "/"). Applies to BOTH tests.
@@ -981,7 +981,7 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
   onRunProbes?: () => void
   probeRequested?: boolean
   // probed/inClusterTested: each test has already produced a result, so its
-  // button is a RE-RUN — labeled and iconed accordingly. The control set itself
+  // button is a RE-RUN - labeled and iconed accordingly. The control set itself
   // never changes (consistency): both tests stay available to re-run whenever
   // they apply. They auto-run on load, so they're almost always re-runs.
   probed?: boolean
@@ -992,14 +992,14 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
   probePath?: string
   onApplyProbePath?: (p: string) => void
 }) {
-  // The in-cluster test stays available whenever the cluster allows it — NEVER
+  // The in-cluster test stays available whenever the cluster allows it - NEVER
   // gated on the verdict. Hiding it after it succeeds (when the verdict turns
   // healthy) is exactly when an operator wants to re-run it after a change.
   const showInCluster = !!(inClusterAllowed && onRunInCluster)
   if (!onRunProbes && !showInCluster) return null
   return (
     <div className="flex shrink-0 items-center gap-2">
-      {/* Secondary: the in-cluster Job (real pod-to-pod traffic) — a real button
+      {/* Secondary: the in-cluster Job (real pod-to-pod traffic) - a real button
           (it mutates: spawns a Job), clearly subordinate to the primary, with an
           in-cluster glyph so it's distinguishable without hover. */}
       {showInCluster && (
@@ -1007,7 +1007,7 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
           type="button"
           onClick={onRunInCluster}
           disabled={inClusterRunning}
-          title="Run the probe from a short-lived Job INSIDE the cluster — real pod-to-pod traffic — to confirm the in-cluster data path"
+          title="Run the probe from a short-lived Job INSIDE the cluster - real pod-to-pod traffic - to confirm the in-cluster data path"
           className="btn-brand-muted px-2.5 py-1 text-xs inline-flex items-center gap-1.5"
         >
           {inClusterRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Network className="w-3 h-3" />}
@@ -1029,11 +1029,11 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
 }
 
 export function CoverageSummary({ coverage, routes }: { coverage: Coverage; routes: RouteResult[] }) {
-  // "verified" is reserved for a real-traffic VERIFIED route — never a mere "reached"
+  // "verified" is reserved for a real-traffic VERIFIED route - never a mere "reached"
   // (server answered, exact route unproven) and never an indirect proxy result.
   const verified = routes.filter((r) => r.outcome === 'verified' && r.confidence === 'real').length
   const reached = routes.filter((r) => r.outcome === 'reached' && r.confidence === 'real').length
-  // Reached via the proxy only — and ONLY count a positive outcome here, so an
+  // Reached via the proxy only - and ONLY count a positive outcome here, so an
   // indirect server-error isn't double-claimed as both "reached" and "failed".
   const viaProxy = routes.filter((r) => r.confidence === 'indirect' && (r.outcome === 'verified' || r.outcome === 'reached')).length
   // Split coverage.failed by KIND so the strip mirrors coverageBannerTone instead
@@ -1041,7 +1041,7 @@ export function CoverageSummary({ coverage, routes }: { coverage: Coverage; rout
   // reached an erroring app (amber) and a benign scale-to-0 is deliberate dormancy
   // (amber). Lumping all into a red "failed" would false-condemn 5xx/dormancy.
   // Only a REAL-path unreachable is red. An apiserver-proxy-only (indirect)
-  // unreachable never tested the real path, so it must not redden the count —
+  // unreachable never tested the real path, so it must not redden the count -
   // mirror coverageBannerTone's hardUnreach split (and every sibling helper that
   // treats indirect unreachable as non-red). Surface it as a neutral line instead.
   const unreachable = routes.filter((r) => r.outcome === 'unreachable' && !r.benign && r.confidence !== 'indirect').length
@@ -1051,7 +1051,7 @@ export function CoverageSummary({ coverage, routes }: { coverage: Coverage; rout
   const notTested = coverage.skipped
   const parts: { tone: StatusTone; text: string }[] = []
   if (verified) parts.push({ tone: 'healthy', text: `${verified} verified` })
-  // A "reached" is server-answered but route-unverified — neutral, not green ✓
+  // A "reached" is server-answered but route-unverified - neutral, not green ✓
   // (green here overclaims verification; reserve healthy for 'verified').
   if (reached) parts.push({ tone: 'neutral', text: `${reached} reached` })
   if (viaProxy) parts.push({ tone: 'neutral', text: `${viaProxy} reached via ${API_PROXY_LABEL}` })
@@ -1089,7 +1089,7 @@ export function CoverageSkipRow({ skip }: { skip: RouteSkip }) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Upstreams — parallel hops INTO the subject
+// Upstreams - parallel hops INTO the subject
 // ────────────────────────────────────────────────────────────────────────────
 
 function UpstreamsBlock({ upstreams, onNavigate }: { upstreams: Hop[]; onNavigate?: (ref: ResourceRef) => void }) {
@@ -1107,11 +1107,11 @@ function UpstreamsBlock({ upstreams, onNavigate }: { upstreams: Hop[]; onNavigat
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Downstream — chain from subject toward pods
+// Downstream - chain from subject toward pods
 // ────────────────────────────────────────────────────────────────────────────
 
 // degradeFocusIndex finds the hop a degraded verdict is about when the server
-// left no brokenAt anchor — single-chain warnings, upstream-only warnings, and
+// left no brokenAt anchor - single-chain warnings, upstream-only warnings, and
 // probe-induced 5xx all surface as degraded without one. Returns the first hop
 // carrying a warning/critical finding or a non-skipped degraded/unhealthy
 // probe; -1 when nothing on the downstream path explains it (an upstream-only
@@ -1130,7 +1130,7 @@ export interface BackendRouteInfo {
   /** Route identities (path, or host+path on a multi-host Ingress) that select
    *  this backend, so a multi-backend path can show WHICH route hits each hop. */
   tags: string[]
-  /** The Ingress names this backend in a route but the Service doesn't exist —
+  /** The Ingress names this backend in a route but the Service doesn't exist -
    *  the broken route in a partial-break path. */
   missing: boolean
 }
@@ -1149,7 +1149,7 @@ export function backendRouteInfo(entry: Hop | undefined, hop: Hop): BackendRoute
   for (const rule of rules) {
     // Match name AND namespace (a backendRef's namespace defaults to the entry's),
     // mirroring the Go side (missingRefMatchesBackend). Name-only would attach a
-    // route's tags — and the "missing" flag — to a same-named Service in a DIFFERENT
+    // route's tags - and the "missing" flag - to a same-named Service in a DIFFERENT
     // namespace, false-condemning the wrong backend on a multi-namespace route.
     if (!(rule.backends ?? []).some((b) => b.name === name && (b.namespace ?? entry.resource.namespace) === namespace)) continue
     const paths = rule.paths?.length ? rule.paths : ['/']
@@ -1182,7 +1182,7 @@ function DownstreamBlock({ subject, downstream, brokenAt, focusAt, onNavigate }:
         subtitle="Top-to-bottom is the direction traffic flows."
       />
       <div className="relative">
-        {/* Spine — the visual continuity that says "these hops are one chain" */}
+        {/* Spine - the visual continuity that says "these hops are one chain" */}
         <div className="absolute left-[14px] top-2 bottom-2 w-px bg-theme-border" aria-hidden />
         <div className="flex flex-col gap-2">
           {downstream.map((hop, i) => (
@@ -1203,11 +1203,11 @@ function DownstreamBlock({ subject, downstream, brokenAt, focusAt, onNavigate }:
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Hop row — one resource along the path
+// Hop row - one resource along the path
 // ────────────────────────────────────────────────────────────────────────────
 
 // Code prefix the server stamps on a finding that describes a route OTHER than
-// the one reaching the current subject — a sibling backend of a shared entry
+// the one reaching the current subject - a sibling backend of a shared entry
 // that doesn't exist. The server already excludes these from an upstream's
 // verdict (nonMissingRefFindings); the UI must scope the upstream row to match.
 // Kept in sync with the Go constant by TestMissingRefPrefixMirrored.
@@ -1216,8 +1216,8 @@ const MISSING_REF_CODE_PREFIX = 'missing_ref:'
 function HopRow({ hop, broken, focus, compact, isSubject, upstream, routeInfo, onNavigate }: { hop: Hop; broken: boolean; focus?: boolean; compact?: boolean; isSubject?: boolean; upstream?: boolean; routeInfo?: BackendRouteInfo; onNavigate?: (ref: ResourceRef) => void }) {
   // On an upstream entry, a missing-backend finding is about a sibling route,
   // not the path that reaches this subject (the subject is itself a live
-  // backend of that entry, so it demonstrably exists). Scope the row — dot,
-  // chip, auto-expand, body — to the subject-relevant findings so a healthy
+  // backend of that entry, so it demonstrably exists). Scope the row - dot,
+  // chip, auto-expand, body - to the subject-relevant findings so a healthy
   // subject doesn't wear a red chip for an unrelated broken route; surface the
   // sibling break as a muted note instead. Downstream rows keep every finding.
   const otherRouteFindings = upstream ? hop.findings.filter((f) => f.code.startsWith(MISSING_REF_CODE_PREFIX)) : []
@@ -1234,7 +1234,7 @@ function HopRow({ hop, broken, focus, compact, isSubject, upstream, routeInfo, o
   const [expanded, setExpanded] = useState<boolean>(shouldAutoExpand)
   // When a probe run upgrades a hop to broken/critical, auto-expand it so
   // the new finding isn't hidden behind a collapsed row. We never auto-
-  // collapse — once the user opens a hop, it stays open until they close it.
+  // collapse - once the user opens a hop, it stays open until they close it.
   useEffect(() => {
     if (shouldAutoExpand) setExpanded(true)
   }, [shouldAutoExpand])
@@ -1245,7 +1245,7 @@ function HopRow({ hop, broken, focus, compact, isSubject, upstream, routeInfo, o
   // at one identifiable resource that is NOT the subject (clicking the
   // subject would navigate to the page the user is already on). Collection
   // hops (Pods fan-out, attached routes) carry an empty name and stay
-  // non-clickable — there's no single resource for the host to open.
+  // non-clickable - there's no single resource for the host to open.
   const navigable = Boolean(onNavigate && hop.resource.name && !isSubject)
   // Row body navigates when there's a routable target; otherwise it falls
   // back to toggling the findings panel so collection hops stay useful.
@@ -1357,9 +1357,9 @@ function HopRow({ hop, broken, focus, compact, isSubject, upstream, routeInfo, o
 // The row carries everything an operator needs: severity dot, target,
 // optional path label (when the probe traversed the API server, knowing
 // that path is part of the answer), latency, status, and any error text.
-// No diagram — the hop above is already the visual anchor.
+// No diagram - the hop above is already the visual anchor.
 function ProbeRows({ probes }: { probes: ProbeResult[] }) {
-  // Failures first, then OK rows, then skipped — matches the operator's
+  // Failures first, then OK rows, then skipped - matches the operator's
   // scan priority. Same comparator the per-hop findings use. Skip rows
   // with identical (layer, path, reason) are collapsed into one row with
   // a count suffix so a 3-pod × 1-port Pods hop doesn't repeat the same
@@ -1388,7 +1388,7 @@ function probeRank(p: ProbeResult): number {
 }
 
 // probeToneToStatus maps the probe's honest reachability tone onto the shared
-// StatusTone vocabulary. 'reached' (3xx/4xx — got a server but didn't verify
+// StatusTone vocabulary. 'reached' (3xx/4xx - got a server but didn't verify
 // the route) renders as the calm 'neutral', never green-verified nor amber.
 export function probeToneToStatus(p: ProbeResult): StatusTone {
   switch (p.tone) {
@@ -1423,7 +1423,7 @@ function ProbeRow({ probe }: { probe: ProbeResult }) {
         )}
         {probe.command && (
           <>
-            <div className="text-[11px] text-theme-text-secondary mt-0.5">Test it yourself — run:</div>
+            <div className="text-[11px] text-theme-text-secondary mt-0.5">Test it yourself - run:</div>
             <CopyableCommand command={probe.command} />
           </>
         )}
@@ -1442,7 +1442,7 @@ function ProbeRow({ probe }: { probe: ProbeResult }) {
 function probePathLabel(p: ProbeResult): string {
   // The data path is "pod-to-pod" only when it ran from INSIDE the cluster; a laptop
   // dialing directly (e.g. an ExternalName host) is a direct external reach, NOT
-  // in-cluster pod-to-pod — labeling it so would over-claim.
+  // in-cluster pod-to-pod - labeling it so would over-claim.
   if (p.path === 'data') return p.vantage === 'in-cluster' ? 'pod-to-pod path' : 'direct'
   // The apiserver-proxy vantage is already named on the hop's outcome chip
   // ("verified via API server"); repeating it on every probe row is noise. Keep the
@@ -1461,7 +1461,7 @@ function formatProbeLatency(ns: number): string {
 // the button when at least one hop has a probeable surface; for traces
 // whose only hops are routes-without-addresses or headless services we
 // explain why instead of pretending the button works. Feasibility is
-// computed from each hop's HopConfig — see probeFeasibility().
+// computed from each hop's HopConfig - see probeFeasibility().
 function ReachabilitySection({
   feasibility,
   probesPresent,
@@ -1478,7 +1478,7 @@ function ReachabilitySection({
   onRun: () => void
 }) {
   const running = requested && !probesPresent && isLoading
-  // A run completed but no probe landed live (every row skipped) — the laptop
+  // A run completed but no probe landed live (every row skipped) - the laptop
   // default without services/proxy RBAC. The loud brand button over-promised;
   // downgrade it and point at the in-cluster test, which probes the real path.
   const limited = probesPresent && !liveEvidence && !running
@@ -1496,7 +1496,7 @@ function ReachabilitySection({
       <span className="text-xs font-medium text-theme-text-secondary">Reachability test</span>
       <span className="text-xs text-theme-text-tertiary flex-1 truncate">
         {limited
-          ? 'Probes from here were limited — every check skipped. Use the in-cluster test for the real path.'
+          ? 'Probes from here were limited - every check skipped. Use the in-cluster test for the real path.'
           : probesPresent
             ? 'Results shown beneath each hop.'
             : running
@@ -1580,7 +1580,7 @@ function probeFeasibility(hops: Hop[]): ProbeFeasibility {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Config pills — declared shape per hop (ports, hostnames, listeners)
+// Config pills - declared shape per hop (ports, hostnames, listeners)
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -1655,17 +1655,17 @@ function ConfigPills({ config, hopKind }: { config: HopConfig; hopKind: string }
   }
 
   for (const addr of config.addresses ?? []) {
-    pills.push({ key: `addr:${addr}`, text: `@${addr}`, tone: 'accent', title: 'Entry address — where clients connect to reach this' })
+    pills.push({ key: `addr:${addr}`, text: `@${addr}`, tone: 'accent', title: 'Entry address - where clients connect to reach this' })
   }
 
-  // Who serves this Ingress (the ingress controller) — a quiet muted pill on the
+  // Who serves this Ingress (the ingress controller) - a quiet muted pill on the
   // healthy path; the tooltip carries the gloss + shared-infra + readiness. A
   // controller PROBLEM (none/unready) comes through as a finding instead.
   if (config.servedBy) {
     pills.push({ key: 'servedby', text: config.servedBy, tone: 'muted', title: config.servedByTitle || config.servedBy })
   }
 
-  // Route rules become a single compact "N paths → X backends" pill — the
+  // Route rules become a single compact "N paths → X backends" pill - the
   // detail expands into a per-rule list below (see ConfigRules).
   if (config.rules && config.rules.length > 0) {
     const total = config.rules.reduce((n, r) => n + (r.backends?.length ?? 0), 0)
@@ -1705,7 +1705,7 @@ function ConfigPills({ config, hopKind }: { config: HopConfig; hopKind: string }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Finding row — single observation + copyable kubectl
+// Finding row - single observation + copyable kubectl
 // ────────────────────────────────────────────────────────────────────────────
 
 // CopyableCommand renders a one-line command in a mono box with a copy
@@ -1737,7 +1737,7 @@ function CopyableCommand({ command }: { command: string }) {
 }
 
 export function FindingRow({ finding, onNavigate }: { finding: Finding; onNavigate?: (ref: ResourceRef) => void }) {
-  // When the detector parsed a domain-specific cause, lead with it — that's
+  // When the detector parsed a domain-specific cause, lead with it - that's
   // the "why" the operator needs first. The raw detector message stays
   // visible below as secondary evidence. Without a parsed cause, message
   // is the primary line as before.
@@ -1745,7 +1745,7 @@ export function FindingRow({ finding, onNavigate }: { finding: Finding; onNaviga
   const secondary = finding.cause && finding.message && finding.message !== finding.cause ? finding.message : ''
   // When the finding names a SPECIFIC culprit resource (e.g. the one crashing
   // Pod behind a Service's "0 ready" symptom), the operator's real next move is
-  // to open that resource and read its logs/events — not to paste a describe.
+  // to open that resource and read its logs/events - not to paste a describe.
   // Offer the click-through as the primary action; keep the command as the
   // terminal/CI fallback below it.
   const culprit = finding.resource?.name ? finding.resource : undefined
@@ -1797,7 +1797,7 @@ export function FindingRow({ finding, onNavigate }: { finding: Finding; onNaviga
         {finding.command && <CopyableCommand command={finding.command} />}
       </div>
       {/* The finding code is a stable identifier for agents/MCP, not operator
-          copy — rendering the raw truncated enum (e.g. "PROBLEM:COMPLETED")
+          copy - rendering the raw truncated enum (e.g. "PROBLEM:COMPLETED")
           leaks internals and misleads (it read as "success" next to a critical).
           Keep it as a hover title only. */}
       <span className="shrink-0 w-0 overflow-hidden" title={`code: ${finding.code}`} aria-hidden />
@@ -1806,13 +1806,13 @@ export function FindingRow({ finding, onNavigate }: { finding: Finding; onNaviga
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Small UI primitives — local, scoped to this panel
+// Small UI primitives - local, scoped to this panel
 // ────────────────────────────────────────────────────────────────────────────
 
 // SectionHeader is local for trace's flat top-level sections (Upstreams,
 // Path). Matches the visual weight of `Section` titles elsewhere in the
 // drawer (text-sm font-medium text-theme-text-secondary) without the
-// collapsible affordance — the trace's sections always stay open.
+// collapsible affordance - the trace's sections always stay open.
 function SectionHeader({ title, subtitle, action }: { title: string; subtitle?: string; action?: React.ReactNode }) {
   return (
     <div className="mb-2 flex items-center gap-2">
@@ -1842,7 +1842,7 @@ function sampledFraction(probes?: ProbeResult[]): { sampled: number; total: numb
 // null when no live probe ran. The ordering is by actionability, and the
 // labels never overclaim: only an all-2xx hop earns "verified"; a 3xx/4xx hop
 // reached a server but did not verify the route, so it reads "reached"; a 5xx
-// hop reads "server error" (reached, erroring — not unreachable); a transport
+// hop reads "server error" (reached, erroring - not unreachable); a transport
 // failure reads "unreachable". apiserver-only success is labeled partial
 // because the in-cluster data path was never exercised.
 function probeChipFor(probes?: ProbeResult[]): React.ReactNode {
@@ -1867,7 +1867,7 @@ function probeChipFor(probes?: ProbeResult[]): React.ReactNode {
   // "Verified" requires an actual HTTP 2xx. If the only successful evidence is
   // TCP/TLS (a raw TCP listener, or a non-HTTP port where the HTTP probe was
   // skipped), the port accepts connections but nothing confirmed the service
-  // works — a port can accept and still serve nothing. Say what we know.
+  // works - a port can accept and still serve nothing. Say what we know.
   const httpOK = (p: ProbeResult) => p.layer === 'http' && p.ok && p.tone !== 'reached'
   const httpVerified = real.some(httpOK)
   if (!httpVerified) {
@@ -1876,7 +1876,7 @@ function probeChipFor(probes?: ProbeResult[]): React.ReactNode {
   if (sample && sample.sampled < sample.total) {
     return <Badge severity="info" size="sm" title={`Probes passed on ${sample.sampled} of ${sample.total} pods. The other ${sample.total - sample.sampled} were not sampled.`}>verified ({sample.sampled} of {sample.total} sampled)</Badge>
   }
-  // Full green "verified" requires an HTTP 2xx on a REAL path — the data path
+  // Full green "verified" requires an HTTP 2xx on a REAL path - the data path
   // (in-cluster pod-to-pod) OR a direct Ingress/Gateway dial (path unset).
   // Only the apiserver proxy is the caveated path: a 2xx solely via the proxy
   // proves a backend answers HTTP but NOT that in-cluster workload→pod traffic
@@ -1898,7 +1898,7 @@ function SeverityChip({ severity, count, probes }: { severity: FindingSeverity |
     return probeChipFor(probes) ?? <Badge severity="info" size="sm" title="Static configuration is consistent; this hop hasn't been actively probed yet">not tested</Badge>
   }
   // When static findings AND a live probe PROBLEM exist on the same hop, stack
-  // two chips so the operator sees both. Only problem states stack — a green
+  // two chips so the operator sees both. Only problem states stack - a green
   // "verified" or neutral "reached" next to a warning finding is noise, and
   // those still show in the expanded probe rows.
   const real = probes?.filter(p => !p.skipped) ?? []
@@ -1973,13 +1973,13 @@ function hopKey(hop: Hop, i: number): string {
   return `${hop.resource.kind}:${hop.resource.namespace ?? ''}:${hop.resource.name ?? ''}:${i}`
 }
 
-// hopFallbackLabel covers the unnamed-collection case — the Pods hop is a
+// hopFallbackLabel covers the unnamed-collection case - the Pods hop is a
 // fan-out over the selector, not a single named resource. Same for any
 // future Routes collection hop on a Gateway entry.
 function hopFallbackLabel(hop: Hop): string {
   if (hop.resource.kind === 'Pods') {
     // The ready/selected count lives once, on the meta line ({ready}/{selected}
-    // ready) — the name stays count-free so the number isn't stated twice.
+    // ready) - the name stays count-free so the number isn't stated twice.
     return 'Pods'
   }
   if (hop.resource.kind === 'Routes') return 'attached routes'

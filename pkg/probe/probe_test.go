@@ -67,8 +67,8 @@ func TestClassifyCertError(t *testing.T) {
 	}
 }
 
-// An expired or wrong-host cert is a deterministic, everyone-affected breakage —
-// reached but DEGRADED — while an unknown/private CA is only untrusted from this
+// An expired or wrong-host cert is a deterministic, everyone-affected breakage -
+// reached but DEGRADED - while an unknown/private CA is only untrusted from this
 // vantage (reached). certErrorTone must split them; lumping expired in with
 // private-CA would hand the strictly-worse state the milder ToneReached.
 func TestCertErrorTone(t *testing.T) {
@@ -129,7 +129,7 @@ func withLoopbackProbes(t *testing.T) {
 // TestHTTPStatusFromError pins how a proxied backend status is recovered. The
 // apiserver relays a backend non-2xx as a typed k8s StatusError (Result's own
 // StatusCode stays 0), so this extraction is the only thing that lets a backend
-// 404 read as "reached" instead of a false "broken" — the exact bug a real
+// 404 read as "reached" instead of a false "broken" - the exact bug a real
 // cluster surfaced that an httptest-only suite could not.
 func TestHTTPStatusFromError(t *testing.T) {
 	nf := apierrors.NewNotFound(schema.GroupResource{Resource: "services"}, "x") // code 404
@@ -148,7 +148,7 @@ func TestHTTPStatusFromError(t *testing.T) {
 // TestIsClusterUnreachable pins the honesty distinction: a transport failure
 // reaching the APISERVER itself (cluster down / stale kubeconfig) must read as
 // "can't test from here" (→ skip), while the apiserver RELAYING a backend
-// failure (a typed StatusError) must NOT — that stays a real backend verdict.
+// failure (a typed StatusError) must NOT - that stays a real backend verdict.
 // The cardinal rule: never condemn a healthy workload because Radar lost its
 // cluster connection.
 func TestIsClusterUnreachable(t *testing.T) {
@@ -161,7 +161,7 @@ func TestIsClusterUnreachable(t *testing.T) {
 		{"apiserver dial refused", errors.New(`Get "https://127.0.0.1:6443/api/v1/.../proxy/": dial tcp 127.0.0.1:6443: connect: connection refused`), true},
 		{"apiserver TLS handshake timeout", errors.New(`net/http: TLS handshake timeout`), true},
 		{"apiserver no such host", errors.New(`dial tcp: lookup apiserver: no such host`), true},
-		// Backend-relayed failures arrive as typed StatusErrors — about the backend, NOT connectivity.
+		// Backend-relayed failures arrive as typed StatusErrors - about the backend, NOT connectivity.
 		{"backend no endpoints (503)", apierrors.NewServiceUnavailable("no endpoints available for service \"echo\""), false},
 		{"rbac forbidden (403)", apierrors.NewForbidden(schema.GroupResource{Resource: "services/proxy"}, "echo", errors.New("denied")), false},
 		{"backend not found (404)", apierrors.NewNotFound(schema.GroupResource{Resource: "services"}, "echo"), false},
@@ -176,10 +176,10 @@ func TestIsClusterUnreachable(t *testing.T) {
 }
 
 // TestProxyUnreachable separates an apiserver "I couldn't reach the backend"
-// 5xx (no endpoints / connection refused / timeout — nothing was reached, must
+// 5xx (no endpoints / connection refused / timeout - nothing was reached, must
 // read as unreachable) from a real backend HTTP response (which is "reached").
 // Both come back as 503 ServiceUnavailable from the apiserver, so only the
-// message distinguishes them — getting this wrong made a zero-endpoint Service
+// message distinguishes them - getting this wrong made a zero-endpoint Service
 // render as "reached · server error", the dishonest signal an infra reader
 // would never trust.
 func TestProxyUnreachable(t *testing.T) {
@@ -188,7 +188,7 @@ func TestProxyUnreachable(t *testing.T) {
 		"error trying to reach service: dial tcp 10.244.0.20:9999: connect: connection refused",
 		"error trying to reach service: dial tcp 10.0.0.5:80: i/o timeout",
 		"no route to host",
-		// Managed control planes (GKE Konnectivity etc.) — these are the
+		// Managed control planes (GKE Konnectivity etc.) - these are the
 		// real messages a truly-unreachable backend produces there.
 		"error dialing backend: No agent available",
 		`proxy error from 127.0.0.1:8131 while dialing 10.0.0.5:8080, code 503: 503 Service Unavailable`,
@@ -199,7 +199,7 @@ func TestProxyUnreachable(t *testing.T) {
 		}
 	}
 	// A genuine backend response (the apiserver proxied successfully and the
-	// app returned 500/404) is NOT a transport failure — it was reached.
+	// app returned 500/404) is NOT a transport failure - it was reached.
 	reached := []string{
 		`an error on the server ("unknown") has prevented the request from succeeding`,
 		"the server could not find the requested resource",
@@ -234,7 +234,7 @@ func TestProxyUnreachableStrict(t *testing.T) {
 	}
 	// Generic transport phrases that leak into a reached-but-degraded backend's
 	// own 5xx body must NOT be treated as unreachable in the strict (code-present)
-	// path — that would false-condemn a backend that genuinely answered 503.
+	// path - that would false-condemn a backend that genuinely answered 503.
 	backendBodyLeaks := []string{
 		"connection refused",
 		"dial tcp: lookup db on 10.96.0.10:53: i/o timeout",
@@ -281,7 +281,7 @@ func TestClassifyProxy5xx(t *testing.T) {
 // TestClassifyHTTPStatus pins the honest reachability vocabulary: reaching any
 // HTTP status proves the transport; the code only refines what was proven.
 // 2xx verifies, 3xx/4xx are "reached" (not failures), 5xx is degraded (reached
-// but erroring) — never an "unreachable/broken" transport failure.
+// but erroring) - never an "unreachable/broken" transport failure.
 func TestClassifyHTTPStatus(t *testing.T) {
 	cases := []struct {
 		code int
@@ -392,7 +392,7 @@ func TestIsCertTrustError(t *testing.T) {
 }
 
 // TestTLSProbe_UntrustedCertReached drives the REAL TLS probe against a server
-// presenting an untrusted (self-signed) cert — a genuine x509 handshake, not a
+// presenting an untrusted (self-signed) cert - a genuine x509 handshake, not a
 // string mock. The honest result is "reached · cert not trusted from here"
 // (OK=true, ToneReached), never a false unreachable: the TCP+TLS transport
 // completed and a cert was presented, so we DID reach the endpoint.
@@ -434,7 +434,7 @@ func TestSSRFGuard_DeniesInternalTargets(t *testing.T) {
 	if err := denyInternalControl("tcp", "10.0.0.5:80", nil); err != nil {
 		t.Errorf("private cluster IP should be allowed, got %v", err)
 	}
-	// Unspecified addresses (0.0.0.0 / ::) route to localhost on a connect() — some
+	// Unspecified addresses (0.0.0.0 / ::) route to localhost on a connect() - some
 	// Gateway controllers report 0.0.0.0 in status.addresses, so the guard must deny
 	// them too, or a probe reaches services on Radar's own localhost.
 	for _, addr := range []string{"0.0.0.0:80", "[::]:80"} {
@@ -453,7 +453,7 @@ func TestSSRFGuard_DeniesInternalTargets(t *testing.T) {
 
 // TestIsBackendTimeout pins the slow-backend vs cluster-down distinction: a context
 // deadline (slow/starting backend answered via the proxy) ALSO satisfies net.Error,
-// so it matches isClusterUnreachable too — proxyResult must check isBackendTimeout
+// so it matches isClusterUnreachable too - proxyResult must check isBackendTimeout
 // FIRST so a slow app isn't blamed on the kubeconfig.
 func TestIsBackendTimeout(t *testing.T) {
 	if !isBackendTimeout(context.DeadlineExceeded) {
@@ -471,7 +471,7 @@ func TestIsBackendTimeout(t *testing.T) {
 	// The ordering guarantee: a deadline ALSO reads as cluster-unreachable, which is
 	// exactly why proxyResult must test isBackendTimeout before isClusterUnreachable.
 	if !isClusterUnreachable(context.DeadlineExceeded) {
-		t.Error("a deadline also matches isClusterUnreachable (net.Error) — ordering matters")
+		t.Error("a deadline also matches isClusterUnreachable (net.Error) - ordering matters")
 	}
 }
 
@@ -483,7 +483,7 @@ func TestIsAPIServerTunnelDown(t *testing.T) {
 		}
 	}
 	// "error dialing backend" is AMBIGUOUS (tunnel OR a backend that refused through a
-	// working tunnel) — it must NOT skip; it stays on the condemn path.
+	// working tunnel) - it must NOT skip; it stays on the condemn path.
 	if isAPIServerTunnelDown(errors.New("error dialing backend: connection refused")) {
 		t.Error(`"error dialing backend" is ambiguous and must NOT be treated as tunnel-down`)
 	}

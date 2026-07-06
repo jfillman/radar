@@ -60,7 +60,7 @@ func registerTools(server *mcp.Server) {
 	// maxInClusterProbes transient, self-destructing probe pods (one per intended
 	// route, sequentially) to test the real dataplane. That makes it non-read-only
 	// (a client gating on readOnlyHint must know the inCluster arg can create pods),
-	// but NOT destructive — each pod is additive and deletes itself within ~60s — so
+	// but NOT destructive - each pod is additive and deletes itself within ~60s - so
 	// DestructiveHint stays false.
 	diagnoseAnno := &mcp.ToolAnnotations{
 		DestructiveHint: boolPtr(false),
@@ -199,7 +199,7 @@ func registerTools(server *mcp.Server) {
 			"For network entry kinds (Service/Ingress/HTTPRoute/GRPCRoute/Gateway), " +
 			"returns a coverage-honest reachability diagnosis instead of pod-log fan-out: a " +
 			"`summary` (headline + tested/passed/failed/skipped counts over the INTENDED routes), " +
-			"`routes` (each declared route's outcome + confidence — `indirect` means reached only " +
+			"`routes` (each declared route's outcome + confidence - `indirect` means reached only " +
 			"via the API-server proxy, NOT the live-traffic path), `notTested` (what we couldn't " +
 			"probe + why), a NAMED `brokenRoute`, and `path` (hops with their static findings). Use " +
 			"for 'traffic is not reaching this service / route / ingress', backend port " +

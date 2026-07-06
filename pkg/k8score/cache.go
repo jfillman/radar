@@ -1212,7 +1212,7 @@ func (rc *ResourceCache) IsKindClusterWide(resource string) bool {
 }
 
 // KindCoversNamespace reports whether the informer for a resource (plural
-// lowercase, e.g. "pods") reliably covers the given namespace — cluster-wide, or
+// lowercase, e.g. "pods") reliably covers the given namespace - cluster-wide, or
 // namespace-scoped to exactly that namespace. When it returns false, an EMPTY
 // list for that namespace is NOT authoritative: the informer may simply not watch
 // it (namespace-scoped RBAC), so callers must not infer "0 objects" from a miss.

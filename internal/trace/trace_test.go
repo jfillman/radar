@@ -347,7 +347,7 @@ func TestBuildTrace_BrokenServiceFlagsBrokenAt(t *testing.T) {
 		t.Fatalf("expected broken verdict with 0 ready pods; got %q (trace=%+v)", trace.Verdict, trace)
 	}
 	// The existing detection attaches "0/N selected pods ready" to the
-	// Service (not each Pod) — that's where the operator can act. So
+	// Service (not each Pod) - that's where the operator can act. So
 	// BrokenAt points at the Service hop (index 0), and the diagnosis
 	// localizes correctly: "this Service has no ready endpoints".
 	if trace.BrokenAt != 0 {
@@ -571,7 +571,7 @@ func TestClassifyHopProbes_TransportFallback(t *testing.T) {
 }
 
 // TestClassifyHopProbes_ReplicaDilutionPreserved: the layer-aware change must
-// NOT break replica dilution — 1 of 3 pods failing its HTTP probe is still
+// NOT break replica dilution - 1 of 3 pods failing its HTTP probe is still
 // transient (real=3, failed=1), not a whole-hop failure.
 func TestClassifyHopProbes_ReplicaDilutionPreserved(t *testing.T) {
 	hop := Hop{Probes: []probe.Result{
@@ -590,7 +590,7 @@ func TestClassifyHopProbes_ReplicaDilutionPreserved(t *testing.T) {
 
 // TestReviseVerdict_UpstreamBreakDoesNotBlameSubject: when every entry path
 // (upstream) is broken but the subject Service + its Pods are healthy, the
-// verdict is broken but must NOT anchor brokenAt to downstream[0] — that would
+// verdict is broken but must NOT anchor brokenAt to downstream[0] - that would
 // render "Service api is broken" and blame a healthy resource. brokenAt stays
 // unanchored and the reason names the real situation.
 func TestReviseVerdict_UpstreamBreakDoesNotBlameSubject(t *testing.T) {
@@ -622,7 +622,7 @@ func TestReviseVerdict_UpstreamBreakDoesNotBlameSubject(t *testing.T) {
 
 // TestComputeVerdict_PartialBackendBreakIsDegraded: one backend route broken
 // among healthy ones is DEGRADED (other routes still deliver), not the
-// confident-wrong "broken — traffic can't pass". brokenAt points at the broken
+// confident-wrong "broken - traffic can't pass". brokenAt points at the broken
 // backend; the reason names it + the route count.
 func TestComputeVerdict_PartialBackendBreakIsDegraded(t *testing.T) {
 	tr := &Trace{Downstream: []Hop{
@@ -645,7 +645,7 @@ func TestComputeVerdict_PartialBackendBreakIsDegraded(t *testing.T) {
 }
 
 // TestComputeVerdict_AllBackendsBrokenIsBroken: when EVERY route is broken,
-// traffic genuinely can't pass — that stays loud-red broken.
+// traffic genuinely can't pass - that stays loud-red broken.
 func TestComputeVerdict_AllBackendsBrokenIsBroken(t *testing.T) {
 	tr := &Trace{Downstream: []Hop{
 		{Resource: ResourceRef{Kind: "Ingress"}, Edge: "entry:Ingress"},
@@ -658,7 +658,7 @@ func TestComputeVerdict_AllBackendsBrokenIsBroken(t *testing.T) {
 }
 
 // TestComputeVerdict_EntryCriticalIsBroken: a critical on the entry hop (no
-// controller address, host unresolvable) means nothing can enter — broken,
+// controller address, host unresolvable) means nothing can enter - broken,
 // anchored on the entry row.
 func TestComputeVerdict_EntryCriticalIsBroken(t *testing.T) {
 	tr := &Trace{Downstream: []Hop{
@@ -672,7 +672,7 @@ func TestComputeVerdict_EntryCriticalIsBroken(t *testing.T) {
 }
 
 // TestComputeVerdict_SingleChainStillBreaks: a Service subject (no backend
-// branches) keeps the flat semantics — a broken Pods hop breaks the path.
+// branches) keeps the flat semantics - a broken Pods hop breaks the path.
 func TestComputeVerdict_SingleChainStillBreaks(t *testing.T) {
 	tr := &Trace{Downstream: []Hop{
 		{Resource: ResourceRef{Kind: "Service", Name: "svc"}},
@@ -684,7 +684,7 @@ func TestComputeVerdict_SingleChainStillBreaks(t *testing.T) {
 }
 
 // TestReviseVerdict_PartialBackendProbeBreakIsDegraded: same rule on the probe
-// path — one route's probes failing while another succeeds is degraded.
+// path - one route's probes failing while another succeeds is degraded.
 func TestReviseVerdict_PartialBackendProbeBreakIsDegraded(t *testing.T) {
 	tr := &Trace{Verdict: VerdictHealthy, BrokenAt: -1, Downstream: []Hop{
 		{Resource: ResourceRef{Kind: "Ingress"}, Edge: "entry:Ingress"},
@@ -702,7 +702,7 @@ func TestReviseVerdict_PartialBackendProbeBreakIsDegraded(t *testing.T) {
 
 // TestComputeVerdict_EntryMissingRefIsPartialDegrade: a missing-backend ref is
 // reported as a critical on the ENTRY hop, but it only breaks that one route.
-// With another healthy route, the verdict is degraded — not the old confident
+// With another healthy route, the verdict is degraded - not the old confident
 // "Ingress is broken" lie.
 func TestComputeVerdict_EntryMissingRefIsPartialDegrade(t *testing.T) {
 	tr := &Trace{Downstream: []Hop{
@@ -721,7 +721,7 @@ func TestComputeVerdict_EntryMissingRefIsPartialDegrade(t *testing.T) {
 }
 
 // TestComputeVerdict_EntryMissingRefAllRoutesBroken: when the missing ref is the
-// ONLY route, traffic genuinely can't pass — stays broken.
+// ONLY route, traffic genuinely can't pass - stays broken.
 func TestComputeVerdict_EntryMissingRefAllRoutesBroken(t *testing.T) {
 	tr := &Trace{Downstream: []Hop{
 		{Resource: ResourceRef{Kind: "Ingress"}, Edge: "entry:Ingress", Findings: []Finding{{Code: "missing_ref:x", Severity: SeverityCritical}}},
@@ -734,7 +734,7 @@ func TestComputeVerdict_EntryMissingRefAllRoutesBroken(t *testing.T) {
 
 // TestClassifyHopProbes_DataPathWinsOverApiserver: in-cluster, the pod-to-pod
 // data path succeeds while the apiserver proxy fails (RBAC denied / non-HTTP).
-// The hop is reachable via the REAL path — an apiserver-proxy failure must not
+// The hop is reachable via the REAL path - an apiserver-proxy failure must not
 // condemn it (that divergence is an info finding, not a broken verdict).
 func TestClassifyHopProbes_DataPathWinsOverApiserver(t *testing.T) {
 	hop := Hop{Probes: []probe.Result{
@@ -750,7 +750,7 @@ func TestClassifyHopProbes_DataPathWinsOverApiserver(t *testing.T) {
 // TestAnyProbeReached_FailedProbeIsNotReached: the "reached a server but didn't
 // verify the exact route" reason must NOT fire when every probe FAILED (e.g. the
 // apiserver-proxy got connection-refused because the cluster API is down). A
-// failed probe has OK==false and reached nothing — claiming "reached a server"
+// failed probe has OK==false and reached nothing - claiming "reached a server"
 // there is a false-heal. Only a probe that actually answered (OK) counts.
 func TestAnyProbeReached_FailedProbeIsNotReached(t *testing.T) {
 	failedOnly := &Trace{Downstream: []Hop{{Probes: []probe.Result{
@@ -767,7 +767,7 @@ func TestAnyProbeReached_FailedProbeIsNotReached(t *testing.T) {
 		t.Error("a skipped-only probe set must not count as 'reached a server'")
 	}
 
-	// A TCP port that actually answered DID reach a server — the reason is honest.
+	// A TCP port that actually answered DID reach a server - the reason is honest.
 	reached := &Trace{Downstream: []Hop{{Probes: []probe.Result{
 		{Layer: probe.LayerTCP, Path: probe.PathData, OK: true},
 	}}}}
@@ -778,7 +778,7 @@ func TestAnyProbeReached_FailedProbeIsNotReached(t *testing.T) {
 
 // TestComputeVerdict_PartialReadyBackendIsDegradedNotBroken: a Service whose
 // backend has SOME ready endpoints (1 of 2 pods, the other crashlooping) still
-// SERVES traffic — it must read degraded, never the false-condemn "broken"
+// SERVES traffic - it must read degraded, never the false-condemn "broken"
 // (which the UI paints ✗ unreachable). A per-pod crash among serving replicas is
 // a degradation, not an outage. The 0-ready case stays broken (genuinely down).
 func TestComputeVerdict_PartialReadyBackendIsDegradedNotBroken(t *testing.T) {
@@ -800,7 +800,7 @@ func TestComputeVerdict_PartialReadyBackendIsDegradedNotBroken(t *testing.T) {
 
 // TestComputeVerdict_GatewayPartialRouteBreakIsDegraded: a Gateway with one
 // healthy and one broken attached route is degraded (1 of 2 routes), not the
-// whole-Gateway "broken" — same parallel-branch honesty as Ingress backends.
+// whole-Gateway "broken" - same parallel-branch honesty as Ingress backends.
 func TestComputeVerdict_GatewayPartialRouteBreakIsDegraded(t *testing.T) {
 	tr := &Trace{Downstream: []Hop{
 		{Resource: ResourceRef{Kind: "Gateway", Name: "gw"}, Edge: "entry:Gateway"},
@@ -818,7 +818,7 @@ func TestComputeVerdict_GatewayPartialRouteBreakIsDegraded(t *testing.T) {
 
 // TestComputeVerdict_UpstreamMissingRefDoesNotDegradeBackend: a healthy Service
 // that is a backend of an Ingress whose OTHER route points at a missing Service
-// must stay healthy — the broken sibling route doesn't reach this subject, so
+// must stay healthy - the broken sibling route doesn't reach this subject, so
 // it can't degrade it.
 func TestComputeVerdict_UpstreamMissingRefDoesNotDegradeBackend(t *testing.T) {
 	tr := &Trace{
@@ -835,7 +835,7 @@ func TestComputeVerdict_UpstreamMissingRefDoesNotDegradeBackend(t *testing.T) {
 
 // TestReviseVerdict_MultiBackendEntryProbeFailBreaks: when the entry hop's own
 // probes fail (front door unreachable) but a backend looks healthy, the
-// multi-backend probe fold must still report broken — a reachable backend
+// multi-backend probe fold must still report broken - a reachable backend
 // behind an unreachable entry is not "healthy".
 func TestReviseVerdict_MultiBackendEntryProbeFailBreaks(t *testing.T) {
 	tr := &Trace{
@@ -869,7 +869,7 @@ func TestReviseVerdict_MultiBackendEntryDegradedUpgrades(t *testing.T) {
 // TestReproducerForRef_PodTargetsTheSpecificPod pins the state-blind fallback: a
 // pod-level finding must point at the specific pod (describe pod <name>), not the
 // Pods collection's "get pods" or a Service's "describe service". The fallback is
-// a single clean command — podDiagnosis overrides it with the state-true variant
+// a single clean command - podDiagnosis overrides it with the state-true variant
 // (e.g. logs --previous) when the live container state is known.
 func TestReproducerForRef_PodTargetsTheSpecificPod(t *testing.T) {
 	cmd := reproducerForRef(ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-abc123"})
@@ -955,7 +955,7 @@ func TestTargetPortAdvisory_FiresOnPositiveEvidence(t *testing.T) {
 		t.Errorf("suspect Service ports = %v, want [80] (so the probe reconcile can clear it)", suspects)
 	}
 	if f.Severity != SeverityWarning {
-		t.Errorf("severity = %q, want warning (never broken — containerPort is informational)", f.Severity)
+		t.Errorf("severity = %q, want warning (never broken - containerPort is informational)", f.Severity)
 	}
 	if f.Code != "svc:targetport-no-listener" {
 		t.Errorf("code = %q", f.Code)
@@ -969,10 +969,10 @@ func TestTargetPortAdvisory_FiresOnPositiveEvidence(t *testing.T) {
 }
 
 // TestTargetPortAdvisory_SilentWhenNoPortsDeclared: pods declare NO container
-// ports (the common case — ports are optional) -> no advisory, no false degrade.
+// ports (the common case - ports are optional) -> no advisory, no false degrade.
 func TestTargetPortAdvisory_SilentWhenNoPortsDeclared(t *testing.T) {
 	if _, _, ok := targetPortAdvisory(b2Service(80, 9999), []*corev1.Pod{b2ReadyPod("p")}); ok {
-		t.Error("must not fire when pods declare no container ports — a mismatch means nothing there")
+		t.Error("must not fire when pods declare no container ports - a mismatch means nothing there")
 	}
 }
 
@@ -1019,7 +1019,7 @@ func httpRouteWithBackend(name, ns, backendName, backendNS string) *unstructured
 }
 
 // assertRedactedHop fails unless the hop carries exactly the cross-namespace
-// redaction marker — endpointSource:"unknown" + the single rbac finding, and no
+// redaction marker - endpointSource:"unknown" + the single rbac finding, and no
 // leaked real findings. Shared by the three CR5 per-site tests.
 func assertRedactedHop(t *testing.T, hop *Hop) {
 	t.Helper()

@@ -5,7 +5,7 @@ import type { Trace, RouteResult, Hop, ProbeResult } from './types'
 // Anti-drift pin: the one operator-facing name for the apiserver-proxy vantage
 // MUST stay identical to the Go const VantageAPIServer (coverage.go), which
 // TestVantageAPIServerName pins to the same literal.
-describe('VIA_API_SERVER — single vantage name, must match the Go const', () => {
+describe('VIA_API_SERVER - single vantage name, must match the Go const', () => {
   it('is exactly "via API server"', () => {
     expect(VIA_API_SERVER).toBe('via API server')
   })
@@ -30,7 +30,7 @@ const trace = (o: Partial<Trace>): Trace => ({
 const route = (o: Partial<RouteResult>): RouteResult => ({ route: '/', outcome: 'verified', ...o })
 
 // An Ingress subject whose entry-host probe(s) live on its own hop. The subject is the
-// FRONT DOOR, so the verdict must speak to it — not let the backend route speak for it.
+// FRONT DOOR, so the verdict must speak to it - not let the backend route speak for it.
 const probe = (o: Partial<ProbeResult>): ProbeResult => ({ layer: 'http', target: 'https://shop.example.com/', vantage: 'local', ok: true, ...o })
 const ingressTrace = (hostProbes: ProbeResult[], routes: RouteResult[] = [route({ outcome: 'reached', confidence: 'indirect' })]): Trace =>
   trace({
@@ -39,7 +39,7 @@ const ingressTrace = (hostProbes: ProbeResult[], routes: RouteResult[] = [route(
     routes,
   })
 
-describe('hostFromTarget — host extraction (linear, no ReDoS-prone regex)', () => {
+describe('hostFromTarget - host extraction (linear, no ReDoS-prone regex)', () => {
   it('strips scheme, path, and trailing numeric port', () => {
     expect(hostFromTarget('http://shop.example.com:80/api/v1')).toBe('shop.example.com')
     expect(hostFromTarget('https://host:8443/')).toBe('host')
@@ -82,13 +82,13 @@ describe('reachVerdict - a degraded route names the layer that failed (per-layer
   })
 })
 
-describe('reachVerdict — an ingress-controller problem leads the verdict', () => {
+describe('reachVerdict - an ingress-controller problem leads the verdict', () => {
   it('no-controller finding on the entry hop headlines the banner (not "backend reachable, entry not tested")', () => {
     const t = trace({
       subject: { kind: 'Ingress', namespace: 'p', name: 'orphan' },
       verdict: 'degraded',
       downstream: [{ resource: { kind: 'Ingress', name: 'orphan' }, edge: 'entry:Ingress', findings: [
-        { code: 'ingress:no-controller', severity: 'warning', message: 'No ingress controller is handling this — the routing rules exist but nothing is serving them.' },
+        { code: 'ingress:no-controller', severity: 'warning', message: 'No ingress controller is handling this - the routing rules exist but nothing is serving them.' },
       ], probes: [probe({ layer: 'dns', ok: false, skipped: true, reason: 'no resolve' })] } as Hop],
       routes: [route({ outcome: 'reached', confidence: 'indirect' })],
     })
@@ -99,13 +99,13 @@ describe('reachVerdict — an ingress-controller problem leads the verdict', () 
   })
 })
 
-describe('reachVerdict — no live backend leads with the cause, not "via API server"', () => {
+describe('reachVerdict - no live backend leads with the cause, not "via API server"', () => {
   const backendDownTrace = (podsFindings: Hop['findings'], selected: number): Trace =>
     trace({
       verdict: 'broken',
       brokenAt: 0,
       downstream: [
-        // The Service symptom carries a Pod ref in reality (linkNoReadyToCulprit) —
+        // The Service symptom carries a Pod ref in reality (linkNoReadyToCulprit) -
         // it must NOT outrank the specific pod-failure cause for the headline.
         { resource: { kind: 'Service', name: 's' }, edge: 'entry:Service', findings: [
           { code: `problem:0/${selected} selected pods ready`, severity: 'critical', message: `0/${selected} selected pods ready`, resource: { kind: 'Pod', name: 'culprit' } },
@@ -136,7 +136,7 @@ describe('reachVerdict — no live backend leads with the cause, not "via API se
     expect(v.caveat).toContain('0/2 pods ready')
   })
 
-  it('0 ready but NO failure finding (fresh rollout / pending) → amber "may be starting", NOT a hard ✗ — a transitional state isn\'t an outage', () => {
+  it('0 ready but NO failure finding (fresh rollout / pending) → amber "may be starting", NOT a hard ✗ - a transitional state isn\'t an outage', () => {
     const v = reachVerdict(backendDownTrace([], 1), true)
     expect(v.tone).toBe('degraded')
     expect(v.icon).toBe('⚠')
@@ -227,7 +227,7 @@ describe('reachVerdict — no live backend leads with the cause, not "via API se
     expect(v.text).not.toContain('1 of 2')
   })
 
-  it('multi-backend with ONE healthy backend does NOT condemn "No healthy backend" — a serving sibling means the entry can still serve', () => {
+  it('multi-backend with ONE healthy backend does NOT condemn "No healthy backend" - a serving sibling means the entry can still serve', () => {
     const v = reachVerdict(trace({
       subject: { kind: 'Ingress', namespace: 'p', name: 'multi' },
       verdict: 'degraded',
@@ -243,7 +243,7 @@ describe('reachVerdict — no live backend leads with the cause, not "via API se
     expect(v.text).not.toContain('No healthy backend')
   })
 
-  it('an unreadable (RBAC-redacted) sibling backend blocks the "No healthy backend" headline — an unseen backend might be serving', () => {
+  it('an unreadable (RBAC-redacted) sibling backend blocks the "No healthy backend" headline - an unseen backend might be serving', () => {
     const v = reachVerdict(trace({
       subject: { kind: 'Ingress', namespace: 'p', name: 'multi' },
       verdict: 'broken',
@@ -252,7 +252,7 @@ describe('reachVerdict — no live backend leads with the cause, not "via API se
           { code: 'problem:CrashLoopBackOff', severity: 'critical', message: 'CrashLoopBackOff', resource: { kind: 'Pod', name: 'dead' } },
         ] } as Hop,
         { resource: { kind: 'Service', name: 'other' }, edge: 'Ingress->Service', findings: [
-          { code: 'rbac:cross-namespace-redacted', severity: 'info', message: 'backend in another namespace — not readable' },
+          { code: 'rbac:cross-namespace-redacted', severity: 'info', message: 'backend in another namespace - not readable' },
         ] } as Hop,
       ],
       routes: [route({ route: '/dead', outcome: 'unreachable', confidence: 'indirect' })],
@@ -260,7 +260,7 @@ describe('reachVerdict — no live backend leads with the cause, not "via API se
     expect(v.text).not.toContain('No healthy backend')
   })
 
-  it('a selectorless (manual-endpoints) sibling backend blocks "No healthy backend" — we can\'t judge it from pod readiness', () => {
+  it('a selectorless (manual-endpoints) sibling backend blocks "No healthy backend" - we can\'t judge it from pod readiness', () => {
     const v = reachVerdict(trace({
       subject: { kind: 'Ingress', namespace: 'p', name: 'mix' },
       verdict: 'broken',
@@ -277,7 +277,7 @@ describe('reachVerdict — no live backend leads with the cause, not "via API se
     expect(v.text).not.toContain('No healthy backend')
   })
 
-  it('scaled-to-0 (0 pods SELECTED) does NOT trigger backend-down — it keeps its own benign read', () => {
+  it('scaled-to-0 (0 pods SELECTED) does NOT trigger backend-down - it keeps its own benign read', () => {
     const v = reachVerdict(trace({
       verdict: 'degraded',
       downstream: [
@@ -289,9 +289,9 @@ describe('reachVerdict — no live backend leads with the cause, not "via API se
   })
 })
 
-describe('reachVerdict — Ingress front door is stated separately from the backend', () => {
+describe('reachVerdict - Ingress front door is stated separately from the backend', () => {
   it('host REACHED from outside → ✓ "Front door confirmed from outside" (success is first-class, not buried)', () => {
-    // A genuine 2xx carries tone 'healthy' — only that earns "confirmed" (a bare
+    // A genuine 2xx carries tone 'healthy' - only that earns "confirmed" (a bare
     // TCP/TLS connect or a 5xx must not, per the front-door honesty fix).
     const v = reachVerdict(ingressTrace([probe({ layer: 'http', ok: true, tone: 'healthy', detail: 'HTTP 200' })]), true)
     expect(v.icon).toBe('✓')
@@ -304,7 +304,7 @@ describe('reachVerdict — Ingress front door is stated separately from the back
     // Headline connects the two facts (backend up BUT entry untested); the caveat
     // explains how the backend was reached + the action. Never claim the entry
     // works, and never the self-contradicting "verify from outside".
-    expect(v.text).toBe('Backend answered via API server — but the Ingress entry point wasn’t tested')
+    expect(v.text).toBe('Backend answered via API server - but the Ingress entry point wasn’t tested')
     // Short caveat stays on screen; the full why + fix lives in detail (tooltip).
     expect(v.caveat?.toLowerCase()).toContain('didn’t resolve')
     expect(v.caveat!.length).toBeLessThan(90) // one line, not a wall of text
@@ -327,12 +327,12 @@ describe('reachVerdict — Ingress front door is stated separately from the back
     ]), true)
     expect(v.icon).toBe('')
     expect(v.tone).toBe('neutral')
-    expect(v.text).toContain('Front door reached — HTTP responded')
+    expect(v.text).toContain('Front door reached - HTTP responded')
     expect(v.text).not.toContain('transport only')
     expect(v.caveat).toContain('HTTP 301')
     expect(v.caveat).not.toContain('HTTP response wasn’t checked')
   })
-  it('host transport-only (TCP ok, NO http probe) → still "transport only — HTTP wasn’t checked"', () => {
+  it('host transport-only (TCP ok, NO http probe) → still "transport only - HTTP wasn’t checked"', () => {
     const v = reachVerdict(ingressTrace([probe({ layer: 'tcp', ok: true })]), true)
     expect(v.icon).toBe('')
     expect(v.tone).toBe('neutral')
@@ -342,10 +342,10 @@ describe('reachVerdict — Ingress front door is stated separately from the back
 })
 
 // The honesty rule the redesign exists to enforce: confidence is a LEVEL, not an
-// alarm. A reached/200 — even via the proxy — reads ✓; ⚠ is reserved for real
+// alarm. A reached/200 - even via the proxy - reads ✓; ⚠ is reserved for real
 // problems (server-error, partial, unreachable). The Tree + Diagram both use this.
-describe('reachVerdict — never a ⚠ on a success', () => {
-  it('reached via proxy (indirect) is NEUTRAL with a caveat — not a green ✓ (overclaims), never a ⚠ (it did reach)', () => {
+describe('reachVerdict - never a ⚠ on a success', () => {
+  it('reached via proxy (indirect) is NEUTRAL with a caveat - not a green ✓ (overclaims), never a ⚠ (it did reach)', () => {
     const v = reachVerdict(trace({ verdict: 'unknown', routes: [route({ outcome: 'reached', confidence: 'indirect' })] }))
     expect(v.icon).toBe('')
     expect(v.tone).toBe('neutral')
@@ -356,7 +356,7 @@ describe('reachVerdict — never a ⚠ on a success', () => {
     const v = reachVerdict(trace({ verdict: 'healthy', routes: [route({ outcome: 'verified', confidence: 'real' })] }))
     expect(v.icon).toBe('✓')
   })
-  it('REACHED-not-verified real route is NEUTRAL, not a green ✓ — "real" confidence means the live path was exercised, not that the route was verified end-to-end (mirrors coverageBannerTone realPass)', () => {
+  it('REACHED-not-verified real route is NEUTRAL, not a green ✓ - "real" confidence means the live path was exercised, not that the route was verified end-to-end (mirrors coverageBannerTone realPass)', () => {
     const v = reachVerdict(trace({ verdict: 'healthy', routes: [route({ outcome: 'reached', confidence: 'real' })] }))
     expect(v.icon).not.toBe('✓')
     expect(v.tone).toBe('neutral')
@@ -377,7 +377,7 @@ describe('reachVerdict — never a ⚠ on a success', () => {
     const v = reachVerdict(trace({ verdict: 'broken', routes: [route({ outcome: 'unreachable' })] }))
     expect(v.icon).toBe('✗')
   })
-  it('un-probed clean config reads "Config valid — not yet tested" (neutral, no green ✓ until a real probe)', () => {
+  it('un-probed clean config reads "Config valid - not yet tested" (neutral, no green ✓ until a real probe)', () => {
     const v = reachVerdict(trace({ verdict: 'healthy', routes: [] }))
     expect(v.icon).toBe('')
     expect(v.tone).toBe('neutral')
@@ -393,7 +393,7 @@ describe('reachVerdict — never a ⚠ on a success', () => {
   })
 })
 
-describe('reachVerdict — benign / indirect / front-door honesty', () => {
+describe('reachVerdict - benign / indirect / front-door honesty', () => {
   it('benign-only (scaled-to-0) probed trace reads amber dormant, NOT "Config looks healthy"', () => {
     const v = reachVerdict(trace({ verdict: 'degraded', routes: [route({ outcome: 'unreachable', benign: true })] }))
     expect(v.tone).toBe('degraded')
@@ -401,10 +401,10 @@ describe('reachVerdict — benign / indirect / front-door honesty', () => {
     expect(v.text).not.toContain('Config looks healthy')
   })
 
-  it('indirect-only unreachable does NOT hard-condemn (✗) — falls to neutral/unknown keeping the honest headline', () => {
+  it('indirect-only unreachable does NOT hard-condemn (✗) - falls to neutral/unknown keeping the honest headline', () => {
     const v = reachVerdict(trace({
       verdict: 'degraded',
-      headline: 'Unreachable via API server — real path not confirmed',
+      headline: 'Unreachable via API server - real path not confirmed',
       routes: [route({ outcome: 'unreachable', confidence: 'indirect' })],
     }))
     expect(v.icon).not.toBe('✗')
@@ -456,7 +456,7 @@ describe('reachVerdict — benign / indirect / front-door honesty', () => {
   })
 })
 
-describe('reachVerdict — a confirmed host must not declare an untested sibling host confirmed (defect 11)', () => {
+describe('reachVerdict - a confirmed host must not declare an untested sibling host confirmed (defect 11)', () => {
   it('2xx on one host + a different declared host whose probe SKIPPED → neutral "one confirmed, another not tested" (no green ✓)', () => {
     const t = ingressTrace([
       probe({ layer: 'http', target: 'https://api.example.com/', ok: true, tone: 'healthy', detail: 'HTTP 200' }),
@@ -479,7 +479,7 @@ describe('reachVerdict — a confirmed host must not declare an untested sibling
   })
 })
 
-describe('reachVerdict — cycle 5 honesty fixes', () => {
+describe('reachVerdict - cycle 5 honesty fixes', () => {
   // Defect 6: a mixed 200 + 5xx front door must not read green "confirmed".
   it('one host 200 + sibling host 5xx → ⚠ partial, never "confirmed from outside"', () => {
     const t = ingressTrace(
@@ -495,7 +495,7 @@ describe('reachVerdict — cycle 5 honesty fixes', () => {
   })
 
   // Defect 7: a proxy-only (indirect) unreachable must not be counted as a confirmed
-  // backend failure in the partial branch — it false-condemns an untested path.
+  // backend failure in the partial branch - it false-condemns an untested path.
   it('one verified/real + one unreachable/indirect → never "1 unreachable" (the proxy-failed route was never tested)', () => {
     const t = trace({
       subject: { kind: 'Service', namespace: 'p', name: 's' },
@@ -510,10 +510,10 @@ describe('reachVerdict — cycle 5 honesty fixes', () => {
   })
 })
 
-describe('reachVerdict — a 2xx host must not declare a sibling 3xx/4xx host confirmed (cycle 11)', () => {
+describe('reachVerdict - a 2xx host must not declare a sibling 3xx/4xx host confirmed (cycle 11)', () => {
   // The single-host path treats a 3xx/4xx as http-reached → neutral "route not
   // verified". The multi-host 2xx branch must apply the SAME rule to a sibling host:
-  // a sibling that returned 3xx/4xx (tone 'reached') is reached, not confirmed — so
+  // a sibling that returned 3xx/4xx (tone 'reached') is reached, not confirmed - so
   // the banner must NOT claim a blanket "Front door confirmed from outside".
   it('2xx on one host + a sibling host that returned 3xx/4xx → neutral, names the unverified sibling (no green ✓)', () => {
     const t = ingressTrace([

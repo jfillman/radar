@@ -30,7 +30,7 @@ deploy-test: frontend embed
 
 # Build a probe image from the CURRENT code and load it into a kind cluster, for
 # developing the in-cluster reachability probe. A -dirty local build's version is
-# not a published tag, so the default image won't exist — load a local one and run
+# not a published tag, so the default image won't exist - load a local one and run
 # radar with --reachability-image $(PROBE_IMAGE). Binary path /radar + ENTRYPOINT
 # match the official image so the probe Job's `["/radar","probe",...]` command works.
 KIND_CLUSTER ?= test

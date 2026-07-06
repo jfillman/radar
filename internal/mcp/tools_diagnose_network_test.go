@@ -35,7 +35,7 @@ func TestBuildNetworkDiagnoseResponse(t *testing.T) {
 		},
 	}
 
-	// The real flow sets tr.Headline in computeCoverage; mirror that — the MCP
+	// The real flow sets tr.Headline in computeCoverage; mirror that - the MCP
 	// now reads the trace's shared headline rather than recomputing it.
 	tr.Headline = trace.CoverageHeadline(tr)
 	resp := buildNetworkDiagnoseResponse(tr)
@@ -81,7 +81,7 @@ func TestBuildNetworkDiagnoseResponse(t *testing.T) {
 }
 
 // Upstream scoping: an upstream entry's missing-ref findings are about ITS
-// sibling routes, not the subject — they must not leak into the subject's
+// sibling routes, not the subject - they must not leak into the subject's
 // response. Other upstream findings (its own problems) are preserved.
 func TestBuildNetworkDiagnoseResponse_UpstreamScoping(t *testing.T) {
 	tr := &trace.Trace{
@@ -138,7 +138,7 @@ func TestBuildNetworkDiagnoseResponse_DiagnosisExposed(t *testing.T) {
 }
 
 // TestInClusterParam_SelfExplanatory pins that the inCluster arg's schema teaches
-// an agent WHAT it does, WHEN to use it, and that it CREATES a pod — so the agent
+// an agent WHAT it does, WHEN to use it, and that it CREATES a pod - so the agent
 // can decide for itself, not just be told a next step it can't take.
 func TestInClusterParam_SelfExplanatory(t *testing.T) {
 	var found string

@@ -1,4 +1,4 @@
-// Package probe runs reachability probes — DNS / TCP / TLS / HTTP — against
+// Package probe runs reachability probes - DNS / TCP / TLS / HTTP - against
 // a target the caller already knows about from declared config. The package
 // is narrow by design: it does not discover targets, crawl URLs, or run as
 // a service. The caller passes a concrete address; this package answers
@@ -14,7 +14,7 @@
 //   - Accept user-supplied URLs. Targets must come from observed cluster
 //     config (Service ports, Ingress addresses, Gateway listeners). The
 //     trace composer enforces this; this package trusts its callers.
-//   - Follow redirects in HTTP probes. One shot per probe — multi-hop
+//   - Follow redirects in HTTP probes. One shot per probe - multi-hop
 //     traces should be modeled as separate probe targets, not as redirect
 //     chains.
 //   - Send a request body, auth headers, or cookies. Every probe is the
@@ -52,12 +52,12 @@ import (
 var dialControl = denyInternalControl
 
 // denyInternalControl is a net.Dialer.Control hook that refuses DIRECT probe
-// connections to loopback, unspecified (0.0.0.0/::), and link-local addresses — most importantly the
+// connections to loopback, unspecified (0.0.0.0/::), and link-local addresses - most importantly the
 // cloud metadata endpoint 169.254.169.254. A user who can set an Ingress host
 // or Gateway address could otherwise point it at an internal target and have
 // Radar's probe reach it on their behalf (SSRF). Legitimate probe targets are
 // declared external hosts and cluster Service/Pod IPs (private ranges like
-// 10.0.0.0/8 stay allowed — those are normal cluster networking); loopback and
+// 10.0.0.0/8 stay allowed - those are normal cluster networking); loopback and
 // link-local are never a legitimate target. Applied to TCP/TLS/HTTP; the
 // apiserver-proxy path doesn't dial directly so it's unaffected.
 func denyInternalControl(_, address string, _ syscall.RawConn) error {
@@ -70,7 +70,7 @@ func denyInternalControl(_, address string, _ syscall.RawConn) error {
 		return nil
 	}
 	// IsUnspecified catches 0.0.0.0 / ::, which on Linux a connect() routes to
-	// 127.0.0.1 / ::1 — so an unspecified address reaches localhost just like a
+	// 127.0.0.1 / ::1 - so an unspecified address reaches localhost just like a
 	// loopback dial (some Gateway controllers report 0.0.0.0 in status.addresses).
 	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return fmt.Errorf("refusing to probe internal address %s (SSRF guard)", ip)
@@ -87,7 +87,7 @@ func denyInternalControl(_, address string, _ syscall.RawConn) error {
 // isCertTrustError reports whether err is a TLS certificate VERIFICATION
 // failure (unknown CA, hostname mismatch, expired) as opposed to a transport
 // or protocol failure. The TCP+TLS transport completed and the server
-// presented a cert — we reached it — so this is never an unreachable service;
+// presented a cert - we reached it - so this is never an unreachable service;
 // treating it as a hard failure would condemn a healthy internal endpoint
 // behind a private CA. Whether the failure is benign-from-here (private CA →
 // ToneReached) or a real degradation (expired / wrong host → ToneDegraded) is
@@ -117,7 +117,7 @@ const (
 )
 
 // Layer names which network layer this Result attests to. Higher layers
-// strictly imply lower layers succeeded — if HTTP returns ok, TCP and DNS
+// strictly imply lower layers succeeded - if HTTP returns ok, TCP and DNS
 // did too.
 type Layer string
 
@@ -147,14 +147,14 @@ const (
 // OK bool conflates: did we reach the target, did the exact thing we asked
 // for succeed, and is the server itself erroring.
 //
-//	healthy   — reached AND verified (HTTP 2xx; a clean DNS/TCP/TLS layer)
-//	reached   — reached an HTTP server, but what we asked for is unproven
+//	healthy   - reached AND verified (HTTP 2xx; a clean DNS/TCP/TLS layer)
+//	reached   - reached an HTTP server, but what we asked for is unproven
 //	            (3xx redirect not followed, or 4xx route/auth not what we
 //	            hit). This is NOT a reachability failure and must not render
 //	            as "verified" nor as "degraded/broken".
-//	degraded  — reached, but the server answered 5xx. Traffic passed; the
+//	degraded  - reached, but the server answered 5xx. Traffic passed; the
 //	            backend is erroring. Never escalates to "unreachable/broken".
-//	unhealthy — could not reach (transport failure: DNS/TCP/TLS/EOF/timeout).
+//	unhealthy - could not reach (transport failure: DNS/TCP/TLS/EOF/timeout).
 //
 // Empty Tone is the default; consumers infer from Skipped + OK in that case.
 type Tone string
@@ -188,7 +188,7 @@ func classifyHTTPStatus(code int) (Tone, string) {
 		// which a network-path diagnosis does not judge.
 		return ToneReached, fmt.Sprintf("HTTP %d · reached, server error", code)
 	case code == 401 || code == 407:
-		// The server answered and is demanding auth — a reachability SUCCESS, and a
+		// The server answered and is demanding auth - a reachability SUCCESS, and a
 		// precise signal (the path works; you just need credentials), never "broken".
 		return ToneReached, fmt.Sprintf("HTTP %d · reached, authentication required", code)
 	case code == 403:
@@ -270,7 +270,7 @@ func DNS(ctx context.Context, host string, vantage Vantage) Result {
 	return r
 }
 
-// classifyDNSError turns a resolver error into the operator's mental model — the
+// classifyDNSError turns a resolver error into the operator's mental model - the
 // difference between "wrong name" (NXDOMAIN) and "your DNS is broken" (SERVFAIL/
 // timeout) is the difference between two completely different fixes. Rides the
 // lookup we already do, so it's free.
@@ -279,21 +279,21 @@ func classifyDNSError(err error) string {
 	if errors.As(err, &de) {
 		switch {
 		case de.IsNotFound:
-			return "NXDOMAIN — the name doesn’t exist (typo, or not registered in this DNS)"
+			return "NXDOMAIN - the name doesn’t exist (typo, or not registered in this DNS)"
 		case de.IsTimeout:
-			return "DNS timeout — the resolver didn’t answer in time"
+			return "DNS timeout - the resolver didn’t answer in time"
 		case de.IsTemporary:
-			return "SERVFAIL — the resolver returned a temporary error (DNS server problem, not the name)"
+			return "SERVFAIL - the resolver returned a temporary error (DNS server problem, not the name)"
 		}
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return "DNS timeout — the resolver didn’t answer in time"
+		return "DNS timeout - the resolver didn’t answer in time"
 	}
 	return "DNS lookup failed"
 }
 
 // TCP attempts a single connect+close against addr ("host:port" or
-// "ip:port"). On success the connection is closed immediately — we only
+// "ip:port"). On success the connection is closed immediately - we only
 // signal that the kernel accepted SYN/ACK, not that any application is
 // reading. Timeout is enforced by ctx.
 func TCP(ctx context.Context, addr string, vantage Vantage) Result {
@@ -410,20 +410,20 @@ func HTTP(ctx context.Context, url, host string, vantage Vantage) Result {
 		return r
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// Getting any HTTP status means the transport reached a server — that is
+	// Getting any HTTP status means the transport reached a server - that is
 	// the reachability claim this probe exists to make. The status only
 	// refines what was proven; 4xx/5xx are not transport failures and never
 	// set Error (which the UI reserves for unreachable-red rows).
 	r.OK = true
 	r.Tone, r.Detail = classifyHTTPStatus(resp.StatusCode)
-	// Name where a redirect points — we don't FOLLOW it (that could cross a trust,
+	// Name where a redirect points - we don't FOLLOW it (that could cross a trust,
 	// auth, or cluster boundary), but the destination is the useful signal.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		if loc := strings.TrimSpace(resp.Header.Get("Location")); loc != "" {
 			r.Detail += " → " + loc
 		}
 	}
-	// Cert inspection rides the TLS handshake the client already completed — surface
+	// Cert inspection rides the TLS handshake the client already completed - surface
 	// expiry (the #1 silent outage) at zero extra cost. Only a VALID cert reaches here
 	// (an expired/untrusted one fails verify and is classified on the error path above).
 	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
@@ -450,7 +450,7 @@ func certExpiringSoon(c *x509.Certificate) bool {
 	return time.Until(c.NotAfter) <= certExpiryWarnDays*24*time.Hour
 }
 
-// classifyCertError names WHY a cert didn't verify — expired vs name-mismatch vs
+// classifyCertError names WHY a cert didn't verify - expired vs name-mismatch vs
 // untrusted CA are three different fixes. Derived from the x509 error type, so no
 // extra handshake is needed.
 func classifyCertError(err error) string {
@@ -471,7 +471,7 @@ func classifyCertError(err error) string {
 
 // certErrorTone splits cert verification failures by whether they are
 // vantage-dependent. An unknown/private CA only fails from a vantage that
-// doesn't trust it — a client that does trust the CA still reaches the service,
+// doesn't trust it - a client that does trust the CA still reaches the service,
 // so it reads ToneReached. An EXPIRED or wrong-host cert is deterministic:
 // every client (including a trusting one) sees the same breakage, so it's a
 // reached-but-degraded front door, ToneDegraded.
@@ -494,7 +494,7 @@ func certErrorTone(err error) Tone {
 func certErrorDetail(prefix string, err error) string {
 	detail := prefix + ", but " + classifyCertError(err)
 	if certErrorTone(err) == ToneReached {
-		return detail + " — verify from a client that trusts the CA."
+		return detail + " - verify from a client that trusts the CA."
 	}
 	return detail + "."
 }
@@ -507,7 +507,7 @@ func certErrorDetail(prefix string, err error) string {
 //
 // The signal is real but partial: it proves the Service has endpoints and
 // at least one backend responds to HTTP. It does NOT prove that traffic
-// from a workload in the cluster would reach the same pod the same way —
+// from a workload in the cluster would reach the same pod the same way -
 // the apiserver-proxy and the data-path are different code paths. The
 // orchestrator tags the Result detail so operators reading the trace know
 // which one ran.
@@ -519,7 +519,7 @@ func ServiceProxy(ctx context.Context, client kubernetes.Interface, namespace, n
 	r := Result{Layer: LayerHTTP, Target: fmt.Sprintf("port %d", port), Vantage: vantage, Path: PathAPIServer}
 	if client == nil {
 		r.Skipped = true
-		r.Reason = "couldn't reach the cluster API from here — reachability can't be tested until the connection is back"
+		r.Reason = "couldn't reach the cluster API from here - reachability can't be tested until the connection is back"
 		return r
 	}
 	portName := fmt.Sprintf("%d", port)
@@ -532,7 +532,7 @@ func ServiceProxy(ctx context.Context, client kubernetes.Interface, namespace, n
 	return proxyResult(ctx, req, r)
 }
 
-// proxySuffix normalizes a probe path for the apiserver-proxy Suffix — always a
+// proxySuffix normalizes a probe path for the apiserver-proxy Suffix - always a
 // leading "/", defaulting to the root.
 func proxySuffix(path string) string {
 	if path == "" {
@@ -546,13 +546,13 @@ func proxySuffix(path string) string {
 
 // PodProxy probes a Pod via the Kubernetes API server proxy. The apiserver
 // routes the request through a kubelet hop rather than kube-proxy, so the
-// result reflects "the cluster API can reach this pod" — not necessarily
+// result reflects "the cluster API can reach this pod" - not necessarily
 // the same as pod-to-pod direct dial.
 func PodProxy(ctx context.Context, client kubernetes.Interface, namespace, name string, port int32, path string, vantage Vantage) Result {
 	r := Result{Layer: LayerHTTP, Target: fmt.Sprintf("%s port %d", name, port), Vantage: vantage, Path: PathAPIServer}
 	if client == nil {
 		r.Skipped = true
-		r.Reason = "couldn't reach the cluster API from here — reachability can't be tested until the connection is back"
+		r.Reason = "couldn't reach the cluster API from here - reachability can't be tested until the connection is back"
 		return r
 	}
 	portName := fmt.Sprintf("%d", port)
@@ -569,12 +569,12 @@ func PodProxy(ctx context.Context, client kubernetes.Interface, namespace, name 
 // the honest reachability vocabulary. The apiserver forwards the backend's
 // HTTP status as the outer status, so capturing the code (not just inferring
 // from the error) lets a backend 404/401 read as "reached" instead of a false
-// "broken" — probing `/` on a path-routed app must not look like an outage.
+// "broken" - probing `/` on a path-routed app must not look like an outage.
 //
 // The status code is authoritative and is trusted FIRST: client-go reports any
 // non-2xx as an error (and even wraps a proxied backend 404 as a typed
 // NotFound), so inferring reachability from the error would misread a backend
-// 404 as "broken" — verified against a real cluster. The only apiserver-level
+// 404 as "broken" - verified against a real cluster. The only apiserver-level
 // refusal handled specially is RBAC Forbidden, where we never reached the
 // backend at all. A non-2xx with NO status code is a genuine transport failure
 // between the apiserver and the backend.
@@ -588,45 +588,45 @@ func proxyResult(ctx context.Context, req *rest.Request, r Result) Result {
 	if code == 0 {
 		// When a backend answers non-2xx the apiserver relays it as a typed
 		// k8s StatusError (a backend 404 → NotFound, 500 → InternalError) and
-		// Result.StatusCode stays 0 — the real HTTP status is on the error.
+		// Result.StatusCode stays 0 - the real HTTP status is on the error.
 		code = httpStatusFromError(err)
 	}
-	// The apiserver ITSELF was unreachable (radar→apiserver dial failed — the
+	// The apiserver ITSELF was unreachable (radar→apiserver dial failed - the
 	// cluster is down / the kubeconfig is stale), as opposed to the apiserver
 	// RELAYING a backend failure. Nothing about the workload can be tested from
-	// here, so this must SKIP — never condemn a healthy workload as "unreachable"
+	// here, so this must SKIP - never condemn a healthy workload as "unreachable"
 	// because Radar lost its cluster connection. (A relayed backend failure
 	// arrives as a typed StatusError with a real status code and is handled below.)
 	// A context deadline means the apiserver proxy didn't get a response within our
-	// probe budget — almost always a SLOW backend (cold start), not a lost cluster
+	// probe budget - almost always a SLOW backend (cold start), not a lost cluster
 	// connection (which fails fast with connection-refused). It ALSO satisfies
-	// net.Error, so it must be caught BEFORE isClusterUnreachable — otherwise a slow
+	// net.Error, so it must be caught BEFORE isClusterUnreachable - otherwise a slow
 	// app gets blamed on the kubeconfig. Skip with a backend-timeout reason.
 	if code == 0 && isBackendTimeout(err) {
 		r.Skipped = true
-		r.Reason = "the backend didn't respond within the probe budget — it may be slow or still starting (not a cluster-connection problem)"
+		r.Reason = "the backend didn't respond within the probe budget - it may be slow or still starting (not a cluster-connection problem)"
 		return r
 	}
 	if code == 0 && isClusterUnreachable(err) {
 		r.Skipped = true
-		r.Reason = "couldn't reach the cluster API from here — reachability can't be tested until the connection is back"
+		r.Reason = "couldn't reach the cluster API from here - reachability can't be tested until the connection is back"
 		return r
 	}
-	// The managed control-plane TUNNEL (Konnectivity/egress agent) is down — the
+	// The managed control-plane TUNNEL (Konnectivity/egress agent) is down - the
 	// apiserver itself is fine, but it can't relay to the backend because its proxy
 	// plumbing is out. That's a control-plane outage, not the workload being down,
 	// so SKIP rather than condemn (matched by proxyUnreachable below, which would
-	// paint a healthy workload red). Only the UNAMBIGUOUS infra signatures qualify —
+	// paint a healthy workload red). Only the UNAMBIGUOUS infra signatures qualify -
 	// "error dialing backend" is left to the condemn path since it can also mean the
 	// backend genuinely refused through a working tunnel.
 	if code == 0 && isAPIServerTunnelDown(err) {
 		r.Skipped = true
-		r.Reason = "couldn't reach the backend through the cluster's API-server tunnel (control-plane connectivity) — reachability can't be tested from here"
+		r.Reason = "couldn't reach the backend through the cluster's API-server tunnel (control-plane connectivity) - reachability can't be tested from here"
 		return r
 	}
 	switch {
 	case apierrors.IsForbidden(err) && strings.Contains(err.Error(), "proxy"):
-		// RBAC denied the proxy verb itself — we never reached the backend.
+		// RBAC denied the proxy verb itself - we never reached the backend.
 		// The message references the "services/proxy" / "pods/proxy"
 		// subresource, which a backend's own 403 body never does, so this
 		// distinguishes an apiserver refusal from an app that answered 403
@@ -659,7 +659,7 @@ func proxyResult(ctx context.Context, req *rest.Request, r Result) Result {
 		r.Tone, r.Detail = classifyHTTPStatus(code)
 		return r
 	case proxyUnreachable(err):
-		// No concrete backend status — the error MESSAGE proves the apiserver/proxy
+		// No concrete backend status - the error MESSAGE proves the apiserver/proxy
 		// could not reach the backend (no ready endpoints, dial refused, timeout,
 		// or a managed control-plane tunnel down: GKE Konnectivity / EKS / AKS).
 		// Nothing was reached: confidently unreachable, with a specific message.
@@ -683,7 +683,7 @@ func Skipped(layer Layer, target string, vantage Vantage, reason string) Result 
 
 // SkippedCmd is Skipped plus a copyable command that fills the gap the probe
 // couldn't verify itself. Pass an empty command for skips that can't form an
-// honest one — those stay prose-only rather than show a bogus command.
+// honest one - those stay prose-only rather than show a bogus command.
 func SkippedCmd(layer Layer, target string, vantage Vantage, reason, command string) Result {
 	r := Skipped(layer, target, vantage, reason)
 	r.Command = command
@@ -693,10 +693,10 @@ func SkippedCmd(layer Layer, target string, vantage Vantage, reason, command str
 // isClusterUnreachable reports whether the error is a transport-level failure
 // reaching the APISERVER itself (radar→apiserver), as opposed to the apiserver
 // relaying a backend failure. A k8s StatusError (or any typed apierror) means
-// the apiserver RESPONDED — that's about the backend, never apiserver
+// the apiserver RESPONDED - that's about the backend, never apiserver
 // connectivity. A bare net/dial error reaching the apiserver host means Radar
 // can't reach the cluster at all: nothing about the workload can be concluded.
-// isBackendTimeout reports whether the error is a context deadline — the apiserver
+// isBackendTimeout reports whether the error is a context deadline - the apiserver
 // proxy didn't return within our probe budget. That's a slow/starting BACKEND, not
 // a lost cluster connection. context.DeadlineExceeded also satisfies net.Error, so
 // callers must check this BEFORE isClusterUnreachable (which would otherwise blame
@@ -706,7 +706,7 @@ func isBackendTimeout(err error) bool {
 }
 
 // isAPIServerTunnelDown reports whether the error is an UNAMBIGUOUS managed
-// control-plane tunnel outage (Konnectivity / egress agent absent or closed) —
+// control-plane tunnel outage (Konnectivity / egress agent absent or closed) -
 // the apiserver can't relay to ANY backend, so nothing about the workload was
 // tested. Distinct from a backend that genuinely refused through a working tunnel
 // ("error dialing backend"), which stays a real unreachable. These phrases come
@@ -759,7 +759,7 @@ func isClusterUnreachable(err error) bool {
 // could not reach the backend at all (so nothing was "reached"), as opposed to
 // the backend answering with an HTTP status. The apiserver uses 503
 // ServiceUnavailable for both "no ready endpoints" and "couldn't dial the
-// backend", and a backend's own 503 is generic — so the message signature, not
+// backend", and a backend's own 503 is generic - so the message signature, not
 // the code, is what distinguishes a transport failure from a real response.
 func proxyUnreachable(err error) bool {
 	if err == nil {
@@ -778,7 +778,7 @@ func proxyUnreachable(err error) bool {
 		// Managed control planes (GKE Konnectivity, AKS/EKS egress proxies)
 		// tunnel apiserver→backend traffic through an agent. When the tunnel
 		// or backend dial fails the apiserver reports these instead of a bare
-		// "dial tcp" — without them a truly-unreachable backend on GKE would
+		// "dial tcp" - without them a truly-unreachable backend on GKE would
 		// fall through and read as "reached, server error".
 		"error dialing backend",
 		"no agent available",
@@ -800,7 +800,7 @@ func proxyUnreachable(err error) bool {
 	return false
 }
 
-// proxyUnreachableStrict reports apiserver-EXCLUSIVE unreachable signatures —
+// proxyUnreachableStrict reports apiserver-EXCLUSIVE unreachable signatures -
 // phrases only the apiserver/proxy layer emits, which a backend's own response
 // body cannot contain. Used where a real backend status code is present (a
 // gateway-class 5xx the backend may have answered itself): the generic transport
@@ -857,7 +857,7 @@ func httpStatusFromError(err error) int {
 }
 
 func sanitizeError(err error) string {
-	// Strip the OS-specific prefix that net.Error often adds — operators
+	// Strip the OS-specific prefix that net.Error often adds - operators
 	// don't care about "dial tcp" framing, they care about "connection
 	// refused" or "i/o timeout". Keep the message short and parseable.
 	s := err.Error()
@@ -880,7 +880,7 @@ func translateAPIError(err error) string {
 	low := strings.ToLower(s)
 	switch {
 	case strings.Contains(low, "no endpoints available"):
-		return "No ready backend endpoints — there's nothing to reach on this Service."
+		return "No ready backend endpoints - there's nothing to reach on this Service."
 	case strings.Contains(low, "could not find the requested resource"):
 		return "No backend pod is answering on this port via the Kubernetes API."
 	case strings.Contains(low, "forbidden"):
@@ -906,7 +906,7 @@ func translateAPIError(err error) string {
 	case strings.Contains(low, "service unavailable"), strings.Contains(low, "bad gateway"),
 		strings.Contains(low, "gateway timeout"), strings.Contains(low, "503"),
 		strings.Contains(low, "502"), strings.Contains(low, "504"):
-		return "Service unavailable via the Kubernetes API — no ready backend, or the backend couldn't be reached / returned 5xx."
+		return "Service unavailable via the Kubernetes API - no ready backend, or the backend couldn't be reached / returned 5xx."
 	}
 	return sanitizeError(err)
 }

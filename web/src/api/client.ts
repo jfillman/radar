@@ -407,7 +407,7 @@ import type { Trace as NetworkTrace, InClusterCapability, InClusterRunResult } f
 
 // useTrace polls the static path-shaped diagnosis for one network entry
 // kind. 5s refetch + 15s staleTime keeps the drawer feeling live without
-// burning request budget; probes are deliberately excluded — they run via
+// burning request budget; probes are deliberately excluded - they run via
 // fetchTraceWithProbes on operator click.
 export function useTrace(kind: string, namespace: string, name: string, enabled = true) {
   return useQuery<NetworkTrace>({
@@ -421,9 +421,9 @@ export function useTrace(kind: string, namespace: string, name: string, enabled 
 
 // fetchTraceWithProbes is one-shot rather than polled: probes generate real
 // network traffic that observability systems can see, so they are NOT polled.
-// They fire on an explicit, scoped trigger — the operator clicking Run, or
+// They fire on an explicit, scoped trigger - the operator clicking Run, or
 // opening the Reachability tab for a resource (auto-run once per resource, so the
-// tab shows results instead of a blank "click Run" page) — never on every render
+// tab shows results instead of a blank "click Run" page) - never on every render
 // or background refresh. The in-cluster probe (which spawns a Job) stays
 // click-only.
 export function fetchTraceWithProbes(kind: string, namespace: string, name: string, path?: string): Promise<NetworkTrace> {
@@ -439,7 +439,7 @@ export function fetchInClusterCapability(kind: string, namespace: string, name: 
 
 // runInCluster triggers the real-dataplane probe Job. The endpoint returns a
 // JSON body on success AND on denial (with a fallbackCommand), so don't treat a
-// 4xx as a thrown error — parse the body either way.
+// 4xx as a thrown error - parse the body either way.
 export async function runInCluster(kind: string, namespace: string, name: string, req: { target: string; host?: string; scheme?: string; path?: string; layers?: string }): Promise<InClusterRunResult> {
   const response = await apiFetch(`${getApiBase()}/trace/${kind}/${namespace}/${name}/probe-in-cluster`, {
     method: 'POST',
@@ -451,7 +451,7 @@ export async function runInCluster(kind: string, namespace: string, name: string
 
 // InClusterMergedResult is the WHOLE-subject in-cluster test: the server runs every
 // route's live probe, folds them in via the canonical trace.ApplyInClusterResults,
-// and returns the FINALIZED trace — so the frontend displays it directly instead of
+// and returns the FINALIZED trace - so the frontend displays it directly instead of
 // reimplementing a weaker merge that could falsely confirm a sibling route.
 export interface InClusterMergedResult {
   trace: NetworkTrace

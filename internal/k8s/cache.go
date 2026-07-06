@@ -838,8 +838,8 @@ var ErrUnknownDynamicKind = errors.New("unknown resource kind")
 
 // ErrDynamicNotReady is returned when API discovery or the dynamic cache hasn't
 // been wired (early startup / a context without dynamic support). It is a
-// definitive "dynamic support isn't available" — distinct from a transient List
-// failure (RBAC / cache-not-synced) against an available CRD — so callers can
+// definitive "dynamic support isn't available" - distinct from a transient List
+// failure (RBAC / cache-not-synced) against an available CRD - so callers can
 // treat it as a clean no-match rather than as actionable uncertainty.
 var ErrDynamicNotReady = errors.New("dynamic resource support not initialized")
 

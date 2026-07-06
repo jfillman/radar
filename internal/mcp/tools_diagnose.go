@@ -33,8 +33,8 @@ import (
 // pod set for log fan-out; GitOps reconcilers take a no-pods status path.
 type diagnoseInput struct {
 	Kind      string `json:"kind" jsonschema:"kind to diagnose: a workload (pod, deployment, statefulset, daemonset) for logs+events+startup blockers, a GitOps reconciler (application, kustomization, Flux HelmRelease) for sync/health summary + parsed failure cause, or a network entry kind (service, ingress, httproute, grpcroute, gateway) for a path-shaped trace of which hop drops traffic"`
-	Probe     bool   `json:"probe,omitempty" jsonschema:"active reachability test for network entry kinds: when true, augment the static trace with DNS/TCP/TLS/HTTP probes against the declared path. Uses direct TCP when radar is in-cluster, K8s API server proxy from a laptop — the same call works either way. Probes can escalate the static verdict when failures are unanimous on a hop, but never soften broken or unknown. Probe failures attributable to the vantage (e.g. NetworkPolicy blocking radar's path) can produce false-positive escalations; the per-hop chip carries the granular signal. Costs 0-3s wall time. No effect for non-network kinds."`
-	InCluster bool   `json:"inCluster,omitempty" jsonschema:"run the reachability probe from INSIDE the cluster (real dataplane), not from where radar runs. Radar creates UP TO 5 short-lived, self-destructing probe pods (one per intended route, run sequentially) under YOUR RBAC (restricted, non-root, no service-account token); each runs the probe and is deleted within ~60s. USE THIS when a prior diagnose (with probe=true) returned a route with confidence:indirect or verdict:unknown — i.e. 'reached via API server, real-traffic path NOT confirmed' — and you need to confirm the live path; or to test from where NetworkPolicy / service-mesh mTLS actually applies, which the apiserver-proxy vantage cannot. EFFECT: this CREATES pods (the only mutating diagnose option); it needs create-jobs + list-pods + get-pods/log RBAC in the namespace. On success the tested route's confidence becomes 'real' and the verdict/headline reflect the live result; if a probe pod can't start (unschedulable, image pull, an admission webhook injecting init containers) you get a plain-English reason; if you can't create pods you get a copyable kubectl command to run by hand. Runtime scales with the number of routes (each probe pod can take a few seconds, up to ~5x). probe=true is forced on when this is set; only meaningful for network entry kinds."`
+	Probe     bool   `json:"probe,omitempty" jsonschema:"active reachability test for network entry kinds: when true, augment the static trace with DNS/TCP/TLS/HTTP probes against the declared path. Uses direct TCP when radar is in-cluster, K8s API server proxy from a laptop - the same call works either way. Probes can escalate the static verdict when failures are unanimous on a hop, but never soften broken or unknown. Probe failures attributable to the vantage (e.g. NetworkPolicy blocking radar's path) can produce false-positive escalations; the per-hop chip carries the granular signal. Costs 0-3s wall time. No effect for non-network kinds."`
+	InCluster bool   `json:"inCluster,omitempty" jsonschema:"run the reachability probe from INSIDE the cluster (real dataplane), not from where radar runs. Radar creates UP TO 5 short-lived, self-destructing probe pods (one per intended route, run sequentially) under YOUR RBAC (restricted, non-root, no service-account token); each runs the probe and is deleted within ~60s. USE THIS when a prior diagnose (with probe=true) returned a route with confidence:indirect or verdict:unknown - i.e. 'reached via API server, real-traffic path NOT confirmed' - and you need to confirm the live path; or to test from where NetworkPolicy / service-mesh mTLS actually applies, which the apiserver-proxy vantage cannot. EFFECT: this CREATES pods (the only mutating diagnose option); it needs create-jobs + list-pods + get-pods/log RBAC in the namespace. On success the tested route's confidence becomes 'real' and the verdict/headline reflect the live result; if a probe pod can't start (unschedulable, image pull, an admission webhook injecting init containers) you get a plain-English reason; if you can't create pods you get a copyable kubectl command to run by hand. Runtime scales with the number of routes (each probe pod can take a few seconds, up to ~5x). probe=true is forced on when this is set; only meaningful for network entry kinds."`
 	Namespace string `json:"namespace" jsonschema:"resource namespace"`
 	Name      string `json:"name" jsonschema:"resource name"`
 	Container string `json:"container,omitempty" jsonschema:"specific container; defaults to all containers across the workload's pods"`
@@ -181,7 +181,7 @@ func handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, input diagnoseI
 		return handleGitOpsDiagnose(ctx, input, gk, group, resource, tool)
 	}
 	// Network entry kinds get a path-shaped trace instead of pod-log fan-out
-	// — "this Service is broken because the upstream Route's parent Gateway
+	// - "this Service is broken because the upstream Route's parent Gateway
 	// is not Accepted" is a different shape of answer than logs+events. See
 	// internal/trace.
 	if traceKind, ok := networkTraceKind(input.Kind); ok {
@@ -665,7 +665,7 @@ func fetchEventsForResource(cache *k8s.ResourceCache, kind, namespace, name stri
 //
 // networkTraceKind returns the canonical entry-kind name for trace
 // diagnostics, accepting plural and lowercase forms the way agents tend to
-// write them. Empty string + false means "not a network entry kind" — the
+// write them. Empty string + false means "not a network entry kind" - the
 // caller falls through to the workload/pod branch.
 func networkTraceKind(kind string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
@@ -688,14 +688,14 @@ func networkTraceKind(kind string) (string, bool) {
 // routes/notTested carry the per-intended-route truth; brokenRoute NAMES the
 // culprit (no raw array index). path keeps each hop's static findings (so the
 // targetPort/missing-ref/scale-0 diagnosis isn't lost) without the verbose
-// per-probe dump — that story is already projected into routes + localization.
+// per-probe dump - that story is already projected into routes + localization.
 // No flat RelatedIssues: the per-hop Findings are the non-duplicated home for it.
 type networkDiagnoseResponse struct {
 	Subject trace.ResourceRef `json:"subject"`
 	Verdict string            `json:"verdict"` // kept until Wave 4 redefines verdict semantics
 	Reason  string            `json:"reason,omitempty"`
-	// Diagnosis is the lead: the one finding that matters — cause, the named
-	// culprit, the next action — hoisted from path[] so the agent reads the
+	// Diagnosis is the lead: the one finding that matters - cause, the named
+	// culprit, the next action - hoisted from path[] so the agent reads the
 	// "why + what next" without walking the hop chain. nil when there is
 	// nothing to diagnose (every route verified over real traffic).
 	Diagnosis   *trace.Diagnosis    `json:"diagnosis,omitempty"`
@@ -722,7 +722,7 @@ type coverageSummary struct {
 }
 
 // networkHop is a slimmed hop for the agent: identity, edge, static findings,
-// and meta — no probes/config dump (the probe story lives in routes).
+// and meta - no probes/config dump (the probe story lives in routes).
 type networkHop struct {
 	Resource trace.ResourceRef `json:"resource"`
 	Edge     string            `json:"edge,omitempty"`
@@ -744,10 +744,10 @@ func buildNetworkDiagnoseResponse(tr *trace.Trace) networkDiagnoseResponse {
 		Path:        slimNetworkHops(tr.Downstream, false, tr.Subject),
 		// Upstreams are OTHER entries that share this subject as a backend; their
 		// missing-ref findings are usually about THEIR sibling routes, not the
-		// subject's path — scope those out so they don't leak into this diagnosis
+		// subject's path - scope those out so they don't leak into this diagnosis
 		// (B1). But a missing-ref that NAMES the subject (e.g. an upstream Ingress
 		// referencing the subject Service on a port it doesn't expose) is a real
-		// subject break represented only on the upstream hop — keep it.
+		// subject break represented only on the upstream hop - keep it.
 		Upstreams: slimNetworkHops(tr.Upstreams, true, tr.Subject),
 	}
 	// Keep the legacy reason only for a special-shape unknown (selectorless, RBAC
@@ -803,7 +803,7 @@ func withoutMissingRef(fs []trace.Finding, subject trace.ResourceRef) []trace.Fi
 }
 
 // handleNetworkTraceDiagnose is the diagnose tool's response for a network
-// entry kind. It deliberately skips the pod-log fan-out path — the trace IS
+// entry kind. It deliberately skips the pod-log fan-out path - the trace IS
 // the diagnosis, projected into a coverage-honest shape (see networkDiagnoseResponse).
 func handleNetworkTraceDiagnose(ctx context.Context, input diagnoseInput, kind string) (*mcp.CallToolResult, any, error) {
 	if !checkNamespaceAccess(ctx, input.Namespace) {

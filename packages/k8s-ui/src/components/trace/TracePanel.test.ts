@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { hasRealProbes, probeToneToStatus, probeOrigin, backendRouteInfo, routeOutcomeLabel, routeTone, routeOutcomeRank, coverageBannerTone, inClusterOutcome, inClusterEligible } from './TracePanel'
 import type { Trace, Hop, ProbeResult, HopConfig, RouteResult, Coverage } from './types'
 
-describe('in-cluster test — eligibility + outcome', () => {
+describe('in-cluster test - eligibility + outcome', () => {
   const p = (o: Partial<ProbeResult>): ProbeResult => ({ layer: 'http', target: 't', vantage: 'in-cluster', ok: true, ...o })
   it('eligible: indirect or failed routes, NOT real-verified or benign', () => {
     expect(inClusterEligible({ route: '/', outcome: 'verified', confidence: 'indirect' })).toBe(true)
@@ -20,7 +20,7 @@ describe('in-cluster test — eligibility + outcome', () => {
   })
 })
 
-describe('coverageBannerTone — the single honest banner tone', () => {
+describe('coverageBannerTone - the single honest banner tone', () => {
   const cov = (o: Partial<Coverage>): Coverage => ({ tested: 0, passed: 0, failed: 0, skipped: 0, ...o })
   const real = (outcome: RouteResult['outcome']): RouteResult => ({ route: '/', outcome, confidence: 'real' })
   const indirect = (outcome: RouteResult['outcome']): RouteResult => ({ route: '/', outcome, confidence: 'indirect' })
@@ -40,7 +40,7 @@ describe('coverageBannerTone — the single honest banner tone', () => {
   it('none reachable is error', () => {
     expect(coverageBannerTone(cov({ tested: 1, passed: 0, failed: 1 }), [real('unreachable')])).toBe('error')
   })
-  it('all server-error (reached, no pass) is warning not red — matches the degraded verdict', () => {
+  it('all server-error (reached, no pass) is warning not red - matches the degraded verdict', () => {
     expect(coverageBannerTone(cov({ tested: 1, passed: 0, failed: 1 }), [real('server-error')])).toBe('warning')
   })
   it('all-failed-but-BENIGN (intentional scale-to-0) is warning, never red', () => {
@@ -70,7 +70,7 @@ describe('route coverage rendering helpers', () => {
   it('maps failure outcomes honestly', () => {
     expect(routeTone(route({ route: '/', outcome: 'unreachable', confidence: 'real' }))).toBe('unhealthy')
     expect(routeTone(route({ route: '/', outcome: 'server-error', confidence: 'real' }))).toBe('degraded')
-    // A proxy-only (indirect) unreachable never tested the real path — neutral, not red.
+    // A proxy-only (indirect) unreachable never tested the real path - neutral, not red.
     expect(routeTone(route({ route: '/', outcome: 'unreachable', confidence: 'indirect' }))).toBe('unknown')
     // ...and the label carries the qualifier rather than a bare condemnation.
     expect(routeOutcomeLabel(route({ route: '/', outcome: 'unreachable', confidence: 'indirect' }))).toBe('unreachable via API server (real path not confirmed)')
@@ -126,7 +126,7 @@ describe('hasRealProbes', () => {
   })
 })
 
-describe('probeToneToStatus — honest reachability vocabulary', () => {
+describe('probeToneToStatus - honest reachability vocabulary', () => {
   it('maps a reached (3xx/4xx) probe to the calm neutral tone, never green', () => {
     expect(probeToneToStatus(probe({ ok: true, tone: 'reached' }))).toBe('neutral')
   })
@@ -196,7 +196,7 @@ describe('backendRouteInfo', () => {
     expect(backendRouteInfo(e, backend('ghost')).tags).toEqual(['admin.example.com/'])
   })
 
-  it('matches on namespace too — a same-named backend in another namespace is NOT tagged or flagged missing (defect 14)', () => {
+  it('matches on namespace too - a same-named backend in another namespace is NOT tagged or flagged missing (defect 14)', () => {
     // Route declares backend "api" in namespace nsA; the hop is a same-named "api"
     // in nsB. Name-only matching would attach nsA's route tags + missing flag to
     // the wrong backend.

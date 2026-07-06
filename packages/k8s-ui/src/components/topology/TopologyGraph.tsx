@@ -82,7 +82,7 @@ function getEdgeStyle(type: string, isTrafficView: boolean, isTrafficEdge: boole
 
 // Reachability outcome → edge color/dash, set by the Reachability view via
 // TopologyEdge.reachOutcome (distinct from policyEffect, a NetworkPolicy concept).
-// Honest + DISTINCT: "blocked" (a CONSEQUENCE — downstream of a real break) is a gray
+// Honest + DISTINCT: "blocked" (a CONSEQUENCE - downstream of a real break) is a gray
 // DASH; "not-tested" (ABSENCE of probe data) is a lighter DOTTED line. Neither is ever
 // a flowing/green edge that implies traffic crosses a break.
 const REACH_COLORS: Record<string, string> = {
@@ -93,9 +93,9 @@ const REACH_COLORS: Record<string, string> = {
   'not-tested': '#cbd5e1',
 }
 const REACH_DASH: Record<string, string | undefined> = {
-  reached: '5 4', // dashed green — reached, but only via the proxy (not real-traffic verified)
-  blocked: '6 3', // dashed gray — a consequence of an upstream break
-  'not-tested': '2 4', // dotted — we have no probe data, not a failure
+  reached: '5 4', // dashed green - reached, but only via the proxy (not real-traffic verified)
+  blocked: '6 3', // dashed gray - a consequence of an upstream break
+  'not-tested': '2 4', // dotted - we have no probe data, not a failure
 }
 function reachEdgeStyle(o: string): React.CSSProperties {
   return {
@@ -163,7 +163,7 @@ function buildEdges(
 
     // Skip duplicate edges (O(1) with Set). Include the reachability outcome and
     // label in the key: two route edges between the same source/target/type but
-    // with different outcomes (one verified, one unreachable) are DISTINCT routes —
+    // with different outcomes (one verified, one unreachable) are DISTINCT routes -
     // collapsing them would drop the failing route from the diagram.
     const edgeId = `${source}-${target}-${edge.type}${edge.reachOutcome ? `-${edge.reachOutcome}` : ''}${edge.label ? `-${edge.label}` : ''}`
     if (seenEdgeIds.has(edgeId)) continue
@@ -183,7 +183,7 @@ function buildEdges(
       animated,
       // labelTitle (declared route when the label shows an overridden tested
       // path) renders as a native SVG <title> tooltip inside React Flow's edge
-      // text — keeps the declared path available without overwriting the label.
+      // text - keeps the declared path available without overwriting the label.
       label: edge.labelTitle
         ? (<>{edge.label}<title>{edge.labelTitle}</title></>)
         : (edge.label || undefined),
@@ -778,14 +778,14 @@ export function TopologyGraph({
     // when the actual structure hasn't changed
   }, [workingNodes, workingEdges, structureKey, groupingMode, hideGroupHeader, collapsedGroups, groupLevels, handleSetLevel, handleCardClick, onMaximizeNamespace, isTrafficView, expandedPodGroups, handleExpandPodGroup, handleCollapsePodGroup, setNodes, setEdges, layoutRetryCount])
 
-  // Visual-only sync — no relayout. The layout effect above is guarded by
+  // Visual-only sync - no relayout. The layout effect above is guarded by
   // structureKey, which DELIBERATELY ignores node status + edge reachOutcome (a
   // recolor shouldn't pay for an ELK pass). But the Reachability diagram mutates
   // exactly those: clicking Run recolors an edge (e.g. not-tested → verified)
   // WITHOUT changing structure, so the layout effect skips and the new outcome
   // never reaches the canvas. Re-apply the visual attributes here, in place,
   // preserving ELK positions. Scoped to groupingMode 'none' (the reachability
-  // view) — the grouped app topology rebuilds structure on each data refresh and
+  // view) - the grouped app topology rebuilds structure on each data refresh and
   // never relies on in-place restyle, so it stays untouched.
   const visualKey = useMemo(() => {
     if (groupingMode !== 'none') return ''
@@ -803,9 +803,9 @@ export function TopologyGraph({
         const wn = byId.get(node.id)
         if (!wn) return node
         // Re-apply BOTH the status AND the latest node payload (nodeData) so a probe
-        // updates the on-canvas subtitle (e.g. "not reached — break upstream") too,
+        // updates the on-canvas subtitle (e.g. "not reached - break upstream") too,
         // not just the dot color. The detail panel reads the topology node directly,
-        // but the rendered card reads node.data.nodeData — keep it fresh.
+        // but the rendered card reads node.data.nodeData - keep it fresh.
         if (node.data?.status === wn.status && node.data?.nodeData === wn.data) return node
         changed = true
         return { ...node, data: { ...node.data, status: wn.status, nodeData: wn.data } }
@@ -813,7 +813,7 @@ export function TopologyGraph({
       return changed ? next : prev
     })
     setEdges(prev => (prev.length === 0 ? prev : buildEdges(workingEdges, collapsedGroups, groupMapRef.current ?? new Map(), groupingMode, isTrafficView, undefined, prev.length, groupLevels, false)))
-    // layoutEpoch is a dep so this re-applies AFTER any in-flight ELK layout lands —
+    // layoutEpoch is a dep so this re-applies AFTER any in-flight ELK layout lands -
     // a stale layout closure can't leave the canvas painted with pre-probe styles.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visualKey, layoutEpoch])

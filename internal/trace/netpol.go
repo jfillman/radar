@@ -18,7 +18,7 @@ import (
 // actually flows (kindnet creates NetworkPolicy objects but enforces nothing),
 // so a wouldDeny is a strong warning the live in-cluster probe must confirm
 // before any verdict goes red. Everything caller-dependent stays advisory by
-// construction — Radar tests from its own vantage, not the real client pod, so
+// construction - Radar tests from its own vantage, not the real client pod, so
 // it can never assert allow/deny for a rule scoped to specific sources.
 type policyVerdict int
 
@@ -26,17 +26,17 @@ const (
 	policyNotEvaluated policyVerdict = iota
 	// policyNotRestricted: no Ingress-isolating core NetworkPolicy selects the
 	// pods, OR one allows this port from anywhere (empty from). Caller-independent.
-	// Scoped to CORE NetworkPolicy only — never an absolute "nothing blocks this".
+	// Scoped to CORE NetworkPolicy only - never an absolute "nothing blocks this".
 	policyNotRestricted
 	// policyWouldDeny: every eligible endpoint pod is caller-independently denied
 	// this port (classic default-deny, or the port is in no ingress rule).
 	policyWouldDeny
 	// policyAdvisory: a rule allows the port only from specific sources, or pods
 	// disagree, or a named port couldn't be resolved, or a hostNetwork pod is in
-	// play. Radar can't assert — stays advisory.
+	// play. Radar can't assert - stays advisory.
 	policyAdvisory
 	// policyEgressNote: the only policies selecting the pods isolate Egress, not
-	// Ingress — the inbound route is unrestricted, but the pod's OUTBOUND calls
+	// Ingress - the inbound route is unrestricted, but the pod's OUTBOUND calls
 	// may be governed.
 	policyEgressNote
 )
@@ -48,17 +48,17 @@ type policyResult struct {
 	verdict     policyVerdict
 	policyNames []string // core NPs that select at least one endpoint pod (sorted)
 	port        string   // the Service port the verdict is about, ":80" form (operator-facing)
-	// denyPort is the resolved POD/container port the deny applies to — what the
+	// denyPort is the resolved POD/container port the deny applies to - what the
 	// in-cluster data-path probe reports as its Port. The reconcile pass matches
 	// on this so a multi-port backend can't downgrade a real block with another
 	// port's success. 0 when it couldn't be resolved to a single number.
 	denyPort int32
 	// wrongPort is set when the deny is because the port is in no ingress rule
-	// while OTHER ports are allowed — drives the "allows other ports but not X"
+	// while OTHER ports are allowed - drives the "allows other ports but not X"
 	// copy instead of a blanket default-deny message.
 	wrongPort bool
 	// proto is the port's protocol. The in-cluster probe can only confirm a
-	// would-deny on TCP — UDP/SCTP probes are skipped — so the finding copy must
+	// would-deny on TCP - UDP/SCTP probes are skipped - so the finding copy must
 	// not promise a verification the tool can't perform.
 	proto corev1.Protocol
 	// egress carries the allowed-outbound picture for the egress-note verdict
@@ -91,7 +91,7 @@ const (
 //
 // Returns policyNotEvaluated when there's nothing to say (no policies, no pods,
 // or every port resolves clean). The caller turns a non-trivial result into a
-// Finding — this function stays pure and cluster-free so the full taxonomy is
+// Finding - this function stays pure and cluster-free so the full taxonomy is
 // unit-testable.
 func evaluateNetpol(pods []*corev1.Pod, ports []PortMap, policies []*networkingv1.NetworkPolicy) policyResult {
 	pods = nonNilPods(pods)
@@ -180,7 +180,7 @@ func evaluatePort(pods []*corev1.Pod, pm PortMap, ingressPolicies []*networkingv
 
 	for _, pod := range pods {
 		// hostNetwork pods bypass the pod-network NetworkPolicy semantics in
-		// ways that are CNI-specific — never assert deny/allow for them.
+		// ways that are CNI-specific - never assert deny/allow for them.
 		if pod.Spec.HostNetwork {
 			anyHostNetwork = true
 			continue
@@ -227,7 +227,7 @@ func evaluatePort(pods []*corev1.Pod, pm PortMap, ingressPolicies []*networkingv
 		}
 		return policyResult{verdict: policyAdvisory, port: label, advisory: reason}
 	case anyDeny && anyAllow:
-		// Mixed endpoint pods: some would flow, some wouldn't — can't condemn
+		// Mixed endpoint pods: some would flow, some wouldn't - can't condemn
 		// the route, but it's not clean either.
 		return policyResult{verdict: policyAdvisory, port: label, advisory: advisoryMixed}
 	case anyDeny:
@@ -250,7 +250,7 @@ const (
 type podPortVerdict struct {
 	kind podPortKind
 	// otherPortsAllowed: this pod denies the target port, but some rule allows a
-	// DIFFERENT port — distinguishes a "wrong port" misconfig from a full
+	// DIFFERENT port - distinguishes a "wrong port" misconfig from a full
 	// default-deny so the copy can be specific.
 	otherPortsAllowed bool
 }
@@ -304,7 +304,7 @@ func evaluatePodPort(pod *corev1.Pod, podPort int32, proto corev1.Protocol, poli
 
 // ruleMatchesPort reports whether an ingress rule's port set covers the target
 // pod port + protocol. Empty ports = all ports (match). A named rule port
-// resolves against the pod's declared container ports — and per Kubernetes
+// resolves against the pod's declared container ports - and per Kubernetes
 // NetworkPolicy semantics a named port the pod does NOT declare simply does not
 // match (the rule is ignored for that pod), so it's a clean no-match, not an
 // uncertainty. Treating it as "unsure" would let a policy whose only allow rule
@@ -334,7 +334,7 @@ func ruleMatchesPort(rulePorts []networkingv1.NetworkPolicyPort, podPort int32, 
 			}
 			continue
 		}
-		// Named port — resolve against the pod's declared container ports. An
+		// Named port - resolve against the pod's declared container ports. An
 		// undeclared name is a no-match per k8s (the rule doesn't apply here).
 		n, ok := containerPortByName(pod, rp.Port.StrVal, proto)
 		if !ok {
@@ -411,7 +411,7 @@ func selectsAnyPod(sel labels.Selector, pods []*corev1.Pod) bool {
 // filterPortMapsByRef restricts a Service's port maps to those an upstream
 // backendRef references (by numeric port or by Service-port name). With no refs
 // (a bare Service entrypoint) it returns all ports. When refs WERE given but
-// match nothing — an upstream pointing at a port the Service doesn't declare —
+// match nothing - an upstream pointing at a port the Service doesn't declare -
 // it returns empty so the verdict is policyNotEvaluated (silence): falling back
 // to all ports would let a deny on an unrelated, unreferenced port surface a
 // would-deny on a path that never uses it (fail toward noise).

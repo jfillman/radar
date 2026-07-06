@@ -34,7 +34,7 @@ type InClusterTestResult struct {
 // returns the per-route results for the response AND a target→results map keyed by
 // trace.InClusterResultKey for trace.ApplyInClusterResults. A nil client
 // (impersonation failure) or a probe that couldn't run is reported honestly per
-// route with a copyable fallback command — never a panic.
+// route with a copyable fallback command - never a panic.
 //
 // This is the single definition both the REST handler and the MCP diagnose tool
 // call, so the two paths can't diverge (the same per-route keying + fail-toward-
@@ -42,7 +42,7 @@ type InClusterTestResult struct {
 func RunInClusterTests(ctx context.Context, tr *trace.Trace, namespace string) ([]InClusterTestResult, map[string][]probe.Result) {
 	typed := k8s.ClientFromContext(ctx)
 	// Self-read uses radar's OWN service-account client (k8s.GetClient), not the
-	// caller's impersonated one — the deployed image is radar's knowledge. Guard
+	// caller's impersonated one - the deployed image is radar's knowledge. Guard
 	// the typed-nil interface so a nil base client falls through to RADAR_IMAGE.
 	var selfClient kubernetes.Interface
 	if base := k8s.GetClient(); base != nil {
@@ -72,7 +72,7 @@ func RunInClusterTests(ctx context.Context, tr *trace.Trace, namespace string) (
 		}
 		res := InClusterTestResult{Route: r.Route, Target: r.Target, TargetNamespace: r.TargetNamespace, Request: r.InClusterRequest}
 		// No impersonated client → auth/impersonation failed for EVERY route. This
-		// creates no probe pod, so it must be handled BEFORE the cap/counter —
+		// creates no probe pod, so it must be handled BEFORE the cap/counter -
 		// otherwise each nil-client route burns a probe slot and routes past the cap
 		// get mislabeled "capped" instead of reflecting the auth failure.
 		if typed == nil {
@@ -96,17 +96,17 @@ func RunInClusterTests(ctx context.Context, tr *trace.Trace, namespace string) (
 			// The throwaway probe pod has a DIFFERENT identity than the real client,
 			// so a source-scoped NetworkPolicy or mesh mTLS can deny it while real
 			// traffic flows. Never let that escalate the static verdict to a
-			// confident broken/unreachable — keep the failed probe informational and
+			// confident broken/unreachable - keep the failed probe informational and
 			// don't fold it into the route outcome.
 			res.Results = results
-			res.Status = "in-cluster probe from a throwaway pod didn't get through — this can differ from real client traffic (source-scoped NetworkPolicy / mesh mTLS), so it's not treated as a confirmed failure"
+			res.Status = "in-cluster probe from a throwaway pod didn't get through - this can differ from real client traffic (source-scoped NetworkPolicy / mesh mTLS), so it's not treated as a confirmed failure"
 			res.FallbackCommand = FallbackCommand(opts)
 		case r.InClusterRequest.PathGuessed:
 			// Only ONE guessed concrete path of a wildcard/regex route was probed.
-			// Report it (informational) but don't fold it into byTarget — a guessed
+			// Report it (informational) but don't fold it into byTarget - a guessed
 			// path must not escalate the whole pattern route to verified-real.
 			res.Results = results
-			res.Status = "in-cluster probe reached the backend on a GUESSED path — the route is a pattern (wildcard/regex), so this confirms the backend is alive but not that every path the route matches is verified"
+			res.Status = "in-cluster probe reached the backend on a GUESSED path - the route is a pattern (wildcard/regex), so this confirms the backend is alive but not that every path the route matches is verified"
 		default:
 			res.Results = results
 			byTarget[trace.InClusterResultKey(r.Route, r.Target, r.TargetNamespace)] = results
@@ -130,7 +130,7 @@ func fqdnDialTarget(target, namespace string) string {
 
 // inClusterClean reports whether an in-cluster probe set is an unambiguous
 // reach: at least one non-skipped probe succeeded and none failed. Only a clean
-// result is folded into the route verdict — a probe failure from a throwaway pod
+// result is folded into the route verdict - a probe failure from a throwaway pod
 // must never escalate the static verdict to a confident unreachable.
 func inClusterClean(results []probe.Result) bool {
 	sawOK := false
@@ -143,7 +143,7 @@ func inClusterClean(results []probe.Result) bool {
 		}
 		// A 5xx sets OK=true (the transport reached a server) but Tone=Degraded.
 		// The throwaway probe pod's identity/path/auth differs from real clients,
-		// so its 5xx must stay informational — folding it would escalate the route
+		// so its 5xx must stay informational - folding it would escalate the route
 		// to a confident server-error condemn. Not a clean reach.
 		if p.Tone == probe.ToneDegraded {
 			return false

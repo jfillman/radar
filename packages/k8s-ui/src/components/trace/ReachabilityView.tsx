@@ -44,7 +44,7 @@ export function ReachabilityView(props: TracePanelProps) {
   }
   return (
     <div className="flex flex-col gap-3">
-      {/* A failed reachability-probe run must never be a silent no-op — surface it
+      {/* A failed reachability-probe run must never be a silent no-op - surface it
           here (mirrors TracePanel). */}
       {probeError && (
         <AlertBanner variant="error" title="Reachability test failed" message={probeError.message}>
@@ -82,7 +82,7 @@ export function ReachabilityView(props: TracePanelProps) {
 }
 
 function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, probed, onRunInCluster, inClusterRunning, inClusterAllowed, probePath, onApplyProbePath, runNonce }: { trace?: Trace; onNavigate?: (ref: ResourceRef) => void; onRunProbes?: () => void; probeRequested?: boolean; probed?: boolean; onRunInCluster?: () => void; inClusterRunning?: boolean; inClusterAllowed?: boolean; probePath?: string; onApplyProbePath?: (p: string) => void; runNonce?: number }) {
-  // Track the selection by ID, not by node object — the node is re-derived from the
+  // Track the selection by ID, not by node object - the node is re-derived from the
   // CURRENT topology each render, so when a probe (e.g. the in-cluster test) updates
   // the trace, the open detail panel refreshes in place instead of showing stale data
   // until you click away and back.
@@ -90,7 +90,7 @@ function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, p
   const topo = useMemo(() => (trace ? traceToSubgraph(trace, probePath) : null), [trace, probePath])
   const selected = useMemo(() => (selectedId ? topo?.nodes.find((n) => n.id === selectedId) : undefined), [topo, selectedId])
   // Open the graph with the SUBJECT (the resource you're viewing) already selected, so
-  // its detail panel shows by default. Done once per subject — after that the operator
+  // its detail panel shows by default. Done once per subject - after that the operator
   // owns the selection (clicking other nodes, or closing the panel, sticks).
   const initedFor = useRef<string>('')
   useEffect(() => {
@@ -108,15 +108,15 @@ function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, p
   }
   const v = reachVerdict(trace, probed)
   // An in-cluster test has produced results when any hop carries an in-cluster
-  // probe — used to label the in-cluster button as a re-run.
+  // probe - used to label the in-cluster button as a re-run.
   const inClusterTested = [...(trace.downstream ?? []), ...(trace.upstreams ?? [])].some((h) => (h.probes ?? []).some((p) => p.vantage === 'in-cluster'))
-  // Click SELECTS and reveals the hop's detail in place — it must NOT navigate away
+  // Click SELECTS and reveals the hop's detail in place - it must NOT navigate away
   // (that dropped the reachability context). The detail panel offers an explicit
   // "Open ↗" to leave when the operator actually wants the resource page.
   const onNodeClick = (node: TopologyNode) => setSelectedId(node.id)
-  // Size the canvas to the path — a 2-node path shouldn't float in a huge empty grid.
+  // Size the canvas to the path - a 2-node path shouldn't float in a huge empty grid.
   const nodeCount = topo?.nodes.length ?? 2
-  // Give the graph real breathing room — a cramped canvas hides the path. Min is
+  // Give the graph real breathing room - a cramped canvas hides the path. Min is
   // ~2x the old floor; taller paths grow up to a generous cap.
   const canvasHeight = Math.min(640, Math.max(360, nodeCount * 78))
   return (
@@ -148,7 +148,7 @@ function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, p
         />
       </div>
       <ReachabilityExplainer trace={trace} probed={probed} inClusterRunning={inClusterRunning} probePath={probePath} />
-      {/* Canvas + the selected node's detail SIDE BY SIDE — the detail must be
+      {/* Canvas + the selected node's detail SIDE BY SIDE - the detail must be
           immediately visible on click, not stranded below the fold. */}
       <div className="flex gap-3">
         <div style={{ height: canvasHeight }} className="flex-1 min-w-0 rounded-lg border border-theme-border overflow-hidden bg-theme-base">
@@ -201,7 +201,7 @@ function layerView(p: ProbeResult): { tone: StatusTone; text: string } {
 }
 
 // DirectionStack shows one vantage's DNS→TCP→TLS→HTTP chain. Layers the probe didn't
-// attempt are OMITTED (e.g. the proxy does HTTP directly, no DNS/TCP) — but once a
+// attempt are OMITTED (e.g. the proxy does HTTP directly, no DNS/TCP) - but once a
 // layer FAILS, the layers that would follow read "not reached", so the break point is
 // unmistakable instead of just trailing off.
 function DirectionStack({ label, probes }: { label: string; probes: ProbeResult[] }) {
@@ -214,7 +214,7 @@ function DirectionStack({ label, probes }: { label: string; probes: ProbeResult[
     }
     // A LIVE result beats a skipped one; among the same skip-status, prefer the
     // WORSE outcome so a failing sibling (sampled multi-pod in-cluster, multi-port
-    // Service) is never masked by a passing one — fail toward surfacing the
+    // Service) is never masked by a passing one - fail toward surfacing the
     // failure, matching ReachabilityExplainer's worse-wins and nodeOwnStatus
     // (which already marks the node degraded/unhealthy on any bad probe).
     const take = !!cur.skipped !== !!p.skipped
@@ -230,7 +230,7 @@ function DirectionStack({ label, probes }: { label: string; probes: ProbeResult[
       rows.push({ layer: L, p })
       // Only a REAL failure cascades "not reached" to later layers. A skip (DNS not
       // resolvable from this vantage, TLS skipped for plain HTTP) is "not tested
-      // here", not a failure — it must not make absent downstream layers read as a
+      // here", not a failure - it must not make absent downstream layers read as a
       // break that never happened.
       if (!p.skipped && (!p.ok || p.tone === 'unhealthy')) brokenBy = LAYER_NAME[L]
     } else if (brokenBy) {
@@ -263,7 +263,7 @@ function DirectionStack({ label, probes }: { label: string; probes: ProbeResult[
   )
 }
 
-// HopDetailPanel: the selected node's diagnostic as a connection STACK — Config first
+// HopDetailPanel: the selected node's diagnostic as a connection STACK - Config first
 // (static issues), then one DNS→TCP→TLS→HTTP stack per direction it was tried from, so
 // a DevOps engineer reads exactly which layer breaks, and from where.
 function HopDetailPanel({ node, onNavigate, onClose, inClusterRunning }: { node: TopologyNode; onNavigate?: (ref: ResourceRef) => void; onClose?: () => void; inClusterRunning?: boolean }) {
@@ -285,7 +285,7 @@ function HopDetailPanel({ node, onNavigate, onClose, inClusterRunning }: { node:
   // run could be an in-cluster one and mislabel the direct column.
   const directVantage = byDir.get('direct')?.find((p) => p.vantage)?.vantage
   // This node gets dialed in-cluster only if it's a Service/Pods/ExternalName (not an
-  // Ingress/Gateway entry) — so only those show the live "testing…" state, mirroring
+  // Ingress/Gateway entry) - so only those show the live "testing…" state, mirroring
   // the matrix's In-cluster column.
   const inClusterTestable = node.kind === 'Service' || node.kind === 'Pods' || node.kind === 'ExternalName'
   const showTesting = !!inClusterRunning && inClusterTestable
@@ -314,7 +314,7 @@ function HopDetailPanel({ node, onNavigate, onClose, inClusterRunning }: { node:
         </div>
       )}
       {/* While the in-cluster Job runs, the In-cluster section reads "testing…" in
-          place — don't show a stale prior In-cluster stack underneath it. */}
+          place - don't show a stale prior In-cluster stack underneath it. */}
       {dirs.filter((d) => !(d === 'real' && showTesting)).map((d) => <DirectionStack key={d} label={d === 'direct' ? directLaneLabel(directVantage) : DIR_NAME[d]} probes={byDir.get(d)!} />)}
       {showTesting && (
         <div className="flex flex-col gap-0.5">

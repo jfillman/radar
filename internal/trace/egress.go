@@ -58,13 +58,13 @@ type egressSummary struct {
 	dnsCov     dnsCoverage
 	isolated   bool
 	// partialReplicas is set when the egress policies don't select EVERY endpoint
-	// pod — the dest chips and DNS gap then describe only some replicas, so the
+	// pod - the dest chips and DNS gap then describe only some replicas, so the
 	// copy must say "some of this service's pods", not claim it for the whole
 	// Service.
 	partialReplicas bool
 	// hostNetwork is set when at least one endpoint pod runs on the host network,
 	// where NetworkPolicy egress is CNI-specific and likely doesn't govern the
-	// pod — the note must not claim outbound is controlled for it.
+	// pod - the note must not claim outbound is controlled for it.
 	hostNetwork bool
 }
 
@@ -88,21 +88,21 @@ func summarizeEgress(pols []*networkingv1.NetworkPolicy, pods []*corev1.Pod) egr
 	if len(rules) == 0 {
 		// No egress-isolating policy here carries any rule. That is an absolute
 		// deny-all only when EVERY endpoint pod is actually selected by one of
-		// them — with heterogeneous replicas an unselected pod can still call
+		// them - with heterogeneous replicas an unselected pod can still call
 		// out, so the blanket "can't open any outbound" claim would be false.
 		if everyPodDenyAllEgress(pols, pods) {
 			s.denyAllOut = true
 			return s
 		}
 		// Some pods aren't covered: can't assert deny-all and can't assert a DNS
-		// gap either — stay uncertain (silent) with the generic outbound note.
+		// gap either - stay uncertain (silent) with the generic outbound note.
 		s.dnsCov = dnsUncertain
 		return s
 	}
 
 	s.dnsCov = classifyDNS(rules, podsNamespace(pods))
 
-	// A single rule with no peers AND no ports allows everything — it subsumes
+	// A single rule with no peers AND no ports allows everything - it subsumes
 	// the rest, so collapse to one chip instead of a misleading destination list.
 	// But only collapse to the blanket "anywhere" claim when an allow-all rule
 	// applies to EVERY endpoint pod; with heterogeneous replicas (pod A allow-
@@ -114,7 +114,7 @@ func summarizeEgress(pols []*networkingv1.NetworkPolicy, pods []*corev1.Pod) egr
 			if len(rule.To) == 0 && len(rule.Ports) == 0 {
 				s.dests = []egressDest{{
 					text:  "anywhere",
-					title: "An egress rule with no peers and no ports allows all destinations on all ports — egress is isolated but unrestricted.",
+					title: "An egress rule with no peers and no ports allows all destinations on all ports - egress is isolated but unrestricted.",
 					tone:  "accent",
 				}}
 				return s
@@ -143,7 +143,7 @@ func summarizeEgress(pols []*networkingv1.NetworkPolicy, pods []*corev1.Pod) egr
 // dnsGapFires is the gate for the "DNS may be blocked" observation: only when
 // egress is isolated, isn't already a deny-all, and no rule plausibly allows
 // cluster DNS. Corrected from the original spec: the silencer is an all-
-// DESTINATION rule (empty `to`), not an all-PORT rule — CoreDNS lives in
+// DESTINATION rule (empty `to`), not an all-PORT rule - CoreDNS lives in
 // kube-system, so "all ports to a same-namespace pod" does NOT reach it.
 func (s egressSummary) dnsGapFires() bool {
 	// Don't generalize a DNS gap to pods the egress policies don't actually
@@ -158,7 +158,7 @@ func (s egressSummary) dnsGapFires() bool {
 
 // peerLabel renders one egress peer in PLAIN language for a non-expert: the
 // on-chip text never shows a raw k=v selector. We humanize only where it's
-// provably safe — a namespace by its real name, or a workload by its app label
+// provably safe - a namespace by its real name, or a workload by its app label
 // ("the cache app"). Anything else collapses to a generic phrase; the exact
 // selector + ports always live in the tooltip and the kubectl command.
 func peerLabel(peer *networkingv1.NetworkPolicyPeer, phrase string) egressDest {
@@ -235,7 +235,7 @@ func ipBlockLabel(b *networkingv1.IPBlock, phrase string) egressDest {
 	if isZeroCIDR(b.CIDR) {
 		if nExcept == 0 {
 			return egressDest{text: "any IP address",
-				title: "ipBlock " + b.CIDR + " " + phrase + " — any destination IP.", tone: "accent"}
+				title: "ipBlock " + b.CIDR + " " + phrase + " - any destination IP.", tone: "accent"}
 		}
 		return egressDest{text: fmt.Sprintf("any IP except %d range%s", nExcept, plural(nExcept)),
 			title: "ipBlock " + b.CIDR + " except [" + strings.Join(b.Except, ", ") + "] " + phrase + ".", tone: "accent"}
@@ -247,7 +247,7 @@ func ipBlockLabel(b *networkingv1.IPBlock, phrase string) egressDest {
 		title: "ipBlock " + b.CIDR + " except [" + strings.Join(b.Except, ", ") + "] " + phrase + "."}
 }
 
-// ── ports (tooltip phrase only — kept off the chip face to stay calm) ───────
+// ── ports (tooltip phrase only - kept off the chip face to stay calm) ───────
 
 func portsPhrase(ports []networkingv1.NetworkPolicyPort) string {
 	if len(ports) == 0 {
@@ -346,7 +346,7 @@ func ruleDestCoversDNS(rule *networkingv1.NetworkPolicyEgressRule, srcNamespace 
 				// kube-system matches, but the podSelector isn't the well-known
 				// k8s-app=kube-dns/coredns. The real CoreDNS labels aren't visible
 				// from here, so an unrecognized selector is unprovable, not a
-				// definite non-cover — stay uncertain (silent) rather than fire the
+				// definite non-cover - stay uncertain (silent) rather than fire the
 				// DNS gap.
 				maybe = true
 			case triMaybe:
@@ -356,7 +356,7 @@ func ruleDestCoversDNS(rule *networkingv1.NetworkPolicyEgressRule, srcNamespace 
 		}
 		// podSelector-only (no namespaceSelector) = same namespace as the source
 		// pod. CoreDNS lives in kube-system, so a same-namespace pod normally does
-		// NOT reach DNS — EXCEPT when the source workload is itself kube-system-
+		// NOT reach DNS - EXCEPT when the source workload is itself kube-system-
 		// resident, where a peer matching the well-known CoreDNS labels
 		// (k8s-app=kube-dns/coredns) DOES cover DNS. Endpoint pods carry their
 		// namespace, so this is determinable, not uncertain.
@@ -366,7 +366,7 @@ func ruleDestCoversDNS(rule *networkingv1.NetworkPolicyEgressRule, srcNamespace 
 			}
 			// Same as the namespaceSelector branch above: the real CoreDNS labels
 			// aren't visible here, so an unrecognized same-namespace podSelector is
-			// unprovable, not a definite non-cover — stay uncertain (silent) rather
+			// unprovable, not a definite non-cover - stay uncertain (silent) rather
 			// than fire the DNS gap.
 			maybe = true
 		}
@@ -378,7 +378,7 @@ func ruleDestCoversDNS(rule *networkingv1.NetworkPolicyEgressRule, srcNamespace 
 }
 
 // podsNamespace returns the shared namespace of the endpoint pods, or "" when
-// they span namespaces (or none are known) — the only cases where the source
+// they span namespaces (or none are known) - the only cases where the source
 // namespace is provable for DNS classification.
 func podsNamespace(pods []*corev1.Pod) string {
 	ns := ""
@@ -430,7 +430,7 @@ func podSelectorAllowsCoreDNS(sel *metav1.LabelSelector) bool {
 
 // everyPodDenyAllEgress reports whether every endpoint pod is selected by at
 // least one egress-isolating policy AND none of the policies selecting a given
-// pod carry an egress rule — the only condition under which "these pods can't
+// pod carry an egress rule - the only condition under which "these pods can't
 // open any outbound connection" is true for all of them. A pod selected by
 // nothing, or by a policy with rules, breaks the blanket claim.
 func everyPodDenyAllEgress(pols []*networkingv1.NetworkPolicy, pods []*corev1.Pod) bool {
@@ -539,7 +539,7 @@ const egressChipCap = 3
 
 // message is the one plain reassurance-led sentence shown as the finding's
 // headline. It names the subject and leads with "doesn't change reachability"
-// — the page's actual question — before the outbound mechanism.
+// - the page's actual question - before the outbound mechanism.
 func (s egressSummary) message() string {
 	subject := "This service's pods"
 	if s.partialReplicas {
@@ -548,11 +548,11 @@ func (s egressSummary) message() string {
 		subject = "Some of this service's pods"
 	}
 	if s.denyAllOut {
-		return subject + " can't open any outbound connection — including DNS name lookups. It doesn't change whether the service can be reached."
+		return subject + " can't open any outbound connection - including DNS name lookups. It doesn't change whether the service can be reached."
 	}
 	if s.hostNetwork {
 		// NetworkPolicy egress is CNI-specific for host-network pods, so it likely
-		// doesn't govern them — don't claim outbound is controlled.
+		// doesn't govern them - don't claim outbound is controlled.
 		return subject + " also have a rule meant to control their outbound connections, but some run on the host network where NetworkPolicy may not apply. It doesn't change whether the service can be reached."
 	}
 	return subject + " also have a rule that controls their outbound connections. It doesn't change whether the service can be reached."
@@ -583,7 +583,7 @@ func (s egressSummary) chips() []FindingChip {
 	if extra > 0 {
 		out = append(out, FindingChip{
 			Text:  fmt.Sprintf("+%d more", extra),
-			Title: fmt.Sprintf("%d more allowed destination%s — see the full rules below.", extra, plural(extra)),
+			Title: fmt.Sprintf("%d more allowed destination%s - see the full rules below.", extra, plural(extra)),
 		})
 	}
 	return out
@@ -613,10 +613,10 @@ func (s egressSummary) chipNotes() []string {
 		}
 	}
 	if s.denyAllOut || hasMuted {
-		notes = append(notes, "Radar reads this from the rule — it hasn't confirmed your cluster actually enforces it.")
+		notes = append(notes, "Radar reads this from the rule - it hasn't confirmed your cluster actually enforces it.")
 	}
 	if s.dnsGapFires() {
-		notes = append(notes, "These pods may not be able to look up other services by name — no rule allows DNS (port 53). Could break their outbound calls if the rule is enforced.")
+		notes = append(notes, "These pods may not be able to look up other services by name - no rule allows DNS (port 53). Could break their outbound calls if the rule is enforced.")
 	}
 	return notes
 }
@@ -643,7 +643,7 @@ func selectorParts(sel *metav1.LabelSelector) (compact, full string, empty, sing
 
 // namespaceName returns the literal namespace name when a namespaceSelector is
 // a single match on kubernetes.io/metadata.name (the label that mirrors the
-// namespace name) — so it can render as plain "kube-system namespace".
+// namespace name) - so it can render as plain "kube-system namespace".
 func namespaceName(sel *metav1.LabelSelector) (string, bool) {
 	if sel == nil || len(sel.MatchExpressions) != 0 || len(sel.MatchLabels) != 1 {
 		return "", false

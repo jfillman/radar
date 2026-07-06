@@ -174,7 +174,7 @@ func TestHandleDiagnose_InvalidKind(t *testing.T) {
 	ctx := withClusterAdmin(t, "admin")
 
 	// configmap is not a workload, not a GitOps reconciler, and not a
-	// network entry kind — diagnose should reject it.
+	// network entry kind - diagnose should reject it.
 	_, _, err := handleDiagnose(ctx, nil, diagnoseInput{Kind: "configmap", Namespace: "alpha", Name: "alpha-cm"})
 	if err == nil {
 		t.Fatalf("expected error for unsupported kind, got nil")

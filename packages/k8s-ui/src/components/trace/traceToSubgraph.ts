@@ -2,7 +2,7 @@ import type { Trace, RouteResult, RouteOutcome, RouteConfidence, ResourceRef, Ho
 import type { Topology, TopologyNode, TopologyEdge, HealthStatus } from '../../types/core'
 
 // outcomeToStatus maps a route outcome onto the subject NODE's health. A node's
-// color is the resource's OWN health — did it respond — NOT how we reached it. So a
+// color is the resource's OWN health - did it respond - NOT how we reached it. So a
 // route that was reached (verified OR reached, real traffic OR only via the apiserver
 // proxy) means the resource ANSWERED → healthy/green; the "real in-cluster traffic not
 // confirmed" caveat is a property of the PATH and lives on the EDGE (dashed green) +
@@ -17,7 +17,7 @@ export function outcomeToStatus(outcome: RouteOutcome, confidence?: RouteConfide
     case 'server-error':
       return 'degraded'
     case 'unreachable':
-      // A proxy-only (indirect) unreachable never condemns the real path — the
+      // A proxy-only (indirect) unreachable never condemns the real path - the
       // real in-cluster path was never tested. Fail toward silence (neutral),
       // mirroring reachVerdict's onlyIndirectUnreach guard, instead of red.
       return confidence === 'indirect' ? 'unknown' : 'unhealthy'
@@ -41,14 +41,14 @@ function verdictToStatus(v: Verdict): HealthStatus {
 }
 
 // A NetworkPolicy finding describes the PATH into a pod (who may reach it), not
-// the pod's OWN health — the pod can be perfectly healthy and answering while a
+// the pod's OWN health - the pod can be perfectly healthy and answering while a
 // rule restricts the route. So policy findings never recolor the node, the same
 // way a probe vantage doesn't. They surface in the hop detail + edge, not the
 // node dot. (Same reasoning as the nodeOwnStatus doc below.)
 const isOwnHealthFinding = (f: { code?: string }): boolean => !(f.code ?? '').startsWith('netpol:')
 
 // A Service's "0/N selected pods ready" is a SYMPTOM of its backing pods' health,
-// not the Service's OWN health — the Service object is correctly configured. The
+// not the Service's OWN health - the Service object is correctly configured. The
 // real fault (crashloop, image pull, OOM) is carried red on the downstream Pods
 // node. So this finding caps the Service at DEGRADED (amber: "wired, no live
 // backend") instead of the false red "the Service itself is broken". N > 0 here
@@ -57,7 +57,7 @@ const isBackendSymptomFinding = (f: { code?: string }): boolean =>
   f.code === 'svc:no-ready-endpoints' || /^problem:0\/[1-9]\d* selected pods ready$/.test(f.code ?? '')
 
 // hopHasReadyEndpoints reports whether a backend hop still has ready endpoints
-// (meta.ready > 0) — the Service serves traffic to the ready pods.
+// (meta.ready > 0) - the Service serves traffic to the ready pods.
 const hopHasReadyEndpoints = (hop: Hop): boolean => typeof hop.meta?.ready === 'number' && (hop.meta.ready as number) > 0
 
 function findingStatus(hop: Hop): HealthStatus | undefined {
@@ -65,9 +65,9 @@ function findingStatus(hop: Hop): HealthStatus | undefined {
   const crit = f.filter((x) => x.severity === 'critical')
   if (crit.length > 0) {
     // A critical paints the node red ONLY when it's a real own-health break AND the
-    // backend has no ready endpoints. A backend that still serves (ready > 0 — one
+    // backend has no ready endpoints. A backend that still serves (ready > 0 - one
     // replica crashing while siblings serve) or a backend-symptom critical (0/N
-    // ready, whose red lives on the downstream Pods node) caps at degraded — never
+    // ready, whose red lives on the downstream Pods node) caps at degraded - never
     // the false red "all down" (mirrors backend hopReachSeverity).
     const hardRed = !hopHasReadyEndpoints(hop) && crit.some((x) => !isBackendSymptomFinding(x))
     return hardRed ? 'unhealthy' : 'degraded'
@@ -91,20 +91,20 @@ function outcomeRank(o: RouteOutcome): number {
 const refId = (r: ResourceRef): string => `${r.kind}/${r.namespace ?? ''}/${r.name || 'pods'}`
 
 const isRbac = (hop: Hop): boolean => (hop.findings ?? []).some((f) => f.code === 'rbac:cross-namespace-redacted')
-// A NetworkPolicy finding is a PREDICTION, not a confirmed reachability break — it
+// A NetworkPolicy finding is a PREDICTION, not a confirmed reachability break - it
 // must never mark an edge unreachable and cascade-block downstream (the node logic
 // already excludes netpol: via isOwnHealthFinding). Mirror that exclusion here.
-// A backend that still has ready endpoints is reachable — a per-pod crash among
+// A backend that still has ready endpoints is reachable - a per-pod crash among
 // serving replicas must NOT mark the edge unreachable and cascade-block downstream
 // (mirrors hopReachSeverity). A 0-ready backend keeps its critical (real break).
 const hasCritical = (hop: Hop): boolean =>
   !hopHasReadyEndpoints(hop) && (hop.findings ?? []).some((f) => f.severity === 'critical' && isOwnHealthFinding(f))
 
 // A NODE's status reflects the resource's OWN health (its findings/probes), NEVER a
-// route's outcome — so a healthy router Ingress is not painted red just because one of
+// route's outcome - so a healthy router Ingress is not painted red just because one of
 // its routes is broken (that per-route truth lives on the edges). Critically, the
 // probe VANTAGE never recolors the node: a resource REACHED only via the apiserver
-// proxy still responded, so its own health is fine — the "real in-cluster traffic not
+// proxy still responded, so its own health is fine - the "real in-cluster traffic not
 // confirmed" caveat is a property of the PATH and lives on the edge (dashed green),
 // not on the node. Only a real own-health signal downgrades it: a finding, a transport
 // failure to the resource, or a 5xx (the app itself erroring).
@@ -117,13 +117,13 @@ function nodeOwnStatus(hop: Hop): HealthStatus {
   const bad = live.filter((p) => !p.ok || p.tone === 'unhealthy')
   const good = live.filter((p) => p.ok && p.tone !== 'unhealthy')
   // Partial own-health: a multi-port Service where one port answered and another
-  // didn't is DEGRADED (amber), not fully dead (red) — red over-claims "nothing
+  // didn't is DEGRADED (amber), not fully dead (red) - red over-claims "nothing
   // works" when port 80 served HTTP 200.
   if (bad.length > 0 && good.length > 0) return 'degraded'
   if (bad.length > 0) return 'unhealthy'
-  if (live.some((p) => p.tone === 'degraded')) return 'degraded' // app answered 5xx — a real own-health problem, not a vantage caveat
+  if (live.some((p) => p.tone === 'degraded')) return 'degraded' // app answered 5xx - a real own-health problem, not a vantage caveat
   // DNS resolving a name to an IP is not own-health/reachability. When the only
-  // live probe is a DNS success (transport/HTTP skipped — ExternalName host, or a
+  // live probe is a DNS success (transport/HTTP skipped - ExternalName host, or a
   // non-HTTP backend port), there's no evidence the resource was actually reached:
   // fail toward silence (unknown), never paint it green 'healthy'.
   if (!live.some((p) => p.layer !== 'dns')) return 'unknown'
@@ -140,7 +140,7 @@ function edgeReach(hop: Hop, route?: RouteResult): TopologyEdge['reachOutcome'] 
         return route.confidence === 'real' ? 'verified' : 'reached'
       case 'reached':
       case 'server-error':
-        // A 5xx REACHED the backend — traffic flowed; the app erroring is the
+        // A 5xx REACHED the backend - traffic flowed; the app erroring is the
         // node's own degraded health, not a broken edge. Green-dashed reached, not
         // a red "route break" (which would falsely say traffic never arrived).
         return 'reached'
@@ -155,7 +155,7 @@ function edgeReach(hop: Hop, route?: RouteResult): TopologyEdge['reachOutcome'] 
     }
   }
   // No route on this hop (e.g. the Service→Pods edge): the edge answers "did any
-  // traffic get through". If ANY non-skipped probe reached, the edge reached — a
+  // traffic get through". If ANY non-skipped probe reached, the edge reached - a
   // multi-port pod where port 80 served 200 but 9090 refused is REACHED (the per-port
   // failure shows in the node detail), never a hard-blocked red edge.
   const live = (hop.probes ?? []).filter((p) => !p.skipped)
@@ -165,7 +165,7 @@ function edgeReach(hop: Hop, route?: RouteResult): TopologyEdge['reachOutcome'] 
 }
 
 // nodeSubtitle builds the diagram node's functional one-liner from the hop's
-// declared config + live meta — the same facts the Tree shows as pills: the
+// declared config + live meta - the same facts the Tree shows as pills: the
 // service port→targetPort mapping (or a Pod's container ports) and pod readiness.
 // This is what gives the diagram parity with the Tree instead of a bare "ClusterIP".
 // Falls back to the caller's status/route string when there's no port/readiness.
@@ -190,19 +190,19 @@ function nodeSubtitle(hop: Hop | undefined, fallback: string): string {
 /**
  * traceToSubgraph projects a reachability Trace into the topology-graph shape so the
  * existing TopologyGraph can render the path HONESTLY:
- *  - it BRANCHES by hop-edge semantics — backend Services hang off the entry, Pods off
+ *  - it BRANCHES by hop-edge semantics - backend Services hang off the entry, Pods off
  *    THEIR parent Service (a multi-backend Ingress fans out; N ingresses converge), never
  *    a linear chain;
- *  - per-route truth lives on the EDGE (reachOutcome) with a route LABEL — a router node
+ *  - per-route truth lives on the EDGE (reachOutcome) with a route LABEL - a router node
  *    stays neutral unless ALL its routes fail (no over-attribution);
  *  - nothing downstream of a real break is "reached": from any broken node/edge, descendant
- *    edges become 'blocked' (dashed) — never a green edge flowing past a break.
+ *    edges become 'blocked' (dashed) - never a green edge flowing past a break.
  * Frontend-only; probe detail stays out of the graph (it lives in the detail/tree).
  */
 // routeEdgeLabel renders the path on a route edge. By default it's the route's
 // DECLARED path. When the operator overrides the tested path (probePath, e.g.
 // "/test"), the edge echoes what was actually tested so the graph agrees with
-// the banner/probe rows — but we NEVER overwrite the route identity: the label
+// the banner/probe rows - but we NEVER overwrite the route identity: the label
 // shows the tested path and the tooltip keeps the declared route, so we never
 // imply the Ingress declares a rule it doesn't.
 function routeEdgeLabel(declared: string | undefined, probePath?: string): { label?: string; labelTitle?: string } {
@@ -229,7 +229,7 @@ export function traceToSubgraph(trace: Trace, probePath?: string): Topology {
   }
 
   const routes = trace.routes ?? []
-  // Match a route to a backend by EXACT name, not substring — a substring match
+  // Match a route to a backend by EXACT name, not substring - a substring match
   // would pair backend "api" with a route targeting "api-v2" (wrong edge color/label).
   // The target is "<name>" or "<name>:<port>", so compare the part before the colon.
   // When the route carries a target namespace (cross-namespace Gateway API
@@ -239,13 +239,13 @@ export function traceToSubgraph(trace: Trace, probePath?: string): Topology {
     const nameMatch = (r.target ?? '').split(':')[0] === ref.name || r.route === ref.name
     if (!nameMatch) return false
     if (r.targetNamespace && ref.namespace && r.targetNamespace !== ref.namespace) return false
-    // An UNSET targetNamespace means the route targets the subject's namespace — so a
+    // An UNSET targetNamespace means the route targets the subject's namespace - so a
     // hop in a DIFFERENT namespace (a cross-ns backendRef) must not match it, or a
     // same-ns route's outcome would attach to a cross-ns same-named backend hop.
     if (!r.targetNamespace && ref.namespace && trace.subject.namespace && ref.namespace !== trace.subject.namespace) return false
     return true
   }
-  // Pick the WORST matching route, not the first — an Ingress with two paths to the
+  // Pick the WORST matching route, not the first - an Ingress with two paths to the
   // same Service (/web verified, /api unreachable) must not hide the failure behind
   // a verified-first ordering on the single backend edge.
   const routeFor = (ref: ResourceRef): RouteResult | undefined => {
@@ -254,16 +254,16 @@ export function traceToSubgraph(trace: Trace, probePath?: string): Topology {
     return matches.slice().sort((a, b) => outcomeRank(a.outcome) - outcomeRank(b.outcome))[0]
   }
 
-  // Subject = the entry. A ROUTER (Ingress/Gateway) stays NEUTRAL unless ALL routes fail —
+  // Subject = the entry. A ROUTER (Ingress/Gateway) stays NEUTRAL unless ALL routes fail -
   // its per-route truth is on the edges, not its node color.
   const subjectId = refId(trace.subject)
   const isRouter = trace.subject.kind === 'Ingress' || trace.subject.kind === 'Gateway'
   // The reused Service node defaults its type subtitle to "ClusterIP" when none is
-  // passed — a lie for an ExternalName Service (a DNS alias, no ClusterIP). Surface
+  // passed - a lie for an ExternalName Service (a DNS alias, no ClusterIP). Surface
   // the real type so the node reads "ExternalName" instead of the false "ClusterIP".
   const isExternalName = (trace.downstream ?? []).some((h) => h.resource?.kind === 'ExternalName')
   const okCount = routes.filter((r) => r.outcome === 'verified' || r.outcome === 'reached').length
-  // A proxy-only (indirect) unreachable is NOT a real failure — the real path was
+  // A proxy-only (indirect) unreachable is NOT a real failure - the real path was
   // never tested. Exclude it everywhere a failure would redden/degrade the node,
   // mirroring reachVerdict's onlyIndirectUnreach guard.
   const isIndirectUnreach = (r: RouteResult): boolean => r.outcome === 'unreachable' && r.confidence === 'indirect'
@@ -271,26 +271,26 @@ export function traceToSubgraph(trace: Trace, probePath?: string): Topology {
   // A ROUTER (Ingress/Gateway) node = the front door's OWN health. It goes red
   // ONLY when the door genuinely can't pass traffic on every real route (all
   // non-benign routes are hard unreachable). A server-error means traffic DID
-  // flow — the backend answered 5xx — so the front door works: that's amber, not
+  // flow - the backend answered 5xx - so the front door works: that's amber, not
   // red. A benign scale-to-zero route isn't a failure at all. Counting either as
   // a hard fail would paint a working front door red.
   const hardUnreach = routes.filter((r) => r.outcome === 'unreachable' && !r.benign && !isIndirectUnreach(r)).length
   const nonBenignRoutes = routes.filter((r) => !(r.outcome === 'unreachable' && (r.benign || isIndirectUnreach(r)))).length
   // "All failed" = every real (non-benign) route is a genuine unreachable. A
   // server-error doesn't count (traffic flowed to a 5xx backend), nor does a
-  // benign scale-to-zero — so neither paints the front door red or the edge
+  // benign scale-to-zero - so neither paints the front door red or the edge
   // "unreachable".
   const allHardFail = nonBenignRoutes > 0 && hardUnreach === nonBenignRoutes
   const anySoftFail = hardUnreach > 0 || routes.some((r) => r.outcome === 'server-error')
   const anyTrafficFlowed = okCount > 0 || routes.some((r) => r.outcome === 'server-error')
   const worst = routes.slice().sort((a, b) => outcomeRank(a.outcome) - outcomeRank(b.outcome))[0]
   // worstReal ignores benign scale-to-zero so a dormant Service backend doesn't
-  // read as a hard (red) failure — benign-only fails fall through to amber below.
+  // read as a hard (red) failure - benign-only fails fall through to amber below.
   const worstReal = routes
     .filter((r) => !(r.outcome === 'unreachable' && (r.benign || isIndirectUnreach(r))))
     .sort((a, b) => outcomeRank(a.outcome) - outcomeRank(b.outcome))[0]
   // onlyIndirectUnreach: every failure is a proxy-only unreachable and nothing
-  // passed — the node must stay neutral/unknown, never red, mirroring
+  // passed - the node must stay neutral/unknown, never red, mirroring
   // reachVerdict.ts's onlyIndirectUnreach guard.
   const onlyIndirectUnreach =
     routes.some((r) => isIndirectUnreach(r) && !r.benign) &&
@@ -306,12 +306,12 @@ export function traceToSubgraph(trace: Trace, probePath?: string): Topology {
     ? 'unknown'
     : isRouter
     ? allHardFail ? 'unhealthy' : anySoftFail ? 'degraded' : 'unknown'
-    : okCount > 0 && failCount > 0 ? 'degraded' // partial — some ports/routes reach, some don't → amber, not a red "all dead"
+    : okCount > 0 && failCount > 0 ? 'degraded' // partial - some ports/routes reach, some don't → amber, not a red "all dead"
     : worstReal ? outcomeToStatus(worstReal.outcome, worstReal.confidence)
     : worst ? 'degraded' // only benign (scaled-to-zero) failures remain → dormant, amber not red
     : verdictToStatus(trace.verdict)
-  // Fold the subject hop's OWN health (its findings — e.g. ingress:no-controller /
-  // controller-unready — and a failed front-door probe) in as a FLOOR. Without
+  // Fold the subject hop's OWN health (its findings - e.g. ingress:no-controller /
+  // controller-unready - and a failed front-door probe) in as a FLOOR. Without
   // this the router node stays neutral while reachVerdict headlines degraded /
   // unreachable, under-representing a real front-door problem. Only a genuine own
   // problem (degraded/unhealthy) floors; a healthy/unknown own status never
@@ -331,9 +331,9 @@ export function traceToSubgraph(trace: Trace, probePath?: string): Topology {
   const subjReach: TopologyEdge['reachOutcome'] = allHardFail ? 'unreachable' : anyTrafficFlowed ? 'reached' : 'not-tested'
 
   // Entry paths converging on a Service subject. An upstream is an ENTRY that routes
-  // here — we test the SUBJECT's reachability, not each upstream's path individually. So
+  // here - we test the SUBJECT's reachability, not each upstream's path individually. So
   // the upstream NODE stays NEUTRAL: it is never colored by its own/other-route findings
-  // (that was the over-attribution bug — e.g. `multi` painted red on echo's view because
+  // (that was the over-attribution bug - e.g. `multi` painted red on echo's view because
   // of multi's UNRELATED /api→ghost break), and a neutral upstream also never triggers
   // the frontier block-cascade through the shared subject to its pods. RBAC-redacted
   // upstreams keep their distinct "no access" label. The upstream→subject edge carries
@@ -343,7 +343,7 @@ export function traceToSubgraph(trace: Trace, probePath?: string): Topology {
     edges.push({ id: `e:${id}->${subjectId}`, source: id, target: subjectId, type: 'routes-to', reachOutcome: subjReach })
   }
 
-  // Downstream — BRANCH: backends (X->Service) hang off the subject; Pods (Service->Pods)
+  // Downstream - BRANCH: backends (X->Service) hang off the subject; Pods (Service->Pods)
   // hang off their parent Service (the last-seen Service while walking).
   let lastService = subjectId
   for (const dn of trace.downstream ?? []) {
@@ -369,7 +369,7 @@ export function traceToSubgraph(trace: Trace, probePath?: string): Topology {
 
   // Frontier rule: nothing downstream of a real break is "reached". From any broken NODE
   // (a no-endpoints Service, a down Pod) or unreachable EDGE, mark descendant edges 'blocked'
-  // (dashed gray) and their nodes "blocked upstream" — never a green/reached edge past a break.
+  // (dashed gray) and their nodes "blocked upstream" - never a green/reached edge past a break.
   const out = new Map<string, TopologyEdge[]>()
   for (const e of edges) {
     const arr = out.get(e.source) ?? []
@@ -389,7 +389,7 @@ export function traceToSubgraph(trace: Trace, probePath?: string): Topology {
           const n = byId.get(nx.target)
           if (n && n.status !== 'unhealthy') {
             n.status = 'unknown'
-            ;(n.data as Record<string, unknown>).subtitleOverride = 'not reached — break upstream'
+            ;(n.data as Record<string, unknown>).subtitleOverride = 'not reached - break upstream'
           }
         }
         stack.push(nx.target)
@@ -398,7 +398,7 @@ export function traceToSubgraph(trace: Trace, probePath?: string): Topology {
   }
   // A backend reached by ANOTHER route/port must not be cascade-blocked just because
   // the WORST matching route colored its edge unreachable (e.g. /web→svc:80 verified,
-  // /api→svc:9090 down — port 80 reached the service AND its pods). The worst-route is
+  // /api→svc:9090 down - port 80 reached the service AND its pods). The worst-route is
   // honest for the edge LABEL/color, but blocking descendants a sibling route reached
   // would false-condemn them. Skip the cascade when the edge's backend has any reach.
   const backendReachedByAnother = (targetId: string): boolean => {

@@ -202,7 +202,7 @@ func TestEvaluateNetpol(t *testing.T) {
 			want: policyNotRestricted,
 		},
 		{
-			name:  "rule's only allow is an undeclared named port — k8s treats it as no-match → would-deny",
+			name:  "rule's only allow is an undeclared named port - k8s treats it as no-match → would-deny",
 			pods:  []*corev1.Pod{npPod(map[string]string{"app": "echo"}, cport("http", 80))},
 			ports: port80,
 			policies: []*networkingv1.NetworkPolicy{np("named", map[string]string{"app": "echo"}, ingressOnly,

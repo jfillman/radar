@@ -13,7 +13,7 @@ import (
 	"github.com/skyhook-io/radar/pkg/probe"
 )
 
-// runProbeCommand implements `radar probe` — run reachability probes against ONE
+// runProbeCommand implements `radar probe` - run reachability probes against ONE
 // target from wherever this process runs and print the results as JSON. When the
 // process runs inside a cluster pod, the probes traverse the real dataplane
 // (subject to NetworkPolicy + mesh mTLS), which is exactly what the laptop's

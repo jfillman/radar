@@ -14,7 +14,7 @@ func TestGuessConcretePath(t *testing.T) {
 	}{
 		{"", "/", false},
 		{"/", "/", false},
-		{"/api", "/api", false},    // Exact / Prefix literal — verbatim
+		{"/api", "/api", false},    // Exact / Prefix literal - verbatim
 		{"api", "/api", false},     // ensures leading slash
 		{"/api/.*", "/api/", true}, // regex tail stripped to leading literal
 		{"/v1/[0-9]+", "/v1/", true},

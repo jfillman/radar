@@ -209,7 +209,7 @@ interface WorkloadViewProps {
   }) => ReactNode
   /** Render the metrics tab content */
   renderMetricsTab?: (props: { kind: string; namespace: string; name: string }) => ReactNode
-  /** Render the Diagnose tab content — a path-shaped trace for network
+  /** Render the Diagnose tab content - a path-shaped trace for network
    *  entry kinds (Service / Ingress / HTTPRoute / GRPCRoute / Gateway). The
    *  tab is hidden when this callback is not provided OR when the focused
    *  kind is not a network entry kind. */
@@ -224,7 +224,7 @@ interface WorkloadViewProps {
   isMetricsAvailable?: (kind: string, resource: any) => boolean
   /** Render extra content at the bottom of the overview tab (e.g. audit
    *  findings). `context` lets the host suppress sections that are already
-   *  surfaced by a dedicated tab in expanded mode — e.g. the Diagnose card
+   *  surfaced by a dedicated tab in expanded mode - e.g. the Diagnose card
    *  belongs inline when there are no tabs (drawer) but would duplicate the
    *  Diagnose tab when it is. */
   renderOverviewExtra?: (props: { kind: string; namespace: string; name: string; group?: string; context: 'drawer' | 'expanded' }) => ReactNode
@@ -589,7 +589,7 @@ export function WorkloadView({
     { id: 'yaml', label: 'YAML', icon: <FileText className="w-4 h-4" /> },
   ]
 
-  // Reset ANY hidden active tab (not just topology) to overview — a stale or manual
+  // Reset ANY hidden active tab (not just topology) to overview - a stale or manual
   // ?tab=reachability / ?tab=diagnose deeplink for a kind that doesn't support it
   // must not render its body (and auto-fire invalid /trace/<kind> calls) under an
   // invisible tab.
@@ -974,13 +974,13 @@ export function WorkloadView({
 // Diagnose tab is only meaningful for the five network entry kinds. The
 // canonical predicate is internal/trace.IsEntryKind in Go; we mirror the
 // allowlist here so TypeScript callers don't need a fetch to decide whether
-// to render the tab. The two MUST stay in sync — when a kind is added on
+// to render the tab. The two MUST stay in sync - when a kind is added on
 // either side, update both. Exported so the web wrapper can reuse the same
 // predicate for the inline drawer section.
 export function isDiagnoseKind(kind: string, group?: string): boolean {
   const k = kind.toLowerCase()
   const g = (group ?? '').toLowerCase()
-  // When the API group is known, require it to match — a CRD sharing a core kind
+  // When the API group is known, require it to match - a CRD sharing a core kind
   // name (Knative Service, Istio Gateway) must NOT enable the trace, which would
   // fire /trace/<kind> against the wrong (core) object. group===undefined keeps the
   // legacy kind-only behavior for callers that don't thread the group yet.

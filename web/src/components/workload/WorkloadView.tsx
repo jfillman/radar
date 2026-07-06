@@ -38,7 +38,7 @@ import { PrometheusChartsGrid } from '../resource/PrometheusChartsGrid'
 import { RestartEventLane } from '../resource/RestartChart'
 import { RightsizingStrip } from '../resource/RightsizingStrip'
 import { useResourceAudit, useResourceIssues, useResources, useTrace, fetchTraceWithProbes, fetchInClusterCapability, runInCluster, runInClusterMerged } from '../../api/client'
-import { AuditAlerts, ResourceIssuesSection, ReachabilityView, TraceSummary, type Trace as NetworkTrace, type InClusterRunner } from '@skyhook-io/k8s-ui'
+import { AuditAlerts, ResourceIssuesSection, ReachabilityView, TraceSummary, InClusterConsentDialog, type Trace as NetworkTrace, type InClusterRunner, type InClusterCapability, inClusterConsentGiven } from '@skyhook-io/k8s-ui'
 import { WorkloadLogsViewer } from '../logs/WorkloadLogsViewer'
 import { LogsViewer } from '../logs/LogsViewer'
 import { useCanUpdateSecrets, useCanNodeWrite, useNamespacedCapabilities, useIsLocalDeployment } from '../../contexts/CapabilitiesContext'
@@ -1030,6 +1030,7 @@ function useInClusterRunner(kind: string, namespace: string, name: string): InCl
 function useInClusterTest(runner: InClusterRunner, base: NetworkTrace | undefined, kind: string, namespace: string, name: string) {
   const [running, setRunning] = useState(false)
   const [allowed, setAllowed] = useState(false)
+  const [cap, setCap] = useState<InClusterCapability | undefined>(undefined)
   const [merged, setMerged] = useState<NetworkTrace | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
   // Per-resource token: bumped whenever the base trace changes (navigation / fresh
@@ -1038,7 +1039,7 @@ function useInClusterTest(runner: InClusterRunner, base: NetworkTrace | undefine
   const tokenRef = useRef(0)
   useEffect(() => {
     let alive = true
-    runner.capability().then((c) => { if (alive) setAllowed(!!c.allowed) }).catch(() => { if (alive) setAllowed(false) })
+    runner.capability().then((c) => { if (alive) { setAllowed(!!c.allowed); setCap(c) } }).catch(() => { if (alive) setAllowed(false) })
     return () => { alive = false }
   }, [runner])
   useEffect(() => {
@@ -1067,7 +1068,7 @@ function useInClusterTest(runner: InClusterRunner, base: NetworkTrace | undefine
       if (tokenRef.current === token) setRunning(false)
     }
   }, [base, running, kind, namespace, name])
-  return { run, running, allowed, merged, error }
+  return { run, running, allowed, cap, merged, error }
 }
 
 function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: string; namespace: string; name: string; onNavigate?: NavigateToResource }) {
@@ -1075,8 +1076,23 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
   const { probeTrace, probeError, running, runProbes, resetProbe } = useProbeRun(kind, namespace, name)
   const inClusterRunner = useInClusterRunner(kind, namespace, name)
   const baseTrace = probeTrace ?? staticTrace
-  const { run: runInClusterTest, running: inClusterRunning, allowed: inClusterAllowed, merged: inClusterTrace, error: inClusterError } = useInClusterTest(inClusterRunner, baseTrace, kind, namespace, name)
+  const { run: runInClusterTest, running: inClusterRunning, allowed: inClusterAllowed, cap: inClusterCap, merged: inClusterTrace, error: inClusterError } = useInClusterTest(inClusterRunner, baseTrace, kind, namespace, name)
   const displayTrace = inClusterTrace ?? baseTrace
+  // Consent gate for the mutating in-cluster test: it spawns a Job/pod, so the first
+  // run per cluster asks the operator to confirm - naming the cluster it lands in -
+  // unless they chose "don't ask again" for that cluster. Permission is already
+  // enforced upstream (the button only renders when the capability SSAR allows), so
+  // this is a safety confirm, not an authz check.
+  const [pendingRunPath, setPendingRunPath] = useState<string | null>(null)
+  const requestInClusterRun = useCallback((path: string) => {
+    if (inClusterConsentGiven(inClusterCap?.cluster)) runInClusterTest(path)
+    else setPendingRunPath(path)
+  }, [inClusterCap, runInClusterTest])
+  const confirmInClusterRun = useCallback(() => {
+    const path = pendingRunPath ?? '/'
+    setPendingRunPath(null)
+    runInClusterTest(path)
+  }, [pendingRunPath, runInClusterTest])
   // The HTTP path the probes request (default "/"). Editable via the "what to
   // test" menu; the buttons re-run with the current path, the form applies a new
   // one. Applies to BOTH the reachability and in-cluster tests.
@@ -1128,7 +1144,7 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
         probed={probeTrace !== undefined || inClusterTrace !== undefined}
         onRunProbes={() => runProbes(probePath)}
         inClusterRunner={inClusterRunner}
-        onRunInCluster={() => runInClusterTest(probePath)}
+        onRunInCluster={() => requestInClusterRun(probePath)}
         inClusterRunning={inClusterRunning}
         inClusterAllowed={inClusterAllowed && (probeTrace !== undefined)}
         inClusterError={inClusterError}
@@ -1136,6 +1152,13 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
         onApplyProbePath={applyProbePath}
         runNonce={runNonce}
         onNavigateToResource={onNavigate ? (ref) => onNavigate({ kind: kindToPlural(ref.kind), namespace: ref.namespace ?? '', name: ref.name, group: ref.group ?? '' }) : undefined}
+      />
+      <InClusterConsentDialog
+        open={pendingRunPath !== null}
+        cluster={inClusterCap?.cluster}
+        namespace={inClusterCap?.namespace ?? namespace}
+        onClose={() => setPendingRunPath(null)}
+        onConfirm={confirmInClusterRun}
       />
     </div>
   )

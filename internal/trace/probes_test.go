@@ -1599,3 +1599,23 @@ func TestNonHTTPSkipReason_TCPClaimGatedOnTCPRan(t *testing.T) {
 		t.Errorf("laptop gRPC: %q missing run-in-cluster hint", got)
 	}
 }
+
+// TestHTTPPath_NormalizesTraversal pins that the operator-chosen probe path is
+// cleaned - . and .. segments collapse so the probe requests the intended path,
+// never a traversal (matches handleProbeInCluster's path.Clean).
+func TestHTTPPath_NormalizesTraversal(t *testing.T) {
+	cases := map[string]string{
+		"":               "/",
+		"/":              "/",
+		"healthz":        "/healthz",
+		"/api/../secret": "/secret",
+		"/a/./b":         "/a/b",
+		"/../../etc":     "/etc",
+		"  /x  ":         "/x",
+	}
+	for in, want := range cases {
+		if got := httpPath(in); got != want {
+			t.Errorf("httpPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

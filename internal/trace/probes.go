@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,16 +29,18 @@ const (
 var detectVantage = probe.DetectVantage
 
 // httpPath normalizes the operator-chosen HTTP probe path: leading slash,
-// defaulting to the root. Every L7 probe requests this path.
+// defaulting to the root, and . / .. segments collapsed so the probe requests
+// the path the operator meant, never a traversal the caller didn't intend
+// (mirrors handleProbeInCluster's path.Clean). Every L7 probe requests this path.
 func httpPath(p string) string {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return "/"
 	}
 	if p[0] != '/' {
-		return "/" + p
+		p = "/" + p
 	}
-	return p
+	return path.Clean(p)
 }
 
 // serviceProxyProbe and podProxyProbe are call-site indirections so tests

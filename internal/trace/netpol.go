@@ -170,12 +170,12 @@ func evaluatePort(pods []*corev1.Pod, pm PortMap, ingressPolicies []*networkingv
 	label := fmt.Sprintf(":%d", pm.Port)
 
 	anyDeny := false
-	anyAllow := false          // allow-from-anywhere on at least one pod
-	anyHostNetwork := false    // a hostNetwork pod (CNI-specific NP semantics)
-	anyUnresolved := false     // a named targetPort that didn't resolve
+	anyAllow := false           // allow-from-anywhere on at least one pod
+	anyHostNetwork := false     // a hostNetwork pod (CNI-specific NP semantics)
+	anyUnresolved := false      // a named targetPort that didn't resolve
 	anyCallerDependent := false // a rule allows the port only from specific sources
-	anyDeniedPort := false     // a deny that's a full default-deny (no other port allowed)
-	denyPort := int32(0)       // the resolved pod port a deny applies to (for probe matching)
+	anyDeniedPort := false      // a deny that's a full default-deny (no other port allowed)
+	denyPort := int32(0)        // the resolved pod port a deny applies to (for probe matching)
 	denyPortVaries := false
 
 	for _, pod := range pods {

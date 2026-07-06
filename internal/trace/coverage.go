@@ -86,10 +86,10 @@ type RouteResult struct {
 	// exactly what broke: "tcp" | "tls" | "http" (unreachable), or "upstream" for a
 	// 502/504 where HTTP was reached but the gateway couldn't reach its backend.
 	// Empty for a reachable outcome.
-	FailedLayer     string `json:"failedLayer,omitempty"`
-	Confidence      string `json:"confidence,omitempty"`
-	Evidence        string `json:"evidence,omitempty"`
-	Command         string `json:"command,omitempty"`
+	FailedLayer string `json:"failedLayer,omitempty"`
+	Confidence  string `json:"confidence,omitempty"`
+	Evidence    string `json:"evidence,omitempty"`
+	Command     string `json:"command,omitempty"`
 	// Benign marks a route that is unreachable by DESIGN - the backing workload is
 	// intentionally scaled to 0 (deliberate dormancy, not an outage). The Outcome
 	// stays unreachable (factually true) but the headline/tone read amber-benign,

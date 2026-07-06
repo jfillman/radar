@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	authv1 "k8s.io/api/authorization/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -45,16 +46,21 @@ type preflightCheck struct {
 }
 
 // installPreflightChecks is the permission set the cloud-enabled chart needs.
-// Kept as a package var so tests can assert its shape.
-func installPreflightChecks(namespace string) []preflightCheck {
+// nsExists suppresses the namespace-create check when the target namespace is
+// already present (the caller may hold create-in-ns without create-namespaces).
+func installPreflightChecks(namespace string, nsExists bool) []preflightCheck {
 	rbacGroup := "rbac.authorization.k8s.io"
-	return []preflightCheck{
+	checks := []preflightCheck{
 		{"create Deployments", true, authv1.ResourceAttributes{Namespace: namespace, Group: "apps", Resource: "deployments", Verb: "create"}},
 		{"create ServiceAccounts", true, authv1.ResourceAttributes{Namespace: namespace, Resource: "serviceaccounts", Verb: "create"}},
 		{"create Services", true, authv1.ResourceAttributes{Namespace: namespace, Resource: "services", Verb: "create"}},
 		{"create Secrets", true, authv1.ResourceAttributes{Namespace: namespace, Resource: "secrets", Verb: "create"}},
 		{"create ClusterRoles", true, authv1.ResourceAttributes{Group: rbacGroup, Resource: "clusterroles", Verb: "create"}},
 		{"create ClusterRoleBindings", true, authv1.ResourceAttributes{Group: rbacGroup, Resource: "clusterrolebindings", Verb: "create"}},
+		// rbac.selfUpgrade=true (which the driver sets) renders a namespaced
+		// Role + RoleBinding, so the caller needs to create those too.
+		{"create Roles", true, authv1.ResourceAttributes{Namespace: namespace, Group: rbacGroup, Resource: "roles", Verb: "create"}},
+		{"create RoleBindings", true, authv1.ResourceAttributes{Namespace: namespace, Group: rbacGroup, Resource: "rolebindings", Verb: "create"}},
 		// Privilege-escalation gates (advisory — see file header): the chart's
 		// ClusterRole carries `impersonate`, and the cloud bindings reference
 		// admin/edit/view, so a non-admin caller needs escalate + bind.
@@ -63,6 +69,10 @@ func installPreflightChecks(namespace string) []preflightCheck {
 		{"bind the edit ClusterRole", false, authv1.ResourceAttributes{Group: rbacGroup, Resource: "clusterroles", Name: "edit", Verb: "bind"}},
 		{"bind the view ClusterRole", false, authv1.ResourceAttributes{Group: rbacGroup, Resource: "clusterroles", Name: "view", Verb: "bind"}},
 	}
+	if !nsExists {
+		checks = append(checks, preflightCheck{"create the target Namespace", true, authv1.ResourceAttributes{Resource: "namespaces", Verb: "create"}})
+	}
+	return checks
 }
 
 // InstallPreflight runs the SSAR batch. A non-nil error means an SSAR call itself
@@ -72,8 +82,16 @@ func InstallPreflight(ctx context.Context, client kubernetes.Interface, namespac
 	if client == nil {
 		return PreflightResult{}, fmt.Errorf("preflight: nil kubernetes client")
 	}
+	// Skip the namespace-create check if it already exists — the caller may be
+	// allowed to create objects inside it without holding create-namespaces.
+	// A get error other than NotFound is ignored (treated as "exists"): we don't
+	// want a transient read blip to demand a create permission the user may lack.
+	nsExists := true
+	if _, err := client.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{}); err != nil && apierrors.IsNotFound(err) {
+		nsExists = false
+	}
 	var res PreflightResult
-	for _, c := range installPreflightChecks(namespace) {
+	for _, c := range installPreflightChecks(namespace, nsExists) {
 		attrs := c.attrs
 		review := &authv1.SelfSubjectAccessReview{
 			Spec: authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &attrs},

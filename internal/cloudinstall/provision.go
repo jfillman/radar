@@ -29,9 +29,9 @@ const (
 	// the same object.
 	DefaultInstallNamespace = "radar"
 	DefaultReleaseName      = "radar"
-	// cloudTokenSecretName is the Secret the chart reads the token from via
+	// CloudTokenSecretName is the Secret the chart reads the token from via
 	// cloud.existingSecret; cloudTokenSecretKey is its data key.
-	cloudTokenSecretName = "radar-cloud-config"
+	CloudTokenSecretName = "radar-cloud-config"
 	cloudTokenSecretKey  = "token"
 	// chartRepo/chartName resolve the PUBLISHED chart (what `helm repo add
 	// skyhook` serves) so the driver installs exactly what users get today.
@@ -116,7 +116,7 @@ func cloudInstallValues(cloudURL, clusterID string) map[string]any {
 			"enabled":        true,
 			"url":            cloudURL,
 			"clusterName":    clusterID, // carries the hub cluster id
-			"existingSecret": cloudTokenSecretName,
+			"existingSecret": CloudTokenSecretName,
 		},
 		"auth": map[string]any{"mode": "proxy"},
 		"rbac": map[string]any{
@@ -151,7 +151,7 @@ func ensureNamespace(ctx context.Context, kc kubernetes.Interface, ns string) er
 // (e.g. after a rotated token) don't fail on a pre-existing Secret.
 func upsertTokenSecret(ctx context.Context, kc kubernetes.Interface, ns, token string) error {
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: cloudTokenSecretName, Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: CloudTokenSecretName, Namespace: ns},
 		Type:       corev1.SecretTypeOpaque,
 		StringData: map[string]string{cloudTokenSecretKey: token},
 	}
@@ -163,7 +163,7 @@ func upsertTokenSecret(ctx context.Context, kc kubernetes.Interface, ns, token s
 		return err
 	}
 	// Exists → patch the token key in place.
-	existing, gerr := kc.CoreV1().Secrets(ns).Get(ctx, cloudTokenSecretName, metav1.GetOptions{})
+	existing, gerr := kc.CoreV1().Secrets(ns).Get(ctx, CloudTokenSecretName, metav1.GetOptions{})
 	if gerr != nil {
 		return gerr
 	}

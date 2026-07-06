@@ -283,9 +283,12 @@ func cloudInstall(args []string) {
 		Token:        pr.Token,
 	})
 	if errors.Is(perr, cloudinstall.ErrReleaseExists) {
-		fmt.Fprintf(os.Stderr, "\nRadar is already installed in namespace %q. Upgrade it to Cloud mode with:\n\n", *namespace)
-		fmt.Fprintf(os.Stderr, "  helm upgrade %s skyhook/radar -n %s --reuse-values \\\n    --set cloud.enabled=true --set cloud.url=%s --set cloud.clusterName=%s --set cloud.token=%s\n\n",
-			*release, *namespace, cloudURL, pr.ClusterID, pr.Token)
+		// The token Secret was already created; reference it rather than printing
+		// the token into a --set (which would land in shell history + the release).
+		fmt.Fprintf(os.Stderr, "\nRadar is already installed in namespace %q. The Cloud token has been written to\n", *namespace)
+		fmt.Fprintf(os.Stderr, "the %q Secret — upgrade the release to Cloud mode with:\n\n", cloudinstall.CloudTokenSecretName)
+		fmt.Fprintf(os.Stderr, "  helm upgrade %s skyhook/radar -n %s --reuse-values \\\n    --set cloud.enabled=true --set cloud.url=%s --set cloud.clusterName=%s --set cloud.existingSecret=%s\n\n",
+			*release, *namespace, cloudURL, pr.ClusterID, cloudinstall.CloudTokenSecretName)
 		os.Exit(1)
 	}
 	if perr != nil {
@@ -311,7 +314,10 @@ func buildLocalInstallClients() (kubernetes.Interface, *helm.Client, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("kube client: %w", err)
 	}
-	if err := helm.Initialize(rules.GetDefaultFilename()); err != nil {
+	// Hand Helm the SAME resolved rest.Config, not a kubeconfig path — otherwise
+	// a multi-file KUBECONFIG could leave Helm on a different current-context
+	// (cluster B) than the preflight/Secret client (cluster A).
+	if err := helm.InitializeWithRESTConfig(restCfg); err != nil {
 		return nil, nil, fmt.Errorf("helm init: %w", err)
 	}
 	return kc, helm.GetClient(), nil
@@ -338,6 +344,10 @@ func pollUntilApproved(ctx context.Context, client *cloud.ConnectClient, cr *clo
 			return pr, nil
 		case "expired":
 			return nil, cloud.ErrConnectExpired
+		case "consumed":
+			// Already approved AND used by a tunnel — the token is gone; the user
+			// must start a fresh install.
+			return nil, fmt.Errorf("this connect request was already used; re-run to start a fresh one")
 		}
 		if !time.Now().Before(deadline) {
 			return nil, cloud.ErrConnectExpired

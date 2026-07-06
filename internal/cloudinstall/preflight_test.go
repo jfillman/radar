@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	authv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
@@ -78,6 +80,34 @@ func TestInstallPreflight_CanCreateButCannotEscalate(t *testing.T) {
 	}
 	if len(res.Advisory) != 4 { // escalate + bind admin/edit/view
 		t.Errorf("expected 4 advisory (escalate + 3 binds), got %v", res.Advisory)
+	}
+}
+
+func TestInstallPreflight_NamespaceCreateSuppressedWhenExists(t *testing.T) {
+	// Caller can create namespaced objects + cluster RBAC but NOT namespaces.
+	allow := func(a authv1.ResourceAttributes) bool {
+		return !(a.Resource == "namespaces")
+	}
+	// No namespace object → nsExists=false → namespace-create is required → blocked.
+	missing := fakeWithSSAR(allow)
+	res, err := InstallPreflight(context.Background(), missing, "radar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubstr(res.Blocking, "create the target Namespace") {
+		t.Errorf("missing namespace should require create, blocking=%v", res.Blocking)
+	}
+
+	// Namespace already present → nsExists=true → the check is skipped → clean.
+	present := fakeWithSSAR(allow)
+	present.CoreV1().Namespaces().Create(context.Background(),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "radar"}}, metav1.CreateOptions{})
+	res, err = InstallPreflight(context.Background(), present, "radar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK() {
+		t.Errorf("existing namespace should skip the create check, blocking=%v", res.Blocking)
 	}
 }
 

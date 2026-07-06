@@ -21,7 +21,7 @@ func TestCloudInstallValues(t *testing.T) {
 	if cloud["clusterName"] != "k3Fg-9pA" {
 		t.Errorf("cloud.clusterName must carry the cluster id, got %v", cloud["clusterName"])
 	}
-	if cloud["existingSecret"] != cloudTokenSecretName {
+	if cloud["existingSecret"] != CloudTokenSecretName {
 		t.Errorf("cloud.existingSecret = %v", cloud["existingSecret"])
 	}
 	// Token must never appear in helm values (it lives in the Secret).
@@ -40,7 +40,7 @@ func TestUpsertTokenSecret_CreateThenUpdate(t *testing.T) {
 	if err := upsertTokenSecret(ctx, kc, "radar", "rhc_first"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := kc.CoreV1().Secrets("radar").Get(ctx, cloudTokenSecretName, metav1.GetOptions{})
+	got, err := kc.CoreV1().Secrets("radar").Get(ctx, CloudTokenSecretName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestUpsertTokenSecret_CreateThenUpdate(t *testing.T) {
 	if err := upsertTokenSecret(ctx, kc, "radar", "rhc_second"); err != nil {
 		t.Fatalf("upsert on existing secret must not fail: %v", err)
 	}
-	got, _ = kc.CoreV1().Secrets("radar").Get(ctx, cloudTokenSecretName, metav1.GetOptions{})
+	got, _ = kc.CoreV1().Secrets("radar").Get(ctx, CloudTokenSecretName, metav1.GetOptions{})
 	if got.StringData[cloudTokenSecretKey] != "rhc_second" {
 		t.Errorf("rotated token not applied, got %q", got.StringData[cloudTokenSecretKey])
 	}

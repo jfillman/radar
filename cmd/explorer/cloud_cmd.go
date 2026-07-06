@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -26,7 +27,9 @@ import (
 
 	"github.com/skyhook-io/radar/internal/app"
 	"github.com/skyhook-io/radar/internal/cloud"
+	"github.com/skyhook-io/radar/internal/cloudinstall"
 	"github.com/skyhook-io/radar/internal/config"
+	"github.com/skyhook-io/radar/internal/helm"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -52,6 +55,9 @@ func runCloudSubcommand() {
 	switch sub {
 	case "connect":
 		cloudConnect(rest)
+	case "install":
+		cloudInstall(rest)
+		os.Exit(0)
 	case "status":
 		cloudStatus()
 		os.Exit(0)
@@ -72,9 +78,23 @@ func cloudUsage(w *os.File) {
 	fmt.Fprint(w, `Connect this cluster to Radar Cloud.
 
 Usage:
+  radar cloud install [--namespace NS] [--hub-url URL] [--name NAME] [--dry-run]
   radar cloud connect [--hub-url URL] [--name NAME] [--no-browser]
   radar cloud status
   radar cloud disconnect
+
+install  Install Radar INTO the current-context cluster, connected to Cloud
+         (uses your kubeconfig; the in-cluster agent serves with full per-user
+         RBAC). This is the recommended way to connect a cluster.
+connect  Tunnel THIS local Radar process to Cloud (preview; does not install).
+
+Flags (install):
+  --namespace NS   Namespace to install into (default: radar)
+  --hub-url URL    Radar Cloud hub API (default `+defaultHubBase+`; set for self-hosted)
+  --name NAME      Cluster name shown in Cloud (default: current kubecontext)
+  --chart-version  Chart version to install (default: latest published)
+  --dry-run        Run the permission preflight + print the plan; install nothing
+  --no-browser     Print the approval URL instead of opening a browser
 
 Flags (connect):
   --hub-url URL   Radar Cloud hub API (default `+defaultHubBase+`; set for self-hosted)
@@ -152,6 +172,189 @@ func cloudConnect(args []string) {
 		"--cluster-name=" + res.ClusterID,
 		"--no-browser",
 	}
+}
+
+// cloudInstall implements `radar cloud install` (#2): install Radar INTO the
+// current-context cluster with Cloud mode enabled, using the operator's own
+// kubeconfig — the only identity that can provision the impersonation RBAC.
+// Unlike `connect`, it does NOT start a local dialer: the in-cluster agent it
+// installs is what dials the tunnel. Terminal (exits after installing).
+func cloudInstall(args []string) {
+	fs := flag.NewFlagSet("cloud install", flag.ExitOnError)
+	hubURL := fs.String("hub-url", defaultHubBase, "Radar Cloud hub API origin")
+	namespace := fs.String("namespace", cloudinstall.DefaultInstallNamespace, "Namespace to install into")
+	release := fs.String("release", cloudinstall.DefaultReleaseName, "Helm release name")
+	chartVersion := fs.String("chart-version", "", "Chart version (default: latest published)")
+	name := fs.String("name", "", "Cluster name shown in Cloud (default: current kubecontext)")
+	noBrowser := fs.Bool("no-browser", false, "Print the approval URL instead of opening a browser")
+	browserPref := fs.String("browser", "", "Browser to open the approval URL with")
+	dryRun := fs.Bool("dry-run", false, "Preflight + print the plan; install nothing")
+	_ = fs.Parse(args)
+
+	ctxName := currentKubeContextName()
+	clusterName := *name
+	if clusterName == "" {
+		clusterName = ctxName
+	}
+	if clusterName == "" {
+		clusterName = "my-cluster"
+	}
+
+	ctx, cancel := signalContext()
+	defer cancel()
+
+	// Build kube + helm clients against the current kubecontext — the driver runs
+	// before Radar's normal boot, so we resolve these ourselves.
+	kc, hc, err := buildLocalInstallClients()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cloud install: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Installing Radar into cluster %q (namespace %q)…\n\n", clusterName, *namespace)
+
+	// 1. Preflight BEFORE minting a token — a permission failure after approval
+	//    would orphan a Cloud cluster + a live token.
+	pf, err := cloudinstall.InstallPreflight(ctx, kc, *namespace)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "permission preflight failed: %v\n", err)
+		os.Exit(1)
+	}
+	if !pf.OK() {
+		fmt.Fprintln(os.Stderr, "You don't have the permissions to install cloud-enabled Radar into this cluster.")
+		fmt.Fprintln(os.Stderr, "Missing:")
+		for _, d := range pf.Blocking {
+			fmt.Fprintf(os.Stderr, "  • %s\n", d)
+		}
+		fmt.Fprintln(os.Stderr, "\nEnabling Cloud mode provisions per-user RBAC (impersonation), which needs a cluster admin.")
+		fmt.Fprintln(os.Stderr, "Ask your platform team to run `radar cloud install`, or share the approval link with them.")
+		os.Exit(1)
+	}
+	if len(pf.Advisory) > 0 {
+		fmt.Println("Note: couldn't confirm these up front (the install will fail cleanly if they're truly missing):")
+		for _, d := range pf.Advisory {
+			fmt.Printf("  • %s\n", d)
+		}
+		fmt.Println()
+	}
+
+	// 2. Dry-run stops here — before any token mint or browser.
+	if *dryRun {
+		fmt.Printf("Dry run — would install chart skyhook/radar (version %s) as release %q in namespace %q with cloud.enabled=true.\n",
+			chartVersionOrLatest(*chartVersion), *release, *namespace)
+		fmt.Println("Permission preflight passed. Re-run without --dry-run to install.")
+		return
+	}
+
+	// 3. Device flow → approve → cluster token (deployment_mode=in-cluster, so the
+	//    hub tags the cluster source=connect_incluster).
+	meta := gatherConnectMetadata(clusterName)
+	meta.DeploymentMode = "in-cluster"
+	client := cloud.NewConnectClient(*hubURL)
+	cr, err := client.Create(ctx, meta)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\ncouldn't start the connect flow: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  Approve this connection in your browser:\n\n    %s\n\n", cr.ConnectURL)
+	if !*noBrowser {
+		go app.OpenBrowser(cr.ConnectURL, *browserPref)
+	}
+	fmt.Println("  Waiting for approval… (Ctrl-C to cancel)")
+
+	pr, err := pollUntilApproved(ctx, client, cr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nconnect failed: %v\n", err)
+		os.Exit(1)
+	}
+	cloudURL := pr.WSSURL
+	if cloudURL == "" { // approved poll may omit it; fall back to create-time wss
+		cloudURL = cr.WSSURL
+	}
+
+	// 4. Provision — install the chart with the token; the in-cluster agent dials.
+	fmt.Printf("\n  Approved. Installing Radar into %q…\n", *namespace)
+	perr := cloudinstall.Provision(ctx, hc, kc, cloudinstall.ProvisionConfig{
+		Namespace:    *namespace,
+		ReleaseName:  *release,
+		ChartVersion: *chartVersion,
+		CloudURL:     cloudURL,
+		ClusterID:    pr.ClusterID,
+		Token:        pr.Token,
+	})
+	if errors.Is(perr, cloudinstall.ErrReleaseExists) {
+		fmt.Fprintf(os.Stderr, "\nRadar is already installed in namespace %q. Upgrade it to Cloud mode with:\n\n", *namespace)
+		fmt.Fprintf(os.Stderr, "  helm upgrade %s skyhook/radar -n %s --reuse-values \\\n    --set cloud.enabled=true --set cloud.url=%s --set cloud.clusterName=%s --set cloud.token=%s\n\n",
+			*release, *namespace, cloudURL, pr.ClusterID, pr.Token)
+		os.Exit(1)
+	}
+	if perr != nil {
+		fmt.Fprintf(os.Stderr, "\ninstall failed: %v\n", perr)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n  ✓ Installed. Radar is starting in your cluster and will connect to Cloud shortly.\n")
+	fmt.Printf("    Track it: kubectl -n %s rollout status deploy/%s\n\n", *namespace, *release)
+}
+
+// buildLocalInstallClients resolves a kube clientset + Helm client from the
+// current kubecontext. Helm needs a kubeconfig FILE path (its RESTClientGetter
+// falls back to the in-cluster/localhost path when the path is empty and Radar's
+// k8s singleton isn't initialized yet at subcommand time).
+func buildLocalInstallClients() (kubernetes.Interface, *helm.Client, error) {
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	restCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{}).ClientConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("no reachable kubeconfig context: %w", err)
+	}
+	kc, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("kube client: %w", err)
+	}
+	if err := helm.Initialize(rules.GetDefaultFilename()); err != nil {
+		return nil, nil, fmt.Errorf("helm init: %w", err)
+	}
+	return kc, helm.GetClient(), nil
+}
+
+// pollUntilApproved polls the connect request until it's approved, honoring the
+// hub's poll interval (clamped 2–10s) and the request's expiry.
+func pollUntilApproved(ctx context.Context, client *cloud.ConnectClient, cr *cloud.CreateResponse) (*cloud.PollResponse, error) {
+	interval := time.Duration(cr.PollInterval) * time.Second
+	if interval < 2*time.Second {
+		interval = 2 * time.Second
+	}
+	if interval > 10*time.Second {
+		interval = 10 * time.Second
+	}
+	deadline := time.Now().Add(time.Duration(cr.ExpiresIn) * time.Second)
+	for {
+		pr, err := client.Poll(ctx, cr.RequestID, cr.DeviceSecret)
+		if err != nil {
+			return nil, err
+		}
+		switch pr.Status {
+		case "approved":
+			return pr, nil
+		case "expired":
+			return nil, cloud.ErrConnectExpired
+		}
+		if !time.Now().Before(deadline) {
+			return nil, cloud.ErrConnectExpired
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+func chartVersionOrLatest(v string) string {
+	if v == "" {
+		return "latest"
+	}
+	return v
 }
 
 func cloudStatus() {

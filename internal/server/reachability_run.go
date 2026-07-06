@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -133,6 +135,15 @@ func (s *Server) handleProbeInCluster(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Target) == "" {
 		s.writeError(w, http.StatusBadRequest, "target (clusterIP:port) is required")
 		return
+	}
+	// Sanitize the caller-supplied dial destination before it reaches the probe pod:
+	// require a well-formed host:port, and strip any ../ from the path.
+	if _, _, err := net.SplitHostPort(strings.TrimSpace(req.Target)); err != nil {
+		s.writeError(w, http.StatusBadRequest, "target must be host:port")
+		return
+	}
+	if p := strings.TrimSpace(req.Path); p != "" {
+		req.Path = path.Clean("/" + p)
 	}
 	auth.AuditLog(r, namespace, name)
 

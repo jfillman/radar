@@ -244,6 +244,45 @@ func TestProbeService_SkipsUDPAndSCTP(t *testing.T) {
 	}
 }
 
+// TestProbeService_GRPCPortEmitsGrpcurlCommand pins that a non-HTTP gRPC port,
+// which the apiserver HTTP proxy cannot verify, skips with a copyable grpcurl
+// reproducer rather than a generic "connect a client" hint, so the operator gets
+// the exact command to test the gap the probe could not.
+func TestProbeService_GRPCPortEmitsGrpcurlCommand(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+	stubProxyProbes(t)
+	tr := &Trace{
+		Downstream: []Hop{{
+			Resource: ResourceRef{Kind: "Service", Namespace: "ns", Name: "svc"},
+			Config: &HopConfig{ServiceType: "ClusterIP", ClusterIP: "10.0.0.1", Ports: []PortMap{
+				{Port: 9090, Name: "grpc", Protocol: "TCP"},                    // cleartext gRPC (h2c): -plaintext
+				{Port: 8443, Name: "grpc", AppProtocol: "h2", Protocol: "TCP"}, // TLS gRPC (h2): -insecure
+			}},
+		}},
+	}
+	runProbes(context.Background(), tr, Options{Probe: true, ProbeBudget: 2 * time.Second}, fake.NewClientset())
+
+	// The apiserver-path skips don't stamp Port, so match by the port in the command.
+	var plaintextCmd, tlsCmd string
+	for _, r := range tr.Downstream[0].Probes {
+		if r.Path != probe.PathAPIServer || !r.Skipped {
+			continue
+		}
+		if strings.Contains(r.Command, "localhost:9090") {
+			plaintextCmd = r.Command
+		}
+		if strings.Contains(r.Command, "localhost:8443") {
+			tlsCmd = r.Command
+		}
+	}
+	if !strings.Contains(plaintextCmd, "grpcurl -plaintext localhost:9090 list") {
+		t.Errorf("cleartext gRPC should get -plaintext, got %q", plaintextCmd)
+	}
+	if !strings.Contains(tlsCmd, "grpcurl -insecure localhost:8443 list") {
+		t.Errorf("TLS gRPC (h2) should get -insecure, not -plaintext, got %q", tlsCmd)
+	}
+}
+
 // TestProbePods_DualPathInCluster pins the Pods-side counterpart: in-cluster
 // vantage + client + both PodIPs and PodNames runs probePodsByIP (data path)
 // AND probePodsByName (apiserver path). Without both, divergence between
@@ -734,6 +773,37 @@ func TestReviseVerdictWithProbes_HealthyEscalatesOnAllFailed(t *testing.T) {
 	}
 	if brokenAt != 1 {
 		t.Errorf("brokenAt = %d, want 1 (the Pods hop)", brokenAt)
+	}
+}
+
+// TestReviseVerdictWithProbes_PartlySkippedEntryNotBroken pins V2/B3: a Gateway
+// front door with one listener that failed its probe but another that was skipped
+// (untestable: no SNI, non-HTTP) must not be condemned "unreachable" whole. The
+// tested failure is real evidence (degraded), but the skipped listener may carry
+// traffic, so broken would overclaim. A fully-tested all-failed entry still breaks.
+func TestReviseVerdictWithProbes_PartlySkippedEntryNotBroken(t *testing.T) {
+	build := func(withSkip bool) *Trace {
+		entryProbes := []probe.Result{
+			{Layer: probe.LayerHTTP, Path: probe.PathData, Port: 443, OK: false, Tone: probe.ToneUnhealthy},
+		}
+		if withSkip {
+			entryProbes = append(entryProbes, probe.Result{Layer: probe.LayerTLS, Skipped: true, Reason: "listener has no hostname"})
+		}
+		return &Trace{
+			Verdict:  VerdictHealthy,
+			BrokenAt: -1,
+			Downstream: []Hop{
+				{Resource: ResourceRef{Kind: "Gateway", Name: "gw", Namespace: "prod"}, Edge: "entry:Gateway", Probes: entryProbes},
+				{Resource: ResourceRef{Kind: "HTTPRoute", Name: "r1", Namespace: "prod"}, Edge: "Gateway->HTTPRoute",
+					Probes: []probe.Result{{Layer: probe.LayerHTTP, Path: probe.PathData, OK: true, Tone: probe.ToneHealthy}}},
+			},
+		}
+	}
+	if v, _ := reviseVerdictWithProbes(build(true)); v == VerdictBroken {
+		t.Errorf("partly-skipped entry (1 failed listener, 1 skipped) = %q, want NOT broken (V2/B3 overclaim guard)", v)
+	}
+	if v, _ := reviseVerdictWithProbes(build(false)); v != VerdictBroken {
+		t.Errorf("fully-tested all-failed entry = %q, want broken (guard must not suppress a real all-fail)", v)
 	}
 }
 
@@ -1241,10 +1311,12 @@ func TestClassifyHopProbes_HonestTones(t *testing.T) {
 	}
 }
 
-// TestReviseVerdictWithProbes_5xxIsDegradedNotBroken: a hop whose only live
-// evidence is a 5xx reached the server — traffic passed, the app erred. The
-// honest verdict is degraded, never "broken — traffic can't pass".
-func TestReviseVerdictWithProbes_5xxIsDegradedNotBroken(t *testing.T) {
+// TestReviseVerdictWithProbes_DegradedFrontDoorIsDegradedNotBroken: a hop whose
+// only live evidence is a degraded-tone probe (a front-door 502/504, the proxy
+// could not reach its upstream) is degraded, never "broken, traffic can't pass".
+// An app's own 5xx no longer lands here at all: it reads as "reached" (the scope
+// is the network path, not app health), pinned in pkg/probe TestClassifyHTTPStatus.
+func TestReviseVerdictWithProbes_DegradedFrontDoorIsDegradedNotBroken(t *testing.T) {
 	tr := &Trace{
 		Verdict: VerdictHealthy,
 		Downstream: []Hop{{
@@ -1254,7 +1326,7 @@ func TestReviseVerdictWithProbes_5xxIsDegradedNotBroken(t *testing.T) {
 	}
 	v, _ := reviseVerdictWithProbes(tr)
 	if v != VerdictDegraded {
-		t.Errorf("5xx-only hop verdict = %q, want %q", v, VerdictDegraded)
+		t.Errorf("degraded front-door hop verdict = %q, want %q", v, VerdictDegraded)
 	}
 }
 

@@ -108,9 +108,44 @@ func TestApplyInClusterResults_ClearsStaleReasonAndBrokenRoute(t *testing.T) {
 		t.Fatalf("verdict = %q, want healthy", tr.Verdict)
 	}
 	if tr.Reason != "" {
-		t.Errorf("Reason = %q, want cleared — a stale break sentence must not survive a flip to healthy", tr.Reason)
+		t.Errorf("Reason = %q, want cleared - a stale break sentence must not survive a flip to healthy", tr.Reason)
 	}
 	if tr.BrokenRoute != nil {
-		t.Errorf("BrokenRoute = %+v, want nil — no break remains", tr.BrokenRoute)
+		t.Errorf("BrokenRoute = %+v, want nil - no break remains", tr.BrokenRoute)
+	}
+}
+
+// TestApplyInClusterResults_UpgradesCollapsedUnknown pins the in-cluster path
+// against the verdict-collapse regression: an unknown that the coverage collapse
+// produced because the laptop trace was apiserver-only (UnknownClass empty) MUST
+// re-derive after the in-cluster pass upgrades its routes to real. Only a genuine
+// special-shape unknown (UnknownClass set) stays unknown. Without the guard fix,
+// the "Test in-cluster" button could never lift a trace off unknown.
+func TestApplyInClusterResults_UpgradesCollapsedUnknown(t *testing.T) {
+	base := func(unknownClass string) *Trace {
+		return &Trace{
+			Subject:      ResourceRef{Kind: "Service", Namespace: "prod", Name: "api"},
+			Verdict:      VerdictUnknown,
+			UnknownClass: unknownClass,
+			BrokenAt:     -1,
+			Downstream: []Hop{
+				{Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "api"}, Edge: "entry:Service"},
+				{Resource: ResourceRef{Kind: "Pods", Namespace: "prod"}, Edge: "Service->Pods"},
+			},
+			Routes:   []RouteResult{{Route: "api", Target: "api:80", Outcome: OutcomeVerified, Confidence: ConfidenceReal}},
+			Coverage: &Coverage{Tested: 1, Passed: 1},
+		}
+	}
+	// Collapse-induced unknown (no UnknownClass): the in-cluster real pass must lift it.
+	up := base("")
+	ApplyInClusterResults(up, nil)
+	if up.Verdict != VerdictHealthy {
+		t.Errorf("collapse-unknown after in-cluster real pass = %q, want healthy (must re-derive)", up.Verdict)
+	}
+	// Genuine special-shape unknown (e.g. selectorless): stays unknown.
+	special := base(UnknownClassByDesign)
+	ApplyInClusterResults(special, nil)
+	if special.Verdict != VerdictUnknown {
+		t.Errorf("special-shape unknown = %q, want unknown preserved", special.Verdict)
 	}
 }

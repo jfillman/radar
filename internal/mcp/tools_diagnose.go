@@ -750,12 +750,15 @@ func buildNetworkDiagnoseResponse(tr *trace.Trace) networkDiagnoseResponse {
 		// subject break represented only on the upstream hop — keep it.
 		Upstreams: slimNetworkHops(tr.Upstreams, true, tr.Subject),
 	}
-	// Keep the legacy reason ONLY for a special-shape unknown (selectorless / RBAC
-	// denied / lookup failure / timed out), where it carries the honest "why" the
-	// coverage counts can't. For every other tier the headline + routes are the
-	// single source — a separate reason would only risk the B3 contradiction
-	// (e.g. a stale "verified via API server" beside an honest headline).
-	if tr.Verdict == trace.VerdictUnknown {
+	// Keep the legacy reason only for a special-shape unknown (selectorless, RBAC
+	// denied, lookup failure, timed out), where it carries the honest reason the
+	// coverage counts cannot. Those set UnknownClass (classifyUnknown always assigns
+	// one). A verdict collapsed to unknown from a healthy static path, reached only
+	// via the apiserver proxy or nothing tested from here, leaves UnknownClass empty;
+	// its headline and routes already explain, and surfacing tr.Reason there would
+	// risk the B3 contradiction (a stale "verified via API server" beside a "couldn't
+	// test any route" headline).
+	if tr.Verdict == trace.VerdictUnknown && tr.UnknownClass != "" {
 		resp.Reason = tr.Reason
 	}
 	if tr.Coverage != nil {

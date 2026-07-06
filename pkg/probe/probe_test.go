@@ -27,10 +27,13 @@ func TestClassifyHTTPStatus_AuthAndRedirect(t *testing.T) {
 		{401, ToneReached, "authentication required"},
 		{407, ToneReached, "authentication required"},
 		{403, ToneReached, "forbidden"},
-		{404, ToneReached, "route/auth not verified"},
+		{404, ToneReached, "HTTP 404 · reached"},
 		{301, ToneReached, "redirect"},
 		{200, ToneHealthy, "HTTP 200"},
-		{503, ToneDegraded, "server error"},
+		{500, ToneReached, "reached, server error"},
+		{503, ToneReached, "reached, server error"},
+		{502, ToneDegraded, "front door couldn't reach the backend"},
+		{504, ToneDegraded, "front door couldn't reach the backend"},
 	}
 	for _, c := range cases {
 		tone, detail := classifyHTTPStatus(c.code)
@@ -249,6 +252,32 @@ func TestProxyUnreachableStrict(t *testing.T) {
 	}
 }
 
+// TestClassifyProxy5xx pins the vantage-agreement decision for a 502/503/504 seen
+// through the apiserver proxy: the apiserver or proxy failing to reach the backend
+// reads unreachable; a backend-forwarded 503 reads reached (the app's own error,
+// matching a direct probe); a forwarded 502 or 504 reads degraded (a proxy-class
+// backend that could not reach its upstream). Without this, the same backend
+// response would read differently from a laptop than from in-cluster.
+func TestClassifyProxy5xx(t *testing.T) {
+	// Our stack couldn't reach the backend → unreachable, whatever the code.
+	for _, code := range []int{502, 503, 504} {
+		if unreachable, _, _ := classifyProxy5xx(code, errors.New(`no endpoints available for service "echo"`)); !unreachable {
+			t.Errorf("classifyProxy5xx(%d, no-endpoints) unreachable=false, want true (our stack)", code)
+		}
+	}
+	// Backend forwarded its own status (no apiserver-exclusive signature) → classify by code.
+	backendErr := errors.New("an error on the server has prevented the request from succeeding")
+	if unreachable, tone, _ := classifyProxy5xx(503, backendErr); unreachable || tone != ToneReached {
+		t.Errorf("forwarded 503 = (unreachable=%v tone=%q), want (false, reached): app error, not a network break", unreachable, tone)
+	}
+	if unreachable, tone, _ := classifyProxy5xx(502, backendErr); unreachable || tone != ToneDegraded {
+		t.Errorf("forwarded 502 = (unreachable=%v tone=%q), want (false, degraded)", unreachable, tone)
+	}
+	if unreachable, tone, _ := classifyProxy5xx(504, backendErr); unreachable || tone != ToneDegraded {
+		t.Errorf("forwarded 504 = (unreachable=%v tone=%q), want (false, degraded)", unreachable, tone)
+	}
+}
+
 // TestClassifyHTTPStatus pins the honest reachability vocabulary: reaching any
 // HTTP status proves the transport; the code only refines what was proven.
 // 2xx verifies, 3xx/4xx are "reached" (not failures), 5xx is degraded (reached
@@ -267,9 +296,14 @@ func TestClassifyHTTPStatus(t *testing.T) {
 		{403, ToneReached},
 		{404, ToneReached},
 		{429, ToneReached},
-		{500, ToneDegraded},
-		{502, ToneDegraded},
-		{503, ToneDegraded},
+		// Scope is the network path, not app health: an app's own 5xx means the request
+		// reached the app and it answered, so the path works. Only a proxy's 502/504
+		// (could not reach its upstream) is a network-path fact worth flagging.
+		{500, ToneReached},  // app error: reached
+		{503, ToneReached},  // service unavailable: reached (ambiguous, do not overclaim)
+		{505, ToneReached},  // any other app 5xx: reached
+		{502, ToneDegraded}, // bad gateway: front door could not reach upstream
+		{504, ToneDegraded}, // gateway timeout: front door could not reach upstream
 	}
 	for _, c := range cases {
 		got, detail := classifyHTTPStatus(c.code)
@@ -297,7 +331,8 @@ func TestHTTPProbeTones(t *testing.T) {
 		{301, ToneReached, true},
 		{404, ToneReached, true},
 		{401, ToneReached, true},
-		{500, ToneDegraded, true},
+		{500, ToneReached, true},  // app 5xx: reached (app health is not judged)
+		{502, ToneDegraded, true}, // proxy could not reach upstream: a network-path fact
 	}
 	for _, c := range cases {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -405,6 +440,13 @@ func TestSSRFGuard_DeniesInternalTargets(t *testing.T) {
 	for _, addr := range []string{"0.0.0.0:80", "[::]:80"} {
 		if err := denyInternalControl("tcp", addr, nil); err == nil {
 			t.Errorf("denyInternalControl(%s): want denied (unspecified routes to localhost), got nil", addr)
+		}
+	}
+	// Cloud metadata endpoints that are not link-local: Alibaba IMDS (100.100.100.100,
+	// CGNAT) and the IPv6 IMDS ULA (fd00:ec2::254) must be denied explicitly.
+	for _, addr := range []string{"100.100.100.100:80", "[fd00:ec2::254]:80"} {
+		if err := denyInternalControl("tcp", addr, nil); err == nil {
+			t.Errorf("denyInternalControl(%s): want denied (cloud metadata), got nil", addr)
 		}
 	}
 }

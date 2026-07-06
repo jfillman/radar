@@ -531,9 +531,23 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 		if client != nil {
 			target := fmt.Sprintf("port %d", p.Port)
 			if !isHTTPProbablePort(p.Name, p.AppProtocol, p.Port) {
+				cmd := portForwardCmd("svc", h.Resource.Namespace, h.Resource.Name, p.Port)
+				if isGRPCLike(p.Name, p.AppProtocol) {
+					// -plaintext is for cleartext gRPC (h2c). A TLS gRPC port,
+					// appProtocol "h2" or a gRPC port on 443/8443, needs a TLS
+					// handshake where -plaintext fails, so use -insecure there and the
+					// copyable reproducer does not mislead.
+					flag := "-plaintext"
+					if isHTTPSPort(p.Name, p.AppProtocol, p.Port) || strings.EqualFold(strings.TrimSpace(p.AppProtocol), "h2") {
+						flag = "-insecure"
+					}
+					cmd += fmt.Sprintf("   # then: grpcurl %s localhost:%d list", flag, p.Port)
+				} else {
+					cmd += fmt.Sprintf("   # then connect a client for this protocol on localhost:%d", p.Port)
+				}
 				skip := probe.SkippedCmd(probe.LayerHTTP, target, vantage,
 					nonHTTPSkipReason(p.Name, p.AppProtocol, p.Port, vantage, dataReachable),
-					portForwardCmd("svc", h.Resource.Namespace, h.Resource.Name, p.Port)+fmt.Sprintf("   # then connect a client for this protocol on localhost:%d", p.Port))
+					cmd)
 				skip.Path = probe.PathAPIServer
 				out = append(out, skip)
 				continue
@@ -863,6 +877,16 @@ func isGRPCLike(name, appProtocol string) bool {
 
 const maxPodsToProbe = 3
 
+// classed stamps a coverage SkipClass on a skip result so the coverage layer
+// reads the class structurally instead of re-deriving it from the reason text
+// (which drifts when the message is reworded). Skips left unstamped fall back to
+// classifySkip, so only the vantage and benign sites, the ones the substring match
+// keys on, need it.
+func classed(r probe.Result, class string) probe.Result {
+	r.SkipClass = class
+	return r
+}
+
 // probePods runs every feasible path against each sampled pod's container
 // ports. In-cluster + PodIPs gets direct TCP (data path); a client + pod
 // names gets PodProxy (apiserver path). Both run when both are feasible —
@@ -918,8 +942,8 @@ func probePodsByIP(ctx context.Context, h *Hop, vantage probe.Vantage) []probe.R
 		}
 	}
 	if len(h.Config.PodIPs) > len(ips) {
-		out = append(out, probe.Skipped(probe.LayerTCP, "", vantage,
-			fmt.Sprintf("sampled %d of %d ready pods", len(ips), len(h.Config.PodIPs))))
+		out = append(out, classed(probe.Skipped(probe.LayerTCP, "", vantage,
+			fmt.Sprintf("sampled %d of %d ready pods", len(ips), len(h.Config.PodIPs))), SkipClassBenign))
 	}
 	return out
 }
@@ -977,8 +1001,8 @@ func probePodsByName(ctx context.Context, h *Hop, vantage probe.Vantage, client 
 		}
 	}
 	if len(h.Config.PodNames) > len(names) {
-		out = append(out, probe.Skipped(probe.LayerHTTP, "", vantage,
-			fmt.Sprintf("sampled %d of %d ready pods", len(names), len(h.Config.PodNames))))
+		out = append(out, classed(probe.Skipped(probe.LayerHTTP, "", vantage,
+			fmt.Sprintf("sampled %d of %d ready pods", len(names), len(h.Config.PodNames))), SkipClassBenign))
 	}
 	return out
 }
@@ -1038,9 +1062,9 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 			// hand over a command to test from somewhere that can resolve it.
 			// In-cluster, an unresolvable host IS real evidence — keep it.
 			if vantage == probe.VantageLocal {
-				out = append(out, probe.SkippedCmd(probe.LayerDNS, host, vantage,
+				out = append(out, classed(probe.SkippedCmd(probe.LayerDNS, host, vantage,
 					fmt.Sprintf("%q doesn't resolve from your machine — it may be cluster-internal DNS. Run Radar in-cluster, or test from a host that resolves it.", host),
-					curlReachCmd("https", host)+"   # from a host that resolves it; or http://"))
+					curlReachCmd("https", host)+"   # from a host that resolves it; or http://"), SkipClassVantage))
 				continue
 			}
 			out = append(out, dnsRes)
@@ -1076,9 +1100,9 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 				break
 			}
 			if !tcpRes.OK && internalOnly {
-				out = append(out, probe.SkippedCmd(probe.LayerTCP, addr, vantage,
+				out = append(out, classed(probe.SkippedCmd(probe.LayerTCP, addr, vantage,
 					fmt.Sprintf("%q resolves to an internal address your machine can't reach — it may be cluster-internal. Run Radar in-cluster, or test from a host that routes to it.", host),
-					curlReachCmd("http", host)))
+					curlReachCmd("http", host)), SkipClassVantage))
 				continue
 			}
 			out = append(out, tcpRes)
@@ -1160,9 +1184,9 @@ func probeGateway(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 			// A public address failing from a laptop IS real, so only demote
 			// internal addresses; in-cluster failures stay real evidence.
 			if !tcpRes.OK && vantage == probe.VantageLocal && (isInternalAddr(addr) || hostResolvesInternalOnly(ctx, addr)) {
-				out = append(out, probe.SkippedCmd(probe.LayerTCP, target, vantage,
+				out = append(out, classed(probe.SkippedCmd(probe.LayerTCP, target, vantage,
 					fmt.Sprintf("couldn't reach internal address %s from your machine — it may be cluster-internal. Run Radar in-cluster, or test from a host that routes to it.", addr),
-					fmt.Sprintf("nc -vz %s %d", addr, l.Port)))
+					fmt.Sprintf("nc -vz %s %d", addr, l.Port)), SkipClassVantage))
 				continue
 			}
 			out = append(out, tcpRes)
@@ -1189,8 +1213,9 @@ func probeGateway(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 				// already proved the listener is reachable; say the rest needs
 				// a host rather than inventing a cert error.
 				if l.Hostname == "" {
-					out = append(out, probe.Skipped(probe.LayerTLS, target, vantage,
-						"listener has no hostname — provide a concrete host/SNI to verify the TLS certificate"))
+					out = append(out, probe.SkippedCmd(probe.LayerTLS, target, vantage,
+						"listener has no hostname - provide a concrete host/SNI to verify the TLS certificate",
+						fmt.Sprintf("openssl s_client -connect %s:%d -servername <host> </dev/null   # replace <host> with a name clients use", addr, l.Port)))
 					continue
 				}
 				lctx, lcancel := context.WithTimeout(ctx, tlsTimeout)

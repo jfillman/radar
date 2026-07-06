@@ -99,6 +99,65 @@ func TestBuildTrace_ServiceHealthy(t *testing.T) {
 	}
 }
 
+// TestBuildTrace_ShippedVerdictIsCoverageHonest pins the C3(b)/M4 collapse: the
+// shipped t.Verdict is the single coverage-honest value, not the raw probe-mutated
+// one. A route reached only via the apiserver proxy (indirect, local vantage) is
+// not a confident green, so the stored verdict must read unknown, matching what
+// CoverageVerdict and the MCP surface report. Without the collapse, t.Verdict would
+// stay healthy while the headline honestly says "reached via API server, not live".
+func TestBuildTrace_ShippedVerdictIsCoverageHonest(t *testing.T) {
+	defer k8s.ResetTestState()
+	t.Setenv("KUBERNETES_SERVICE_HOST", "") // local vantage: only the apiserver path probes
+	stubProxyProbes(t)                       // apiserver proxy returns 2xx (indirect success)
+
+	labelsMap := map[string]string{"app": "api"}
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "prod"},
+		Spec: corev1.ServiceSpec{
+			Selector: labelsMap,
+			Ports:    []corev1.ServicePort{{Name: "http", Port: 80, TargetPort: intstr.FromString("http")}},
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "api-1", Namespace: "prod", Labels: labelsMap},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:  "main",
+			Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}},
+		}}},
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(time.Now())}},
+		},
+	}
+	client := fake.NewClientset(svc, pod)
+	if err := k8s.InitTestResourceCache(client); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	deps := Deps{Cache: k8s.GetResourceCache(), Dynamic: k8s.GetDynamicResourceCache(), Discovery: k8s.GetResourceDiscovery(), Issues: issues.NewCacheProvider()}
+
+	var tr *Trace
+	waitFor(t, func() bool {
+		x, err := BuildTraceWithOptions(context.Background(), deps, "Service", "prod", "api", Options{Probe: true, ProbeBudget: 2 * time.Second})
+		if err != nil {
+			return false
+		}
+		tr = x
+		return len(tr.Downstream) == 2
+	})
+
+	// The collapse in action: an apiserver-only reach is indirect, so the shipped
+	// verdict is unknown, not a confident healthy.
+	if tr.Verdict != VerdictUnknown {
+		t.Errorf("shipped verdict = %q, want unknown (apiserver-only reach is indirect, not a confident green)", tr.Verdict)
+	}
+	// Invariant the collapse guarantees: the stored verdict always equals
+	// CoverageVerdict, one source of truth for REST, UI, and MCP. If either collapse
+	// site is removed, the raw healthy leaks and this fails.
+	if cv := CoverageVerdict(tr); tr.Verdict != cv {
+		t.Errorf("shipped verdict %q != CoverageVerdict %q, the collapse must keep them identical", tr.Verdict, cv)
+	}
+}
+
 func TestBuildTrace_ServiceNoSelectorIsSelectorless(t *testing.T) {
 	defer k8s.ResetTestState()
 

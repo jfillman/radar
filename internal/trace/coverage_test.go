@@ -554,6 +554,48 @@ func TestCoverageVerdict_SpecialShapeUnknownPreserved(t *testing.T) {
 	}
 }
 
+// TestSkipClassOf_PrefersStructuredField pins spine-a: the coverage class comes
+// from the structured SkipClass a probe stamped, not from re-matching the reason
+// text, so rewording a skip message cannot silently misclassify a stamped skip.
+// Unstamped skips still fall back to the reason-text classifier.
+func TestSkipClassOf_PrefersStructuredField(t *testing.T) {
+	// The reason text says "sampled ..." (which classifySkip reads as benign), but the
+	// stamped class is vantage, so the structured field must win.
+	stamped := probe.Result{Skipped: true, SkipClass: SkipClassVantage, Reason: "sampled 1 of 3 ready pods"}
+	if got := skipClassOf(stamped); got != SkipClassVantage {
+		t.Errorf("skipClassOf(stamped) = %q, want %q (structured field must win over reason text)", got, SkipClassVantage)
+	}
+	// No stamp: fall back to classifying the reason text.
+	unstamped := probe.Result{Skipped: true, Reason: "sampled 2 of 5 ready pods"}
+	if got := skipClassOf(unstamped); got != SkipClassBenign {
+		t.Errorf("skipClassOf(unstamped) = %q, want %q (reason-text fallback)", got, SkipClassBenign)
+	}
+}
+
+// TestWorstOutcome_FailedLayerNamesTheBrokenLayer pins the per-layer model: a
+// degraded TLS probe (cert failure) reports failedLayer "tls"; a degraded HTTP
+// probe (a 502/504) reports "upstream" - HTTP was reached (a response came back),
+// so it is never an HTTP failure; a transport failure reports its own layer; and a
+// reachable outcome carries no failed layer.
+func TestWorstOutcome_FailedLayerNamesTheBrokenLayer(t *testing.T) {
+	tlsCert := probe.Result{Layer: probe.LayerTLS, OK: true, Tone: probe.ToneDegraded, Detail: "certificate expired"}
+	if o, _, l := worstOutcome([]probe.Result{tlsCert}); o != OutcomeServerError || l != "tls" {
+		t.Errorf("TLS cert failure = (%q, layer %q), want (server-error, tls)", o, l)
+	}
+	http502 := probe.Result{Layer: probe.LayerHTTP, OK: true, Tone: probe.ToneDegraded, Detail: "HTTP 502 · the front door couldn't reach the backend"}
+	if o, _, l := worstOutcome([]probe.Result{http502}); o != OutcomeServerError || l != "upstream" {
+		t.Errorf("HTTP 502 = (%q, layer %q), want (server-error, upstream) - HTTP reached, upstream failed", o, l)
+	}
+	tcpFail := probe.Result{Layer: probe.LayerTCP, OK: false, Detail: "connection refused"}
+	if o, _, l := worstOutcome([]probe.Result{tcpFail}); o != OutcomeUnreachable || l != "tcp" {
+		t.Errorf("TCP failure = (%q, layer %q), want (unreachable, tcp)", o, l)
+	}
+	ok := probe.Result{Layer: probe.LayerHTTP, OK: true, Tone: probe.ToneHealthy, Detail: "HTTP 200"}
+	if o, _, l := worstOutcome([]probe.Result{ok}); o != OutcomeVerified || l != "" {
+		t.Errorf("HTTP 200 = (%q, layer %q), want (verified, empty)", o, l)
+	}
+}
+
 func TestCoverageVerdict_ZeroTestedIsNotHealthy(t *testing.T) {
 	// Healthy internal verdict but nothing actually tested (all skipped) — the
 	// "couldn't test any route" headline must not sit beside a confident healthy.

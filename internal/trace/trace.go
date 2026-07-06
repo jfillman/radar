@@ -491,9 +491,16 @@ func BuildTraceWithOptions(ctx context.Context, deps Deps, kind, namespace, name
 		}
 	}
 	// Coverage projection: server-authoritative view of what was actually
-	// tested, computed AFTER the verdict is final. Additive — never mutates
-	// Verdict/BrokenAt.
+	// tested, computed over the internal verdict. Additive; it does not mutate
+	// Verdict or BrokenAt itself.
 	computeCoverage(t)
+	// Collapse the shipped verdict to the single coverage-honest value so every
+	// surface (the REST `verdict` field, the UI diagram, and the MCP response) reads
+	// one answer. The internal computeVerdict and reviseVerdictWithProbes result
+	// feeds this, but on its own it overclaims: a route reached only via the
+	// apiserver proxy, or nothing tested at all, leaves Verdict=healthy while the
+	// coverage tier honestly reads unknown. One source of truth, no per-surface drift.
+	t.Verdict = CoverageVerdict(t)
 	return t, nil
 }
 
@@ -593,7 +600,12 @@ func reviseVerdictWithProbes(t *Trace) (string, int) {
 		// (computeVerdict does this for static findings; the probe revision
 		// must too, or a reachable-backend + unreachable-entry reads "healthy".)
 		ef, ed, er := classifyHopProbes(t.Downstream[0])
-		if er > 0 && ef == er {
+		// Only condemn the whole front door when every listener was testable and
+		// failed. If some listeners were skipped (no-SNI, non-HTTP, wildcard host), a
+		// failure on the tested ones is real evidence but does not prove the entry is
+		// unreachable, since an untested listener may still carry traffic. Fall through
+		// to the degraded path instead of overclaiming broken (V2/B3).
+		if er > 0 && ef == er && !hopHasSkippedProbe(t.Downstream[0]) {
 			t.Verdict, t.BrokenAt = VerdictBroken, 0
 			if t.Reason == "" {
 				t.Reason = "the entry is unreachable — traffic can't pass through it"
@@ -744,6 +756,20 @@ func hopVotesDegraded(failed, degraded, real int) bool {
 // failure (RBAC denied, non-HTTP backend) must NOT condemn a hop whose data
 // path succeeded — that divergence is surfaced as an info finding, not a broken
 // verdict. From a laptop where only the apiserver path ran, it is the verdict.
+// hopHasSkippedProbe reports whether any of the hop's probes was skipped: a
+// listener or port that could not be tested from here (no SNI, non-HTTP, wildcard
+// host). The entry-unreachable escalation guards on this so a partly-testable
+// front door is not condemned whole on the strength of the listeners that were
+// reachable.
+func hopHasSkippedProbe(hop Hop) bool {
+	for _, p := range hop.Probes {
+		if p.Skipped {
+			return true
+		}
+	}
+	return false
+}
+
 func classifyHopProbes(hop Hop) (failed, degraded, real int) {
 	var dataP, apiP, directP []probe.Result
 	for _, p := range hop.Probes {

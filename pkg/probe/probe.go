@@ -75,6 +75,12 @@ func denyInternalControl(_, address string, _ syscall.RawConn) error {
 	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return fmt.Errorf("refusing to probe internal address %s (SSRF guard)", ip)
 	}
+	// Cloud metadata endpoints that are NOT link-local (so the check above misses
+	// them): Alibaba's IMDS at 100.100.100.100 (CGNAT range) and the IPv6 IMDS ULA
+	// fd00:ec2::254. Deny explicitly so a probe target can't be pointed at them.
+	if ip.Equal(net.ParseIP("100.100.100.100")) || ip.Equal(net.ParseIP("fd00:ec2::254")) {
+		return fmt.Errorf("refusing to probe cloud-metadata address %s (SSRF guard)", ip)
+	}
 	return nil
 }
 
@@ -160,15 +166,27 @@ const (
 	ToneUnhealthy Tone = "unhealthy"
 )
 
-// classifyHTTPStatus maps an HTTP status code to the honest reachability
-// vocabulary. Reaching ANY status proves the transport works — the code only
-// refines what was proven. Transport failures never reach here; they set
-// Error + OK=false at the call site. Returned tone pairs with OK=true: the
-// probe DID get an answer, even on 4xx/5xx.
+// classifyHTTPStatus maps an HTTP status code to the reachability vocabulary.
+// The scope is the network path, not application health: reaching the target and
+// getting any answer means the path works, so 2xx, 3xx, 4xx, and an app's own 5xx
+// all read as "reached"; the status code itself is not judged. The one exception
+// is a proxy or gateway's own 502/504, which is that proxy reporting it could not
+// reach its upstream, a fact about the front-door-to-backend hop and in scope.
+// Transport failures never reach here; they set Error and OK=false at the call
+// site. The returned tone pairs with OK=true: a status was received, even for a
+// 4xx or 5xx.
 func classifyHTTPStatus(code int) (Tone, string) {
 	switch {
+	case code == 502 || code == 504:
+		// Bad Gateway / Gateway Timeout: a proxy reporting it could not reach its
+		// upstream. That is a network-path statement about the next hop, not an app
+		// error, and it is the one 5xx a reachability diagnosis flags.
+		return ToneDegraded, fmt.Sprintf("HTTP %d · the front door couldn't reach the backend", code)
 	case code >= 500:
-		return ToneDegraded, fmt.Sprintf("HTTP %d · reached, server error", code)
+		// The app answered with a server error. The request reached it and it
+		// responded, so the network path works. A 500 or 503 is application health,
+		// which a network-path diagnosis does not judge.
+		return ToneReached, fmt.Sprintf("HTTP %d · reached, server error", code)
 	case code == 401 || code == 407:
 		// The server answered and is demanding auth — a reachability SUCCESS, and a
 		// precise signal (the path works; you just need credentials), never "broken".
@@ -176,7 +194,7 @@ func classifyHTTPStatus(code int) (Tone, string) {
 	case code == 403:
 		return ToneReached, fmt.Sprintf("HTTP %d · reached, forbidden (auth or policy)", code)
 	case code >= 400:
-		return ToneReached, fmt.Sprintf("HTTP %d · reached, route/auth not verified", code)
+		return ToneReached, fmt.Sprintf("HTTP %d · reached", code)
 	case code >= 300:
 		return ToneReached, fmt.Sprintf("HTTP %d · reached, redirect", code)
 	default:
@@ -210,6 +228,13 @@ type Result struct {
 	// can't relay, an address only reachable in-cluster). Set at the skip site
 	// where the structured context exists; the UI renders it via CopyableCommand.
 	Command string `json:"command,omitempty"`
+	// SkipClass is the coverage class of a skip (a vantage gap, a benign no-loss
+	// skip, or a genuine coverage gap), stamped at the skip site that has the
+	// structured context. The consumer prefers this over re-deriving the class from
+	// the human Reason text, which drifts when the copy is reworded. The value space
+	// is defined by the consumer (the internal/trace SkipClass constants); probe
+	// treats it as an opaque tag.
+	SkipClass string `json:"skipClass,omitempty"`
 }
 
 // DetectVantage reads the process env on every call so tests can override
@@ -327,10 +352,11 @@ func TLS(ctx context.Context, addr, serverName string, vantage Vantage) Result {
 	r.OK = true
 	if len(state.PeerCertificates) > 0 {
 		leaf := state.PeerCertificates[0]
+		// A valid cert that is merely expiring soon still completed the handshake, so
+		// TLS reached and traffic flows - that is not a reachability failure. Surface
+		// the expiry in the detail as an advisory; do not degrade the tone (which would
+		// read as a TLS failure and mask a following HTTP 2xx).
 		r.Detail = "valid · " + certExpiryNote(leaf)
-		if certExpiringSoon(leaf) {
-			r.Tone = ToneDegraded
-		}
 	}
 	return r
 }
@@ -402,10 +428,10 @@ func HTTP(ctx context.Context, url, host string, vantage Vantage) Result {
 	// (an expired/untrusted one fails verify and is classified on the error path above).
 	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
 		leaf := resp.TLS.PeerCertificates[0]
+		// Expiry is an advisory, not a reachability failure: the handshake succeeded
+		// and the app answered, so traffic flows. Keep the note in the detail; do not
+		// degrade the tone (that would falsely read as a failure).
 		r.Detail += " · " + certExpiryNote(leaf)
-		if certExpiringSoon(leaf) && r.Tone == ToneHealthy {
-			r.Tone = ToneDegraded
-		}
 	}
 	return r
 }
@@ -608,33 +634,27 @@ func proxyResult(ctx context.Context, req *rest.Request, r Result) Result {
 		r.Error = "Permission denied. Your identity lacks get services/proxy or get pods/proxy in this namespace."
 		return r
 	case code == 502 || code == 503 || code == 504:
-		// A backend that genuinely answered 502/503/504 (reached, degraded) carries a
-		// real status CODE, and its own 5xx body routinely contains generic transport
-		// phrases ("connection refused", "dial tcp", "i/o timeout", "eof"). Those leak
-		// into err.Error() here (see comments above), so only the apiserver-EXCLUSIVE
-		// signatures — phrases a backend body can't produce — may confidently claim
-		// unreachable. The generic transport substrings are deferred to the code==0
-		// branch below (no backend status = real transport failure).
-		if proxyUnreachableStrict(err) {
+		// A backend that genuinely answered 502/503/504 carries a real status code, and
+		// its own 5xx body routinely contains generic transport phrases ("connection
+		// refused", "dial tcp", "i/o timeout", "eof") that leak into err.Error(). Only
+		// the apiserver-exclusive signatures, phrases a backend body cannot produce, may
+		// claim the apiserver or proxy could not reach the backend.
+		unreachable, tone, detail := classifyProxy5xx(code, err)
+		if unreachable {
 			r.Error = translateAPIError(err)
 			return r
 		}
-		// A gateway-class 5xx is otherwise genuinely AMBIGUOUS: the apiserver wraps
-		// both its own "couldn't reach upstream" failures AND a backend's own
-		// 502/503/504 the same way, and we can't tell them apart here. Don't
-		// confidently claim either "reached, server error" or "unreachable" —
-		// degrade and state both possibilities so the operator checks the right layer.
-		r.OK = true
-		r.Tone = ToneDegraded
-		r.Detail = fmt.Sprintf("HTTP %d · unavailable — no ready backend, or the backend itself returned %d. Check endpoint readiness.", code, code)
+		r.OK, r.Tone, r.Detail = true, tone, detail
 		return r
 	case code >= 100:
-		// A real HTTP status was recovered from the backend — the transport
-		// reached a server. Trust the CODE over proxyUnreachable's loose error-
+		// A real HTTP status was recovered from the backend - the transport
+		// reached a server. Trust the code over proxyUnreachable's loose error-
 		// substring match: a backend that genuinely answered (e.g. a 500 whose
 		// nginx error page body contains "connection refused") must not be
-		// mislabeled apiserver-unreachable. 2xx verified, 3xx/4xx reached, 5xx the
-		// app erred (degraded). A backend 404 is "reached", never "broken".
+		// mislabeled apiserver-unreachable. classifyHTTPStatus does the mapping:
+		// 2xx verified, 3xx/4xx and an app's own 5xx are "reached", only a 502/504
+		// (front door couldn't reach upstream) is degraded. A backend 404 is
+		// "reached", never "broken".
 		r.OK = true
 		r.Tone, r.Detail = classifyHTTPStatus(code)
 		return r
@@ -787,6 +807,22 @@ func proxyUnreachable(err error) bool {
 // substrings proxyUnreachable also matches ("connection refused", "dial tcp",
 // "i/o timeout", "eof", ...) routinely appear in a Go backend's 5xx body and
 // would false-condemn a reached-but-degraded backend as a transport failure.
+// classifyProxy5xx decides how a 502/503/504 recovered from the apiserver proxy
+// reads. If the apiserver or proxy reports it could not reach the backend (an
+// apiserver-exclusive error signature) that is a real network break, reported as
+// unreachable. Otherwise the backend itself answered, so it reads exactly as a
+// direct probe of that code would: a forwarded 503 is the app's own error
+// (reached), while a 502 or 504 is a proxy-class backend that could not reach its
+// upstream (degraded). This keeps the laptop (proxy) and in-cluster vantages from
+// disagreeing on the same backend response.
+func classifyProxy5xx(code int, err error) (unreachable bool, tone Tone, detail string) {
+	if proxyUnreachableStrict(err) {
+		return true, "", ""
+	}
+	tone, detail = classifyHTTPStatus(code)
+	return false, tone, detail
+}
+
 func proxyUnreachableStrict(err error) bool {
 	if err == nil {
 		return false

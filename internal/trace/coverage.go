@@ -82,6 +82,11 @@ type RouteResult struct {
 	// Service or NXDOMAIN.
 	TargetNamespace string `json:"targetNamespace,omitempty"`
 	Outcome         string `json:"outcome"` // see Outcome* constants
+	// FailedLayer names which layer failed on a non-reachable route so the UI can say
+	// exactly what broke: "tcp" | "tls" | "http" (unreachable), or "upstream" for a
+	// 502/504 where HTTP was reached but the gateway couldn't reach its backend.
+	// Empty for a reachable outcome.
+	FailedLayer     string `json:"failedLayer,omitempty"`
 	Confidence      string `json:"confidence,omitempty"`
 	Evidence        string `json:"evidence,omitempty"`
 	Command         string `json:"command,omitempty"`
@@ -322,9 +327,12 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 	// Re-derive the verdict over the updated findings, mirroring BuildTraceWithOptions:
 	// a would-deny WARNING that reconcileInClusterPolicy just downgraded to info must
 	// not leave a stale 'degraded' beside a now-healthy headline, and a surviving real
-	// critical re-derives honestly to broken. Guard VerdictUnknown so an unverifiable
-	// path stays unknown.
-	if t.Verdict != VerdictUnknown {
+	// critical re-derives honestly to broken. Only a genuine special-shape unknown
+	// (selectorless / RBAC / lookup failure / timed out; those set UnknownClass) stays
+	// unknown. An unknown produced by the coverage collapse of a healthy-but-indirect
+	// laptop trace (UnknownClass empty) MUST re-derive here, or the in-cluster pass that
+	// just upgraded its routes to real can never lift it off unknown.
+	if !(t.Verdict == VerdictUnknown && t.UnknownClass != "") {
 		// computeVerdict only sets t.Reason when it's empty, so a prior "all routes
 		// broken" sentence would survive a flip toward healthy. Clear it first so the
 		// fresh verdict re-explains (or leaves it empty when there's nothing to explain).
@@ -344,6 +352,10 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 	recountCoverage(t)
 	t.Headline = CoverageHeadline(t)
 	t.Diagnosis = computeDiagnosis(t)
+	// Same collapse as the standard path (BuildTraceWithOptions): ship the one
+	// coverage-honest verdict so REST, UI, and MCP never diverge on the in-cluster
+	// flow.
+	t.Verdict = CoverageVerdict(t)
 }
 
 // reconcileInClusterPolicy downgrades a static netpol:would-deny WARNING to the
@@ -811,14 +823,17 @@ func firstNonEmpty(a, b string) string {
 	return b
 }
 
-// CoverageVerdict is the AGENT-FACING verdict tier, reconciled with the coverage
-// projection so it can never contradict the headline/routes (bug B3). It reuses
-// the internal verdict for broken/degraded/unknown — those are already honest —
-// and only corrects the one over-claim: a HEALTHY verdict whose only verifying
-// evidence is the apiserver proxy (indirect) is NOT a confident green (#1a/B3 —
-// the proxy reached a pod but never confirmed the real-traffic path). That
-// downgrades to unknown; the headline + routes explain. The internal Verdict and
-// computeVerdict are untouched — this is the agent-facing tier only.
+// CoverageVerdict is the shipped verdict, reconciled with the coverage projection
+// so it cannot contradict the headline or routes (bug B3). It reuses the internal
+// verdict for broken, degraded, and unknown, which are already honest, and only
+// corrects the one over-claim: a healthy verdict whose only verifying evidence is
+// the apiserver proxy (indirect) is not a confident green (#1a/B3), because the
+// proxy reached a pod but never confirmed the real-traffic path. That downgrades
+// to unknown, and the headline and routes explain why. It is computed once over
+// the internal verdict and coverage, then stored back into t.Verdict (in
+// BuildTraceWithOptions and ApplyInClusterResults), so every surface (REST, UI,
+// MCP) reads one answer. It is idempotent: re-running it on the stored value
+// returns the same verdict.
 func CoverageVerdict(t *Trace) string {
 	if t == nil {
 		return VerdictUnknown
@@ -1432,33 +1447,53 @@ func routeFromProbes(routeID, target string, probes []probe.Result) (RouteResult
 	}
 	r := RouteResult{Route: routeID, Target: target, Localization: localization}
 	if len(real) > 0 {
-		r.Outcome, r.Evidence = worstOutcome(real)
+		r.Outcome, r.Evidence, r.FailedLayer = worstOutcome(real)
 		r.Confidence = ConfidenceReal
 	} else {
 		// Only the apiserver proxy reached it: indirect evidence. We record the
 		// outcome it observed, but Confidence=indirect means it must NEVER be
 		// read as a real-traffic pass/fail (the headline rule enforces that).
-		r.Outcome, r.Evidence = worstOutcome(indirect)
+		r.Outcome, r.Evidence, r.FailedLayer = worstOutcome(indirect)
 		r.Confidence = ConfidenceIndirect
 	}
 	return r, true
 }
 
 // worstOutcome reduces a probe set to one outcome. Precedence: any transport
-// failure → unreachable; else any 5xx → server-error; else an HTTP 2xx →
-// verified; else reached (3xx/4xx, or a transport-only TCP/TLS success that
+// failure -> unreachable; else a degraded layer -> server-error; else an HTTP 2xx
+// -> verified; else reached (3xx/4xx, or a transport-only TCP/TLS success that
 // didn't verify an HTTP response). Evidence is the deciding probe's detail.
-func worstOutcome(probes []probe.Result) (string, string) {
-	var evidence string
+// failedLayer names WHICH layer failed on a non-reachable outcome ("tcp"/"tls"/
+// "http" for unreachable; "tls" for a cert failure; "upstream" for a 502/504 where
+// HTTP was reached but the gateway couldn't reach its backend) and is empty for a
+// reachable outcome.
+func worstOutcome(probes []probe.Result) (outcome, evidence, failedLayer string) {
 	httpVerified := false
 	transportReached := false // a non-DNS layer actually confirmed reachability
 	for _, p := range probes {
 		detail := probeDetail(p)
 		if !p.OK || p.Tone == probe.ToneUnhealthy {
-			return OutcomeUnreachable, detail
+			// The failing layer names where the path broke: a TCP connect, a TLS
+			// handshake, or an HTTP request that got no response back.
+			return OutcomeUnreachable, detail, string(p.Layer)
 		}
 		if p.Tone == probe.ToneDegraded {
-			return OutcomeServerError, detail
+			// A degraded probe still reached the responder. Name the layer honestly.
+			switch p.Layer {
+			case probe.LayerTLS:
+				// A cert verification failure (expired / wrong host). A valid cert that
+				// only expires soon is NOT degraded - it stays reachable (probe.go).
+				return OutcomeServerError, detail, "tls"
+			case probe.LayerHTTP:
+				// A 502/504: HTTP was reached (a response came back), whose meaning is
+				// that this gateway couldn't reach its upstream - an upstream fault,
+				// never an HTTP failure.
+				return OutcomeServerError, detail, "upstream"
+			default:
+				// No other layer sets ToneDegraded today; name the layer rather than
+				// silently mislabeling a future one as "upstream".
+				return OutcomeServerError, detail, string(p.Layer)
+			}
 		}
 		if p.Layer == probe.LayerDNS {
 			// A name resolving is not transport reachability. Record it as evidence
@@ -1479,16 +1514,16 @@ func worstOutcome(probes []probe.Result) (string, string) {
 		}
 	}
 	if httpVerified {
-		return OutcomeVerified, evidence
+		return OutcomeVerified, evidence, ""
 	}
 	if transportReached {
 		// Reached the server (3xx/4xx) or only a transport layer (TCP/TLS)
 		// succeeded: reachable, but the exact HTTP route wasn't verified.
-		return OutcomeReached, evidence
+		return OutcomeReached, evidence, ""
 	}
 	// Only DNS resolved (TCP/TLS/HTTP skipped for a vantage reason): name
-	// resolution alone is not server reachability — report not-tested.
-	return OutcomeNotTested, evidence
+	// resolution alone is not server reachability - report not-tested.
+	return OutcomeNotTested, evidence, ""
 }
 
 // buildNotTested lists every distinct skip on the intended route (DOWNSTREAM
@@ -1510,7 +1545,7 @@ func buildNotTested(t *Trace) []RouteSkip {
 			out = append(out, RouteSkip{
 				Route:       p.Target,
 				Reason:      p.Reason,
-				ReasonClass: classifySkip(p.Reason),
+				ReasonClass: skipClassOf(p),
 				Command:     p.Command,
 			})
 		}
@@ -1527,6 +1562,17 @@ func buildNotTested(t *Trace) []RouteSkip {
 // classifySkip maps a skip reason to its coverage impact. Pod-sampling is the
 // only benign case (the unsampled pods are identical replicas); vantage skips
 // name an inability to reach FROM HERE; everything else is a real coverage gap.
+// skipClassOf returns the coverage class of a skipped probe, preferring the
+// structured SkipClass the probe stamped at its skip site. It falls back to
+// matching the human Reason text only when the class is unset, so a reworded
+// message no longer silently misclassifies a skip that carries the field.
+func skipClassOf(p probe.Result) string {
+	if p.SkipClass != "" {
+		return p.SkipClass
+	}
+	return classifySkip(p.Reason)
+}
+
 func classifySkip(reason string) string {
 	low := strings.ToLower(reason)
 	switch {

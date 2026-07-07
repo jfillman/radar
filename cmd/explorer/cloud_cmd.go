@@ -191,7 +191,10 @@ func cloudInstall(args []string) {
 	dryRun := fs.Bool("dry-run", false, "Preflight + print the plan; install nothing")
 	_ = fs.Parse(args)
 
-	ctxName := currentKubeContextName()
+	// Honor a config.json kubeconfig so we install into (and describe) the SAME
+	// cluster the operator's config points at, not the default context.
+	kubeconfig := config.Load().Kubeconfig
+	ctxName := currentKubeContextName(kubeconfig)
 	clusterName := *name
 	if clusterName == "" {
 		clusterName = ctxName
@@ -203,9 +206,9 @@ func cloudInstall(args []string) {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	// Build kube + helm clients against the current kubecontext — the driver runs
+	// Build kube + helm clients against the resolved kubecontext — the driver runs
 	// before Radar's normal boot, so we resolve these ourselves.
-	kc, hc, err := buildLocalInstallClients()
+	kc, hc, err := buildLocalInstallClients(kubeconfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cloud install: %v\n", err)
 		os.Exit(1)
@@ -248,7 +251,7 @@ func cloudInstall(args []string) {
 
 	// 3. Device flow → approve → cluster token (deployment_mode=in-cluster, so the
 	//    hub tags the cluster source=connect_incluster).
-	meta := gatherConnectMetadata(clusterName)
+	meta := gatherConnectMetadata(clusterName, kubeconfig)
 	meta.DeploymentMode = "in-cluster"
 	client := cloud.NewConnectClient(*hubURL)
 	cr, err := client.Create(ctx, meta)
@@ -301,11 +304,10 @@ func cloudInstall(args []string) {
 }
 
 // buildLocalInstallClients resolves a kube clientset + Helm client from the
-// current kubecontext. Helm needs a kubeconfig FILE path (its RESTClientGetter
-// falls back to the in-cluster/localhost path when the path is empty and Radar's
-// k8s singleton isn't initialized yet at subcommand time).
-func buildLocalInstallClients() (kubernetes.Interface, *helm.Client, error) {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+// resolved kubecontext (honoring a config.json kubeconfig override), so the
+// install targets the operator's configured cluster, not the default context.
+func buildLocalInstallClients(kubeconfig string) (kubernetes.Interface, *helm.Client, error) {
+	rules := connectLoadingRules(kubeconfig)
 	restCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{}).ClientConfig()
 	if err != nil {
 		return nil, nil, fmt.Errorf("no reachable kubeconfig context: %w", err)

@@ -91,7 +91,10 @@ func cloudConnect(args []string) {
 	browserPref := fs.String("browser", "", "Browser to open the approval URL with")
 	_ = fs.Parse(args)
 
-	ctxName := currentKubeContextName()
+	// Honor a config.json kubeconfig so the metadata + saved ServerURL describe
+	// the SAME cluster main() will serve (not the default context).
+	kubeconfig := config.Load().Kubeconfig
+	ctxName := currentKubeContextName(kubeconfig)
 	clusterName := *name
 	if clusterName == "" {
 		clusterName = ctxName
@@ -100,7 +103,7 @@ func cloudConnect(args []string) {
 		clusterName = "my-cluster"
 	}
 
-	meta := gatherConnectMetadata(clusterName)
+	meta := gatherConnectMetadata(clusterName, kubeconfig)
 
 	ctx, cancel := signalContext()
 	defer cancel()
@@ -130,7 +133,7 @@ func cloudConnect(args []string) {
 		ClusterName: clusterName,
 		Token:       res.Token,
 		WSSURL:      res.WSSURL,
-		ServerURL:   currentClusterServerURL(),
+		ServerURL:   currentClusterServerURL(kubeconfig),
 	}); err != nil {
 		// Non-fatal: we can still serve this session; the user just won't get
 		// auto-resume next time. Warn and continue.
@@ -152,7 +155,7 @@ func cloudConnect(args []string) {
 }
 
 func cloudStatus() {
-	ctxName := currentKubeContextName()
+	ctxName := currentKubeContextName(config.Load().Kubeconfig)
 	creds := cloud.LoadCredentials()
 	if len(creds.Clusters) == 0 {
 		fmt.Println("No clusters connected to Radar Cloud.")
@@ -179,7 +182,7 @@ func cloudDisconnect(args []string) {
 	_ = fs.Parse(args)
 	ctxName := *ctxFlag
 	if ctxName == "" {
-		ctxName = currentKubeContextName()
+		ctxName = currentKubeContextName(config.Load().Kubeconfig)
 	}
 	if ctxName == "" {
 		fmt.Fprintln(os.Stderr, "no current kubecontext; pass --context NAME")
@@ -227,7 +230,7 @@ func maybeResumeCloud(fileCfg config.Config) {
 			return
 		}
 	}
-	ctxName := currentKubeContextName()
+	ctxName := currentKubeContextName(fileCfg.Kubeconfig)
 	if ctxName == "" {
 		return
 	}
@@ -241,7 +244,7 @@ func maybeResumeCloud(fileCfg config.Config) {
 	// the wrong cluster under this cred's Cloud identity). Empty saved URL
 	// (legacy cred) falls back to name-only matching.
 	if cred.ServerURL != "" {
-		if cur := currentClusterServerURL(); cur != "" && cur != cred.ServerURL {
+		if cur := currentClusterServerURL(fileCfg.Kubeconfig); cur != "" && cur != cred.ServerURL {
 			log.Printf("[cloud] not resuming context %q: kubeconfig now points at a different cluster than the saved connection", ctxName)
 			return
 		}
@@ -265,12 +268,28 @@ func isKubeconfigOverrideArg(a string) bool {
 	return false
 }
 
+// connectLoadingRules builds kubeconfig loading rules that honor a config.json
+// `kubeconfig` override. NewDefaultClientConfigLoadingRules reads the KUBECONFIG
+// env + ~/.kube/config (which main() also honors), but NOT ~/.radar/config.json's
+// `kubeconfig` — without this the connect flow would resolve the DEFAULT context
+// while main() serves the config.json one, registering/serving mismatched
+// clusters under the minted token. (KubeconfigDirs multi-cluster mode is left to
+// default resolution: the resume guard already declines there, and single-cluster
+// connect metadata is inherently best-effort across many clusters.)
+func connectLoadingRules(kubeconfig string) *clientcmd.ClientConfigLoadingRules {
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig != "" {
+		rules.ExplicitPath = kubeconfig
+	}
+	return rules
+}
+
 // currentKubeContextName reads the current kubecontext directly from kubeconfig,
 // without initializing Radar's full client (this runs before that setup).
-// Empty string on any failure (e.g. in-cluster with no kubeconfig).
-func currentKubeContextName() string {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	cfg, err := rules.Load()
+// Empty string on any failure (e.g. in-cluster with no kubeconfig). kubeconfig
+// is the config.json override (or "" for default resolution).
+func currentKubeContextName(kubeconfig string) string {
+	cfg, err := connectLoadingRules(kubeconfig).Load()
 	if err != nil || cfg == nil {
 		return ""
 	}
@@ -281,9 +300,9 @@ func currentKubeContextName() string {
 // context, resolved locally (no network). Empty on any failure. Used to bind a
 // saved credential to its cluster so a same-named context in a different
 // kubeconfig can't resume it.
-func currentClusterServerURL() string {
+func currentClusterServerURL(kubeconfig string) string {
 	restCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(),
+		connectLoadingRules(kubeconfig),
 		&clientcmd.ConfigOverrides{},
 	).ClientConfig()
 	if err != nil {
@@ -295,8 +314,8 @@ func currentClusterServerURL() string {
 // gatherConnectMetadata assembles best-effort display context for the consent
 // page. k8s version + node count are looked up under a short timeout and simply
 // omitted on any failure (RBAC, unreachable) — the consent page renders what's
-// present.
-func gatherConnectMetadata(clusterName string) cloud.ConnectMetadata {
+// present. kubeconfig is the config.json override (or "").
+func gatherConnectMetadata(clusterName, kubeconfig string) cloud.ConnectMetadata {
 	meta := cloud.ConnectMetadata{
 		DeploymentMode: "local",
 		ClusterName:    clusterName,
@@ -305,7 +324,7 @@ func gatherConnectMetadata(clusterName string) cloud.ConnectMetadata {
 	}
 
 	restCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(),
+		connectLoadingRules(kubeconfig),
 		&clientcmd.ConfigOverrides{},
 	).ClientConfig()
 	if err != nil {

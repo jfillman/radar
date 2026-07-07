@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/internal/settings"
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -305,6 +306,113 @@ func restoreHelmNamespaceFallbackState(t *testing.T) {
 	t.Cleanup(func() { k8s.SetFallbackNamespace("") })
 }
 
+// The shared TestMain cache holds exactly two namespaces: "default" and
+// "broken". Anything else counts as deleted from the cluster.
+
+func TestParseNamespacesForUser_EvictsDeletedSavedPick(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+
+	// A pick saved in a previous session names a namespace that has since
+	// been deleted from the cluster.
+	if _, err := settings.Update(func(st *settings.Settings) {
+		st.ActiveNamespaces = map[string][]string{"test-ctx": {"ghost"}}
+	}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/resources/pods", nil)
+	if got := s.parseNamespacesForUser(req); got != nil {
+		t.Fatalf("parseNamespacesForUser = %v, want nil (unfiltered) after stale-pick eviction", got)
+	}
+	if picks := s.getActiveNamespaceForUser(reqAs("")); len(picks) != 0 {
+		t.Errorf("stale pick survived in memory: %v", picks)
+	}
+	// The eviction must reach settings.json — otherwise loadSavedNamespace-
+	// Preference re-seeds the stale pick on the next request.
+	if saved := settings.Load().ActiveNamespaces["test-ctx"]; len(saved) != 0 {
+		t.Errorf("stale pick survived in settings: %v", saved)
+	}
+}
+
+func TestParseNamespacesForUser_TrimsPartiallyDeletedPick(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+
+	if _, err := settings.Update(func(st *settings.Settings) {
+		st.ActiveNamespaces = map[string][]string{"test-ctx": {"default", "ghost"}}
+	}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/resources/pods", nil)
+	if got := s.parseNamespacesForUser(req); !slices.Equal(got, []string{"default"}) {
+		t.Fatalf("parseNamespacesForUser = %v, want [default]", got)
+	}
+	if picks := s.getActiveNamespaceForUser(reqAs("")); !slices.Equal(picks, []string{"default"}) {
+		t.Errorf("in-memory pick = %v, want [default]", picks)
+	}
+	if saved := settings.Load().ActiveNamespaces["test-ctx"]; !slices.Equal(saved, []string{"default"}) {
+		t.Errorf("saved pick = %v, want [default]", saved)
+	}
+}
+
+func TestParseNamespacesForUser_ValidSavedPickStillFilters(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	s.setActiveNamespaceForUser(reqAs(""), []string{"default"})
+
+	req := httptest.NewRequest("GET", "/api/resources/pods", nil)
+	if got := s.parseNamespacesForUser(req); !slices.Equal(got, []string{"default"}) {
+		t.Fatalf("parseNamespacesForUser = %v, want [default]", got)
+	}
+	if picks := s.getActiveNamespaceForUser(reqAs("")); !slices.Equal(picks, []string{"default"}) {
+		t.Errorf("valid pick was disturbed: %v", picks)
+	}
+}
+
+func TestPruneToExistingNamespaces(t *testing.T) {
+	tests := []struct {
+		name     string
+		picks    []string
+		existing []string
+		want     []string
+	}{
+		{
+			name:     "nil existing (informer unavailable) leaves picks alone",
+			picks:    []string{"alpha", "beta"},
+			existing: nil,
+			want:     []string{"alpha", "beta"},
+		},
+		{
+			name:     "empty existing leaves picks alone",
+			picks:    []string{"alpha"},
+			existing: []string{},
+			want:     []string{"alpha"},
+		},
+		{
+			name:     "deleted namespace dropped, survivors kept",
+			picks:    []string{"alpha", "ghost"},
+			existing: []string{"alpha", "beta"},
+			want:     []string{"alpha"},
+		},
+		{
+			name:     "all deleted returns empty",
+			picks:    []string{"ghost", "phantom"},
+			existing: []string{"alpha"},
+			want:     []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pruneToExistingNamespaces(tt.picks, tt.existing)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("pruneToExistingNamespaces(%v, %v) = %v, want %v", tt.picks, tt.existing, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseNamespacesForUser_ForcedCacheScope(t *testing.T) {
 	s := newTestServer(t)
 	k8s.ForceNamespaceScope = true
@@ -331,5 +439,61 @@ func TestParseNamespacesForUser_ForcedCacheScope(t *testing.T) {
 				t.Fatalf("parseNamespacesForUser(%q) = %v, want %v", tt.url, got, tt.want)
 			}
 		})
+	}
+}
+
+// The prune validates a snapshot of the pick; if a concurrent POST replaces
+// the pick before the prune's write, the write must be skipped — otherwise a
+// slow read reverts the user's fresh pick to pruned survivors of the old one.
+func TestPruneDeletedNamespacePicks_SkipsWhenPickChangedMidFlight(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+
+	// The stale snapshot a slow read is working from.
+	snapshot := []string{"default", "ghost"}
+	s.setActiveNamespaceForUser(req, snapshot)
+
+	// A user POST lands while the read is pruning its snapshot.
+	s.setActiveNamespaceForUser(req, []string{"broken"})
+
+	survivors := s.pruneDeletedNamespacePicks(req, snapshot)
+	if !slices.Equal(survivors, []string{"default"}) {
+		t.Fatalf("survivors = %v, want [default] (this request still filters by its own snapshot)", survivors)
+	}
+	// The fresh pick must be untouched — the prune's write was skipped.
+	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, []string{"broken"}) {
+		t.Errorf("fresh pick reverted by stale prune: %v, want [broken]", picks)
+	}
+	if saved := settings.Load().ActiveNamespaces["test-ctx"]; len(saved) != 0 {
+		t.Errorf("stale prune persisted survivors over the fresh pick: %v", saved)
+	}
+}
+
+// A context switch between snapshot and write must also skip the mutation —
+// old-context survivors must not persist under the new context's key.
+func TestPruneDeletedNamespacePicks_SkipsAcrossContextSwitch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+
+	snapshot := []string{"default", "ghost"}
+	s.setActiveNamespaceForUser(req, snapshot)
+
+	// Simulate the interleaving: the prune's entry snapshot saw "test-ctx";
+	// wrap the call so the context flips before it runs (the guard re-reads
+	// the context under the lock, so a flip before the call exercises the
+	// same skip path as one mid-call).
+	prev := k8s.SetTestContextName("other-ctx")
+	survivorsUnderOther := s.pruneDeletedNamespacePicks(req, snapshot)
+	k8s.SetTestContextName(prev)
+	_ = survivorsUnderOther
+
+	// The original context's pick and settings are untouched.
+	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, snapshot) {
+		t.Errorf("old-context pick mutated across switch: %v, want %v", picks, snapshot)
+	}
+	if saved := settings.Load().ActiveNamespaces["other-ctx"]; len(saved) != 0 {
+		t.Errorf("survivors persisted under the new context's key: %v", saved)
 	}
 }

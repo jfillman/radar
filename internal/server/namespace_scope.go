@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/skyhook-io/radar/internal/auth"
@@ -149,6 +150,56 @@ func (s *Server) loadSavedNamespacePreference(r *http.Request) {
 	}
 }
 
+// pruneToExistingNamespaces returns picks minus namespaces absent from
+// existing. An empty existing list means the namespace informer can't answer
+// (namespace-scoped cache, restricted RBAC) — picks pass through unchanged,
+// since wrongly evicting a valid pick is worse than keeping a stale one.
+func pruneToExistingNamespaces(picks, existing []string) []string {
+	if len(existing) == 0 {
+		return picks
+	}
+	return intersectPicksWithAllowed(picks, existing)
+}
+
+// pruneDeletedNamespacePicks drops saved picks whose namespaces were deleted
+// from the cluster. Without this, a stale pick silently empties every read —
+// in no-auth mode nothing downstream re-validates it (getUserNamespaces is a
+// pass-through), so the UI looks like an empty cluster forever.
+//
+// Survivors are written back to the in-memory pick and, for the no-auth
+// single-user case, to settings.json — otherwise loadSavedNamespacePreference
+// re-seeds the stale pick from disk on the next request and the eviction is
+// undone. Skipped under --namespace-scope, where the saved pick doubles as
+// the cache-scope restore value and handleSetActiveNamespace owns its
+// lifecycle.
+func (s *Server) pruneDeletedNamespacePicks(r *http.Request, picks []string) []string {
+	ctxName := k8s.GetContextName()
+	survivors := pruneToExistingNamespaces(picks, s.allNamespaceNames())
+	if len(survivors) == len(picks) || ctxName == "" {
+		return survivors
+	}
+
+	// The prune validated a snapshot; mutate only if that snapshot is still
+	// the live state. A concurrent POST replacing the pick, or a context
+	// switch mid-request, makes the survivors stale — skip, and let the new
+	// pick be pruned on its own next read. Without the guard a slow read
+	// could land after a user's fresh pick and silently revert it, or
+	// persist old-context survivors under the new context's key.
+	s.nsPickMu.Lock()
+	defer s.nsPickMu.Unlock()
+	if k8s.GetContextName() != ctxName || !slices.Equal(s.getActiveNamespaceForUser(r), picks) {
+		return survivors
+	}
+
+	s.setActiveNamespaceForUser(r, survivors)
+	if auth.UserFromContext(r.Context()) == nil && !k8s.ForceNamespaceScope {
+		if err := persistNamespacePick(ctxName, survivors); err != nil {
+			log.Printf("[namespace] failed to persist pruned namespace pick for context %q: %v", ctxName, err)
+		}
+	}
+	return survivors
+}
+
 // intersectPicksWithAllowed returns the picks that survive RBAC filtering.
 // allowed=nil means cluster-admin / auth-disabled — all picks pass through.
 // Returns nil when the input picks are empty (no narrowing in effect).
@@ -178,7 +229,7 @@ func (s *Server) handleGetNamespaceScope(w http.ResponseWriter, r *http.Request)
 	}
 
 	s.loadSavedNamespacePreference(r)
-	actives := s.getActiveNamespaceForUser(r)
+	actives := s.pruneDeletedNamespacePicks(r, s.getActiveNamespaceForUser(r))
 	kubeNs := k8s.GetContextNamespace()
 	cacheScopeNs := k8s.GetNamespaceScopeTarget()
 
@@ -365,6 +416,12 @@ func (s *Server) handleSetActiveNamespace(w http.ResponseWriter, r *http.Request
 		s.scopeMutationMu.Lock()
 		defer s.scopeMutationMu.Unlock()
 	}
+	// Pairs this handler's persist+set with the read-path stale-pick prune:
+	// the prune re-checks the live pick under the same lock before mutating,
+	// so it can't revert a pick set here from a stale snapshot. Lock order is
+	// scopeMutationMu → nsPickMu; the prune takes only nsPickMu.
+	s.nsPickMu.Lock()
+	defer s.nsPickMu.Unlock()
 
 	// Persist the no-auth (single-user) pick across restarts before acting on it.
 	// Auth-enabled deploys skip persistence — it'd require user-keyed storage we

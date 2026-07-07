@@ -90,6 +90,12 @@ type Server struct {
 	// rebuild, not this handler's persist step).
 	scopeMutationMu sync.Mutex
 
+	// nsPickMu serializes namespace-pick mutations: the POST handler's
+	// persist+set pair and the read-path stale-pick prune. Without it, a
+	// prune computed from a stale snapshot can land after a user's fresh
+	// pick and silently revert it.
+	nsPickMu sync.Mutex
+
 	// Short-TTL cache for topology builds. The Topology graph is a
 	// deterministic projection of the informer cache; rebuilding it walks
 	// every resource of every kind. A 5s TTL absorbs the typical bursts
@@ -866,11 +872,17 @@ func (s *Server) parseNamespacesForUser(r *http.Request) []string {
 		}
 	}
 	if namespaces == nil {
-		// No explicit filter — use the user's saved picks if any.
+		// No explicit filter — use the user's saved picks if any, pruned of
+		// namespaces that were deleted from the cluster since the pick was made.
+		// When every pick is stale, fall through with no filter so the user sees
+		// the full cluster instead of a silently-empty UI.
 		s.loadSavedNamespacePreference(r)
 		if picks := s.getActiveNamespaceForUser(r); len(picks) > 0 {
-			namespaces = picks
-			pickFallback = true
+			picks = s.pruneDeletedNamespacePicks(r, picks)
+			if len(picks) > 0 {
+				namespaces = picks
+				pickFallback = true
+			}
 		}
 	}
 	filtered := s.getUserNamespaces(r, namespaces)

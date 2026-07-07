@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/k8s"
@@ -420,8 +421,14 @@ func (s *Server) handleSetActiveNamespace(w http.ResponseWriter, r *http.Request
 	// the prune re-checks the live pick under the same lock before mutating,
 	// so it can't revert a pick set here from a stale snapshot. Lock order is
 	// scopeMutationMu → nsPickMu; the prune takes only nsPickMu.
+	//
+	// Released explicitly before the closing handleGetNamespaceScope render:
+	// that path runs the prune, which takes nsPickMu itself — holding it
+	// across the render would self-deadlock (the mutex is not reentrant).
+	// OnceFunc keeps every early error return covered by the defer.
 	s.nsPickMu.Lock()
-	defer s.nsPickMu.Unlock()
+	unlockNsPick := sync.OnceFunc(s.nsPickMu.Unlock)
+	defer unlockNsPick()
 
 	// Persist the no-auth (single-user) pick across restarts before acting on it.
 	// Auth-enabled deploys skip persistence — it'd require user-keyed storage we
@@ -480,6 +487,7 @@ func (s *Server) handleSetActiveNamespace(w http.ResponseWriter, r *http.Request
 	}
 
 	s.setActiveNamespaceForUser(r, cleaned)
+	unlockNsPick()
 
 	// Return the fresh scope state so the UI can update without a follow-up GET.
 	s.handleGetNamespaceScope(w, r)

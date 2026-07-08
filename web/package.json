@@ -20,9 +20,10 @@
   ],
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "npm run tsc && vite build",
     "preview": "vite preview",
-    "tsc": "tsc --noEmit",
+    "tsc": "node ../node_modules/typescript-7/bin/tsc --noEmit",
+    "tsc:ts6": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
     "lint": "eslint src && node scripts/check-no-native-title.mjs"
   },

@@ -61,7 +61,8 @@
     "./assets/radar/radar-icon-loading.svg": "./src/assets/radar/radar-icon-loading.svg"
   },
   "scripts": {
-    "tsc": "tsc --noEmit",
+    "tsc": "node ../../node_modules/typescript-7/bin/tsc --noEmit",
+    "tsc:ts6": "tsc --noEmit",
     "test": "vitest run",
     "format": "prettier --write \"src/**/*.{ts,tsx}\""
   },

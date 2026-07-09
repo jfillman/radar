@@ -188,10 +188,9 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   const selectedCount = selectedCountKey ? countsData?.counts[selectedCountKey] : undefined
   const selectedCountKnown = selectedCountKey ? hasResourceCount(countsData?.counts, selectedCountKey) : false
   const selectedCountUnavailable = selectedCountKey ? countsData?.unavailable?.includes(selectedCountKey) ?? false : false
-  const selectedCountUnknown = selectedCountKey !== '' && countsData != null && !selectedCountKnown
   const isSelectedKindGuarded = selectedCountKey !== '' && LARGE_RESOURCE_LIST_GUARD_KEYS.has(selectedCountKey)
   const waitingForGuardCount = isSelectedKindGuarded && !countsData && !countsIsError
-  const largeListBlocked = isSelectedKindGuarded && countsData != null && (selectedCountUnavailable || selectedCountUnknown || (selectedCount ?? 0) > LARGE_RESOURCE_LIST_LIMIT)
+  const largeListBlocked = isSelectedKindGuarded && countsData != null && (selectedCountUnavailable || (selectedCountKnown && (selectedCount ?? 0) > LARGE_RESOURCE_LIST_LIMIT))
   const selectedKindQueryBlocked = waitingForGuardCount || largeListBlocked
   const podCount = countsData?.counts.Pod
   const podCountKnown = hasResourceCount(countsData?.counts, 'Pod')
@@ -203,8 +202,8 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   const largeListGuard = selectedKind && largeListBlocked
     ? {
         kind: selectedKind.name,
-        count: selectedCountUnavailable || selectedCountUnknown ? undefined : selectedCount,
-        reason: selectedCountUnavailable || selectedCountUnknown ? 'count-unavailable' as const : 'too-many' as const,
+        count: selectedCountUnavailable ? undefined : selectedCount,
+        reason: selectedCountUnavailable ? 'count-unavailable' as const : 'too-many' as const,
         limit: LARGE_RESOURCE_LIST_LIMIT,
         namespaces,
       }

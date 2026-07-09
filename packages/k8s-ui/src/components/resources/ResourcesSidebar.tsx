@@ -318,7 +318,10 @@ export function ResourcesSidebar({
       // visible as a dash so count coverage gaps do not masquerade as emptiness.
       const visibleResources = category.resources.filter(resource => {
         const count = counts[resource.group ? `${resource.group}/${resource.kind}` : resource.kind]
-        const shouldShow = count === null || (count ?? 0) > 0 || showEmptyKinds
+        const isSelectedResource =
+          (effectiveSelectedKind.name === resource.name && effectiveSelectedKind.group === resource.group) ||
+          (effectiveSelectedKind.kind.toLowerCase() === resource.kind.toLowerCase() && effectiveSelectedKind.group === resource.group)
+        const shouldShow = isSelectedResource || count === null || (count ?? 0) > 0 || showEmptyKinds
         if (!shouldShow) totalHiddenKinds++
         return shouldShow
       })
@@ -341,7 +344,7 @@ export function ResourcesSidebar({
     })
 
     return { sortedCategories: visibleCategories, hiddenKindsCount: totalHiddenKinds, hiddenGroupsCount: totalHiddenGroups }
-  }, [categories, counts, showEmptyKinds])
+  }, [categories, counts, showEmptyKinds, effectiveSelectedKind.name, effectiveSelectedKind.kind, effectiveSelectedKind.group])
 
   // Filter sidebar categories/kinds by the kind search term
   const filteredCategories = useMemo(() => {

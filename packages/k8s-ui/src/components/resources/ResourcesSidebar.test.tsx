@@ -75,6 +75,20 @@ describe('ResourcesSidebar count visibility', () => {
     expect(html).toContain('Show')
   })
 
+  it('keeps the selected confirmed-empty resource visible', () => {
+    const html = renderToString(
+      <ResourcesSidebar
+        selectedKind={{ name: 'horizontalpodautoscalers', kind: 'HorizontalPodAutoscaler', group: 'autoscaling' }}
+        onSelectedKindChange={() => {}}
+        apiResources={[horizontalPodAutoscaler]}
+        resourceCounts={{ 'autoscaling/HorizontalPodAutoscaler': 0 }}
+      />
+    )
+
+    expect(html).toContain('HorizontalPodAutoscaler')
+    expect(html).toContain('>0</')
+  })
+
   it('keeps pinned confirmed-empty resources visible in Favorites', () => {
     const html = renderToString(
       <ResourcesSidebar

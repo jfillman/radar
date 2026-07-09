@@ -255,6 +255,8 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   const selectedKindQueryResult: ResourceQueryResult | undefined = useMemo(() => {
     if (!selectedKind) return undefined
     return {
+      resourceName: selectedKind.name,
+      group: selectedKind.group,
       data: selectedKindQueryBlocked ? [] : selectedKindQuery.data as any[] | undefined,
       isLoading: waitingForGuardCount || selectedKindQuery.isLoading,
       error: selectedKindQueryBlocked ? undefined : selectedKindQuery.error,
@@ -322,7 +324,7 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   return (
     <>
     <BaseResourcesView
-      key={location.pathname}
+      key={connection.context || 'default'}
       namespaces={namespaces}
       selectedResource={selectedResource}
       onResourceClick={onResourceClick}

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { APIResource } from '../../types'
-import { canonicalizeSelectedKind, deriveSidebarResourceCounts, LOADED_RESOURCE_COUNT_TTL_MS } from './ResourcesView'
+import {
+  canonicalizeSelectedKind,
+  deriveSidebarResourceCounts,
+  LOADED_RESOURCE_COUNT_TTL_MS,
+  resourceQueryMatchesSelectedKind,
+} from './ResourcesView'
 
 const endpoints: APIResource = {
   group: '',
@@ -109,5 +114,30 @@ describe('deriveSidebarResourceCounts', () => {
         now
       )
     ).toEqual({ Endpoints: 132 })
+  })
+})
+
+describe('resourceQueryMatchesSelectedKind', () => {
+  it('accepts untagged legacy query results', () => {
+    expect(resourceQueryMatchesSelectedKind(undefined, { name: 'endpoints', kind: 'Endpoints', group: '' })).toBe(true)
+    expect(resourceQueryMatchesSelectedKind({}, { name: 'endpoints', kind: 'Endpoints', group: '' })).toBe(true)
+  })
+
+  it('rejects stale selected-kind query results from the previous kind', () => {
+    expect(
+      resourceQueryMatchesSelectedKind(
+        { resourceName: 'pods', group: '' },
+        { name: 'endpoints', kind: 'Endpoints', group: '' }
+      )
+    ).toBe(false)
+  })
+
+  it('matches grouped built-in resources by plural name and group', () => {
+    expect(
+      resourceQueryMatchesSelectedKind(
+        { resourceName: 'endpointslices', group: 'discovery.k8s.io' },
+        { name: 'endpointslices', kind: 'EndpointSlice', group: 'discovery.k8s.io' }
+      )
+    ).toBe(true)
   })
 })

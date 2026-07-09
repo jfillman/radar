@@ -1818,6 +1818,8 @@ interface ResourcesViewData {
 export const ResourcesViewDataContext = React.createContext<ResourcesViewData>({})
 
 export interface ResourceQueryResult {
+  resourceName?: string
+  group?: string
   data?: any[]
   isLoading: boolean
   error?: any
@@ -1969,6 +1971,14 @@ type LoadedResourceCountCache = Record<string, LoadedResourceCount>
 
 function resourceCountKey(resource: Pick<APIResource, 'group' | 'kind'>): string {
   return resource.group ? `${resource.group}/${resource.kind}` : resource.kind
+}
+
+export function resourceQueryMatchesSelectedKind(
+  query: Pick<ResourceQueryResult, 'resourceName' | 'group'> | undefined,
+  selectedKind: SelectedKindInfo,
+): boolean {
+  if (!query?.resourceName) return true
+  return query.resourceName === selectedKind.name && (query.group ?? '') === selectedKind.group
 }
 
 // Read initial state from URL — kind is in the path: {basePath}/{kind}
@@ -3221,7 +3231,8 @@ export function ResourcesView({
   }, [resourcesToCount, selectedKind.name, selectedKind.group])
 
   const selectedQuery = selectedKindQueryProp ?? resourceQueries[selectedQueryIndex]
-  const resources = selectedQuery?.data
+  const selectedQueryMatchesKind = resourceQueryMatchesSelectedKind(selectedQuery, selectedKind)
+  const resources = selectedQueryMatchesKind ? selectedQuery?.data : undefined
 
   // Auto-surface the GPU column the first time GPU-bearing rows load for a kind
   // the user has never customized — a static default can't know whether the
@@ -3262,14 +3273,25 @@ export function ResourcesView({
       annotation: Array.from(annotations).sort(),
     }
   }, [resources])
-  const isLoading = selectedQuery?.isLoading ?? true
-  const selectedQueryError = selectedQuery?.error
+  const isLoading = selectedQueryMatchesKind ? (selectedQuery?.isLoading ?? true) : true
+  const selectedQueryError = selectedQueryMatchesKind ? selectedQuery?.error : undefined
   const selectedKindCountKey = selectedKind.group
     ? `${selectedKind.group}/${selectedKind.kind}`
     : selectedKind.kind
   const selectedQueryHasLoadedCount = Array.isArray(resources) && !isLoading && !selectedQueryError && !largeListGuard
   const selectedLoadedResourceCount = Array.isArray(resources) ? resources.length : undefined
   const [loadedCountCache, setLoadedCountCache] = useState<LoadedResourceCountCache>({})
+  const namespaceScopeKey = useMemo(
+    () => namespaces.length === 0 ? '' : [...namespaces].sort().join('\0'),
+    [namespaces],
+  )
+  const loadedCountScopeRef = useRef(namespaceScopeKey)
+
+  useEffect(() => {
+    if (loadedCountScopeRef.current === namespaceScopeKey) return
+    loadedCountScopeRef.current = namespaceScopeKey
+    setLoadedCountCache({})
+  }, [namespaceScopeKey])
 
   useEffect(() => {
     if (!selectedQueryHasLoadedCount || selectedLoadedResourceCount == null) return

@@ -41,6 +41,7 @@ interface ResourcesViewProps {
 
 type SelectedKindInfo = { name: string; kind: string; group: string } | null
 
+const EMPTY_RESOURCE_COUNTS: Record<string, number> = {}
 const LARGE_RESOURCE_LIST_LIMIT = 25000
 const LARGE_RESOURCE_LIST_GUARD_KEYS = new Set([
   'Pod',
@@ -332,7 +333,7 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       // Injected data
       apiResources={apiResources}
       // Lightweight counts for sidebar (replaces 233 parallel queries)
-      resourceCounts={countsData?.counts}
+      resourceCounts={countsData?.counts ?? EMPTY_RESOURCE_COUNTS}
       resourceForbidden={countsData?.forbidden}
       resourceReasons={countsData?.reasons}
       resourceUnavailable={countsData?.unavailable}

@@ -3161,7 +3161,7 @@ export function ResourcesView({
 
   // Resource data — prefer new lightweight props over legacy resourceQueries array
   const resourceQueries = resourceQueriesProp ?? []
-  const useNewCountsMode = !!resourceCountsProp
+  const useNewCountsMode = resourceCountsProp !== undefined || selectedKindQueryProp !== undefined
 
   // Find the selected kind's query
   const selectedQueryIndex = useMemo(() => {
@@ -3229,8 +3229,8 @@ export function ResourcesView({
         const key = resource.group ? `${resource.group}/${resource.kind}` : resource.kind
         if (unavailableKinds.has(key)) {
           results[key] = null
-        } else if (key in resourceCountsProp!) {
-          results[key] = resourceCountsProp![key] ?? null
+        } else if (resourceCountsProp && key in resourceCountsProp) {
+          results[key] = resourceCountsProp[key] ?? null
         } else {
           results[key] = null
         }

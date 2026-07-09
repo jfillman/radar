@@ -903,14 +903,14 @@ func (c *ResourceCache) getDynamicWithGroup(ctx context.Context, kind string, na
 	// cluster-wide just to power a per-page-load drift diff.
 	var u *unstructured.Unstructured
 	var err error
-	if shouldBypassDynamicInformer(gvr) {
+	if preserveLastApplied {
+		u, err = dynamicCache.GetDirectPreserveLastApplied(ctx, gvr, namespace, name)
+	} else if shouldBypassDynamicInformer(gvr) {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
 	} else if gvr.Group == "apiextensions.k8s.io" && gvr.Resource == "customresourcedefinitions" {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
 	} else if gvr.Group == "apiregistration.k8s.io" && gvr.Resource == "apiservices" {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
-	} else if preserveLastApplied {
-		u, err = dynamicCache.GetDirectPreserveLastApplied(ctx, gvr, namespace, name)
 	} else {
 		u, err = dynamicCache.Get(gvr, namespace, name)
 	}

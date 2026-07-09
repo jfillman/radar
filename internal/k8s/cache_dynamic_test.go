@@ -96,12 +96,16 @@ func TestHighChurnDynamicBuiltinsBypassInformer(t *testing.T) {
 			defer ResetTestDynamicState()
 
 			gvr := schema.GroupVersionResource{Group: tc.group, Version: tc.version, Resource: tc.resource}
+			lastApplied := `{"kind":"` + tc.kind + `"}`
 			obj := &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": tc.apiVersion,
 				"kind":       tc.kind,
 				"metadata": map[string]any{
 					"name":      "sample",
 					"namespace": tc.namespace,
+					"annotations": map[string]any{
+						"kubectl.kubernetes.io/last-applied-configuration": lastApplied,
+					},
 				},
 			}}
 			dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
@@ -134,6 +138,16 @@ func TestHighChurnDynamicBuiltinsBypassInformer(t *testing.T) {
 			}
 			if got.GetName() != "sample" {
 				t.Fatalf("GetDynamicWithGroup name = %q", got.GetName())
+			}
+			if _, ok := got.GetAnnotations()["kubectl.kubernetes.io/last-applied-configuration"]; ok {
+				t.Fatalf("GetDynamicWithGroup should strip last-applied")
+			}
+			preserved, err := cache.GetDynamicWithGroupPreserveLastApplied(context.Background(), tc.kind, tc.namespace, "sample", tc.group)
+			if err != nil {
+				t.Fatalf("GetDynamicWithGroupPreserveLastApplied: %v", err)
+			}
+			if preserved.GetAnnotations()["kubectl.kubernetes.io/last-applied-configuration"] != lastApplied {
+				t.Fatalf("GetDynamicWithGroupPreserveLastApplied did not preserve last-applied: %v", preserved.GetAnnotations())
 			}
 			if count := GetDynamicResourceCache().GetInformerCount(); count != 0 {
 				t.Fatalf("%s started %d dynamic informer(s), want direct reads", tc.kind, count)

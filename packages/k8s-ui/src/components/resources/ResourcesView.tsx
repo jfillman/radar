@@ -3214,6 +3214,10 @@ export function ResourcesView({
   }, [resources])
   const isLoading = selectedQuery?.isLoading ?? true
   const selectedQueryError = selectedQuery?.error
+  const selectedKindCountKey = selectedKind.group
+    ? `${selectedKind.group}/${selectedKind.kind}`
+    : selectedKind.kind
+  const selectedQueryHasLoadedCount = Array.isArray(resources) && !isLoading && !selectedQueryError && !largeListGuard
 
   // Derive counts — prefer lightweight resourceCounts prop over full query data
   const counts = useMemo(() => {
@@ -3231,6 +3235,9 @@ export function ResourcesView({
           results[key] = null
         }
       }
+      if (selectedQueryHasLoadedCount) {
+        results[selectedKindCountKey] = resources.length
+      }
       return results
     }
     // Legacy: derive counts from full query data
@@ -3241,7 +3248,14 @@ export function ResourcesView({
       results[key] = Array.isArray(data) ? data.length : 0
     })
     return results
-  }, [useNewCountsMode, resourcesToCount, resourceCountsProp, resourceUnavailableProp, resourceQueries])
+  }, [useNewCountsMode, resourcesToCount, resourceCountsProp, resourceUnavailableProp, resources, selectedQueryHasLoadedCount, selectedKindCountKey, resourceQueries])
+
+  const sidebarResourceUnavailable = useMemo(() => {
+    if (!selectedQueryHasLoadedCount || !resourceUnavailableProp?.includes(selectedKindCountKey)) {
+      return resourceUnavailableProp
+    }
+    return resourceUnavailableProp.filter(key => key !== selectedKindCountKey)
+  }, [resourceUnavailableProp, selectedKindCountKey, selectedQueryHasLoadedCount])
 
   // Track which resource kinds returned 403 Forbidden
   const forbiddenKinds = useMemo(() => {
@@ -3262,9 +3276,6 @@ export function ResourcesView({
   // denials) OR the selected kind is in the counts `forbidden` set. Denied
   // cluster-scoped kinds return 200 with `[]` from the list endpoint, so the
   // 403 signal alone misses them — they'd fall through to "No <kind> found".
-  const selectedKindCountKey = selectedKind.group
-    ? `${selectedKind.group}/${selectedKind.kind}`
-    : selectedKind.kind
   // Actual rows win over a stale counts `forbidden` entry: a kind can be marked
   // forbidden/unavailable in counts (e.g. an informer not yet synced at counts
   // time) while the list query has since returned data — show the table, not
@@ -3994,7 +4005,7 @@ export function ResourcesView({
           apiResources={apiResourcesProp}
           resourceCounts={counts}
           resourceForbidden={Array.from(forbiddenKinds)}
-          resourceUnavailable={resourceUnavailableProp}
+          resourceUnavailable={sidebarResourceUnavailable}
           pinned={pinned}
           togglePin={togglePin}
           isPinned={isPinned}

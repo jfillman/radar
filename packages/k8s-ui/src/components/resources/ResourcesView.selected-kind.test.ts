@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { APIResource } from '../../types'
-import { canonicalizeSelectedKind } from './ResourcesView'
+import { canonicalizeSelectedKind, deriveSidebarResourceCounts, LOADED_RESOURCE_COUNT_TTL_MS } from './ResourcesView'
 
 const endpoints: APIResource = {
   group: '',
@@ -51,5 +51,63 @@ describe('canonicalizeSelectedKind', () => {
         [httpRoute]
       )
     ).toEqual({ name: 'httproutes', kind: 'HTTPRoute', group: 'gateway.networking.k8s.io' })
+  })
+})
+
+describe('deriveSidebarResourceCounts', () => {
+  it('keeps recently loaded counts for resources omitted from resource-counts', () => {
+    const now = 10_000
+
+    expect(
+      deriveSidebarResourceCounts(
+        [endpoints],
+        {},
+        undefined,
+        { Endpoints: { count: 132, expiresAt: now + LOADED_RESOURCE_COUNT_TTL_MS } },
+        now
+      )
+    ).toEqual({ Endpoints: 132 })
+  })
+
+  it('expires loaded counts after the TTL', () => {
+    const now = 10_000
+
+    expect(
+      deriveSidebarResourceCounts(
+        [endpoints],
+        {},
+        undefined,
+        { Endpoints: { count: 132, expiresAt: now } },
+        now
+      )
+    ).toEqual({ Endpoints: null })
+  })
+
+  it('prefers authoritative resource-counts over cached loaded counts', () => {
+    const now = 10_000
+
+    expect(
+      deriveSidebarResourceCounts(
+        [endpoints],
+        { Endpoints: 7 },
+        undefined,
+        { Endpoints: { count: 132, expiresAt: now + LOADED_RESOURCE_COUNT_TTL_MS } },
+        now
+      )
+    ).toEqual({ Endpoints: 7 })
+  })
+
+  it('lets a fresh loaded count override an unavailable count marker', () => {
+    const now = 10_000
+
+    expect(
+      deriveSidebarResourceCounts(
+        [endpoints],
+        {},
+        ['Endpoints'],
+        { Endpoints: { count: 132, expiresAt: now + LOADED_RESOURCE_COUNT_TTL_MS } },
+        now
+      )
+    ).toEqual({ Endpoints: 132 })
   })
 })

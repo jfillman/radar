@@ -1958,6 +1958,18 @@ interface ResourcesViewProps {
 
 // Default selected kind
 const DEFAULT_KIND_INFO: SelectedKindInfo = { name: 'pods', kind: 'Pod', group: '' }
+export const LOADED_RESOURCE_COUNT_TTL_MS = 5 * 60 * 1000
+
+interface LoadedResourceCount {
+  count: number
+  expiresAt: number
+}
+
+type LoadedResourceCountCache = Record<string, LoadedResourceCount>
+
+function resourceCountKey(resource: Pick<APIResource, 'group' | 'kind'>): string {
+  return resource.group ? `${resource.group}/${resource.kind}` : resource.kind
+}
 
 // Read initial state from URL — kind is in the path: {basePath}/{kind}
 //
@@ -2025,6 +2037,33 @@ export function canonicalizeSelectedKind(
     r.kind === selectedKind.kind && r.group === selectedKind.group
   )
   return match ? { name: match.name, kind: match.kind, group: match.group } : null
+}
+
+export function deriveSidebarResourceCounts(
+  resourcesToCount: Array<Pick<APIResource, 'kind' | 'group'>>,
+  resourceCounts: Record<string, number | null> | undefined,
+  resourceUnavailable: string[] | undefined,
+  loadedCountCache: LoadedResourceCountCache,
+  now: number = Date.now(),
+): Record<string, number | null> {
+  const unavailableKinds = new Set(resourceUnavailable ?? [])
+  const results: Record<string, number | null> = {}
+
+  for (const resource of resourcesToCount) {
+    const key = resourceCountKey(resource)
+    const cached = loadedCountCache[key]
+    if (resourceCounts && key in resourceCounts) {
+      results[key] = resourceCounts[key] ?? null
+    } else if (cached && cached.expiresAt > now) {
+      results[key] = cached.count
+    } else if (unavailableKinds.has(key)) {
+      results[key] = null
+    } else {
+      results[key] = null
+    }
+  }
+
+  return results
 }
 
 // Get initial filters from URL
@@ -3229,25 +3268,46 @@ export function ResourcesView({
     ? `${selectedKind.group}/${selectedKind.kind}`
     : selectedKind.kind
   const selectedQueryHasLoadedCount = Array.isArray(resources) && !isLoading && !selectedQueryError && !largeListGuard
+  const selectedLoadedResourceCount = Array.isArray(resources) ? resources.length : undefined
+  const [loadedCountCache, setLoadedCountCache] = useState<LoadedResourceCountCache>({})
+
+  useEffect(() => {
+    if (!selectedQueryHasLoadedCount || selectedLoadedResourceCount == null) return
+    const now = Date.now()
+    const loadedAt = selectedQuery?.dataUpdatedAt && selectedQuery.dataUpdatedAt > 0
+      ? selectedQuery.dataUpdatedAt
+      : now
+    const expiresAt = loadedAt + LOADED_RESOURCE_COUNT_TTL_MS
+
+    setLoadedCountCache(prev => {
+      const next: LoadedResourceCountCache = {}
+      let changed = false
+      for (const [key, cached] of Object.entries(prev)) {
+        if (cached.expiresAt > now || key === selectedKindCountKey) {
+          next[key] = cached
+        } else {
+          changed = true
+        }
+      }
+
+      const existing = next[selectedKindCountKey]
+      if (existing?.count === selectedLoadedResourceCount && existing.expiresAt === expiresAt) {
+        return changed ? next : prev
+      }
+
+      return {
+        ...next,
+        [selectedKindCountKey]: { count: selectedLoadedResourceCount, expiresAt },
+      }
+    })
+  }, [selectedQueryHasLoadedCount, selectedLoadedResourceCount, selectedKindCountKey, selectedQuery?.dataUpdatedAt])
 
   // Derive counts — prefer lightweight resourceCounts prop over full query data
   const counts = useMemo(() => {
     if (useNewCountsMode) {
-      // resourceCountsProp uses "group/Kind" keys for CRDs, "Kind" for core — same format as sidebar
-      const unavailableKinds = new Set(resourceUnavailableProp ?? [])
-      const results: Record<string, number | null> = {}
-      for (const resource of resourcesToCount) {
-        const key = resource.group ? `${resource.group}/${resource.kind}` : resource.kind
-        if (unavailableKinds.has(key)) {
-          results[key] = null
-        } else if (resourceCountsProp && key in resourceCountsProp) {
-          results[key] = resourceCountsProp[key] ?? null
-        } else {
-          results[key] = null
-        }
-      }
-      if (selectedQueryHasLoadedCount) {
-        results[selectedKindCountKey] = resources.length
+      const results = deriveSidebarResourceCounts(resourcesToCount, resourceCountsProp, resourceUnavailableProp, loadedCountCache)
+      if (selectedQueryHasLoadedCount && selectedLoadedResourceCount != null) {
+        results[selectedKindCountKey] = selectedLoadedResourceCount
       }
       return results
     }
@@ -3259,14 +3319,14 @@ export function ResourcesView({
       results[key] = Array.isArray(data) ? data.length : 0
     })
     return results
-  }, [useNewCountsMode, resourcesToCount, resourceCountsProp, resourceUnavailableProp, resources, selectedQueryHasLoadedCount, selectedKindCountKey, resourceQueries])
+  }, [useNewCountsMode, resourcesToCount, resourceCountsProp, resourceUnavailableProp, loadedCountCache, selectedQueryHasLoadedCount, selectedLoadedResourceCount, selectedKindCountKey, resourceQueries])
 
   const sidebarResourceUnavailable = useMemo(() => {
-    if (!selectedQueryHasLoadedCount || !resourceUnavailableProp?.includes(selectedKindCountKey)) {
+    if (!resourceUnavailableProp?.length) {
       return resourceUnavailableProp
     }
-    return resourceUnavailableProp.filter(key => key !== selectedKindCountKey)
-  }, [resourceUnavailableProp, selectedKindCountKey, selectedQueryHasLoadedCount])
+    return resourceUnavailableProp.filter(key => counts[key] == null)
+  }, [resourceUnavailableProp, counts])
 
   // Track which resource kinds returned 403 Forbidden
   const forbiddenKinds = useMemo(() => {

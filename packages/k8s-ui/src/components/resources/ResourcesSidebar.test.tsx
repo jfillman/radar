@@ -58,6 +58,7 @@ describe('ResourcesSidebar count visibility', () => {
 
     expect(html).toContain('HorizontalPodAutoscaler')
     expect(html).toContain('–')
+    expect(html).toContain('aria-label="Count unavailable. Open to view resources."')
   })
 
   it('hides confirmed-empty resources by default', () => {

@@ -52,6 +52,7 @@ export interface ResourcesSidebarProps {
 
 // Persisted across remounts so collapsed categories survive tab switches
 let persistedExpandedCategories: Set<string> | null = null
+const COUNT_UNAVAILABLE_MESSAGE = 'Count unavailable. Open to view resources.'
 
 // Fallback resource types when API resources aren't loaded yet
 const CORE_RESOURCE_TYPES = [
@@ -150,15 +151,25 @@ const ResourceTypeButton = forwardRef<HTMLButtonElement, ResourceTypeButtonProps
             <Tooltip content="Insufficient permissions" position="left">
               <Shield className="w-3.5 h-3.5 text-amber-400/60" />
             </Tooltip>
+          ) : count === null ? (
+            <Tooltip content={COUNT_UNAVAILABLE_MESSAGE} position="left">
+              <span
+                className={clsx(
+                  'text-xs py-0.5 rounded text-center font-mono w-8 text-theme-text-disabled',
+                  isSelected ? 'bg-skyhook-500/30 selection-text' : 'bg-theme-elevated',
+                )}
+                aria-label={COUNT_UNAVAILABLE_MESSAGE}
+              >
+                –
+              </span>
+            </Tooltip>
           ) : (
             <span className={clsx(
               'text-xs py-0.5 rounded text-center font-mono',
               isSelected ? 'bg-skyhook-500/30 selection-text' : 'bg-theme-elevated',
-              count === null
-                ? 'w-8 text-theme-text-disabled'
-                : count < 1000 ? 'w-8' : 'w-9',
+              count < 1000 ? 'w-8' : 'w-9',
             )}>
-              {count === null ? '–' : count}
+              {count}
             </span>
           )}
         </div>
@@ -620,13 +631,26 @@ export function ResourcesSidebar({
               >
                 <Icon className="w-4 h-4 shrink-0" />
                 <span className="flex-1 text-left">{type.label}</span>
-                <span className={clsx(
-                  'badge font-mono',
-                  isSelected ? 'bg-skyhook-500/30 selection-text' : 'bg-theme-elevated',
-                  count === null && 'text-theme-text-disabled',
-                )}>
-                  {count === null ? '–' : count}
-                </span>
+                {count === null ? (
+                  <Tooltip content={COUNT_UNAVAILABLE_MESSAGE} position="left">
+                    <span
+                      className={clsx(
+                        'badge font-mono text-theme-text-disabled',
+                        isSelected ? 'bg-skyhook-500/30 selection-text' : 'bg-theme-elevated',
+                      )}
+                      aria-label={COUNT_UNAVAILABLE_MESSAGE}
+                    >
+                      –
+                    </span>
+                  </Tooltip>
+                ) : (
+                  <span className={clsx(
+                    'badge font-mono',
+                    isSelected ? 'bg-skyhook-500/30 selection-text' : 'bg-theme-elevated',
+                  )}>
+                    {count}
+                  </span>
+                )}
               </button>
             )
           })

@@ -1850,7 +1850,7 @@ interface ResourcesViewProps {
   /** @deprecated Use resourceCounts + resourceForbidden + selectedKindQuery instead */
   resourceQueries?: ResourceQueryResult[]
   // Lightweight counts for sidebar badges (from /api/resource-counts)
-  resourceCounts?: Record<string, number>
+  resourceCounts?: Record<string, number | null>
   resourceForbidden?: string[]
   /** Per-kind reason a forbidden kind is hidden ("rbac_denied" | "unavailable"),
    *  keyed by the same count key as resourceForbidden. Drives RestrictedState copy. */
@@ -3226,9 +3226,9 @@ export function ResourcesView({
         if (unavailableKinds.has(key)) {
           results[key] = null
         } else if (key in resourceCountsProp!) {
-          results[key] = resourceCountsProp![key]
+          results[key] = resourceCountsProp![key] ?? null
         } else {
-          results[key] = 0
+          results[key] = null
         }
       }
       return results

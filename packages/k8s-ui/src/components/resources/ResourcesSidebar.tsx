@@ -53,29 +53,6 @@ export interface ResourcesSidebarProps {
 // Persisted across remounts so collapsed categories survive tab switches
 let persistedExpandedCategories: Set<string> | null = null
 
-// Core kinds that are always shown even with 0 instances
-// These are the most commonly used Kubernetes resources (using Kind names, not plural names)
-const ALWAYS_SHOWN_KINDS = new Set([
-  'Pod',
-  'Deployment',
-  'DaemonSet',
-  'StatefulSet',
-  'ReplicaSet',
-  'Service',
-  'Ingress',
-  'ConfigMap',
-  'Secret',
-  'Job',
-  'CronJob',
-  'HorizontalPodAutoscaler',
-  'PersistentVolumeClaim',
-  'Node',
-  'Namespace',
-  'ServiceAccount',
-  'NetworkPolicy',
-  'Event',
-])
-
 // Fallback resource types when API resources aren't loaded yet
 const CORE_RESOURCE_TYPES = [
   { kind: 'pods', label: 'Pods' },
@@ -299,7 +276,7 @@ export function ResourcesSidebar({
       } else if (key in resourceCounts) {
         results[key] = resourceCounts[key] ?? null
       } else {
-        results[key] = 0
+        results[key] = null
       }
     }
     return results
@@ -326,14 +303,11 @@ export function ResourcesSidebar({
         0
       )
 
-      // Filter resources: show if has instances, is core kind, has an
-      // unknown count (loading — don't pre-emptively hide), or
-      // showEmptyKinds is true.
+      // Filter resources: hide only confirmed-empty kinds. Unknown counts stay
+      // visible as a dash so count coverage gaps do not masquerade as emptiness.
       const visibleResources = category.resources.filter(resource => {
         const count = counts[resource.group ? `${resource.group}/${resource.kind}` : resource.kind]
-        const isCore = ALWAYS_SHOWN_KINDS.has(resource.kind)
-        const isLoading = count === null
-        const shouldShow = (count ?? 0) > 0 || isCore || isLoading || showEmptyKinds
+        const shouldShow = count === null || (count ?? 0) > 0 || showEmptyKinds
         if (!shouldShow) totalHiddenKinds++
         return shouldShow
       })
@@ -348,9 +322,8 @@ export function ResourcesSidebar({
       return 0
     })
 
-    // Filter out empty groups unless they have visible resources (core kinds) or showEmptyKinds is true
+    // Filter out empty groups unless they have visible resources or showEmptyKinds is true.
     const visibleCategories = sorted.filter(category => {
-      // Show if: has resources with instances, OR has visible resources (core kinds), OR showEmptyKinds
       const shouldShow = category.total > 0 || category.visibleResources.length > 0 || showEmptyKinds
       if (!shouldShow) totalHiddenGroups++
       return shouldShow

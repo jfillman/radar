@@ -57,6 +57,25 @@ describe('getWorkloadCostState', () => {
     expect(getWorkloadCostState(current, trend, false)).toBe('partial_missing_history')
   })
 
+  it('keeps current cost visible while historical owner metrics are still loading', () => {
+    const current: OpenCostWorkloadDetailResponse = {
+      available: true,
+      namespace: 'default',
+      kind: 'Deployment',
+      name: 'checkout',
+      current: {
+        name: 'checkout',
+        kind: 'Deployment',
+        hourlyCost: 0.2,
+        cpuCost: 0.12,
+        memoryCost: 0.08,
+        replicas: 2,
+      },
+    }
+
+    expect(getWorkloadCostState(current, undefined, { trendLoading: true })).toBe('data')
+  })
+
   it('uses historical data when current metrics are absent but history exists', () => {
     const current: OpenCostWorkloadDetailResponse = {
       available: false,

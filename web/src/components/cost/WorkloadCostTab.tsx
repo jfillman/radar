@@ -40,10 +40,13 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
   const [noPrometheusSince, setNoPrometheusSince] = useState<number | null>(null)
   const currentQuery = useOpenCostWorkload(kind, namespace, name)
   const trendQuery = useOpenCostWorkloadTrend(kind, namespace, name, range)
+  const trendMatchesRange = trendQuery.data?.range === range
+  const trendData = trendMatchesRange ? trendQuery.data : undefined
+  const trendLoading = trendQuery.isLoading || (trendQuery.isFetching && Boolean(trendQuery.data) && !trendMatchesRange)
 
-  const state = getWorkloadCostState(currentQuery.data, trendQuery.data, {
+  const state = getWorkloadCostState(currentQuery.data, trendData, {
     currentLoading: currentQuery.isLoading,
-    trendLoading: trendQuery.isLoading,
+    trendLoading,
     currentError: currentQuery.isError,
     trendError: trendQuery.isError,
   })
@@ -83,11 +86,10 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
   }
 
   const current = currentQuery.data?.current
-  const trend = trendQuery.data
+  const trend = trendData
   const points = trend?.available ? trend.dataPoints ?? [] : []
   const hasTrend = points.length >= 2 && points.some((p) => p.value > 0)
   const hasCurrent = Boolean(current)
-  const trendLoading = trendQuery.isLoading && !trend
   const hourly = current?.hourlyCost ?? 0
   const monthly = hourly * 730
   const windowTotal = trend?.available ? trend.windowTotalCost ?? 0 : 0

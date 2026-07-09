@@ -582,7 +582,7 @@ function costRefetchInterval(defaultInterval: number | false = COST_REFRESH_INTE
     const queryID = query.queryHash ?? JSON.stringify(query.queryKey ?? 'opencost')
     if (data?.available === false && data.reason === 'no_prometheus') {
       const now = Date.now()
-      const firstSeenAt = noPrometheusFirstSeenAt.get(queryID) ?? query.state.dataUpdatedAt ?? now
+      const firstSeenAt = noPrometheusFirstSeenAt.get(queryID) ?? now
       noPrometheusFirstSeenAt.set(queryID, firstSeenAt)
       return now - firstSeenAt < COST_DISCOVERY_GRACE_MS ? COST_DISCOVERY_RETRY_INTERVAL_MS : defaultInterval
     }

@@ -11,6 +11,7 @@ export interface ResourcePermissions {
   statefulSets: boolean
   replicaSets: boolean
   ingresses: boolean
+  ingressClasses: boolean
   configMaps: boolean
   secrets: boolean
   events: boolean

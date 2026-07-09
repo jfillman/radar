@@ -812,7 +812,7 @@ func (c *ResourceCache) ListDynamicWithGroup(ctx context.Context, kind string, n
 		return nil, fmt.Errorf("dynamic resource cache not initialized")
 	}
 
-	if gvr.Group == "discovery.k8s.io" && gvr.Resource == "endpointslices" {
+	if shouldBypassDynamicInformer(gvr) {
 		return dynamicCache.ListDirect(ctx, gvr, namespace)
 	}
 
@@ -828,6 +828,12 @@ func (c *ResourceCache) ListDynamicWithGroup(ctx context.Context, kind string, n
 // when discovery is incomplete.
 func builtinGVRFallback(kind, group string) (schema.GroupVersionResource, bool) {
 	return BuiltinGVR(kind, group)
+}
+
+func shouldBypassDynamicInformer(gvr schema.GroupVersionResource) bool {
+	return (gvr.Group == "discovery.k8s.io" && gvr.Resource == "endpointslices") ||
+		(gvr.Group == "coordination.k8s.io" && gvr.Resource == "leases") ||
+		(gvr.Group == "" && gvr.Resource == "endpoints")
 }
 
 // ErrUnknownDynamicKind is returned by ListDynamic / GetDynamicWithGroup when
@@ -897,7 +903,7 @@ func (c *ResourceCache) getDynamicWithGroup(ctx context.Context, kind string, na
 	// cluster-wide just to power a per-page-load drift diff.
 	var u *unstructured.Unstructured
 	var err error
-	if gvr.Group == "discovery.k8s.io" && gvr.Resource == "endpointslices" {
+	if shouldBypassDynamicInformer(gvr) {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
 	} else if gvr.Group == "apiextensions.k8s.io" && gvr.Resource == "customresourcedefinitions" {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)

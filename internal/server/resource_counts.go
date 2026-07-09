@@ -30,9 +30,9 @@ const (
 )
 
 const (
-	endpointSliceCountKey       = "discovery.k8s.io/EndpointSlice"
-	directCountNamespaceCap     = 50
-	directCountProbeConcurrency = 8
+	endpointSliceCountKey          = "discovery.k8s.io/EndpointSlice"
+	endpointSliceCountNamespaceCap = 50
+	endpointSliceCountConcurrency  = 8
 )
 
 func (s *Server) handleResourceCounts(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +67,9 @@ func (s *Server) handleResourceCounts(w http.ResponseWriter, r *http.Request) {
 		return kind
 	}
 	markCounted := func(key string, count int) {
+		if covered[key] {
+			return
+		}
 		counts[key] = count
 		covered[key] = true
 	}
@@ -91,21 +94,29 @@ func (s *Server) handleResourceCounts(w http.ResponseWriter, r *http.Request) {
 		}
 		covered[key] = true
 	}
-	countDirectProbe := func(key string, gvr schema.GroupVersionResource, namespaces []string) {
-		dynamicCache := k8s.GetDynamicResourceCache()
-		if dynamicCache == nil {
-			markUnavailable(key)
+	countEndpointSlices := func() {
+		if covered[endpointSliceCountKey] {
 			return
 		}
-		total, err := dynamicCache.CountDirectProbe(r.Context(), gvr, namespaces, directCountNamespaceCap, directCountProbeConcurrency)
+		dynamicCache := k8s.GetDynamicResourceCache()
+		if dynamicCache == nil {
+			markUnavailable(endpointSliceCountKey)
+			return
+		}
+		gvr, ok := k8s.BuiltinGVR("endpointslices", "discovery.k8s.io")
+		if !ok {
+			markUnavailable(endpointSliceCountKey)
+			return
+		}
+		total, err := dynamicCache.CountDirectProbe(r.Context(), gvr, namespaces, endpointSliceCountNamespaceCap, endpointSliceCountConcurrency)
 		if err != nil {
-			markUnavailable(key)
+			markUnavailable(endpointSliceCountKey)
 			if !errors.Is(err, k8score.ErrResourceCountUnavailable) {
-				log.Printf("[resource-counts] Failed to count %s: %v", key, err)
+				log.Printf("[resource-counts] Failed to count EndpointSlice: %v", err)
 			}
 			return
 		}
-		markCounted(key, total)
+		markCounted(endpointSliceCountKey, total)
 	}
 
 	for _, kl := range k8score.AllKindListers() {
@@ -143,10 +154,7 @@ func (s *Server) handleResourceCounts(w http.ResponseWriter, r *http.Request) {
 		markCounted(kl.CountKey(), n)
 	}
 
-	// 2. Dynamic resources:
-	//   - CRDs are counted only from already-watched informers.
-	//   - Built-ins that do not have typed listers are counted with bounded
-	//     direct probes, restricted to the existing built-in GVR catalogue.
+	// 2. Dynamic resources (CRDs) — report counts only for already-watched informers.
 	discovery := k8s.GetResourceDiscovery()
 	dynamicCache := k8s.GetDynamicResourceCache()
 	if discovery != nil && dynamicCache != nil {
@@ -155,7 +163,7 @@ func (s *Server) handleResourceCounts(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[resource-counts] Failed to discover API resources for CRD counts: %v", err)
 		} else {
 			// Deduplicate CRDs by group+kind, keeping the most stable served version.
-			type discoveredInfo struct {
+			type crdInfo struct {
 				kind       string
 				group      string
 				resource   string
@@ -164,17 +172,20 @@ func (s *Server) handleResourceCounts(w http.ResponseWriter, r *http.Request) {
 				gvr        schema.GroupVersionResource
 			}
 			crdSeen := make(map[string]bool)
-			crds := make(map[string]discoveredInfo)
+			crds := make(map[string]crdInfo)
 			var crdOrder []string
-			builtinSeen := make(map[string]bool)
-			builtins := make(map[string]discoveredInfo)
-			var builtinOrder []string
 			for _, res := range resources {
-				if !slices.Contains(res.Verbs, "list") {
+				if !res.IsCRD {
+					continue
+				}
+				// Informer-backed counts only work for listable+watchable kinds.
+				// Create-only review resources (LocalSubjectAccessReview, etc.)
+				// never sync an informer and would log a permanent count error.
+				if !slices.Contains(res.Verbs, "list") || !slices.Contains(res.Verbs, "watch") {
 					continue
 				}
 				key := countKey(res.Group, res.Kind)
-				info := discoveredInfo{
+				info := crdInfo{
 					kind:       res.Kind,
 					group:      res.Group,
 					resource:   res.Name,
@@ -182,36 +193,12 @@ func (s *Server) handleResourceCounts(w http.ResponseWriter, r *http.Request) {
 					namespaced: res.Namespaced,
 					gvr:        schema.GroupVersionResource{Group: res.Group, Version: res.Version, Resource: res.Name},
 				}
-				if res.IsCRD {
-					// Informer-backed counts only work for listable+watchable kinds.
-					// Create-only review resources (LocalSubjectAccessReview, etc.)
-					// never sync an informer and would log a permanent count error.
-					if !slices.Contains(res.Verbs, "watch") {
-						continue
-					}
-					if !crdSeen[key] {
-						crdSeen[key] = true
-						crdOrder = append(crdOrder, key)
-						crds[key] = info
-					} else if k8score.IsMoreStableVersion(res.Version, crds[key].version) {
-						crds[key] = info
-					}
-					continue
-				}
-				if covered[key] {
-					continue
-				}
-				if _, ok := k8s.BuiltinGVR(res.Name, res.Group); !ok {
-					if _, ok := k8s.BuiltinGVR(res.Kind, res.Group); !ok {
-						continue
-					}
-				}
-				if !builtinSeen[key] {
-					builtinSeen[key] = true
-					builtinOrder = append(builtinOrder, key)
-					builtins[key] = info
-				} else if k8score.IsMoreStableVersion(res.Version, builtins[key].version) {
-					builtins[key] = info
+				if !crdSeen[key] {
+					crdSeen[key] = true
+					crdOrder = append(crdOrder, key)
+					crds[key] = info
+				} else if k8score.IsMoreStableVersion(res.Version, crds[key].version) {
+					crds[key] = info
 				}
 			}
 
@@ -235,27 +222,9 @@ func (s *Server) handleResourceCounts(w http.ResponseWriter, r *http.Request) {
 				}
 				markUnavailable(key)
 			}
-			for _, key := range builtinOrder {
-				builtin := builtins[key]
-				probeNamespaces := namespaces
-				if !builtin.namespaced {
-					if !s.canRead(r, builtin.group, builtin.resource, "", "list") {
-						markForbidden(key, reasonRBACDenied)
-						continue
-					}
-					probeNamespaces = nil
-				}
-				countDirectProbe(key, builtin.gvr, probeNamespaces)
-			}
 		}
 	}
-	if !covered[endpointSliceCountKey] {
-		if gvr, ok := k8s.BuiltinGVR("endpointslices", "discovery.k8s.io"); ok {
-			countDirectProbe(endpointSliceCountKey, gvr, namespaces)
-		} else {
-			markUnavailable(endpointSliceCountKey)
-		}
-	}
+	countEndpointSlices()
 
 	s.writeJSON(w, ResourceCountsResponse{
 		Counts:      counts,

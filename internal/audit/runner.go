@@ -15,8 +15,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/skyhook-io/radar/internal/k8s"
-	"github.com/skyhook-io/radar/pkg/k8score"
 	bp "github.com/skyhook-io/radar/pkg/audit"
+	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 // RunOptions provides optional data sources for checks that need them.
@@ -48,6 +48,7 @@ func RunFromCache(cache *k8s.ResourceCache, namespaces []string, opts *RunOption
 		ServiceAccounts:          listNamespaced(cache.ServiceAccounts(), namespaces),
 		ServiceAccountsNamespace: serviceAccountScopeNamespace(),
 		LimitRanges:              listNamespaced(cache.LimitRanges(), namespaces),
+		GitOpsToolsPresent:       gitOpsToolsPresent(),
 	}
 
 	if opts != nil {
@@ -388,6 +389,32 @@ func extractNamespace(obj any) string {
 		return v.Namespace
 	}
 	return ""
+}
+
+// gitOpsToolsPresent reports whether a GitOps controller is installed, by
+// asking discovery whether any of the three controller CRDs is registered:
+// Argo CD Application, Flux Kustomization, or Flux HelmRelease. It gates the
+// GitOps coverage check — which flags workloads NOT under GitOps and would
+// otherwise flag everything on a cluster that doesn't do GitOps at all.
+func gitOpsToolsPresent() bool {
+	discovery := k8s.GetResourceDiscovery()
+	if discovery == nil {
+		return false
+	}
+	for _, kg := range gitOpsControllerKinds {
+		if _, ok := discovery.GetGVRWithGroup(kg.kind, kg.group); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// gitOpsControllerKinds are the (kind, group) pairs whose presence in discovery
+// means a GitOps controller is installed.
+var gitOpsControllerKinds = []struct{ kind, group string }{
+	{"Application", "argoproj.io"},
+	{"Kustomization", "kustomize.toolkit.fluxcd.io"},
+	{"HelmRelease", "helm.toolkit.fluxcd.io"},
 }
 
 // serviceAccountScopeNamespace reports the single namespace the SA informer

@@ -61,6 +61,26 @@ type Summary struct {
 	// deletion completes. When the resource is stuck Terminating, this is
 	// the operator's first lead on which controller to investigate.
 	Finalizers []string `json:"finalizers,omitempty"`
+	// IgnoredDifferences, when non-nil, discloses the Argo Application's
+	// spec.ignoreDifferences coverage — the field exclusions that suppress
+	// drift from comparison (both Argo's own comparison and Radar's). Nil for
+	// Flux roots and for Applications that declare no exclusions.
+	IgnoredDifferences *IgnoredDifferencesSummary `json:"ignoredDifferences,omitempty"`
+}
+
+// IgnoredDifferencesSummary is the comparison-coverage disclosure for an Argo
+// Application's spec.ignoreDifferences. RuleCount is the number of exclusion
+// entries; Kinds lists the sorted unique "Group/Kind" targets (just "Kind" for
+// core resources, "group/*" for a group-wide rule that omits kind).
+//
+// JQRuleCount is the load-bearing field: Radar does NOT evaluate
+// jqPathExpressions (only jsonPointer rules reach the drift filter), so an
+// Application whose exclusions use jq can surface drift entries in Radar that
+// Argo's own UI suppresses. The UI uses this count to warn about that gap.
+type IgnoredDifferencesSummary struct {
+	RuleCount   int      `json:"ruleCount"`
+	JQRuleCount int      `json:"jqRuleCount"`
+	Kinds       []string `json:"kinds"`
 }
 
 type Ref struct {
@@ -362,6 +382,7 @@ func buildSummary(root *unstructured.Unstructured, tool string) Summary {
 		}
 		s.Source = joinNonEmpty(gitops.StringValue(source["repoURL"]), gitops.StringValue(source["path"]), gitops.StringValue(source["chart"]))
 		s.AutoSyncMode = describeArgoAutoSync(root)
+		s.IgnoredDifferences = summarizeArgoIgnoreDifferences(root)
 		return s
 	}
 	status := fluxStatus(root)
@@ -722,6 +743,57 @@ func (r argoIgnoreRule) matches(ref Ref) bool {
 		return false
 	}
 	return true
+}
+
+// summarizeArgoIgnoreDifferences builds the comparison-coverage disclosure for
+// an Argo Application by walking spec.ignoreDifferences directly. This is a
+// deliberately separate pass from parseArgoIgnoreDifferences (which feeds the
+// drift filter and retains only jsonPointer rules): the summary needs the raw
+// entry count, the jq-rule count, and the target kinds — data the parser
+// discards. Returns nil when the Application declares no exclusions so the UI
+// renders nothing.
+func summarizeArgoIgnoreDifferences(root *unstructured.Unstructured) *IgnoredDifferencesSummary {
+	raw, _, _ := unstructured.NestedSlice(root.Object, "spec", "ignoreDifferences")
+	if len(raw) == 0 {
+		return nil
+	}
+	out := &IgnoredDifferencesSummary{}
+	seen := map[string]struct{}{}
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		out.RuleCount++
+		if jq, _, _ := unstructured.NestedStringSlice(m, "jqPathExpressions"); len(jq) > 0 {
+			out.JQRuleCount++
+		}
+		label := ignoreDifferenceKindLabel(gitops.StringValue(m["group"]), gitops.StringValue(m["kind"]))
+		if _, dup := seen[label]; !dup {
+			seen[label] = struct{}{}
+			out.Kinds = append(out.Kinds, label)
+		}
+	}
+	if out.RuleCount == 0 {
+		return nil
+	}
+	sort.Strings(out.Kinds)
+	return out
+}
+
+// ignoreDifferenceKindLabel formats an ignoreDifferences rule's (group, kind)
+// into a display token: "group/kind", or just "kind" for core resources
+// (empty group). A rule that omits kind is a group-wide wildcard in Argo's
+// matching semantics, rendered as "group/*" (or "*" when group is empty too).
+// Literal "*" values the operator wrote are passed through unchanged.
+func ignoreDifferenceKindLabel(group, kind string) string {
+	if kind == "" {
+		kind = "*"
+	}
+	if group == "" {
+		return kind
+	}
+	return group + "/" + kind
 }
 
 func argoResourceChanges(root *unstructured.Unstructured, resolver Resolver) []Change {

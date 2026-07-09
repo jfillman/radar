@@ -73,6 +73,14 @@ type CheckInput struct {
 	// AllServices is the cluster-wide Service list (all namespaces) for resolving
 	// Traefik route → Service references, including cross-namespace ones.
 	AllServices []*corev1.Service
+
+	// GitOpsToolsPresent gates the GitOps coverage check (checkGitOpsCoverage).
+	// True when discovery shows an Argo CD Application, Flux Kustomization, or
+	// Flux HelmRelease CRD registered — i.e. some GitOps controller is installed.
+	// The coverage check flags workloads NOT under GitOps, so it must stay silent
+	// on clusters that don't do GitOps at all, otherwise it flags everything.
+	// Callers populate from the discovery client.
+	GitOpsToolsPresent bool
 }
 
 // ConfigObjectRef identifies a ConfigMap or Secret dependency.

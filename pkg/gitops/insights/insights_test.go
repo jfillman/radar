@@ -1,6 +1,7 @@
 package insights
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1135,6 +1136,81 @@ func TestBuildSummary_TerminatingFields(t *testing.T) {
 	}
 	if len(s.Finalizers) != 1 || s.Finalizers[0] != "resources-finalizer.argocd.argoproj.io" {
 		t.Fatalf("Finalizers = %v, want [resources-finalizer.argocd.argoproj.io]", s.Finalizers)
+	}
+}
+
+// TestBuildSummary_IgnoredDifferences pins the Argo comparison-coverage
+// disclosure: RuleCount counts every spec.ignoreDifferences entry, JQRuleCount
+// counts only those using jqPathExpressions (which Radar doesn't evaluate — so
+// the drift panel may surface fields Argo's UI suppresses), and Kinds is the
+// sorted unique Group/Kind targets with a group-wildcard rule (kind omitted)
+// rendered as "group/*".
+func TestBuildSummary_IgnoredDifferences(t *testing.T) {
+	root := argoApp(map[string]any{})
+	root.Object["spec"] = map[string]any{
+		"ignoreDifferences": []any{
+			// jsonPointers rule, namespaced group + kind → "apps/Deployment".
+			map[string]any{
+				"group":        "apps",
+				"kind":         "Deployment",
+				"jsonPointers": []any{"/spec/replicas"},
+			},
+			// jqPathExpressions rule, core resource (empty group) → "ConfigMap".
+			map[string]any{
+				"kind":              "ConfigMap",
+				"jqPathExpressions": []any{".data.checksum"},
+			},
+			// Group-wildcard rule: group set, kind omitted → "networking.k8s.io/*".
+			map[string]any{
+				"group":        "networking.k8s.io",
+				"jsonPointers": []any{"/spec/rules"},
+			},
+		},
+	}
+
+	s := buildSummary(root, "argocd")
+	if s.IgnoredDifferences == nil {
+		t.Fatal("expected IgnoredDifferences to be populated")
+	}
+	if s.IgnoredDifferences.RuleCount != 3 {
+		t.Errorf("RuleCount = %d, want 3", s.IgnoredDifferences.RuleCount)
+	}
+	if s.IgnoredDifferences.JQRuleCount != 1 {
+		t.Errorf("JQRuleCount = %d, want 1", s.IgnoredDifferences.JQRuleCount)
+	}
+	want := []string{"ConfigMap", "apps/Deployment", "networking.k8s.io/*"}
+	if !reflect.DeepEqual(s.IgnoredDifferences.Kinds, want) {
+		t.Errorf("Kinds = %v, want %v", s.IgnoredDifferences.Kinds, want)
+	}
+}
+
+// TestBuildSummary_IgnoredDifferences_NilWhenAbsent confirms the field stays
+// nil (and json-omitted) when the Application declares no exclusions.
+func TestBuildSummary_IgnoredDifferences_NilWhenAbsent(t *testing.T) {
+	s := buildSummary(argoApp(map[string]any{}), "argocd")
+	if s.IgnoredDifferences != nil {
+		t.Errorf("expected nil IgnoredDifferences when spec.ignoreDifferences absent, got %+v", s.IgnoredDifferences)
+	}
+}
+
+// TestBuildSummary_IgnoredDifferences_NilForFlux pins that the disclosure is
+// Argo-only: it describes Argo's comparison pipeline, so a Flux root leaves the
+// field nil even if it somehow carried spec.ignoreDifferences.
+func TestBuildSummary_IgnoredDifferences_NilForFlux(t *testing.T) {
+	root := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+		"kind":       "Kustomization",
+		"metadata":   map[string]any{"namespace": "flux-system", "name": "apps"},
+		"spec": map[string]any{
+			"ignoreDifferences": []any{
+				map[string]any{"kind": "ConfigMap", "jsonPointers": []any{"/data"}},
+			},
+		},
+		"status": map[string]any{},
+	}}
+	s := buildSummary(root, "fluxcd")
+	if s.IgnoredDifferences != nil {
+		t.Errorf("expected nil IgnoredDifferences for Flux root, got %+v", s.IgnoredDifferences)
 	}
 }
 

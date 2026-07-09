@@ -766,6 +766,10 @@ export function GitOpsChangesView({ insight, error, onOpenResource, focusKey, tr
   // doesn't exist), but we CAN point at where they're declared in Git —
   // which is the most useful thing to do when there's no drawer to open.
   const sourceTreeURL = gitTreeURL(insight.summary.source, insight.summary.lastRevision || insight.summary.targetRevision || '')
+  // Comparison-coverage disclosure (Argo only). spec.ignoreDifferences hides
+  // fields from drift comparison; surfacing the count keeps the drift view
+  // honest about what it's NOT checking. Neutral note, not an alarm.
+  const ignoredDiffs = insight.summary.ignoredDifferences
   return (
     <div className="h-full overflow-auto bg-theme-base p-4">
       <section className="rounded-md border border-theme-border bg-theme-surface">
@@ -831,6 +835,22 @@ export function GitOpsChangesView({ insight, error, onOpenResource, focusKey, tr
               )
             ) : (
               <>use the Argo CD UI or run <code className="inline-code text-[10px]">argocd app diff {insight.summary.name}</code>.</>
+            )}
+          </div>
+        )}
+        {ignoredDiffs && ignoredDiffs.ruleCount > 0 && (
+          <div className="border-b border-theme-border bg-theme-base/40 px-4 py-2 text-[11px] text-theme-text-tertiary">
+            <span className="text-theme-text-secondary">
+              {ignoredDiffs.ruleCount} comparison {ignoredDiffs.ruleCount === 1 ? 'exclusion' : 'exclusions'} configured
+            </span>
+            {ignoredDiffs.kinds.length > 0 && <> on {ignoredDiffs.kinds.join(', ')}</>} — these fields are
+            hidden from drift comparison.
+            {ignoredDiffs.jqRuleCount > 0 && (
+              <>
+                {' '}
+                {ignoredDiffs.jqRuleCount} jq {ignoredDiffs.jqRuleCount === 1 ? 'rule is' : 'rules are'} not
+                evaluated by Radar — some entries Argo suppresses may appear here.
+              </>
             )}
           </div>
         )}

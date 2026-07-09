@@ -2007,6 +2007,26 @@ function getInitialKindFromURL(
   return defaultKind
 }
 
+export function canonicalizeSelectedKind(
+  selectedKind: SelectedKindInfo,
+  resourcesToCount: Array<Pick<APIResource, 'name' | 'kind' | 'group'>>,
+  apiResources?: APIResource[],
+): SelectedKindInfo | null {
+  const nameMatch = resourcesToCount.find(r =>
+    r.name === selectedKind.name && r.group === selectedKind.group
+  )
+  if (nameMatch) {
+    return selectedKind.kind === nameMatch.kind
+      ? null
+      : { name: nameMatch.name, kind: nameMatch.kind, group: nameMatch.group }
+  }
+
+  const match = apiResources?.find(r =>
+    r.kind === selectedKind.kind && r.group === selectedKind.group
+  )
+  return match ? { name: match.name, kind: match.kind, group: match.group } : null
+}
+
 // Get initial filters from URL
 function getInitialFiltersFromURL() {
   const params = new URLSearchParams(window.location.search)
@@ -3144,18 +3164,9 @@ export function ResourcesView({
   // getInitialKindFromURL can't look up CRDs, so name may be wrong (e.g., 'HTTPRoute' instead of 'httproutes')
   useEffect(() => {
     if (!apiResources) return
-    // Check if current selectedKind already matches a discovered resource
-    const alreadyResolved = resourcesToCount.some(r =>
-      r.name === selectedKind.name && r.group === selectedKind.group
-    )
-    if (alreadyResolved) return
-
-    // Try to match by kind name (URL stores kind=HTTPRoute, API has name=httproutes)
-    const match = apiResources.find(r =>
-      r.kind === selectedKind.kind && r.group === selectedKind.group
-    )
-    if (match) {
-      setSelectedKind({ name: match.name, kind: match.kind, group: match.group })
+    const canonicalKind = canonicalizeSelectedKind(selectedKind, resourcesToCount, apiResources)
+    if (canonicalKind) {
+      setSelectedKind(canonicalKind)
     }
   }, [apiResources, resourcesToCount, selectedKind.name, selectedKind.kind, selectedKind.group])
 

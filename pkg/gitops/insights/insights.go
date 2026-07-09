@@ -73,14 +73,15 @@ type Summary struct {
 // entries; Kinds lists the sorted unique "Group/Kind" targets (just "Kind" for
 // core resources, "group/*" for a group-wide rule that omits kind).
 //
-// JQRuleCount is the load-bearing field: Radar does NOT evaluate
-// jqPathExpressions (only jsonPointer rules reach the drift filter), so an
-// Application whose exclusions use jq can surface drift entries in Radar that
+// UnsupportedRuleCount is the load-bearing field: Radar evaluates only
+// jsonPointer rules in its drift filter — jqPathExpressions and
+// managedFieldsManagers rules are not applied — so an Application whose
+// exclusions use those features can surface drift entries in Radar that
 // Argo's own UI suppresses. The UI uses this count to warn about that gap.
 type IgnoredDifferencesSummary struct {
-	RuleCount   int      `json:"ruleCount"`
-	JQRuleCount int      `json:"jqRuleCount"`
-	Kinds       []string `json:"kinds"`
+	RuleCount            int      `json:"ruleCount"`
+	UnsupportedRuleCount int      `json:"unsupportedRuleCount"`
+	Kinds                []string `json:"kinds"`
 }
 
 type Ref struct {
@@ -765,8 +766,10 @@ func summarizeArgoIgnoreDifferences(root *unstructured.Unstructured) *IgnoredDif
 			continue
 		}
 		out.RuleCount++
-		if jq, _, _ := unstructured.NestedStringSlice(m, "jqPathExpressions"); len(jq) > 0 {
-			out.JQRuleCount++
+		jq, _, _ := unstructured.NestedStringSlice(m, "jqPathExpressions")
+		mfm, _, _ := unstructured.NestedStringSlice(m, "managedFieldsManagers")
+		if len(jq) > 0 || len(mfm) > 0 {
+			out.UnsupportedRuleCount++
 		}
 		label := ignoreDifferenceKindLabel(gitops.StringValue(m["group"]), gitops.StringValue(m["kind"]))
 		if _, dup := seen[label]; !dup {

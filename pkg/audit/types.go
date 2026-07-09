@@ -75,12 +75,20 @@ type CheckInput struct {
 	AllServices []*corev1.Service
 
 	// GitOpsToolsPresent gates the GitOps coverage check (checkGitOpsCoverage).
-	// True when discovery shows an Argo CD Application, Flux Kustomization, or
-	// Flux HelmRelease CRD registered — i.e. some GitOps controller is installed.
-	// The coverage check flags workloads NOT under GitOps, so it must stay silent
-	// on clusters that don't do GitOps at all, otherwise it flags everything.
-	// Callers populate from the discovery client.
+	// True when at least one GitOps root OBJECT exists (Argo CD Application,
+	// Flux Kustomization, or Flux HelmRelease) — not merely the CRDs, which
+	// linger after an uninstall and would gate the check open on a cluster that
+	// doesn't do GitOps at all. The coverage check flags workloads NOT under
+	// GitOps, so it must stay silent there, otherwise it flags everything.
 	GitOpsToolsPresent bool
+
+	// ArgoAppNames is the set of Argo CD Application names in the cluster.
+	// Argo's label tracking mode (application.resourceTrackingMethod: label)
+	// stamps managed resources with only app.kubernetes.io/instance — by shape
+	// indistinguishable from a generic Helm/kustomize label — so the coverage
+	// check treats that label as GitOps-managed only when its value names a
+	// real Application.
+	ArgoAppNames map[string]struct{}
 }
 
 // ConfigObjectRef identifies a ConfigMap or Secret dependency.

@@ -845,11 +845,13 @@ export function GitOpsChangesView({ insight, error, onOpenResource, focusKey, tr
             </span>
             {ignoredDiffs.kinds.length > 0 && <> on {ignoredDiffs.kinds.join(', ')}</>} — these fields are
             hidden from drift comparison.
-            {ignoredDiffs.jqRuleCount > 0 && (
+            {ignoredDiffs.unsupportedRuleCount > 0 && (
               <>
                 {' '}
-                {ignoredDiffs.jqRuleCount} jq {ignoredDiffs.jqRuleCount === 1 ? 'rule is' : 'rules are'} not
-                evaluated by Radar — some entries Argo suppresses may appear here.
+                {ignoredDiffs.unsupportedRuleCount}{' '}
+                {ignoredDiffs.unsupportedRuleCount === 1 ? 'rule uses' : 'rules use'} features Radar does not
+                evaluate (jq expressions, managed-fields managers) — some entries Argo suppresses may appear
+                here.
               </>
             )}
           </div>

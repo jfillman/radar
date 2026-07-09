@@ -1140,10 +1140,11 @@ func TestBuildSummary_TerminatingFields(t *testing.T) {
 }
 
 // TestBuildSummary_IgnoredDifferences pins the Argo comparison-coverage
-// disclosure: RuleCount counts every spec.ignoreDifferences entry, JQRuleCount
-// counts only those using jqPathExpressions (which Radar doesn't evaluate — so
-// the drift panel may surface fields Argo's UI suppresses), and Kinds is the
-// sorted unique Group/Kind targets with a group-wildcard rule (kind omitted)
+// disclosure: RuleCount counts every spec.ignoreDifferences entry,
+// UnsupportedRuleCount counts those using jqPathExpressions OR
+// managedFieldsManagers (Radar's drift filter applies neither — the drift
+// panel may surface fields Argo's UI suppresses), and Kinds is the sorted
+// unique Group/Kind targets with a group-wildcard rule (kind omitted)
 // rendered as "group/*".
 func TestBuildSummary_IgnoredDifferences(t *testing.T) {
 	root := argoApp(map[string]any{})
@@ -1160,6 +1161,13 @@ func TestBuildSummary_IgnoredDifferences(t *testing.T) {
 				"kind":              "ConfigMap",
 				"jqPathExpressions": []any{".data.checksum"},
 			},
+			// managedFieldsManagers rule — the other exclusion shape Radar's
+			// drift filter doesn't apply.
+			map[string]any{
+				"group":                 "apps",
+				"kind":                  "Deployment",
+				"managedFieldsManagers": []any{"kube-controller-manager"},
+			},
 			// Group-wildcard rule: group set, kind omitted → "networking.k8s.io/*".
 			map[string]any{
 				"group":        "networking.k8s.io",
@@ -1172,11 +1180,11 @@ func TestBuildSummary_IgnoredDifferences(t *testing.T) {
 	if s.IgnoredDifferences == nil {
 		t.Fatal("expected IgnoredDifferences to be populated")
 	}
-	if s.IgnoredDifferences.RuleCount != 3 {
-		t.Errorf("RuleCount = %d, want 3", s.IgnoredDifferences.RuleCount)
+	if s.IgnoredDifferences.RuleCount != 4 {
+		t.Errorf("RuleCount = %d, want 4", s.IgnoredDifferences.RuleCount)
 	}
-	if s.IgnoredDifferences.JQRuleCount != 1 {
-		t.Errorf("JQRuleCount = %d, want 1", s.IgnoredDifferences.JQRuleCount)
+	if s.IgnoredDifferences.UnsupportedRuleCount != 2 {
+		t.Errorf("UnsupportedRuleCount = %d, want 2", s.IgnoredDifferences.UnsupportedRuleCount)
 	}
 	want := []string{"ConfigMap", "apps/Deployment", "networking.k8s.io/*"}
 	if !reflect.DeepEqual(s.IgnoredDifferences.Kinds, want) {

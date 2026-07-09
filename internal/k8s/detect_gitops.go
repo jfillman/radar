@@ -155,12 +155,15 @@ func DetectGitOpsProblems(dynamicCache *DynamicResourceCache, discovery *Resourc
 
 	var problems []Detection
 	problems = append(problems, detectArgoAppProblems(argoApps, driftTracker(cache), now)...)
-	driftTracker(cache).purge(now, argoDriftRetain)
 	// Controller-staleness is a cluster-wide signal: it needs global Application
 	// counts plus cross-namespace controller-pod health, and a namespace-scoped
 	// viewer can't see the controller pods anyway. Compute it only on the
 	// cluster-wide pass (namespace == ""), where argoApps is the full fleet.
+	// The drift tracker is purged here too, and ONLY here: a namespace-scoped
+	// pass observes just its slice of the fleet, so purging on it would drop
+	// other namespaces' drift clocks and restart their 24h gate.
 	if namespace == "" {
+		driftTracker(cache).purge(now, argoDriftRetain)
 		problems = append(problems, detectArgoStaleFromCache(cache, argoApps, now)...)
 	}
 	problems = append(problems, detectFluxProblems(list("Kustomization", fluxKustGrp), "Kustomization", fluxKustGrp, now)...)

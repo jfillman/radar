@@ -52,6 +52,10 @@ func checkGitOpsCoverage(tr *evalTracker, input *CheckInput) []Finding {
 		switch {
 		case overlay != nil && overlay.Winner.Tier <= subject.TierArgoInstance:
 			return // GitOps-managed (Flux / Argo) — the good case, no finding.
+		case overlay != nil && overlay.Winner.Tier == subject.TierInstance && argoAppTracksByLabel(input, obj):
+			// Argo label-tracking mode: app.kubernetes.io/instance naming a real
+			// Application IS Argo management, not a generic app label.
+			return
 		case overlay != nil && overlay.Winner.Tier == subject.TierHelmRelease:
 			checkID = checkGitOpsHelmOnly
 			message = "Managed by Helm but not GitOps — helm-CLI upgrades bypass Git review and the declarative rollback path."
@@ -86,4 +90,22 @@ func checkGitOpsCoverage(tr *evalTracker, input *CheckInput) []Finding {
 		emit("CronJob", cj)
 	}
 	return findings
+}
+
+// argoAppTracksByLabel reports whether the workload's app.kubernetes.io/instance
+// value names an existing Argo CD Application — the signature of Argo's label
+// tracking mode. Without the cross-reference, every label-tracked workload
+// would be flagged as unmanaged; without requiring a real Application, every
+// Helm/kustomize install carrying the standard instance label would silently
+// pass as GitOps-managed.
+func argoAppTracksByLabel(input *CheckInput, obj metav1.Object) bool {
+	if len(input.ArgoAppNames) == 0 {
+		return false
+	}
+	instance := obj.GetLabels()["app.kubernetes.io/instance"]
+	if instance == "" {
+		return false
+	}
+	_, ok := input.ArgoAppNames[instance]
+	return ok
 }

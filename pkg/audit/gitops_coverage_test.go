@@ -52,11 +52,24 @@ func TestCheckGitOpsCoverage_Classification(t *testing.T) {
 			name:      "no labels",
 			wantCheck: checkGitOpsUnmanaged,
 		},
+		{
+			// Argo label tracking mode (application.resourceTrackingMethod:
+			// label) stamps ONLY app.kubernetes.io/instance; it counts as
+			// GitOps-managed when the value names a real Application.
+			name:   "argo label tracking, app exists",
+			labels: map[string]string{"app.kubernetes.io/instance": "guestbook"},
+		},
+		{
+			name:      "instance label, no matching app",
+			labels:    map[string]string{"app.kubernetes.io/instance": "not-an-app"},
+			wantCheck: checkGitOpsUnmanaged,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			input := &CheckInput{
 				GitOpsToolsPresent: true,
+				ArgoAppNames:       map[string]struct{}{"guestbook": {}},
 				Deployments:        []*appsv1.Deployment{gitopsWorkload("web", "prod", tc.labels, tc.annos)},
 			}
 			tr := newEvalTracker()

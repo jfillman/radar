@@ -69,14 +69,15 @@ export interface GitOpsInsightSummary {
   // Argo comparison-coverage disclosure: the field exclusions declared in
   // spec.ignoreDifferences that suppress drift from comparison (both Argo's
   // and Radar's). Undefined for Flux roots and Applications without any
-  // exclusions. jqRuleCount counts entries Radar does NOT evaluate — the
+  // exclusions. unsupportedRuleCount counts entries Radar does NOT evaluate
+  // (jqPathExpressions / managedFieldsManagers rules) — the
   // drift panel may surface fields Argo's own UI suppresses.
   ignoredDifferences?: GitOpsIgnoredDifferences
 }
 
 export interface GitOpsIgnoredDifferences {
   ruleCount: number
-  jqRuleCount: number
+  unsupportedRuleCount: number
   // Sorted unique "Group/Kind" targets ("Kind" for core resources,
   // "group/*" for a group-wide rule that omits kind).
   kinds: string[]

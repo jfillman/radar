@@ -199,6 +199,7 @@ type NodeCostResponse struct {
 // NodeCost holds per-node cost breakdown.
 type NodeCost struct {
 	Name         string  `json:"name"`
+	ProviderID   string  `json:"providerID,omitempty"`
 	InstanceType string  `json:"instanceType,omitempty"`
 	Region       string  `json:"region,omitempty"`
 	HourlyCost   float64 `json:"hourlyCost"`

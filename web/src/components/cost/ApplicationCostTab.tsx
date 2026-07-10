@@ -137,7 +137,7 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
   const maxCost = Math.max(...rows.map((row) => row.current?.hourlyCost ?? 0), 0)
 
   return (
-    <div className="mx-auto w-full max-w-[1400px] space-y-4">
+    <div className="mx-auto w-full max-w-[1600px] space-y-4">
       {(current?.partial ||
         trend?.partial ||
         state === 'partial_missing_history' ||

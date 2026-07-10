@@ -813,6 +813,7 @@ export function useOpenCostApplicationCostTrend(workloads: OpenCostApplicationWo
 // Node cost breakdown
 export interface OpenCostNodeCost {
   name: string
+  providerID?: string
   instanceType?: string
   region?: string
   hourlyCost: number

@@ -1,7 +1,13 @@
 import { useState, useEffect } from 'react'
-import { COST_DISCOVERY_GRACE_MS, useOpenCostSummary, useOpenCostWorkloads, useOpenCostNodes } from '../../api/client'
+import {
+  COST_DISCOVERY_GRACE_MS,
+  useClusterInfo,
+  useOpenCostSummary,
+  useOpenCostWorkloads,
+  useOpenCostNodes,
+} from '../../api/client'
 import type { OpenCostNamespaceCost, OpenCostWorkloadCost, OpenCostNodeCost } from '../../api/client'
-import { ChevronDown, ChevronRight, DollarSign, HelpCircle, Loader2, Server, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, DollarSign, ExternalLink, HelpCircle, Loader2, Server, X } from 'lucide-react'
 import { PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
 import { CostTrendChart } from './CostTrendChart'
 import {
@@ -15,7 +21,8 @@ import {
 import { Tooltip } from '../ui/Tooltip'
 import { useConnection } from '../../context/ConnectionContext'
 import type { SelectedResource } from '../../types'
-import { kindToPlural } from '../../utils/navigation'
+import { kindToPlural, openExternal } from '../../utils/navigation'
+import { clusterCloudConsoleLink, nodeCloudConsoleLink } from './cloud-console'
 
 interface CostViewProps {
   onBack: () => void
@@ -25,6 +32,7 @@ interface CostViewProps {
 export function CostView({ onBack, onOpenResource }: CostViewProps) {
   const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useOpenCostSummary()
   const { data: nodeData } = useOpenCostNodes()
+  const { data: clusterInfo } = useClusterInfo()
   const { connection } = useConnection()
   const [showHelp, setShowHelp] = useState(false)
   const [noPrometheusSince, setNoPrometheusSince] = useState<number | null>(null)
@@ -119,6 +127,7 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
   const storagePct = allocTotal > 0 ? (totalStorage / allocTotal) * 100 : 0
 
   const nodes = nodeData?.available ? (nodeData.nodes ?? []) : []
+  const clusterConsoleLink = clusterCloudConsoleLink(clusterInfo?.context)
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -138,6 +147,19 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
               <HelpCircle className="w-3.5 h-3.5" />
               How this works
             </button>
+            {clusterConsoleLink && (
+              <Tooltip content={clusterConsoleLink.label}>
+                <button
+                  type="button"
+                  onClick={() => openExternal(clusterConsoleLink.url)}
+                  className="flex items-center gap-1 text-xs text-theme-text-tertiary hover:text-accent-text transition-colors duration-150"
+                  aria-label={clusterConsoleLink.label}
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Cloud console
+                </button>
+              </Tooltip>
+            )}
           </div>
           <div className="flex items-center gap-4">
             {/* Tracks the headline monthly summary (the primary query); its load
@@ -257,7 +279,7 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
         </div>
 
         {/* Node cost table */}
-        {nodes.length > 0 && <NodeCostTable nodes={nodes} />}
+        {nodes.length > 0 && <NodeCostTable nodes={nodes} onOpenResource={onOpenResource} />}
 
         {/* Footer */}
         <div className="flex items-center justify-between text-xs text-theme-text-tertiary pb-4">
@@ -470,7 +492,13 @@ function WorkloadCostRow({
   return <div className={rowClass}>{content}</div>
 }
 
-function NodeCostTable({ nodes }: { nodes: OpenCostNodeCost[] }) {
+function NodeCostTable({
+  nodes,
+  onOpenResource,
+}: {
+  nodes: OpenCostNodeCost[]
+  onOpenResource?: (resource: SelectedResource) => void
+}) {
   return (
     <div className="rounded-lg border border-theme-border bg-theme-surface/50">
       <div className="px-4 py-3 border-b border-theme-border">
@@ -506,19 +534,52 @@ function NodeCostTable({ nodes }: { nodes: OpenCostNodeCost[] }) {
       {/* Node rows */}
       <div className="divide-y divide-theme-border/50">
         {nodes.map((node) => (
-          <NodeCostRow key={node.name} node={node} />
+          <NodeCostRow key={node.name} node={node} onOpenResource={onOpenResource} />
         ))}
       </div>
     </div>
   )
 }
 
-function NodeCostRow({ node }: { node: OpenCostNodeCost }) {
+function NodeCostRow({
+  node,
+  onOpenResource,
+}: {
+  node: OpenCostNodeCost
+  onOpenResource?: (resource: SelectedResource) => void
+}) {
+  const cloudLink = nodeCloudConsoleLink(node.providerID)
+  const openNode = () => onOpenResource?.({ kind: 'nodes', namespace: '', name: node.name })
+
   return (
     <div className="grid grid-cols-[minmax(200px,1fr)_minmax(120px,1fr)_100px_90px_140px] gap-2 px-4 py-2.5">
-      <Tooltip content={node.name} wrapperClassName="!block min-w-0">
-        <span className="text-sm text-theme-text-primary truncate font-medium block">{node.name}</span>
-      </Tooltip>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <Tooltip content={`Open Node ${node.name}`} wrapperClassName="!block min-w-0">
+          {onOpenResource ? (
+            <button
+              type="button"
+              onClick={openNode}
+              className="block min-w-0 truncate text-left text-sm font-medium text-theme-text-primary transition-colors hover:text-accent-text focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-1 focus:ring-offset-theme-base"
+            >
+              {node.name}
+            </button>
+          ) : (
+            <span className="text-sm text-theme-text-primary truncate font-medium block">{node.name}</span>
+          )}
+        </Tooltip>
+        {cloudLink && (
+          <Tooltip content={cloudLink.label}>
+            <button
+              type="button"
+              onClick={() => openExternal(cloudLink.url)}
+              className="shrink-0 rounded p-0.5 text-theme-text-tertiary transition-colors hover:bg-theme-hover hover:text-accent-text focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-1 focus:ring-offset-theme-base"
+              aria-label={`${cloudLink.label}: ${node.name}`}
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
+        )}
+      </span>
       <span className="text-xs text-theme-text-secondary truncate">
         {node.instanceType || '-'}
         {node.region && <span className="text-theme-text-quaternary ml-1.5">({node.region})</span>}

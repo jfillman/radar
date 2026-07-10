@@ -143,5 +143,30 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pkgopencost.NodeCostResponse{Available: false, Reason: pkgopencost.ReasonNoPrometheus})
 		return
 	}
-	writeJSON(w, http.StatusOK, pkgopencost.ComputeNodeCosts(r.Context(), client.Prom()))
+	resp := pkgopencost.ComputeNodeCosts(r.Context(), client.Prom())
+	attachNodeProviderIDs(resp)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func attachNodeProviderIDs(resp *pkgopencost.NodeCostResponse) {
+	if resp == nil || !resp.Available || len(resp.Nodes) == 0 {
+		return
+	}
+	rc := k8s.GetResourceCache()
+	if rc == nil || rc.Nodes() == nil {
+		return
+	}
+	nodes, err := rc.Nodes().List(labels.Everything())
+	if err != nil || len(nodes) == 0 {
+		return
+	}
+	providerIDs := make(map[string]string, len(nodes))
+	for _, node := range nodes {
+		if node.Spec.ProviderID != "" {
+			providerIDs[node.Name] = node.Spec.ProviderID
+		}
+	}
+	for i := range resp.Nodes {
+		resp.Nodes[i].ProviderID = providerIDs[resp.Nodes[i].Name]
+	}
 }

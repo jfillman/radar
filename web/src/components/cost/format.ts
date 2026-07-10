@@ -7,3 +7,16 @@ export function formatCostAxis(value: number): string {
   if (value >= 0.00001) return `$${value.toFixed(5)}`
   return '<$0.00001'
 }
+
+export function formatCost(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '$0.00'
+  if (value >= 1000) return `$${(value / 1000).toFixed(1)}k`
+  if (value >= 1) return `$${value.toFixed(2)}`
+  if (value >= 0.01) return `$${value.toFixed(3)}`
+  if (value >= 0.0001) return `$${value.toFixed(4)}`
+  return formatCostAxis(value)
+}
+
+export function formatCostPerHour(value: number): string {
+  return `${formatCost(value)}/hr`
+}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildLineChart, getWorkloadCostState } from './WorkloadCostTab'
+import { getWorkloadCostState } from './WorkloadCostTab'
+import { buildLineChart } from './chart'
 import type { OpenCostWorkloadDetailResponse, OpenCostWorkloadTrendResponse } from '../../api/client'
 
 describe('getWorkloadCostState', () => {

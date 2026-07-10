@@ -77,7 +77,7 @@ export function CostTrendChart() {
   )
 }
 
-function StackedAreaChart({ series }: { series: OpenCostTrendSeries[] }) {
+export function StackedAreaChart({ series }: { series: OpenCostTrendSeries[] }) {
   const svgRef = useRef<SVGSVGElement>(null)
   const [hoverX, setHoverX] = useState<number | null>(null)
 

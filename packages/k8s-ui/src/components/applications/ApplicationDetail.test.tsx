@@ -109,6 +109,33 @@ describe('ApplicationDetail shell', () => {
     expect(html).not.toContain('Source &amp; provenance')
   })
 
+  it('renders the optional application cost view only when the host selects it', () => {
+    const withCostTab = renderDetail({
+      selectedView: 'overview',
+      onSelectView: () => {},
+      selectedWorkloadKey: null,
+      onSelectWorkload: () => {},
+      renderCostView: () => <div>Application cost body</div>,
+    })
+
+    expect(withCostTab).toContain('Cost')
+    expect(withCostTab).not.toContain('Application cost body')
+
+    const selectedCost = renderDetail({
+      selectedView: 'overview',
+      onSelectView: () => {},
+      selectedWorkloadKey: null,
+      onSelectWorkload: () => {},
+      renderCostView: () => <div>Application cost body</div>,
+      costViewSelected: true,
+      onSelectCostView: () => {},
+    })
+
+    expect(selectedCost).toContain('Cost')
+    expect(selectedCost).toContain('Application cost body')
+    expect(selectedCost).not.toContain('Source &amp; provenance')
+  })
+
   it('does not render a workload selector for a single-workload app', () => {
     const singleApp: AppRow = {
       ...app,

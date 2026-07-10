@@ -92,6 +92,91 @@ type WorkloadCostTrendResponse struct {
 	DataPoints      []CostDataPoint `json:"dataPoints,omitempty"`
 }
 
+// ApplicationWorkloadRef identifies one workload included in an application
+// cost request.
+type ApplicationWorkloadRef struct {
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+}
+
+// ApplicationWorkloadCostInput carries server-validated metadata used to
+// aggregate current app cost.
+type ApplicationWorkloadCostInput struct {
+	ApplicationWorkloadRef
+	DesiredReplicas int `json:"desiredReplicas,omitempty"`
+}
+
+// ApplicationCostCoverage describes how much of an app's workload set was
+// included in a cost response.
+type ApplicationCostCoverage struct {
+	Total       int                         `json:"total"`
+	Included    int                         `json:"included"`
+	Unavailable []ApplicationWorkloadStatus `json:"unavailable,omitempty"`
+	Unsupported []ApplicationWorkloadRef    `json:"unsupported,omitempty"`
+}
+
+// ApplicationWorkloadStatus describes a workload that could not be included in
+// the app cost total.
+type ApplicationWorkloadStatus struct {
+	ApplicationWorkloadRef
+	Reason       string `json:"reason"`
+	ScaledToZero bool   `json:"scaledToZero,omitempty"`
+}
+
+// ApplicationCostTotals holds summed current cost values for included app
+// workloads.
+type ApplicationCostTotals struct {
+	HourlyCost      float64 `json:"hourlyCost"`
+	CPUCost         float64 `json:"cpuCost"`
+	MemoryCost      float64 `json:"memoryCost"`
+	Replicas        int     `json:"replicas"`
+	CPUUsageCost    float64 `json:"cpuUsageCost,omitempty"`
+	MemoryUsageCost float64 `json:"memoryUsageCost,omitempty"`
+	Efficiency      float64 `json:"efficiency,omitempty"`
+	IdleCost        float64 `json:"idleCost,omitempty"`
+}
+
+// ApplicationWorkloadCost is a current-cost row for one app workload.
+type ApplicationWorkloadCost struct {
+	ApplicationWorkloadRef
+	Available    bool          `json:"available"`
+	Reason       string        `json:"reason,omitempty"`
+	ScaledToZero bool          `json:"scaledToZero,omitempty"`
+	Current      *WorkloadCost `json:"current,omitempty"`
+}
+
+// ApplicationCostResponse is the focused current-cost response for an app's
+// steady-state workloads.
+type ApplicationCostResponse struct {
+	Available bool                      `json:"available"`
+	Reason    string                    `json:"reason,omitempty"`
+	Partial   bool                      `json:"partial,omitempty"`
+	Totals    ApplicationCostTotals     `json:"totals"`
+	Coverage  ApplicationCostCoverage   `json:"coverage"`
+	Workloads []ApplicationWorkloadCost `json:"workloads,omitempty"`
+}
+
+// ApplicationCostTrendSeries is one workload's historical cost series.
+type ApplicationCostTrendSeries struct {
+	ApplicationWorkloadRef
+	WindowTotalCost float64         `json:"windowTotalCost,omitempty"`
+	DataPoints      []CostDataPoint `json:"dataPoints,omitempty"`
+}
+
+// ApplicationCostTrendResponse is the historical cost response for an app's
+// steady-state workloads.
+type ApplicationCostTrendResponse struct {
+	Available       bool                         `json:"available"`
+	Reason          string                       `json:"reason,omitempty"`
+	Range           string                       `json:"range"`
+	Partial         bool                         `json:"partial,omitempty"`
+	WindowTotalCost float64                      `json:"windowTotalCost,omitempty"`
+	DataPoints      []CostDataPoint              `json:"dataPoints,omitempty"`
+	Series          []ApplicationCostTrendSeries `json:"series,omitempty"`
+	Coverage        ApplicationCostCoverage      `json:"coverage"`
+}
+
 // CostTrendSeries holds cost data points for a single namespace.
 type CostTrendSeries struct {
 	Namespace  string          `json:"namespace"`

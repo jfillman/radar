@@ -147,8 +147,9 @@ export function isMetricsUnavailableError(error: unknown): boolean {
   })
 }
 
-export async function fetchJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await apiFetch(`${getApiBase()}${path}`, signal ? { signal } : undefined)
+export async function fetchJSON<T>(path: string, init?: RequestInit | AbortSignal): Promise<T> {
+  const requestInit = init instanceof AbortSignal ? { signal: init } : init
+  const response = await apiFetch(`${getApiBase()}${path}`, requestInit)
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
     throw new ApiError(errorData.error || `HTTP ${response.status}`, response.status, errorData)
@@ -698,6 +699,111 @@ export function useOpenCostWorkloadTrend(kind: string, namespace: string, name: 
     queryKey: ['opencost-workload-trend', kind, namespace, name, range_],
     queryFn: () => fetchJSON(`/opencost/workload/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/trend?range=${range_}`),
     enabled: (options?.enabled ?? true) && Boolean(kind && namespace && name),
+    staleTime: 60000,
+    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS),
+    placeholderData: (prev) => prev,
+  })
+}
+
+export interface OpenCostApplicationWorkloadRef {
+  kind: string
+  namespace: string
+  name: string
+}
+
+export interface OpenCostApplicationWorkloadStatus extends OpenCostApplicationWorkloadRef {
+  reason: CostUnavailableReason
+  scaledToZero?: boolean
+}
+
+export interface OpenCostApplicationCostCoverage {
+  total: number
+  included: number
+  unavailable?: OpenCostApplicationWorkloadStatus[]
+  unsupported?: OpenCostApplicationWorkloadRef[]
+}
+
+export interface OpenCostApplicationCostTotals {
+  hourlyCost: number
+  cpuCost: number
+  memoryCost: number
+  replicas: number
+  cpuUsageCost?: number
+  memoryUsageCost?: number
+  efficiency?: number
+  idleCost?: number
+}
+
+export interface OpenCostApplicationWorkloadCost extends OpenCostApplicationWorkloadRef {
+  available: boolean
+  reason?: CostUnavailableReason
+  scaledToZero?: boolean
+  current?: OpenCostWorkloadCost
+}
+
+export interface OpenCostApplicationCostResponse {
+  available: boolean
+  reason?: CostUnavailableReason
+  partial?: boolean
+  totals: OpenCostApplicationCostTotals
+  coverage: OpenCostApplicationCostCoverage
+  workloads?: OpenCostApplicationWorkloadCost[]
+}
+
+export interface OpenCostApplicationCostTrendSeries extends OpenCostApplicationWorkloadRef {
+  windowTotalCost?: number
+  dataPoints?: OpenCostTrendDataPoint[]
+}
+
+export interface OpenCostApplicationCostTrendResponse {
+  available: boolean
+  reason?: CostUnavailableReason
+  range: string
+  partial?: boolean
+  windowTotalCost?: number
+  dataPoints?: OpenCostTrendDataPoint[]
+  series?: OpenCostApplicationCostTrendSeries[]
+  coverage: OpenCostApplicationCostCoverage
+}
+
+function stableOpenCostWorkloadRefs(workloads: OpenCostApplicationWorkloadRef[]): OpenCostApplicationWorkloadRef[] {
+  const byKey = new Map<string, OpenCostApplicationWorkloadRef>()
+  for (const workload of workloads) {
+    if (!workload.kind || !workload.namespace || !workload.name) continue
+    const ref = { kind: workload.kind, namespace: workload.namespace, name: workload.name }
+    byKey.set(`${ref.namespace}/${ref.kind}/${ref.name}`, ref)
+  }
+  return [...byKey.values()].sort((a, b) => `${a.namespace}/${a.kind}/${a.name}`.localeCompare(`${b.namespace}/${b.kind}/${b.name}`))
+}
+
+export function useOpenCostApplicationCost(workloads: OpenCostApplicationWorkloadRef[], options?: { enabled?: boolean }) {
+  const refs = stableOpenCostWorkloadRefs(workloads)
+  return useQuery<OpenCostApplicationCostResponse>({
+    queryKey: ['opencost-application', refs],
+    queryFn: ({ signal }) => fetchJSON('/opencost/application', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workloads: refs }),
+      signal,
+    }),
+    enabled: (options?.enabled ?? true) && refs.length > 0,
+    staleTime: 30000,
+    refetchInterval: costRefetchInterval(),
+    placeholderData: (prev) => prev,
+  })
+}
+
+export function useOpenCostApplicationCostTrend(workloads: OpenCostApplicationWorkloadRef[], range_: CostTimeRange = '24h', options?: { enabled?: boolean }) {
+  const refs = stableOpenCostWorkloadRefs(workloads)
+  return useQuery<OpenCostApplicationCostTrendResponse>({
+    queryKey: ['opencost-application-trend', refs, range_],
+    queryFn: ({ signal }) => fetchJSON('/opencost/application/trend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workloads: refs, range: range_ }),
+      signal,
+    }),
+    enabled: (options?.enabled ?? true) && refs.length > 0,
     staleTime: 60000,
     refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS),
     placeholderData: (prev) => prev,

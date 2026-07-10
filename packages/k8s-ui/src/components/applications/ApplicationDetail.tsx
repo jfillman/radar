@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
-import { AlertTriangle, ArrowLeft, Boxes, CheckCircle2, ChevronDown, Clock3, ExternalLink, Layers, Search } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Boxes, CheckCircle2, ChevronDown, Clock3, DollarSign, ExternalLink, Layers, Search } from 'lucide-react'
 import { clsx } from 'clsx'
 import type { ResourceRef, Topology, TopologyNode } from '../../types'
 import { StatusDot, mapHealthToTone } from '../ui/status-tone'
@@ -64,8 +64,12 @@ export interface AppIdentityInstance {
  *  the application itself is selected; a key (see `workloadKey`) selects a
  *  workload scope. */
 type SelectionProps =
-  | { selectedWorkloadKey: string | null; onSelectWorkload: (key: string | null) => void }
+  | { selectedWorkloadKey: string | null; onSelectWorkload: (key: string | null, options?: AppWorkloadSelectionOptions) => void }
   | { selectedWorkloadKey?: undefined; onSelectWorkload?: undefined }
+
+export interface AppWorkloadSelectionOptions {
+  tab?: string
+}
 
 type CanonicalApplicationView = 'overview' | 'topology' | 'history'
 
@@ -92,6 +96,14 @@ export type ApplicationDetailProps = {
   onBack: () => void
   /** Render the host's WorkloadView for the chosen workload. */
   renderWorkload: (workload: SelectedAppWorkload) => ReactNode
+  /** Optional host-rendered app-scope Cost view. When absent, no Cost tab is shown. */
+  renderCostView?: (props: {
+    app: AppRow
+    workloads: AppWorkload[]
+    onSelectWorkload: (workload: AppWorkload, options?: AppWorkloadSelectionOptions) => void
+  }) => ReactNode
+  costViewSelected?: boolean
+  onSelectCostView?: () => void
   /** Resources-view topology spanning the app's namespaces. When present, it
    *  powers the application Topology view and workload hover focus. */
   topology?: Topology
@@ -160,7 +172,7 @@ function compareDefinedVersions(a: string | undefined, b: string | undefined): n
   return compareVersions(a, b) ?? 0
 }
 
-export function ApplicationDetail({ app, onBack, renderWorkload, topology, topologyLoading, onNavigateToResource, identityInstances, onSwitchInstance, discoveredEnvs, activeInstanceKey, history, historyLoading, onOpenSource, selectedWorkloadKey, onSelectWorkload, selectedView, onSelectView }: ApplicationDetailProps) {
+export function ApplicationDetail({ app, onBack, renderWorkload, renderCostView, costViewSelected, onSelectCostView, topology, topologyLoading, onNavigateToResource, identityInstances, onSwitchInstance, discoveredEnvs, activeInstanceKey, history, historyLoading, onOpenSource, selectedWorkloadKey, onSelectWorkload, selectedView, onSelectView }: ApplicationDetailProps) {
   // Stable order regardless of API ordering: rail rows and the per-workload
   // color assignment both follow this array, so an order flap between
   // refetches must not reshuffle rows or reassign a workload's hue.
@@ -188,20 +200,34 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
   const env = app.identity?.env ?? resolvedEnv.env
   const inferred = app.identity ? identityEnvInferred(app.identity) : resolvedEnv.inferred
   const [internalView, setInternalView] = useState<CanonicalApplicationView>(DEFAULT_APPLICATION_VIEW)
+  const [internalCostSelected, setInternalCostSelected] = useState(false)
   const activeView = canonicalApplicationView(selectedView ?? internalView)
+  const costSelected = Boolean(renderCostView && (costViewSelected ?? internalCostSelected))
   const setView = useCallback(
-    (view: CanonicalApplicationView) => (onSelectView ? onSelectView(view) : setInternalView(view)),
+    (view: CanonicalApplicationView) => {
+      if (onSelectView) onSelectView(view)
+      else {
+        setInternalView(view)
+        setInternalCostSelected(false)
+      }
+    },
     [onSelectView],
   )
+  const selectCostView = useCallback(() => {
+    if (!renderCostView) return
+    if (onSelectCostView) onSelectCostView()
+    else setInternalCostSelected(true)
+  }, [onSelectCostView, renderCostView])
   useEffect(() => {
     if (selectedView === undefined) setInternalView(DEFAULT_APPLICATION_VIEW)
+    setInternalCostSelected(false)
   }, [app.key, selectedView])
 
   const [internalSelected, setInternalSelected] = useState<string | null>(null)
   const implicitSingleWorkloadKey = workloads.length === 1 ? workloadKey(workloads[0]) : null
   const rawSelected = selectedWorkloadKey !== undefined ? selectedWorkloadKey : (internalSelected ?? implicitSingleWorkloadKey)
   const setSelected = useCallback(
-    (key: string | null) => (onSelectWorkload ? onSelectWorkload(key) : setInternalSelected(key)),
+    (key: string | null, options?: AppWorkloadSelectionOptions) => (onSelectWorkload ? onSelectWorkload(key, options) : setInternalSelected(key)),
     [onSelectWorkload],
   )
   const selectedWorkload = rawSelected ? workloads.find((w) => workloadKey(w) === rawSelected) : undefined
@@ -375,7 +401,10 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
           <ApplicationWorkspace
             app={app}
             activeView={activeView}
+            costSelected={costSelected}
             onViewChange={setView}
+            onCostViewChange={selectCostView}
+            renderCostView={renderCostView}
             workloads={workloads}
             namespace={namespace}
             namespaces={namespaces}
@@ -392,7 +421,7 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
             onNodeClick={handleAppNodeClick}
             onNodeHover={handleNodeHover}
             onFocusWorkload={setFocusedOwnerId}
-            onSelectWorkload={(workload) => setSelected(workloadKey(workload))}
+            onSelectWorkload={(workload, options) => setSelected(workloadKey(workload), options)}
             onNavigateToResource={onNavigateToResource}
             history={history}
             historyLoading={historyLoading}
@@ -407,7 +436,10 @@ export function ApplicationDetail({ app, onBack, renderWorkload, topology, topol
 function ApplicationWorkspace({
   app,
   activeView,
+  costSelected,
   onViewChange,
+  onCostViewChange,
+  renderCostView,
   workloads,
   namespace,
   namespaces,
@@ -432,7 +464,10 @@ function ApplicationWorkspace({
 }: {
   app: AppRow
   activeView: CanonicalApplicationView
+  costSelected: boolean
   onViewChange: (view: CanonicalApplicationView) => void
+  onCostViewChange: () => void
+  renderCostView?: ApplicationDetailProps['renderCostView']
   workloads: AppWorkload[]
   namespace: string
   namespaces: string[]
@@ -449,7 +484,7 @@ function ApplicationWorkspace({
   onNodeClick: (node: TopologyNode) => void
   onNodeHover: (node: TopologyNode | null) => void
   onFocusWorkload: (owner: WorkloadFocus) => void
-  onSelectWorkload: (workload: AppWorkload) => void
+  onSelectWorkload: (workload: AppWorkload, options?: AppWorkloadSelectionOptions) => void
   onNavigateToResource?: (resource: { kind: string; namespace: string; name: string; group?: string }) => void
   history?: AppHistory
   historyLoading?: boolean
@@ -460,10 +495,14 @@ function ApplicationWorkspace({
     <div className="flex h-full min-h-0 flex-col">
       <ApplicationViewTabs
         activeView={activeView}
+        costSelected={costSelected}
+        costAvailable={Boolean(renderCostView)}
         historyCount={historyCount}
         onChange={onViewChange}
+        onCostChange={onCostViewChange}
       />
-      {activeView === 'overview' && (
+      {costSelected && renderCostView && renderCostView({ app, workloads, onSelectWorkload })}
+      {!costSelected && activeView === 'overview' && (
         <ApplicationOverview
           app={app}
           workloads={workloads}
@@ -480,7 +519,7 @@ function ApplicationWorkspace({
           onOpenSource={onOpenSource}
         />
       )}
-      {activeView === 'topology' && (
+      {!costSelected && activeView === 'topology' && (
         <ApplicationTopology
           topology={topology}
           loading={topologyLoading}
@@ -495,25 +534,31 @@ function ApplicationWorkspace({
           onSelectWorkload={onSelectWorkload}
         />
       )}
-      {activeView === 'history' && <ApplicationHistoryView history={history} loading={historyLoading} fallbackEvents={app.events ?? []} workloads={workloads} onSelectWorkload={onSelectWorkload} onOpenSource={onOpenSource} />}
+      {!costSelected && activeView === 'history' && <ApplicationHistoryView history={history} loading={historyLoading} fallbackEvents={app.events ?? []} workloads={workloads} onSelectWorkload={onSelectWorkload} onOpenSource={onOpenSource} />}
     </div>
   )
 }
 
 function ApplicationViewTabs({
   activeView,
+  costSelected,
+  costAvailable,
   historyCount,
   onChange,
+  onCostChange,
 }: {
   activeView: CanonicalApplicationView
+  costSelected: boolean
+  costAvailable: boolean
   historyCount: number
   onChange: (view: CanonicalApplicationView) => void
+  onCostChange: () => void
 }) {
   return (
     <div className="flex shrink-0 items-center border-b border-theme-border px-4 sm:px-6" role="tablist" aria-label="Application views">
       <div className="flex min-w-0 gap-1 overflow-x-auto">
         {APPLICATION_VIEWS.map((view) => {
-          const active = view.id === activeView
+          const active = !costSelected && view.id === activeView
           const badge = view.id === 'history' && historyCount > 0 ? historyCount : null
           return (
             <button
@@ -538,6 +583,23 @@ function ApplicationViewTabs({
             </button>
           )
         })}
+        {costAvailable && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={costSelected}
+            onClick={onCostChange}
+            className={clsx(
+              'flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium transition-colors',
+              costSelected
+                ? 'border-skyhook-500 text-theme-text-primary'
+                : 'border-transparent text-theme-text-secondary hover:border-theme-border-light hover:text-theme-text-primary',
+            )}
+          >
+            <DollarSign className="h-4 w-4" />
+            Cost
+          </button>
+        )}
       </div>
     </div>
   )

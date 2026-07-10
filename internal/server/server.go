@@ -510,6 +510,8 @@ func (s *Server) setupRoutes() {
 			prometheuspkg.RegisterRoutes(r)
 
 			// OpenCost routes
+			r.Post("/opencost/application", s.handleOpenCostApplication)
+			r.Post("/opencost/application/trend", s.handleOpenCostApplicationTrend)
 			r.Get("/opencost/workload/{kind}/{namespace}/{name}", s.handleOpenCostWorkload)
 			r.Get("/opencost/workload/{kind}/{namespace}/{name}/trend", s.handleOpenCostWorkloadTrend)
 			opencost.RegisterRoutes(r)

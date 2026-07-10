@@ -43,6 +43,7 @@ import { PrometheusChartsGrid } from '../resource/PrometheusChartsGrid'
 import { RestartEventLane } from '../resource/RestartChart'
 import { RightsizingStrip } from '../resource/RightsizingStrip'
 import { WorkloadCostTab } from '../cost/WorkloadCostTab'
+import { isOpenCostWorkloadKind } from '../cost/kinds'
 import { useResourceAudit, useResourceIssues, useResources } from '../../api/client'
 import { AuditAlerts, ResourceIssuesSection } from '@skyhook-io/k8s-ui'
 import { WorkloadLogsViewer } from '../logs/WorkloadLogsViewer'
@@ -917,10 +918,6 @@ function hasGitOpsStatusPayload(owner: GitOpsOwnerRef, resource: any): boolean {
 // ============================================================================
 
 const WORKLOAD_LOG_KINDS = new Set(['Deployment', 'StatefulSet', 'DaemonSet'])
-
-function isOpenCostWorkloadKind(kind: string): boolean {
-  return WORKLOAD_LOG_KINDS.has(kind)
-}
 
 function LogsTabContent({
   kind,

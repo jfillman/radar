@@ -4,6 +4,7 @@ import type { OpenCostNamespaceCost, OpenCostWorkloadCost, OpenCostNodeCost } fr
 import { ArrowLeft, ChevronDown, ChevronRight, DollarSign, HelpCircle, Loader2, Server, X } from 'lucide-react'
 import { PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
 import { CostTrendChart } from './CostTrendChart'
+import { formatCost } from './format'
 import { Tooltip } from '../ui/Tooltip'
 import { useConnection } from '../../context/ConnectionContext'
 
@@ -587,20 +588,4 @@ function efficiencyColor(efficiency: number): string {
   if (efficiency >= 50) return 'text-emerald-400'
   if (efficiency >= 25) return 'text-amber-400'
   return 'text-red-400'
-}
-
-function formatCost(value: number): string {
-  if (value >= 1000) {
-    return `$${(value / 1000).toFixed(1)}k`
-  }
-  if (value >= 1) {
-    return `$${value.toFixed(2)}`
-  }
-  if (value >= 0.01) {
-    return `$${value.toFixed(3)}`
-  }
-  if (value > 0) {
-    return `$${value.toFixed(4)}`
-  }
-  return '$0.00'
 }

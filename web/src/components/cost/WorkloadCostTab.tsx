@@ -13,7 +13,14 @@ import {
 } from '../../api/client'
 import { Tooltip } from '../ui/Tooltip'
 import { buildLineChart, formatChartTime } from './chart'
-import { formatCost, formatCostAxis } from './format'
+import {
+  formatCost,
+  formatCostAxis,
+  formatCostPerHour,
+  formatProjectedDailyRate,
+  formatProjectedMonthlyCost,
+  formatProjectedMonthlyRate,
+} from './format'
 
 const TIME_RANGES: { value: CostTimeRange; label: string }[] = [
   { value: '6h', label: '6h' },
@@ -21,7 +28,14 @@ const TIME_RANGES: { value: CostTimeRange; label: string }[] = [
   { value: '7d', label: '7d' },
 ]
 
-type WorkloadCostState = 'loading' | 'data' | 'partial_missing_history' | 'partial_missing_current' | 'zero' | 'load_error' | CostUnavailableReason
+type WorkloadCostState =
+  | 'loading'
+  | 'data'
+  | 'partial_missing_history'
+  | 'partial_missing_current'
+  | 'zero'
+  | 'load_error'
+  | CostUnavailableReason
 
 interface WorkloadCostQueryStatus {
   currentLoading?: boolean
@@ -88,12 +102,11 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
 
   const current = currentQuery.data?.current
   const trend = trendData
-  const points = trend?.available ? trend.dataPoints ?? [] : []
+  const points = trend?.available ? (trend.dataPoints ?? []) : []
   const hasTrend = points.length >= 2 && points.some((p) => p.value > 0)
   const hasCurrent = Boolean(current)
   const hourly = current?.hourlyCost ?? 0
-  const monthly = hourly * 730
-  const windowTotal = trend?.available ? trend.windowTotalCost ?? 0 : 0
+  const windowTotal = trend?.available ? (trend.windowTotalCost ?? 0) : 0
   const cpuCost = current?.cpuCost ?? 0
   const memoryCost = current?.memoryCost ?? 0
   const splitTotal = cpuCost + memoryCost
@@ -114,11 +127,11 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
             <div>
               <div className="flex items-center gap-1.5">
                 <div className="text-sm font-semibold text-theme-text-primary">Historical compute cost</div>
-                <MetricInfoTooltip
-                  content="Dollars are based on OpenCost CPU and memory allocation over time, not raw utilization. Efficiency compares actual usage against that allocated cost."
-                />
+                <MetricInfoTooltip content="Dollars are based on OpenCost CPU and memory allocation over time, not raw utilization. Efficiency compares actual usage against that allocated cost." />
               </div>
-              <div className="text-xs text-theme-text-tertiary">CPU and memory allocation attributed by workload ownership</div>
+              <div className="text-xs text-theme-text-tertiary">
+                CPU and memory allocation attributed by workload ownership
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -147,9 +160,9 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
               subvalue={state === 'partial_missing_history' ? 'Historical data unavailable' : undefined}
             />
             <MetricBlock
-              label="Current rate"
-              value={hasCurrent ? `${formatCost(hourly)}/hr` : '—'}
-              subvalue={hasCurrent ? `~${formatCost(monthly)}/mo at this rate` : 'Current allocation unavailable'}
+              label="Projected monthly"
+              value={hasCurrent ? formatProjectedMonthlyCost(hourly) : '—'}
+              subvalue={hasCurrent ? `${formatCostPerHour(hourly)} current rate` : 'Current allocation unavailable'}
             />
           </div>
           <div className="min-w-0">
@@ -172,7 +185,9 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
       {state === 'partial_missing_history' && (
         <div className="flex items-start gap-2 rounded-lg border border-theme-border bg-theme-base px-3 py-2 text-sm text-theme-text-secondary">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-theme-text-tertiary" />
-          <span>Current cost is available, but historical workload owner metrics are not available for this range.</span>
+          <span>
+            Current cost is available, but historical workload owner metrics are not available for this range.
+          </span>
         </div>
       )}
       {state === 'partial_missing_current' && (
@@ -187,13 +202,17 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
         <MetricTile
           label="Efficiency"
           value={hasCurrent ? (current?.efficiency ? `${current.efficiency.toFixed(0)}%` : '0%') : '—'}
-          subvalue={hasCurrent ? `${formatCost(current?.idleCost ?? 0)}/hr idle` : 'Current allocation unavailable'}
+          subvalue={
+            hasCurrent
+              ? `${formatProjectedMonthlyRate(current?.idleCost ?? 0)} idle at current rate`
+              : 'Current allocation unavailable'
+          }
           tooltip="Actual CPU and memory usage divided by allocated CPU and memory cost for the last hour. Low efficiency usually means requested capacity is sitting idle."
         />
         <MetricTile
-          label="Monthly projection"
-          value={hasCurrent ? `~${formatCost(monthly)}` : '—'}
-          subvalue={hasCurrent ? 'From current hourly rate' : 'Current allocation unavailable'}
+          label="Current rate"
+          value={hasCurrent ? formatCostPerHour(hourly) : '—'}
+          subvalue={hasCurrent ? `${formatProjectedDailyRate(hourly)} at this rate` : 'Current allocation unavailable'}
         />
       </div>
 
@@ -206,7 +225,9 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
             </div>
             <div className="text-xs text-theme-text-tertiary">Last 1h OpenCost allocation window</div>
           </div>
-          <div className="text-sm font-medium text-theme-text-primary tabular-nums">{hasCurrent ? `${formatCost(splitTotal)}/hr` : '—'}</div>
+          <div className="text-sm font-medium text-theme-text-primary tabular-nums">
+            {hasCurrent ? formatCostPerHour(splitTotal) : '—'}
+          </div>
         </div>
         <div className="h-3 overflow-hidden rounded-full bg-theme-hover">
           <div className="flex h-full">
@@ -219,13 +240,18 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
           </div>
         </div>
         <div className="mt-3 grid gap-2 text-xs text-theme-text-secondary sm:grid-cols-2">
-          <LegendItem colorClass="bg-accent" label="CPU" value={hasCurrent ? `${formatCost(cpuCost)}/hr` : '—'} />
-          <LegendItem colorClass="bg-[var(--color-info)]" label="Memory" value={hasCurrent ? `${formatCost(memoryCost)}/hr` : '—'} />
+          <LegendItem colorClass="bg-accent" label="CPU" value={hasCurrent ? formatCostPerHour(cpuCost) : '—'} />
+          <LegendItem
+            colorClass="bg-[var(--color-info)]"
+            label="Memory"
+            value={hasCurrent ? formatCostPerHour(memoryCost) : '—'}
+          />
         </div>
       </section>
 
       <div className="text-xs text-theme-text-tertiary">
-        Powered by OpenCost via Prometheus. Workload cost currently includes CPU and memory allocation; storage/PVC attribution remains at namespace and cluster level.
+        Powered by OpenCost via Prometheus. Historical spend uses the selected range; projected monthly values multiply
+        the current hourly allocation. Storage/PVC attribution remains at namespace and cluster level.
       </div>
     </div>
   )
@@ -236,9 +262,8 @@ export function getWorkloadCostState(
   trend: OpenCostWorkloadTrendResponse | undefined,
   status: boolean | WorkloadCostQueryStatus,
 ): WorkloadCostState {
-  const queryStatus: WorkloadCostQueryStatus = typeof status === 'boolean'
-    ? { currentLoading: status, trendLoading: status }
-    : status
+  const queryStatus: WorkloadCostQueryStatus =
+    typeof status === 'boolean' ? { currentLoading: status, trendLoading: status } : status
   const loading = Boolean(queryStatus.currentLoading || queryStatus.trendLoading)
   const queryError = Boolean(queryStatus.currentError || queryStatus.trendError)
 
@@ -246,7 +271,8 @@ export function getWorkloadCostState(
   const trendHasData = trend?.available === true && (trend.dataPoints ?? []).some((p) => p.value > 0)
   if (currentRow) {
     if (queryStatus.trendLoading && !trend) return 'data'
-    if (queryStatus.trendError || (trend?.available === false && trend.reason !== 'no_metrics')) return 'partial_missing_history'
+    if (queryStatus.trendError || (trend?.available === false && trend.reason !== 'no_metrics'))
+      return 'partial_missing_history'
     if (currentRow.hourlyCost === 0 && currentRow.replicas === 0 && !trendHasData) return 'zero'
     if (!trend?.available) return 'partial_missing_history'
     return 'data'
@@ -284,13 +310,14 @@ function WorkloadCostDiscovering({ isFetching, onRetry }: { isFetching: boolean;
 }
 
 function WorkloadCostUnavailable({ state }: { state: CostUnavailableReason | 'load_error' }) {
-  const message = state === 'no_prometheus'
-    ? 'Prometheus not found. OpenCost workload cost requires Prometheus or VictoriaMetrics.'
-    : state === 'query_error'
-      ? 'Cost data is temporarily unavailable. Prometheus was found, but workload cost queries failed.'
-      : state === 'load_error'
-        ? 'Could not load workload cost data. Check access to this workload and try again.'
-        : 'OpenCost workload metrics were not found for this workload.'
+  const message =
+    state === 'no_prometheus'
+      ? 'Prometheus not found. OpenCost workload cost requires Prometheus or VictoriaMetrics.'
+      : state === 'query_error'
+        ? 'Cost data is temporarily unavailable. Prometheus was found, but workload cost queries failed.'
+        : state === 'load_error'
+          ? 'Could not load workload cost data. Check access to this workload and try again.'
+          : 'OpenCost workload metrics were not found for this workload.'
 
   return (
     <div className="flex h-full min-h-[320px] items-center justify-center">
@@ -312,7 +339,17 @@ function MetricBlock({ label, value, subvalue }: { label: string; value: string;
   )
 }
 
-function MetricTile({ label, value, subvalue, tooltip }: { label: string; value: string; subvalue?: string; tooltip?: string }) {
+function MetricTile({
+  label,
+  value,
+  subvalue,
+  tooltip,
+}: {
+  label: string
+  value: string
+  subvalue?: string
+  tooltip?: string
+}) {
   return (
     <div className="rounded-lg border border-theme-border bg-theme-surface/50 p-4">
       <div className="flex items-center gap-1.5">
@@ -361,7 +398,14 @@ function WorkloadCostLineChart({ points }: { points: OpenCostTrendDataPoint[] })
           </g>
         ))}
         <path d={chart.areaPath} fill="var(--accent-muted)" />
-        <path d={chart.linePath} fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        <path
+          d={chart.linePath}
+          fill="none"
+          stroke="var(--accent)"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
         <text x="44" y="232" className="fill-theme-text-tertiary text-[10px]">
           {formatChartTime(points[0]?.timestamp)}
         </text>

@@ -15,7 +15,13 @@ import {
 } from '../../api/client'
 import { Tooltip } from '../ui/Tooltip'
 import { ChartLegend, StackedAreaChart } from './CostTrendChart'
-import { formatCost, formatCostPerHour } from './format'
+import {
+  formatCost,
+  formatCostPerHour,
+  formatProjectedDailyRate,
+  formatProjectedMonthlyCost,
+  formatProjectedMonthlyRate,
+} from './format'
 import { isOpenCostWorkloadKind } from './kinds'
 
 const TIME_RANGES: { value: CostTimeRange; label: string }[] = [
@@ -24,7 +30,14 @@ const TIME_RANGES: { value: CostTimeRange; label: string }[] = [
   { value: '7d', label: '7d' },
 ]
 
-type ApplicationCostState = 'loading' | 'data' | 'partial_missing_history' | 'partial_missing_current' | 'zero' | 'load_error' | CostUnavailableReason
+type ApplicationCostState =
+  | 'loading'
+  | 'data'
+  | 'partial_missing_history'
+  | 'partial_missing_current'
+  | 'zero'
+  | 'load_error'
+  | CostUnavailableReason
 
 interface ApplicationCostQueryStatus {
   currentLoading?: boolean
@@ -71,7 +84,12 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
   }, [workloads])
 
   if (supportedCount === 0) {
-    return <ApplicationCostUnavailable state="no_metrics" message="No steady-state workloads in this app are currently cost-attributed." />
+    return (
+      <ApplicationCostUnavailable
+        state="no_metrics"
+        message="No steady-state workloads in this app are currently cost-attributed."
+      />
+    )
   }
 
   if (state === 'loading') {
@@ -110,29 +128,38 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
   const unavailableCount = coverage?.unavailable?.length ?? 0
   const unsupportedCount = coverage?.unsupported?.length ?? 0
   const hourly = totals?.hourlyCost ?? 0
-  const monthly = hourly * 730
   const currentSplit = (totals?.cpuCost ?? 0) + (totals?.memoryCost ?? 0)
   const cpuPct = currentSplit > 0 ? ((totals?.cpuCost ?? 0) / currentSplit) * 100 : 0
   const memoryPct = currentSplit > 0 ? ((totals?.memoryCost ?? 0) / currentSplit) * 100 : 0
-  const points = trend?.available ? trend.dataPoints ?? [] : []
+  const points = trend?.available ? (trend.dataPoints ?? []) : []
   const hasTrend = points.length >= 2 && points.some((p) => p.value > 0)
   const rows = current?.workloads ?? []
   const maxCost = Math.max(...rows.map((row) => row.current?.hourlyCost ?? 0), 0)
 
   return (
     <div className="mx-auto max-w-[1180px] space-y-4">
-      {(current?.partial || trend?.partial || state === 'partial_missing_history' || state === 'partial_missing_current') && (
+      {(current?.partial ||
+        trend?.partial ||
+        state === 'partial_missing_history' ||
+        state === 'partial_missing_current') && (
         <div className="flex items-start gap-2 rounded-lg border border-theme-border bg-theme-base px-3 py-2 text-sm text-theme-text-secondary">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-theme-text-tertiary" />
           <span>
             Showing tracked steady-state compute for {included} of {total} workloads.
-            {unavailableCount > 0 ? ` ${unavailableCount} workload${unavailableCount === 1 ? '' : 's'} had no cost metrics for this window.` : ''}
-            {unsupportedCount > 0 ? ` ${unsupportedCount} batch or unsupported workload${unsupportedCount === 1 ? ' is' : 's are'} excluded from this compute view.` : ''}
+            {unavailableCount > 0
+              ? ` ${unavailableCount} workload${unavailableCount === 1 ? '' : 's'} had no cost metrics for this window.`
+              : ''}
+            {unsupportedCount > 0
+              ? ` ${unsupportedCount} batch or unsupported workload${unsupportedCount === 1 ? ' is' : 's are'} excluded from this compute view.`
+              : ''}
           </span>
         </div>
       )}
 
-      <section className="rounded-lg border border-theme-border bg-theme-surface/50" aria-label={`${app.name} application cost`}>
+      <section
+        className="rounded-lg border border-theme-border bg-theme-surface/50"
+        aria-label={`${app.name} application cost`}
+      >
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-theme-border px-4 py-3">
           <div className="flex items-center gap-2">
             <TrendingUp className="h-4 w-4 text-theme-text-tertiary" />
@@ -141,7 +168,9 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
                 <div className="text-sm font-semibold text-theme-text-primary">Application compute cost</div>
                 <CostInfoTooltip content="Dollars are based on OpenCost CPU and memory allocation over time, grouped by the workloads in this application. This is allocated/requested compute cost, not raw utilization alone." />
               </div>
-              <div className="text-xs text-theme-text-tertiary">OpenCost CPU and memory allocation for Deployment, StatefulSet, and DaemonSet workloads</div>
+              <div className="text-xs text-theme-text-tertiary">
+                OpenCost CPU and memory allocation for Deployment, StatefulSet, and DaemonSet workloads
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -166,13 +195,23 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
           <div className="space-y-4">
             <CostMetricBlock
               label={`Spend over ${range}`}
-              value={hasTrend ? `~${formatCost(trend?.windowTotalCost ?? 0)}` : trendLoading || state === 'partial_missing_history' ? '—' : formatCost(0)}
-              subvalue={state === 'partial_missing_history' ? 'Historical data incomplete' : `${included} of ${total} workloads included`}
+              value={
+                hasTrend
+                  ? `~${formatCost(trend?.windowTotalCost ?? 0)}`
+                  : trendLoading || state === 'partial_missing_history'
+                    ? '—'
+                    : formatCost(0)
+              }
+              subvalue={
+                state === 'partial_missing_history'
+                  ? 'Historical data incomplete'
+                  : `${included} of ${total} workloads included`
+              }
             />
             <CostMetricBlock
-              label="Current rate"
-              value={totals ? formatCostPerHour(hourly) : '—'}
-              subvalue={totals ? `~${formatCost(monthly)}/mo at this rate` : 'Current allocation unavailable'}
+              label="Projected monthly"
+              value={totals ? formatProjectedMonthlyCost(hourly) : '—'}
+              subvalue={totals ? `${formatCostPerHour(hourly)} current rate` : 'Current allocation unavailable'}
             />
           </div>
           <div className="min-w-0">
@@ -196,17 +235,25 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
       </section>
 
       <div className="grid gap-4 md:grid-cols-3">
-        <CostMetricTile label="Tracked workloads" value={`${included}/${total}`} subvalue={unsupportedCount > 0 ? `${unsupportedCount} unsupported` : 'All supported workloads included'} />
+        <CostMetricTile
+          label="Tracked workloads"
+          value={`${included}/${total}`}
+          subvalue={unsupportedCount > 0 ? `${unsupportedCount} unsupported` : 'All supported workloads included'}
+        />
         <CostMetricTile
           label="Efficiency"
           value={totals ? `${(totals.efficiency ?? 0).toFixed(0)}%` : '—'}
-          subvalue={totals ? `${formatCost(totals.idleCost ?? 0)}/hr idle` : 'Current allocation unavailable'}
+          subvalue={
+            totals
+              ? `${formatProjectedMonthlyRate(totals.idleCost ?? 0)} idle at current rate`
+              : 'Current allocation unavailable'
+          }
           tooltip="Actual CPU and memory usage divided by allocated CPU and memory cost across included workloads. Low efficiency usually means requested capacity is sitting idle."
         />
         <CostMetricTile
-          label="Monthly projection"
-          value={totals ? `~${formatCost(monthly)}` : '—'}
-          subvalue={totals ? 'From current hourly rate' : 'Current allocation unavailable'}
+          label="Current rate"
+          value={totals ? formatCostPerHour(hourly) : '—'}
+          subvalue={totals ? `${formatProjectedDailyRate(hourly)} at this rate` : 'Current allocation unavailable'}
         />
       </div>
 
@@ -219,7 +266,9 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
             </div>
             <div className="text-xs text-theme-text-tertiary">Last 1h OpenCost allocation window</div>
           </div>
-          <div className="text-sm font-medium text-theme-text-primary tabular-nums">{totals ? formatCostPerHour(currentSplit) : '—'}</div>
+          <div className="text-sm font-medium text-theme-text-primary tabular-nums">
+            {totals ? formatCostPerHour(currentSplit) : '—'}
+          </div>
         </div>
         <div className="h-3 overflow-hidden rounded-full bg-theme-hover">
           <div className="flex h-full">
@@ -232,8 +281,16 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
           </div>
         </div>
         <div className="mt-3 grid gap-2 text-xs text-theme-text-secondary sm:grid-cols-2">
-          <CostLegendItem colorClass="bg-accent" label="CPU" value={totals ? formatCostPerHour(totals.cpuCost ?? 0) : '—'} />
-          <CostLegendItem colorClass="bg-[var(--color-info)]" label="Memory" value={totals ? formatCostPerHour(totals.memoryCost ?? 0) : '—'} />
+          <CostLegendItem
+            colorClass="bg-accent"
+            label="CPU"
+            value={totals ? formatCostPerHour(totals.cpuCost ?? 0) : '—'}
+          />
+          <CostLegendItem
+            colorClass="bg-[var(--color-info)]"
+            label="Memory"
+            value={totals ? formatCostPerHour(totals.memoryCost ?? 0) : '—'}
+          />
         </div>
       </section>
 
@@ -241,12 +298,16 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
         <div className="flex items-center justify-between border-b border-theme-border px-4 py-3">
           <div>
             <div className="text-sm font-semibold text-theme-text-primary">Workload contributors</div>
-            <div className="text-xs text-theme-text-tertiary">Current hourly allocation, sorted by spend</div>
+            <div className="text-xs text-theme-text-tertiary">
+              Projected monthly from current allocation, sorted by spend
+            </div>
           </div>
           <div className="text-xs text-theme-text-tertiary">{rows.length} tracked</div>
         </div>
         {rows.length === 0 ? (
-          <div className="px-4 py-6 text-sm text-theme-text-tertiary">No workload cost rows available for this application.</div>
+          <div className="px-4 py-6 text-sm text-theme-text-tertiary">
+            No workload cost rows available for this application.
+          </div>
         ) : (
           <div className="divide-y divide-theme-border/60">
             {rows.map((row) => {
@@ -265,7 +326,9 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
       </section>
 
       <div className="text-xs text-theme-text-tertiary">
-        Powered by OpenCost via Prometheus. Application cost currently includes CPU and memory allocation for Deployment, StatefulSet, and DaemonSet workloads. Batch/job cost is separate; storage/PVC and network costs remain at namespace and cluster level.
+        Powered by OpenCost via Prometheus. Historical spend uses the selected range; projected monthly values multiply
+        current hourly allocation. Batch/job cost is separate; storage/PVC and network costs remain at namespace and
+        cluster level.
       </div>
     </div>
   )
@@ -282,7 +345,8 @@ export function getApplicationCostState(
   const trendHasData = trend?.available === true && (trend.dataPoints ?? []).some((p) => p.value > 0)
   if (currentHasData) {
     if (status.trendLoading && !trend) return 'data'
-    if (status.trendError || (trend?.available === false && trend.reason !== 'no_metrics')) return 'partial_missing_history'
+    if (status.trendError || (trend?.available === false && trend.reason !== 'no_metrics'))
+      return 'partial_missing_history'
     if ((current?.totals?.hourlyCost ?? 0) === 0 && !trendHasData) return 'zero'
     if (!trend?.available) return 'partial_missing_history'
     return 'data'
@@ -296,24 +360,37 @@ export function getApplicationCostState(
   return 'no_metrics'
 }
 
-function ApplicationWorkloadCostRow({ row, maxCost, onOpen }: { row: OpenCostApplicationWorkloadCost; maxCost: number; onOpen?: () => void }) {
+function ApplicationWorkloadCostRow({
+  row,
+  maxCost,
+  onOpen,
+}: {
+  row: OpenCostApplicationWorkloadCost
+  maxCost: number
+  onOpen?: () => void
+}) {
   const current = row.current
   const hourly = current?.hourlyCost ?? 0
-  const monthly = hourly * 730
   const cpuPct = hourly > 0 ? ((current?.cpuCost ?? 0) / hourly) * 100 : 0
   const barWidth = maxCost > 0 ? Math.max((hourly / maxCost) * 100, 3) : 0
   const content = (
     <>
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="shrink-0 rounded bg-theme-base px-1.5 py-0.5 text-[10px] uppercase text-theme-text-tertiary">{row.kind}</span>
+          <span className="shrink-0 rounded bg-theme-base px-1.5 py-0.5 text-[10px] uppercase text-theme-text-tertiary">
+            {row.kind}
+          </span>
           <span className="truncate text-sm font-medium text-theme-text-primary">{row.name}</span>
           <span className="shrink-0 text-xs text-theme-text-tertiary">{row.namespace}</span>
         </div>
         {!row.available && <div className="mt-0.5 text-xs text-theme-text-tertiary">{reasonLabel(row.reason)}</div>}
       </div>
-      <div className="text-right text-sm font-medium tabular-nums text-theme-text-primary">{current ? formatCostPerHour(hourly) : '—'}</div>
-      <div className="hidden text-right text-xs tabular-nums text-theme-text-tertiary sm:block">{current ? `~${formatCost(monthly)}/mo` : '—'}</div>
+      <div className="text-right text-sm font-medium tabular-nums text-theme-text-primary">
+        {current ? formatProjectedMonthlyRate(hourly) : '—'}
+      </div>
+      <div className="hidden text-right text-xs tabular-nums text-theme-text-tertiary sm:block">
+        {current ? formatCostPerHour(hourly) : '—'}
+      </div>
       <div className="hidden min-w-0 items-center gap-2 md:flex">
         <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-theme-hover" style={{ maxWidth: `${barWidth}%` }}>
           <div className="flex h-full">
@@ -329,7 +406,11 @@ function ApplicationWorkloadCostRow({ row, maxCost, onOpen }: { row: OpenCostApp
   )
 
   if (!onOpen) {
-    return <div className="grid grid-cols-[minmax(180px,1fr)_100px] gap-3 px-4 py-3 sm:grid-cols-[minmax(180px,1fr)_100px_100px] md:grid-cols-[minmax(220px,1fr)_100px_100px_minmax(160px,1fr)] lg:grid-cols-[minmax(220px,1fr)_110px_110px_minmax(180px,1fr)_130px]">{content}</div>
+    return (
+      <div className="grid grid-cols-[minmax(180px,1fr)_100px] gap-3 px-4 py-3 sm:grid-cols-[minmax(180px,1fr)_100px_100px] md:grid-cols-[minmax(220px,1fr)_100px_100px_minmax(160px,1fr)] lg:grid-cols-[minmax(220px,1fr)_110px_110px_minmax(180px,1fr)_130px]">
+        {content}
+      </div>
+    )
   }
   return (
     <button
@@ -368,7 +449,9 @@ function ApplicationCostDiscovering({ isFetching, onRetry }: { isFetching: boole
         <Loader2 className="h-8 w-8 animate-spin text-theme-text-tertiary/60" />
         <div>
           <p className="text-sm font-medium text-theme-text-primary">Looking for Prometheus cost data…</p>
-          <p className="mt-1 text-xs text-theme-text-tertiary">First discovery can take a few seconds while Radar checks cluster services and opens a local port-forward.</p>
+          <p className="mt-1 text-xs text-theme-text-tertiary">
+            First discovery can take a few seconds while Radar checks cluster services and opens a local port-forward.
+          </p>
         </div>
         <button
           onClick={onRetry}
@@ -382,16 +465,22 @@ function ApplicationCostDiscovering({ isFetching, onRetry }: { isFetching: boole
   )
 }
 
-function ApplicationCostUnavailable({ state, message }: { state: CostUnavailableReason | 'load_error'; message?: string }) {
-  const text = message ?? (
-    state === 'no_prometheus'
+function ApplicationCostUnavailable({
+  state,
+  message,
+}: {
+  state: CostUnavailableReason | 'load_error'
+  message?: string
+}) {
+  const text =
+    message ??
+    (state === 'no_prometheus'
       ? 'Prometheus not found. OpenCost application cost requires Prometheus or VictoriaMetrics.'
       : state === 'query_error'
         ? 'Cost data is temporarily unavailable. Prometheus was found, but application cost queries failed.'
         : state === 'load_error'
           ? 'Could not load application cost data. Check access to these workloads and try again.'
-          : 'OpenCost workload metrics were not found for this application.'
-  )
+          : 'OpenCost workload metrics were not found for this application.')
   return (
     <div className="flex h-full min-h-[320px] items-center justify-center">
       <div className="flex max-w-md flex-col items-center gap-3 text-center text-theme-text-secondary">
@@ -412,7 +501,17 @@ function CostMetricBlock({ label, value, subvalue }: { label: string; value: str
   )
 }
 
-function CostMetricTile({ label, value, subvalue, tooltip }: { label: string; value: string; subvalue?: string; tooltip?: string }) {
+function CostMetricTile({
+  label,
+  value,
+  subvalue,
+  tooltip,
+}: {
+  label: string
+  value: string
+  subvalue?: string
+  tooltip?: string
+}) {
   return (
     <div className="rounded-lg border border-theme-border bg-theme-surface/50 p-4">
       <div className="flex items-center gap-1.5">

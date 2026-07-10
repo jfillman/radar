@@ -1,3 +1,6 @@
+export const COST_HOURS_PER_DAY = 24
+export const COST_HOURS_PER_MONTH = 730
+
 export function formatCostAxis(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '$0'
   if (value >= 1000) return `$${(value / 1000).toFixed(0)}k`
@@ -19,4 +22,20 @@ export function formatCost(value: number): string {
 
 export function formatCostPerHour(value: number): string {
   return `${formatCost(value)}/hr`
+}
+
+export function formatProjectedDailyCost(hourlyCost: number): string {
+  return `~${formatCost(hourlyCost * COST_HOURS_PER_DAY)}`
+}
+
+export function formatProjectedDailyRate(hourlyCost: number): string {
+  return `${formatProjectedDailyCost(hourlyCost)}/day`
+}
+
+export function formatProjectedMonthlyCost(hourlyCost: number): string {
+  return `~${formatCost(hourlyCost * COST_HOURS_PER_MONTH)}`
+}
+
+export function formatProjectedMonthlyRate(hourlyCost: number): string {
+  return `${formatProjectedMonthlyCost(hourlyCost)}/mo`
 }

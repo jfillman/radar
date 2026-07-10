@@ -858,6 +858,7 @@ func mergeNamespaceCapability(global, namespaced, checkErrored bool) bool {
 func (s *Server) parseNamespacesForUser(r *http.Request) []string {
 	namespaces := parseNamespaces(r.URL.Query())
 	pickFallback := false
+	pickCtx := ""
 	if k8s.ForceNamespaceScope {
 		target := k8s.GetNamespaceScopeTarget()
 		if target == "" {
@@ -875,13 +876,16 @@ func (s *Server) parseNamespacesForUser(r *http.Request) []string {
 		// No explicit filter — use the user's saved picks if any, pruned of
 		// namespaces that were deleted from the cluster since the pick was made.
 		// When every pick is stale, fall through with no filter so the user sees
-		// the full cluster instead of a silently-empty UI.
+		// the full cluster instead of a silently-empty UI. Read the pick and its
+		// context as one snapshot so the empty-fallback clear below commits
+		// against the same context, not one switched in mid-request.
 		s.loadSavedNamespacePreference(r)
-		if picks := s.getActiveNamespaceForUser(r); len(picks) > 0 {
+		if ctx, picks := s.getActiveNamespaceForUserInContext(r); len(picks) > 0 {
 			picks = s.pruneDeletedNamespacePicks(r, picks)
 			if len(picks) > 0 {
 				namespaces = picks
 				pickFallback = true
+				pickCtx = ctx
 			}
 		}
 	}
@@ -891,8 +895,11 @@ func (s *Server) parseNamespacesForUser(r *http.Request) []string {
 	// stale pick entirely and recomputing as if no filter were set, so the
 	// user sees their full RBAC ceiling instead of a silently-empty UI.
 	// Symmetric with handleGetNamespaceScope's partial-revocation eviction.
+	// namespaces holds the pruned picks this fallback filtered on; clear only
+	// if it's still the live pick, so a stale read can't wipe a concurrent
+	// POST or clear across a context switch.
 	if pickFallback && noNamespaceAccess(filtered) {
-		s.setActiveNamespaceForUser(r, nil)
+		s.commitPickMutation(r, pickCtx, namespaces, nil, false)
 		filtered = s.getUserNamespaces(r, nil)
 	}
 	return filtered

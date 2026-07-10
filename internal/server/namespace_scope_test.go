@@ -470,6 +470,129 @@ func TestPruneDeletedNamespacePicks_SkipsWhenPickChangedMidFlight(t *testing.T) 
 	}
 }
 
+// commitPickMutation is the single guarded writer every read-path pick
+// mutation goes through. A stale snapshot must never revert a concurrent POST.
+func TestCommitPickMutation_SkipsWhenPickChangedMidFlight(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+
+	// The snapshot a slow read computed its survivors from.
+	snapshot := []string{"default", "ghost"}
+	s.setActiveNamespaceForUser(req, snapshot)
+
+	// A user POST replaces the pick before the read commits.
+	s.setActiveNamespaceForUser(req, []string{"broken"})
+
+	// The read tries to trim its stale snapshot down to survivors.
+	s.commitPickMutation(req, "test-ctx", snapshot, []string{"default"}, false)
+
+	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, []string{"broken"}) {
+		t.Errorf("fresh pick reverted by stale mutation: %v, want [broken]", picks)
+	}
+}
+
+// A commit whose snapshot still matches the live pick must go through — the
+// guard only skips on mismatch, it doesn't block the common case.
+func TestCommitPickMutation_AppliesWhenSnapshotStillLive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+
+	snapshot := []string{"default", "ghost"}
+	s.setActiveNamespaceForUser(req, snapshot)
+
+	s.commitPickMutation(req, "test-ctx", snapshot, []string{"default"}, false)
+
+	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, []string{"default"}) {
+		t.Errorf("in-memory pick = %v, want [default]", picks)
+	}
+	// persist=false: the in-memory trim must NOT touch settings.json.
+	if saved := settings.Load().ActiveNamespaces["test-ctx"]; len(saved) != 0 {
+		t.Errorf("view-filter trim leaked to settings: %v", saved)
+	}
+}
+
+// persist=false must not touch settings even when it clears the pick — the
+// empty-fallback clear and RBAC trim are in-memory view filters.
+func TestCommitPickMutation_ClearWithoutPersistKeepsSettings(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+
+	if _, err := settings.Update(func(st *settings.Settings) {
+		st.ActiveNamespaces = map[string][]string{"test-ctx": {"default"}}
+	}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+	s.setActiveNamespaceForUser(req, []string{"default"})
+
+	s.commitPickMutation(req, "test-ctx", []string{"default"}, nil, false)
+
+	if picks := s.getActiveNamespaceForUser(req); len(picks) != 0 {
+		t.Errorf("pick not cleared in memory: %v", picks)
+	}
+	if saved := settings.Load().ActiveNamespaces["test-ctx"]; !slices.Equal(saved, []string{"default"}) {
+		t.Errorf("in-memory clear leaked to settings: %v, want [default] preserved", saved)
+	}
+}
+
+// A context switch between the caller's snapshot and the helper's write must
+// skip the whole mutation — the helper keys off the passed snapshot ctxName,
+// never the live context. Regression guard for a helper that re-derived the
+// key from k8s.GetContextName() at write time: it would compare against one
+// context's pick and store under another's.
+func TestCommitPickMutation_SkipsAcrossContextSwitch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t) // live context = test-ctx
+	req := reqAs("")
+
+	snapshot := []string{"default"}
+	s.setActiveNamespaceForUser(req, snapshot) // pick under test-ctx
+
+	// Switch context and preseed the SAME-valued pick under the new context.
+	// A helper that keyed off the live context would find expected==current
+	// here and wrongly clear it; the snapshot-pinned helper must not.
+	prev := k8s.SetTestContextName("other-ctx")
+	s.setActiveNamespaceForUser(req, []string{"default"}) // pick under other-ctx
+
+	// Caller snapshotted test-ctx; the switch to other-ctx already happened.
+	s.commitPickMutation(req, "test-ctx", snapshot, nil, false)
+
+	// other-ctx pick untouched — the context guard skipped the whole mutation.
+	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, []string{"default"}) {
+		t.Errorf("other-ctx pick mutated under the wrong key: %v, want [default]", picks)
+	}
+	k8s.SetTestContextName(prev)
+	// test-ctx pick also untouched.
+	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, snapshot) {
+		t.Errorf("test-ctx pick mutated after context switch: %v, want %v", picks, snapshot)
+	}
+}
+
+// The first-request seed reads settings then stores. If a POST installs a
+// fresh pick between the two, the seed must not overwrite it with the disk value.
+func TestLoadSavedNamespacePreference_SeedDoesNotClobberFreshPick(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+
+	if _, err := settings.Update(func(st *settings.Settings) {
+		st.ActiveNamespaces = map[string][]string{"test-ctx": {"default"}}
+	}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+
+	// A POST already set a different pick in memory.
+	s.setActiveNamespaceForUser(req, []string{"broken"})
+
+	s.loadSavedNamespacePreference(req)
+
+	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, []string{"broken"}) {
+		t.Errorf("seed clobbered fresh pick with disk value: %v, want [broken]", picks)
+	}
+}
+
 // A context switch between snapshot and write must also skip the mutation —
 // old-context survivors must not persist under the new context's key.
 func TestPruneDeletedNamespacePicks_SkipsAcrossContextSwitch(t *testing.T) {

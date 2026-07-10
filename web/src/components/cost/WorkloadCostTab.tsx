@@ -119,7 +119,7 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
       : formatCost(0)
 
   return (
-    <div className="mx-auto max-w-[1100px] space-y-4">
+    <div className="mx-auto w-full max-w-[1400px] space-y-4">
       <section className="rounded-lg border border-theme-border bg-theme-surface/50">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-theme-border px-4 py-3">
           <div className="flex items-center gap-2">

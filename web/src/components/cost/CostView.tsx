@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { COST_DISCOVERY_GRACE_MS, useOpenCostSummary, useOpenCostWorkloads, useOpenCostNodes } from '../../api/client'
 import type { OpenCostNamespaceCost, OpenCostWorkloadCost, OpenCostNodeCost } from '../../api/client'
-import { ArrowLeft, ChevronDown, ChevronRight, DollarSign, HelpCircle, Loader2, Server, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, DollarSign, HelpCircle, Loader2, Server, X } from 'lucide-react'
 import { PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
 import { CostTrendChart } from './CostTrendChart'
 import {
@@ -14,12 +14,15 @@ import {
 } from './format'
 import { Tooltip } from '../ui/Tooltip'
 import { useConnection } from '../../context/ConnectionContext'
+import type { SelectedResource } from '../../types'
+import { kindToPlural } from '../../utils/navigation'
 
 interface CostViewProps {
   onBack: () => void
+  onOpenResource?: (resource: SelectedResource) => void
 }
 
-export function CostView({ onBack }: CostViewProps) {
+export function CostView({ onBack, onOpenResource }: CostViewProps) {
   const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useOpenCostSummary()
   const { data: nodeData } = useOpenCostNodes()
   const { connection } = useConnection()
@@ -119,18 +122,10 @@ export function CostView({ onBack }: CostViewProps) {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[1100px] mx-auto px-6 py-6 space-y-6">
+      <div className="mx-auto w-full max-w-[1600px] px-6 py-6 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <button
-              onClick={onBack}
-              className="flex items-center gap-1.5 text-sm text-theme-text-secondary hover:text-theme-text-primary transition-colors"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Dashboard
-            </button>
-            <div className="w-px h-5 bg-theme-border" />
             <div className="flex items-center gap-2">
               <DollarSign className="w-5 h-5 text-indigo-500" />
               <h1 className="text-lg font-semibold text-theme-text-primary">Cost Insights</h1>
@@ -255,6 +250,7 @@ export function CostView({ onBack }: CostViewProps) {
                 ns={ns}
                 maxCost={namespaces[0]?.hourlyCost ?? 0}
                 hasStorage={hasStorage}
+                onOpenResource={onOpenResource}
               />
             ))}
           </div>
@@ -283,10 +279,12 @@ function NamespaceCostRow({
   ns,
   maxCost,
   hasStorage,
+  onOpenResource,
 }: {
   ns: OpenCostNamespaceCost
   maxCost: number
   hasStorage: boolean
+  onOpenResource?: (resource: SelectedResource) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const allocTotal = ns.cpuCost + ns.memoryCost + (ns.storageCost ?? 0)
@@ -308,7 +306,9 @@ function NamespaceCostRow({
           ) : (
             <ChevronRight className="w-3.5 h-3.5 text-theme-text-tertiary shrink-0" />
           )}
-          <span className="text-sm text-theme-text-primary truncate font-medium">{ns.name}</span>
+          <Tooltip content={`Namespace ${ns.name}`} wrapperClassName="min-w-0">
+            <span className="block truncate text-sm text-theme-text-primary font-medium">{ns.name}</span>
+          </Tooltip>
         </span>
         <span className="text-sm font-medium text-theme-text-primary tabular-nums text-right">
           {formatProjectedMonthlyCost(ns.hourlyCost)}
@@ -344,12 +344,18 @@ function NamespaceCostRow({
       </button>
 
       {/* Expanded workload rows */}
-      {expanded && <WorkloadRows namespace={ns.name} />}
+      {expanded && <WorkloadRows namespace={ns.name} onOpenResource={onOpenResource} />}
     </div>
   )
 }
 
-function WorkloadRows({ namespace }: { namespace: string }) {
+function WorkloadRows({
+  namespace,
+  onOpenResource,
+}: {
+  namespace: string
+  onOpenResource?: (resource: SelectedResource) => void
+}) {
   const { data, isLoading } = useOpenCostWorkloads(namespace)
 
   if (isLoading) {
@@ -373,26 +379,45 @@ function WorkloadRows({ namespace }: { namespace: string }) {
   return (
     <div className="bg-theme-elevated/30 border-t border-theme-border/30">
       {workloads.map((wl) => (
-        <WorkloadCostRow key={`${wl.kind}-${wl.name}`} wl={wl} maxCost={workloads[0]?.hourlyCost ?? 0} />
+        <WorkloadCostRow
+          key={`${wl.kind}-${wl.name}`}
+          wl={wl}
+          namespace={namespace}
+          maxCost={workloads[0]?.hourlyCost ?? 0}
+          onOpenResource={onOpenResource}
+        />
       ))}
     </div>
   )
 }
 
-function WorkloadCostRow({ wl, maxCost }: { wl: OpenCostWorkloadCost; maxCost: number }) {
+function WorkloadCostRow({
+  wl,
+  namespace,
+  maxCost,
+  onOpenResource,
+}: {
+  wl: OpenCostWorkloadCost
+  namespace: string
+  maxCost: number
+  onOpenResource?: (resource: SelectedResource) => void
+}) {
   const cpuPct = wl.hourlyCost > 0 ? (wl.cpuCost / wl.hourlyCost) * 100 : 50
   const barWidth = maxCost > 0 ? (wl.hourlyCost / maxCost) * 100 : 0
   const eff = wl.efficiency ?? 0
   const hasEff = eff > 0
-  const kindLabel = wl.kind === 'standalone' ? 'pod' : wl.kind
-
-  return (
-    <div className="grid grid-cols-[minmax(180px,1fr)_100px_90px_80px_minmax(160px,1fr)_120px] gap-2 px-4 py-2 text-left">
+  const kindLabel = displayCostWorkloadKind(wl.kind)
+  const resource = costWorkloadResource(wl, namespace)
+  const canOpen = Boolean(resource && onOpenResource)
+  const content = (
+    <>
       <span className="flex items-center gap-1.5 min-w-0 pl-5">
         <span className="text-[10px] text-theme-text-tertiary bg-theme-surface px-1 py-0.5 rounded shrink-0">
           {kindLabel}
         </span>
-        <span className="text-xs text-theme-text-secondary truncate">{wl.name}</span>
+        <Tooltip content={`${kindLabel} ${namespace}/${wl.name}`} wrapperClassName="min-w-0">
+          <span className="block truncate text-xs text-theme-text-secondary">{wl.name}</span>
+        </Tooltip>
         {wl.replicas > 1 && <span className="text-[10px] text-theme-text-tertiary shrink-0">{wl.replicas}x</span>}
       </span>
       <span className="text-xs font-medium text-theme-text-secondary tabular-nums text-right">
@@ -423,8 +448,26 @@ function WorkloadCostRow({ wl, maxCost }: { wl: OpenCostWorkloadCost; maxCost: n
       <span className="text-[10px] text-theme-text-tertiary tabular-nums text-right">
         {formatCost(wl.cpuCost)} / {formatCost(wl.memoryCost)}
       </span>
-    </div>
+    </>
   )
+
+  const rowClass =
+    'grid grid-cols-[minmax(180px,1fr)_100px_90px_80px_minmax(160px,1fr)_120px] gap-2 px-4 py-2 text-left'
+
+  if (canOpen && resource) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenResource?.(resource)}
+        className={`${rowClass} w-full transition-colors hover:bg-theme-hover/60 focus:outline-none focus:ring-2 focus:ring-accent focus:ring-inset`}
+        aria-label={`Open ${kindLabel} ${wl.name}`}
+      >
+        {content}
+      </button>
+    )
+  }
+
+  return <div className={rowClass}>{content}</div>
 }
 
 function NodeCostTable({ nodes }: { nodes: OpenCostNodeCost[] }) {
@@ -491,6 +534,37 @@ function NodeCostRow({ node }: { node: OpenCostNodeCost }) {
       </span>
     </div>
   )
+}
+
+function displayCostWorkloadKind(kind: string): string {
+  if (kind === 'standalone') return 'pod'
+  if (kind === 'staticpod') return 'static pod'
+  return kind
+}
+
+function costWorkloadResource(wl: OpenCostWorkloadCost, namespace: string): SelectedResource | null {
+  const kind = resourceKindForCostWorkload(wl.kind)
+  if (!kind || !wl.name) return null
+  return {
+    kind: kindToPlural(kind),
+    namespace: kind === 'Node' ? '' : namespace,
+    name: wl.name,
+    group: apiGroupForCostWorkload(kind),
+  }
+}
+
+function resourceKindForCostWorkload(kind: string): string | null {
+  if (kind === 'standalone' || kind === 'staticpod') return 'Pod'
+  if (kind === 'Deployment' || kind === 'StatefulSet' || kind === 'DaemonSet') return kind
+  if (kind === 'Job' || kind === 'CronJob') return kind
+  if (kind === 'Node') return kind
+  return null
+}
+
+function apiGroupForCostWorkload(kind: string): string | undefined {
+  if (kind === 'Deployment' || kind === 'StatefulSet' || kind === 'DaemonSet') return 'apps'
+  if (kind === 'Job' || kind === 'CronJob') return 'batch'
+  return undefined
 }
 
 // --- Help dialog ---

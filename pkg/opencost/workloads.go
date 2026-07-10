@@ -121,6 +121,8 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 		}
 		if !ok {
 			owner = WorkloadOwner{Name: stripPodSuffix(podName), Kind: "standalone"}
+		} else if owner.Kind == "Node" {
+			owner = WorkloadOwner{Name: podName, Kind: "staticpod"}
 		}
 
 		wl, exists := workloadMap[owner]

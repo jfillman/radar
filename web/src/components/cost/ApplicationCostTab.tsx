@@ -137,7 +137,7 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
   const maxCost = Math.max(...rows.map((row) => row.current?.hourlyCost ?? 0), 0)
 
   return (
-    <div className="mx-auto max-w-[1180px] space-y-4">
+    <div className="mx-auto w-full max-w-[1400px] space-y-4">
       {(current?.partial ||
         trend?.partial ||
         state === 'partial_missing_history' ||
@@ -380,8 +380,12 @@ function ApplicationWorkloadCostRow({
           <span className="shrink-0 rounded bg-theme-base px-1.5 py-0.5 text-[10px] uppercase text-theme-text-tertiary">
             {row.kind}
           </span>
-          <span className="truncate text-sm font-medium text-theme-text-primary">{row.name}</span>
-          <span className="shrink-0 text-xs text-theme-text-tertiary">{row.namespace}</span>
+          <Tooltip content={`${row.kind} ${row.namespace}/${row.name}`} wrapperClassName="min-w-0">
+            <span className="block truncate text-sm font-medium text-theme-text-primary">{row.name}</span>
+          </Tooltip>
+          <Tooltip content={row.namespace} wrapperClassName="shrink-0">
+            <span className="text-xs text-theme-text-tertiary">{row.namespace}</span>
+          </Tooltip>
         </div>
         {!row.available && <div className="mt-0.5 text-xs text-theme-text-tertiary">{reasonLabel(row.reason)}</div>}
       </div>

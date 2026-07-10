@@ -146,6 +146,28 @@ func TestComputeWorkloads_OwnerLookupUnresolvedPodFallsBack(t *testing.T) {
 	}
 }
 
+func TestComputeWorkloads_NodeOwnedPodIsStaticPodCost(t *testing.T) {
+	client := workloadsProm(t, podVectorBody(map[string]float64{
+		"kube-apiserver-gke-node-1": 1.0,
+	}))
+	lookup := func(pod string) (WorkloadOwner, bool) {
+		if pod == "kube-apiserver-gke-node-1" {
+			return WorkloadOwner{Name: "gke-node-1", Kind: "Node"}, true
+		}
+		return WorkloadOwner{}, false
+	}
+	got := ComputeWorkloadsFromProm(context.Background(), client, "kube-system", lookup)
+	if !got.Available {
+		t.Fatalf("expected Available=true, got %+v", got)
+	}
+	if len(got.Workloads) != 1 {
+		t.Fatalf("expected 1 workload, got %d: %+v", len(got.Workloads), got.Workloads)
+	}
+	if got.Workloads[0].Name != "kube-apiserver-gke-node-1" || got.Workloads[0].Kind != "staticpod" {
+		t.Errorf("got %s/%s, want kube-apiserver-gke-node-1/staticpod", got.Workloads[0].Name, got.Workloads[0].Kind)
+	}
+}
+
 func TestComputeWorkloads_EmptyResultReturnsNoMetricsReason(t *testing.T) {
 	// Queries succeed but return zero series — should surface ReasonNoMetrics
 	// (not Available=true with empty workloads list).
@@ -174,11 +196,11 @@ func TestStripPodSuffix(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"myapp-7f8d9c-xyz12", "myapp"},        // deployment pod (rs-hash + pod-hash)
-		{"myapp-xyz12", "myapp"},               // single suffix (e.g. CronJob)
+		{"myapp-7f8d9c-xyz12", "myapp"},          // deployment pod (rs-hash + pod-hash)
+		{"myapp-xyz12", "myapp"},                 // single suffix (e.g. CronJob)
 		{"mywf-step-1-abc12-xyz", "mywf-step-1"}, // multi-segment workflow name
-		{"plain", "plain"},                     // no dashes
-		{"-leading", "-leading"},               // leading-dash edge case
+		{"plain", "plain"},                       // no dashes
+		{"-leading", "-leading"},                 // leading-dash edge case
 	}
 	for _, tc := range cases {
 		got := stripPodSuffix(tc.in)

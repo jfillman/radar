@@ -2183,7 +2183,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
         {/* Cost detail view */}
         {mainView === 'cost' && (
-          <CostView onBack={() => setMainView('home')} />
+          <CostView onBack={() => setMainView('home')} onOpenResource={navigateToResource} />
         )}
 
         {/* Takeover splash. When the host claims the current view via

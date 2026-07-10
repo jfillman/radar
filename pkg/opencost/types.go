@@ -61,7 +61,7 @@ type WorkloadCostDetailResponse struct {
 // WorkloadCost holds per-workload cost breakdown within a namespace.
 type WorkloadCost struct {
 	Name            string  `json:"name"`
-	Kind            string  `json:"kind"` // Deployment, StatefulSet, DaemonSet, Job, standalone
+	Kind            string  `json:"kind"` // Deployment, StatefulSet, DaemonSet, Job, standalone, staticpod
 	HourlyCost      float64 `json:"hourlyCost"`
 	CPUCost         float64 `json:"cpuCost"`
 	MemoryCost      float64 `json:"memoryCost"`

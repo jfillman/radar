@@ -261,7 +261,10 @@ func (s *Server) commitPickMutation(r *http.Request, ctxName string, expected, s
 func (s *Server) pruneDeletedNamespacePicks(r *http.Request, picks []string) []string {
 	ctxName := k8s.GetContextName()
 	survivors := pruneToExistingNamespaces(picks, s.allNamespaceNames())
-	if len(survivors) == len(picks) {
+	// Compare contents, not just length: skip the write only when nothing
+	// actually changed. A length check would rely on the prune being a pure
+	// order-preserving filter; equality holds regardless of how it evolves.
+	if slices.Equal(survivors, picks) {
 		return survivors
 	}
 	s.commitPickMutation(r, ctxName, picks, survivors, true)

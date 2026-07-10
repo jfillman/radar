@@ -402,6 +402,22 @@ func TestPruneToExistingNamespaces(t *testing.T) {
 			existing: []string{"alpha"},
 			want:     []string{},
 		},
+		{
+			// Duplicates are preserved when they still exist — the prune must
+			// not dedup, so a no-op prune leaves the pick byte-for-byte equal.
+			name:     "duplicates preserved when all exist",
+			picks:    []string{"alpha", "alpha"},
+			existing: []string{"alpha", "beta"},
+			want:     []string{"alpha", "alpha"},
+		},
+		{
+			// Duplicate survives, the deleted sibling is dropped — the survivor
+			// count differs from the input, so the eviction still commits.
+			name:     "duplicate kept, deleted sibling dropped",
+			picks:    []string{"alpha", "alpha", "ghost"},
+			existing: []string{"alpha", "beta"},
+			want:     []string{"alpha", "alpha"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

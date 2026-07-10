@@ -881,7 +881,7 @@ func (s *Server) parseNamespacesForUser(r *http.Request) []string {
 		// against the same context, not one switched in mid-request.
 		s.loadSavedNamespacePreference(r)
 		if ctx, picks := s.getActiveNamespaceForUserInContext(r); len(picks) > 0 {
-			picks = s.pruneDeletedNamespacePicks(r, picks)
+			picks = s.pruneDeletedNamespacePicks(r, ctx, picks)
 			if len(picks) > 0 {
 				namespaces = picks
 				pickFallback = true

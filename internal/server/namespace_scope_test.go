@@ -473,7 +473,7 @@ func TestPruneDeletedNamespacePicks_SkipsWhenPickChangedMidFlight(t *testing.T) 
 	// A user POST lands while the read is pruning its snapshot.
 	s.setActiveNamespaceForUser(req, []string{"broken"})
 
-	survivors := s.pruneDeletedNamespacePicks(req, snapshot)
+	survivors := s.pruneDeletedNamespacePicks(req, "test-ctx", snapshot)
 	if !slices.Equal(survivors, []string{"default"}) {
 		t.Fatalf("survivors = %v, want [default] (this request still filters by its own snapshot)", survivors)
 	}
@@ -619,20 +619,27 @@ func TestPruneDeletedNamespacePicks_SkipsAcrossContextSwitch(t *testing.T) {
 	snapshot := []string{"default", "ghost"}
 	s.setActiveNamespaceForUser(req, snapshot)
 
-	// Simulate the interleaving: the prune's entry snapshot saw "test-ctx";
-	// wrap the call so the context flips before it runs (the guard re-reads
-	// the context under the lock, so a flip before the call exercises the
-	// same skip path as one mid-call).
+	// The pick was snapshotted under "test-ctx"; the context flips to
+	// "other-ctx" before the prune runs. Preseed other-ctx with the SAME value,
+	// so a prune that keyed off the live context would find its stored pick
+	// equal to the snapshot and wrongly trim it. Prune carries the snapshot
+	// ctx, so the commit guard (live context != snapshot ctx) skips the write.
 	prev := k8s.SetTestContextName("other-ctx")
-	survivorsUnderOther := s.pruneDeletedNamespacePicks(req, snapshot)
-	k8s.SetTestContextName(prev)
+	s.setActiveNamespaceForUser(req, snapshot) // other-ctx pick == snapshot
+	survivorsUnderOther := s.pruneDeletedNamespacePicks(req, "test-ctx", snapshot)
 	_ = survivorsUnderOther
 
-	// The original context's pick and settings are untouched.
+	// other-ctx's coincidentally-matching pick must NOT be trimmed to survivors.
 	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, snapshot) {
-		t.Errorf("old-context pick mutated across switch: %v, want %v", picks, snapshot)
+		t.Errorf("new-context pick trimmed by a stale-snapshot prune: %v, want %v", picks, snapshot)
 	}
 	if saved := settings.Load().ActiveNamespaces["other-ctx"]; len(saved) != 0 {
 		t.Errorf("survivors persisted under the new context's key: %v", saved)
+	}
+	k8s.SetTestContextName(prev)
+
+	// The original context's pick is also untouched.
+	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, snapshot) {
+		t.Errorf("old-context pick mutated across switch: %v, want %v", picks, snapshot)
 	}
 }

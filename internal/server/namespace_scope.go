@@ -258,8 +258,11 @@ func (s *Server) commitPickMutation(r *http.Request, ctxName string, expected, s
 // undone. Skipped under --namespace-scope, where the saved pick doubles as
 // the cache-scope restore value and handleSetActiveNamespace owns its
 // lifecycle.
-func (s *Server) pruneDeletedNamespacePicks(r *http.Request, picks []string) []string {
-	ctxName := k8s.GetContextName()
+// ctxName is the context the picks were snapshotted under (from
+// getActiveNamespaceForUserInContext). The commit binds to it rather than
+// re-reading the live context, so a switch between the caller's snapshot and
+// this prune can't persist old-context survivors under the new context's key.
+func (s *Server) pruneDeletedNamespacePicks(r *http.Request, ctxName string, picks []string) []string {
 	survivors := pruneToExistingNamespaces(picks, s.allNamespaceNames())
 	// Compare contents, not just length: skip the write only when nothing
 	// actually changed. A length check would rely on the prune being a pure
@@ -303,7 +306,7 @@ func (s *Server) handleGetNamespaceScope(w http.ResponseWriter, r *http.Request)
 	// Read the pick and its context as one snapshot so a later trim commits
 	// against the same context it was computed from, not a switched-in one.
 	pickCtx, activesRaw := s.getActiveNamespaceForUserInContext(r)
-	actives := s.pruneDeletedNamespacePicks(r, activesRaw)
+	actives := s.pruneDeletedNamespacePicks(r, pickCtx, activesRaw)
 	kubeNs := k8s.GetContextNamespace()
 	cacheScopeNs := k8s.GetNamespaceScopeTarget()
 

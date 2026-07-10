@@ -251,7 +251,7 @@ export function StackedAreaChart({ series }: { series: OpenCostTrendSeries[] }) 
             key={`xlabel-${i}`}
             x={tick.x}
             y={height - 4}
-            textAnchor="middle"
+            textAnchor={i === 0 ? 'start' : i === xTicks.length - 1 ? 'end' : 'middle'}
             className="fill-theme-text-secondary"
             fontSize="10"
             fontFamily="ui-monospace, monospace"
@@ -345,7 +345,7 @@ export function StackedAreaChart({ series }: { series: OpenCostTrendSeries[] }) 
   )
 }
 
-function ChartLegend({ series }: { series: OpenCostTrendSeries[] }) {
+export function ChartLegend({ series }: { series: OpenCostTrendSeries[] }) {
   return (
     <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
       {series.map((s, i) => (

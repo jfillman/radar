@@ -14,7 +14,7 @@ import {
   type OpenCostTrendSeries,
 } from '../../api/client'
 import { Tooltip } from '../ui/Tooltip'
-import { StackedAreaChart } from './CostTrendChart'
+import { ChartLegend, StackedAreaChart } from './CostTrendChart'
 import { formatCost, formatCostPerHour } from './format'
 import { isOpenCostWorkloadKind } from './kinds'
 
@@ -71,7 +71,7 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
   }, [workloads])
 
   if (supportedCount === 0) {
-    return <ApplicationCostUnavailable state="no_metrics" message="No steady-state workloads in this app are supported by workload cost yet." />
+    return <ApplicationCostUnavailable state="no_metrics" message="No steady-state workloads in this app are currently cost-attributed." />
   }
 
   if (state === 'loading') {
@@ -127,12 +127,12 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
           <span>
             Showing tracked steady-state compute for {included} of {total} workloads.
             {unavailableCount > 0 ? ` ${unavailableCount} workload${unavailableCount === 1 ? '' : 's'} had no cost metrics for this window.` : ''}
-            {unsupportedCount > 0 ? ` ${unsupportedCount} job/batch or unsupported workload${unsupportedCount === 1 ? '' : 's'} excluded until that cost model lands.` : ''}
+            {unsupportedCount > 0 ? ` ${unsupportedCount} batch or unsupported workload${unsupportedCount === 1 ? ' is' : 's are'} excluded from this compute view.` : ''}
           </span>
         </div>
       )}
 
-      <section className="rounded-lg border border-theme-border bg-theme-surface/50">
+      <section className="rounded-lg border border-theme-border bg-theme-surface/50" aria-label={`${app.name} application cost`}>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-theme-border px-4 py-3">
           <div className="flex items-center gap-2">
             <TrendingUp className="h-4 w-4 text-theme-text-tertiary" />
@@ -141,7 +141,7 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
                 <div className="text-sm font-semibold text-theme-text-primary">Application compute cost</div>
                 <CostInfoTooltip content="Dollars are based on OpenCost CPU and memory allocation over time, grouped by the workloads in this application. This is allocated/requested compute cost, not raw utilization alone." />
               </div>
-              <div className="text-xs text-theme-text-tertiary">{app.name} · Deployment, StatefulSet, and DaemonSet workloads</div>
+              <div className="text-xs text-theme-text-tertiary">OpenCost CPU and memory allocation for Deployment, StatefulSet, and DaemonSet workloads</div>
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -184,6 +184,7 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
             ) : hasTrend && chartSeries.length > 0 ? (
               <div className="min-w-0">
                 <StackedAreaChart series={chartSeries} />
+                <ChartLegend series={chartSeries} />
               </div>
             ) : (
               <div className="flex h-[240px] items-center justify-center rounded-md border border-dashed border-theme-border bg-theme-base/60 text-sm text-theme-text-tertiary">
@@ -264,7 +265,7 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
       </section>
 
       <div className="text-xs text-theme-text-tertiary">
-        Powered by OpenCost via Prometheus. Application cost currently includes CPU and memory allocation for Deployment, StatefulSet, and DaemonSet workloads; batch/job and storage attribution are handled separately.
+        Powered by OpenCost via Prometheus. Application cost currently includes CPU and memory allocation for Deployment, StatefulSet, and DaemonSet workloads. Batch/job cost is separate; storage/PVC and network costs remain at namespace and cluster level.
       </div>
     </div>
   )

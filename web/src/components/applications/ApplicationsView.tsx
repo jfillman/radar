@@ -165,14 +165,15 @@ function AppDetailRoute({ app, apps, onBack, onOpenResource }: { app: AppRow; ap
     const params = new URLSearchParams(searchParams)
     params.delete('view')
     params.set('workload', singleWorkloadKey)
+    if (selectedRouteView === 'cost') params.set('tab', 'cost')
     setSearchParams(params, { replace: true })
-  }, [searchParams, selectedWorkloadParam, setSearchParams, singleWorkloadKey, viewParam])
+  }, [searchParams, selectedRouteView, selectedWorkloadParam, setSearchParams, singleWorkloadKey, viewParam])
   useEffect(() => {
-    if (selectedRouteView !== 'cost' || applicationCostAvailable) return
+    if (singleWorkloadKey || selectedRouteView !== 'cost' || applicationCostAvailable) return
     const params = new URLSearchParams(searchParams)
     params.delete('view')
     setSearchParams(params, { replace: true })
-  }, [applicationCostAvailable, searchParams, selectedRouteView, setSearchParams])
+  }, [applicationCostAvailable, searchParams, selectedRouteView, setSearchParams, singleWorkloadKey])
   const selectView = useCallback(
     (view: ApplicationRouteView) => {
       const params = new URLSearchParams(searchParams)

@@ -554,7 +554,7 @@ export interface OpenCostNamespaceCost {
   idleCost?: number
 }
 
-export type CostUnavailableReason = 'no_prometheus' | 'no_metrics' | 'query_error'
+export type CostUnavailableReason = 'no_prometheus' | 'no_metrics' | 'query_error' | 'access_denied' | 'not_found'
 
 export interface OpenCostSummary {
   available: boolean
@@ -570,7 +570,7 @@ export interface OpenCostSummary {
 
 const noPrometheusFirstSeenAt = new Map<string, number>()
 
-function costRefetchInterval(defaultInterval: number | false = COST_REFRESH_INTERVAL_MS) {
+function costRefetchInterval(defaultInterval: number | false = COST_REFRESH_INTERVAL_MS, contextName?: string) {
   return (query: {
     queryHash?: string
     queryKey?: unknown
@@ -580,7 +580,7 @@ function costRefetchInterval(defaultInterval: number | false = COST_REFRESH_INTE
     }
   }) => {
     const data = query.state.data
-    const queryID = query.queryHash ?? JSON.stringify(query.queryKey ?? 'opencost')
+    const queryID = `${contextName ?? 'unknown'}:${query.queryHash ?? JSON.stringify(query.queryKey ?? 'opencost')}`
     if (data?.available === false && data.reason === 'no_prometheus') {
       const now = Date.now()
       const firstSeenAt = noPrometheusFirstSeenAt.get(queryID) ?? now
@@ -593,10 +593,11 @@ function costRefetchInterval(defaultInterval: number | false = COST_REFRESH_INTE
 }
 
 export function useOpenCostSummary() {
+  const clusterInfo = useClusterInfo()
   return useQuery<OpenCostSummary>({
     queryKey: ['opencost-summary'],
     queryFn: () => fetchJSON('/opencost/summary'),
-    refetchInterval: costRefetchInterval(),
+    refetchInterval: costRefetchInterval(COST_REFRESH_INTERVAL_MS, clusterInfo.data?.context),
     staleTime: 30000,
     placeholderData: (prev) => prev, // Keep previous data visible during refetch
   })
@@ -624,11 +625,12 @@ export interface OpenCostWorkloadResponse {
 }
 
 export function useOpenCostWorkloads(namespace: string, options?: { enabled?: boolean }) {
+  const clusterInfo = useClusterInfo()
   return useQuery<OpenCostWorkloadResponse>({
     queryKey: ['opencost-workloads', namespace],
     queryFn: () => fetchJSON(`/opencost/workloads?namespace=${encodeURIComponent(namespace)}`),
     enabled: (options?.enabled ?? true) && Boolean(namespace),
-    refetchInterval: costRefetchInterval(false),
+    refetchInterval: costRefetchInterval(false, clusterInfo.data?.context),
     staleTime: 30000,
   })
 }
@@ -643,12 +645,13 @@ export interface OpenCostWorkloadDetailResponse {
 }
 
 export function useOpenCostWorkload(kind: string, namespace: string, name: string, options?: { enabled?: boolean }) {
+  const clusterInfo = useClusterInfo()
   return useQuery<OpenCostWorkloadDetailResponse>({
     queryKey: ['opencost-workload', kind, namespace, name],
     queryFn: () => fetchJSON(`/opencost/workload/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`),
     enabled: (options?.enabled ?? true) && Boolean(kind && namespace && name),
     staleTime: 30000,
-    refetchInterval: costRefetchInterval(),
+    refetchInterval: costRefetchInterval(COST_REFRESH_INTERVAL_MS, clusterInfo.data?.context),
     placeholderData: (prev) => prev,
   })
 }
@@ -674,11 +677,12 @@ export interface OpenCostTrendResponse {
 }
 
 export function useOpenCostTrend(range_: CostTimeRange = '24h') {
+  const clusterInfo = useClusterInfo()
   return useQuery<OpenCostTrendResponse>({
     queryKey: ['opencost-trend', range_],
     queryFn: () => fetchJSON(`/opencost/trend?range=${range_}`),
     staleTime: 60000,
-    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS),
+    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS, clusterInfo.data?.context),
     placeholderData: (prev) => prev,
   })
 }
@@ -695,12 +699,13 @@ export interface OpenCostWorkloadTrendResponse {
 }
 
 export function useOpenCostWorkloadTrend(kind: string, namespace: string, name: string, range_: CostTimeRange = '24h', options?: { enabled?: boolean }) {
+  const clusterInfo = useClusterInfo()
   return useQuery<OpenCostWorkloadTrendResponse>({
     queryKey: ['opencost-workload-trend', kind, namespace, name, range_],
     queryFn: () => fetchJSON(`/opencost/workload/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/trend?range=${range_}`),
     enabled: (options?.enabled ?? true) && Boolean(kind && namespace && name),
     staleTime: 60000,
-    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS),
+    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS, clusterInfo.data?.context),
     placeholderData: (prev) => prev,
   })
 }
@@ -777,6 +782,7 @@ function stableOpenCostWorkloadRefs(workloads: OpenCostApplicationWorkloadRef[])
 }
 
 export function useOpenCostApplicationCost(workloads: OpenCostApplicationWorkloadRef[], options?: { enabled?: boolean }) {
+  const clusterInfo = useClusterInfo()
   const refs = stableOpenCostWorkloadRefs(workloads)
   return useQuery<OpenCostApplicationCostResponse>({
     queryKey: ['opencost-application', refs],
@@ -788,12 +794,13 @@ export function useOpenCostApplicationCost(workloads: OpenCostApplicationWorkloa
     }),
     enabled: (options?.enabled ?? true) && refs.length > 0,
     staleTime: 30000,
-    refetchInterval: costRefetchInterval(),
+    refetchInterval: costRefetchInterval(COST_REFRESH_INTERVAL_MS, clusterInfo.data?.context),
     placeholderData: (prev) => prev,
   })
 }
 
 export function useOpenCostApplicationCostTrend(workloads: OpenCostApplicationWorkloadRef[], range_: CostTimeRange = '24h', options?: { enabled?: boolean }) {
+  const clusterInfo = useClusterInfo()
   const refs = stableOpenCostWorkloadRefs(workloads)
   return useQuery<OpenCostApplicationCostTrendResponse>({
     queryKey: ['opencost-application-trend', refs, range_],
@@ -805,7 +812,7 @@ export function useOpenCostApplicationCostTrend(workloads: OpenCostApplicationWo
     }),
     enabled: (options?.enabled ?? true) && refs.length > 0,
     staleTime: 60000,
-    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS),
+    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS, clusterInfo.data?.context),
     placeholderData: (prev) => prev,
   })
 }
@@ -828,11 +835,12 @@ export interface OpenCostNodeResponse {
 }
 
 export function useOpenCostNodes() {
+  const clusterInfo = useClusterInfo()
   return useQuery<OpenCostNodeResponse>({
     queryKey: ['opencost-nodes'],
     queryFn: () => fetchJSON('/opencost/nodes'),
     staleTime: 60000,
-    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS),
+    refetchInterval: costRefetchInterval(COST_TREND_REFRESH_INTERVAL_MS, clusterInfo.data?.context),
     placeholderData: (prev) => prev,
   })
 }

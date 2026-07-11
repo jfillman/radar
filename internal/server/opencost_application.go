@@ -24,19 +24,19 @@ func (s *Server) handleOpenCostApplication(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	_, inputs, unsupported, ok := s.parseOpenCostApplicationRequest(w, r)
+	_, inputs, unavailable, unsupported, ok := s.parseOpenCostApplicationRequest(w, r)
 	if !ok {
 		return
 	}
 
 	client := prometheuspkg.GetClient()
 	if client == nil {
-		s.writeJSON(w, pkgopencost.UnavailableApplicationCostResponse(inputs, unsupported, pkgopencost.ReasonNoPrometheus))
+		s.writeJSON(w, pkgopencost.UnavailableApplicationCostResponse(inputs, unavailable, unsupported, pkgopencost.ReasonNoPrometheus))
 		return
 	}
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
-		log.Printf("[opencost] EnsureConnected failed (application cost): %v", err)
-		s.writeJSON(w, pkgopencost.UnavailableApplicationCostResponse(inputs, unsupported, pkgopencost.ReasonNoPrometheus))
+		log.Print("[opencost] EnsureConnected failed for application cost")
+		s.writeJSON(w, pkgopencost.UnavailableApplicationCostResponse(inputs, unavailable, unsupported, pkgopencost.ReasonNoPrometheus))
 		return
 	}
 
@@ -46,7 +46,7 @@ func (s *Server) handleOpenCostApplication(w http.ResponseWriter, r *http.Reques
 			r.Context(), client.Prom(), namespace, internalopencost.BuildPodOwnerLookup(namespace))
 	}
 
-	s.writeJSON(w, pkgopencost.BuildApplicationCostResponse(inputs, unsupported, namespaceCosts))
+	s.writeJSON(w, pkgopencost.BuildApplicationCostResponse(inputs, unavailable, unsupported, namespaceCosts))
 }
 
 func (s *Server) handleOpenCostApplicationTrend(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +54,7 @@ func (s *Server) handleOpenCostApplicationTrend(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	req, inputs, unsupported, ok := s.parseOpenCostApplicationRequest(w, r)
+	req, inputs, unavailable, unsupported, ok := s.parseOpenCostApplicationRequest(w, r)
 	if !ok {
 		return
 	}
@@ -67,42 +67,46 @@ func (s *Server) handleOpenCostApplicationTrend(w http.ResponseWriter, r *http.R
 	client := prometheuspkg.GetClient()
 	if client == nil {
 		s.writeJSON(w, pkgopencost.ComputeApplicationCostTrendFromProm(r.Context(), nil, pkgopencost.ApplicationTrendOptions{
-			Range:     req.Range,
-			Workloads: refs,
+			Range:       req.Range,
+			Workloads:   refs,
+			Unavailable: unavailable,
 		}))
 		return
 	}
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
-		log.Printf("[opencost] EnsureConnected failed (application trend): %v", err)
+		log.Print("[opencost] EnsureConnected failed for application trend")
 		s.writeJSON(w, pkgopencost.ComputeApplicationCostTrendFromProm(r.Context(), nil, pkgopencost.ApplicationTrendOptions{
-			Range:     req.Range,
-			Workloads: refs,
+			Range:       req.Range,
+			Workloads:   refs,
+			Unavailable: unavailable,
 		}))
 		return
 	}
 
 	s.writeJSON(w, pkgopencost.ComputeApplicationCostTrendFromProm(r.Context(), client.Prom(), pkgopencost.ApplicationTrendOptions{
-		Range:     req.Range,
-		Workloads: refs,
+		Range:       req.Range,
+		Workloads:   refs,
+		Unavailable: unavailable,
 	}))
 }
 
-func (s *Server) parseOpenCostApplicationRequest(w http.ResponseWriter, r *http.Request) (openCostApplicationRequest, []pkgopencost.ApplicationWorkloadCostInput, []pkgopencost.ApplicationWorkloadRef, bool) {
+func (s *Server) parseOpenCostApplicationRequest(w http.ResponseWriter, r *http.Request) (openCostApplicationRequest, []pkgopencost.ApplicationWorkloadCostInput, []pkgopencost.ApplicationWorkloadStatus, []pkgopencost.ApplicationWorkloadRef, bool) {
 	var req openCostApplicationRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128*1024)).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid application cost request")
-		return req, nil, nil, false
+		return req, nil, nil, nil, false
 	}
 	if len(req.Workloads) == 0 {
 		s.writeError(w, http.StatusBadRequest, "at least one workload is required")
-		return req, nil, nil, false
+		return req, nil, nil, nil, false
 	}
 	if len(req.Workloads) > maxOpenCostApplicationWorkloads {
 		s.writeError(w, http.StatusBadRequest, "too many workloads requested")
-		return req, nil, nil, false
+		return req, nil, nil, nil, false
 	}
 
 	inputs := make([]pkgopencost.ApplicationWorkloadCostInput, 0, len(req.Workloads))
+	unavailable := make([]pkgopencost.ApplicationWorkloadStatus, 0)
 	unsupported := make([]pkgopencost.ApplicationWorkloadRef, 0)
 	seen := make(map[string]bool, len(req.Workloads))
 	for _, ref := range req.Workloads {
@@ -111,7 +115,7 @@ func (s *Server) parseOpenCostApplicationRequest(w http.ResponseWriter, r *http.
 		ref.Name = strings.TrimSpace(ref.Name)
 		if ref.Kind == "" || ref.Namespace == "" || ref.Name == "" || ref.Namespace == "_" {
 			s.writeError(w, http.StatusBadRequest, "workload kind, namespace, and name are required")
-			return req, nil, nil, false
+			return req, nil, nil, nil, false
 		}
 
 		kind, supported := pkgopencost.CanonicalWorkloadKind(ref.Kind)
@@ -128,17 +132,25 @@ func (s *Server) parseOpenCostApplicationRequest(w http.ResponseWriter, r *http.
 			unsupported = append(unsupported, ref)
 			continue
 		}
-		if status, msg, ok := s.preflightResourceGet(r, normalizeKind(ref.Kind), ref.Namespace, ref.Name, "apps"); !ok {
-			s.writeError(w, status, msg)
-			return req, nil, nil, false
+		if status, _, ok := s.preflightResourceGet(r, normalizeKind(ref.Kind), ref.Namespace, ref.Name, "apps"); !ok {
+			unavailable = append(unavailable, pkgopencost.ApplicationWorkloadStatus{
+				ApplicationWorkloadRef: ref,
+				Reason:                 openCostUnavailableReasonForHTTPStatus(status),
+			})
+			log.Printf("[opencost] Skipping application workload during cost preflight (status=%d)", status)
+			continue
 		}
-		_, desiredReplicas, ok := s.loadOpenCostWorkloadResource(w, ref.Kind, ref.Namespace, ref.Name)
-		if !ok {
-			return req, nil, nil, false
+		lookup := s.lookupOpenCostWorkloadResource(ref.Kind, ref.Namespace, ref.Name)
+		if lookup.Status != 0 {
+			unavailable = append(unavailable, pkgopencost.ApplicationWorkloadStatus{
+				ApplicationWorkloadRef: ref,
+				Reason:                 lookup.Reason,
+			})
+			continue
 		}
 		inputs = append(inputs, pkgopencost.ApplicationWorkloadCostInput{
 			ApplicationWorkloadRef: ref,
-			DesiredReplicas:        desiredReplicas,
+			DesiredReplicas:        lookup.DesiredReplicas,
 		})
 	}
 	sort.Slice(inputs, func(i, j int) bool {
@@ -147,7 +159,20 @@ func (s *Server) parseOpenCostApplicationRequest(w http.ResponseWriter, r *http.
 	sort.Slice(unsupported, func(i, j int) bool {
 		return unsupported[i].Namespace+"/"+unsupported[i].Kind+"/"+unsupported[i].Name < unsupported[j].Namespace+"/"+unsupported[j].Kind+"/"+unsupported[j].Name
 	})
-	return req, inputs, unsupported, true
+	sort.Slice(unavailable, func(i, j int) bool {
+		return unavailable[i].Namespace+"/"+unavailable[i].Kind+"/"+unavailable[i].Name < unavailable[j].Namespace+"/"+unavailable[j].Kind+"/"+unavailable[j].Name
+	})
+	return req, inputs, unavailable, unsupported, true
+}
+
+func openCostUnavailableReasonForHTTPStatus(status int) string {
+	if status == http.StatusForbidden {
+		return pkgopencost.ReasonAccessDenied
+	}
+	if status == http.StatusNotFound {
+		return pkgopencost.ReasonNotFound
+	}
+	return pkgopencost.ReasonQueryError
 }
 
 func applicationInputNamespaces(inputs []pkgopencost.ApplicationWorkloadCostInput) []string {

@@ -147,7 +147,7 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
           <span>
             Showing tracked steady-state compute for {included} of {total} workloads.
             {unavailableCount > 0
-              ? ` ${unavailableCount} workload${unavailableCount === 1 ? '' : 's'} had no cost metrics for this window.`
+              ? ` ${unavailableCount} workload${unavailableCount === 1 ? '' : 's'} could not be included for this window.`
               : ''}
             {unsupportedCount > 0
               ? ` ${unsupportedCount} batch or unsupported workload${unsupportedCount === 1 ? ' is' : 's are'} excluded from this compute view.`
@@ -356,7 +356,7 @@ export function getApplicationCostState(
   if (loading) return 'loading'
 
   const reason = current?.reason ?? trend?.reason
-  if (reason === 'no_prometheus' || reason === 'query_error') return reason
+  if (reason === 'no_prometheus' || reason === 'query_error' || reason === 'access_denied' || reason === 'not_found') return reason
   return 'no_metrics'
 }
 
@@ -443,6 +443,8 @@ function applicationCostKey(ref: { kind: string; namespace: string; name: string
 function reasonLabel(reason?: CostUnavailableReason) {
   if (reason === 'no_prometheus') return 'Prometheus not found'
   if (reason === 'query_error') return 'Cost query failed'
+  if (reason === 'access_denied') return 'No access to this workload'
+  if (reason === 'not_found') return 'Workload not found'
   return 'No workload cost metrics'
 }
 
@@ -482,6 +484,10 @@ function ApplicationCostUnavailable({
       ? 'Prometheus not found. OpenCost application cost requires Prometheus or VictoriaMetrics.'
       : state === 'query_error'
         ? 'Cost data is temporarily unavailable. Prometheus was found, but application cost queries failed.'
+        : state === 'access_denied'
+          ? 'Cost data is unavailable because these workloads are not accessible with your current permissions.'
+          : state === 'not_found'
+            ? 'Cost data is unavailable because the referenced workloads no longer exist.'
         : state === 'load_error'
           ? 'Could not load application cost data. Check access to these workloads and try again.'
           : 'OpenCost workload metrics were not found for this application.')

@@ -6,6 +6,8 @@ const (
 	ReasonNoPrometheus = "no_prometheus" // Prometheus/VictoriaMetrics not found in cluster
 	ReasonNoMetrics    = "no_metrics"    // Prometheus found but OpenCost metrics not present
 	ReasonQueryError   = "query_error"   // Prometheus found but cost queries failed
+	ReasonAccessDenied = "access_denied" // user cannot access the requested resource
+	ReasonNotFound     = "not_found"     // requested resource no longer exists
 )
 
 // CostSummary is the response for the /api/opencost/summary endpoint.

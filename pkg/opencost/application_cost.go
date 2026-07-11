@@ -4,12 +4,21 @@ import "sort"
 
 // BuildApplicationCostResponse folds namespace workload-cost responses into a
 // single app-scoped current-cost response.
-func BuildApplicationCostResponse(inputs []ApplicationWorkloadCostInput, unsupported []ApplicationWorkloadRef, namespaceCosts map[string]*WorkloadCostResponse) *ApplicationCostResponse {
+func BuildApplicationCostResponse(inputs []ApplicationWorkloadCostInput, unavailable []ApplicationWorkloadStatus, unsupported []ApplicationWorkloadRef, namespaceCosts map[string]*WorkloadCostResponse) *ApplicationCostResponse {
 	out := &ApplicationCostResponse{
 		Coverage: ApplicationCostCoverage{
-			Total:       len(inputs) + len(unsupported),
+			Total:       len(inputs) + len(unavailable) + len(unsupported),
+			Unavailable: append([]ApplicationWorkloadStatus(nil), unavailable...),
 			Unsupported: append([]ApplicationWorkloadRef(nil), unsupported...),
 		},
+	}
+
+	for _, status := range unavailable {
+		out.Workloads = append(out.Workloads, ApplicationWorkloadCost{
+			ApplicationWorkloadRef: status.ApplicationWorkloadRef,
+			Reason:                 status.Reason,
+			ScaledToZero:           status.ScaledToZero,
+		})
 	}
 
 	for _, input := range inputs {
@@ -55,8 +64,9 @@ func BuildApplicationCostResponse(inputs []ApplicationWorkloadCostInput, unsuppo
 
 // UnavailableApplicationCostResponse returns a shaped app response for
 // cluster-wide failures that happen before per-namespace cost can be queried.
-func UnavailableApplicationCostResponse(inputs []ApplicationWorkloadCostInput, unsupported []ApplicationWorkloadRef, reason string) *ApplicationCostResponse {
-	statuses := make([]ApplicationWorkloadStatus, 0, len(inputs))
+func UnavailableApplicationCostResponse(inputs []ApplicationWorkloadCostInput, unavailable []ApplicationWorkloadStatus, unsupported []ApplicationWorkloadRef, reason string) *ApplicationCostResponse {
+	statuses := make([]ApplicationWorkloadStatus, 0, len(inputs)+len(unavailable))
+	statuses = append(statuses, unavailable...)
 	for _, input := range inputs {
 		statuses = append(statuses, ApplicationWorkloadStatus{
 			ApplicationWorkloadRef: input.ApplicationWorkloadRef,
@@ -69,9 +79,9 @@ func UnavailableApplicationCostResponse(inputs []ApplicationWorkloadCostInput, u
 	return &ApplicationCostResponse{
 		Available: false,
 		Reason:    reason,
-		Partial:   len(unsupportedCopy) > 0,
+		Partial:   len(unsupportedCopy) > 0 || len(unavailable) > 0,
 		Coverage: ApplicationCostCoverage{
-			Total:       len(inputs) + len(unsupportedCopy),
+			Total:       len(inputs) + len(unavailable) + len(unsupportedCopy),
 			Unavailable: statuses,
 			Unsupported: unsupportedCopy,
 		},
@@ -151,7 +161,7 @@ func finalizeApplicationCostTotals(total *ApplicationCostTotals) {
 
 func applicationUnavailableReason(statuses []ApplicationWorkloadStatus) string {
 	for _, status := range statuses {
-		if status.Reason == ReasonQueryError || status.Reason == ReasonNoPrometheus {
+		if status.Reason == ReasonQueryError || status.Reason == ReasonNoPrometheus || status.Reason == ReasonAccessDenied {
 			return status.Reason
 		}
 	}

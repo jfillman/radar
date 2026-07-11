@@ -12,8 +12,9 @@ import (
 )
 
 type ApplicationTrendOptions struct {
-	Range     string
-	Workloads []ApplicationWorkloadRef
+	Range       string
+	Workloads   []ApplicationWorkloadRef
+	Unavailable []ApplicationWorkloadStatus
 }
 
 func ComputeApplicationCostTrendFromProm(ctx context.Context, client *prom.Client, opts ApplicationTrendOptions) *ApplicationCostTrendResponse {
@@ -22,28 +23,30 @@ func ComputeApplicationCostTrendFromProm(ctx context.Context, client *prom.Clien
 	resp := &ApplicationCostTrendResponse{
 		Range: label,
 		Coverage: ApplicationCostCoverage{
-			Total:       len(supported) + len(unsupported),
+			Total:       len(supported) + len(opts.Unavailable) + len(unsupported),
+			Unavailable: append([]ApplicationWorkloadStatus(nil), opts.Unavailable...),
 			Unsupported: unsupported,
 		},
 	}
 	if client == nil {
 		resp.Available = false
 		resp.Reason = ReasonNoPrometheus
-		resp.Coverage.Unavailable = applicationStatusesForRefs(supported, ReasonNoPrometheus)
-		resp.Partial = len(resp.Coverage.Unsupported) > 0
+		resp.Coverage.Unavailable = append(resp.Coverage.Unavailable, applicationStatusesForRefs(supported, ReasonNoPrometheus)...)
+		sortApplicationStatuses(resp.Coverage.Unavailable)
+		resp.Partial = len(resp.Coverage.Unsupported) > 0 || len(opts.Unavailable) > 0
 		return resp
 	}
 	if len(supported) == 0 {
 		resp.Available = false
-		resp.Reason = ReasonNoMetrics
-		resp.Partial = len(resp.Coverage.Unsupported) > 0
+		resp.Reason = applicationUnavailableReason(resp.Coverage.Unavailable)
+		resp.Partial = len(resp.Coverage.Unsupported) > 0 || len(resp.Coverage.Unavailable) > 0
 		return resp
 	}
 
 	byNamespace := groupApplicationRefsByNamespace(supported)
 	for _, namespace := range sortedNamespaceKeys(byNamespace) {
 		refs := byNamespace[namespace]
-		result, reason := queryApplicationTrendNamespace(ctx, client, namespace, refs, start, end, step, label)
+		result, reason := queryApplicationTrendNamespace(ctx, client, namespace, refs, start, end, step)
 		if reason != "" {
 			resp.Coverage.Unavailable = append(resp.Coverage.Unavailable, applicationStatusesForRefs(refs, reason)...)
 			continue
@@ -101,17 +104,17 @@ func ComputeApplicationCostTrendFromProm(ctx context.Context, client *prom.Clien
 	return resp
 }
 
-func queryApplicationTrendNamespace(ctx context.Context, client *prom.Client, namespace string, refs []ApplicationWorkloadRef, start, end time.Time, step time.Duration, label string) (*prom.QueryResult, string) {
+func queryApplicationTrendNamespace(ctx context.Context, client *prom.Client, namespace string, refs []ApplicationWorkloadRef, start, end time.Time, step time.Duration) (*prom.QueryResult, string) {
 	query := buildApplicationTrendQuery(namespace, refs, false)
 	if query == "" {
 		return nil, ReasonNoMetrics
 	}
 	result, err := client.QueryRange(ctx, query, start, end, step)
 	if err != nil {
-		log.Printf("[opencost] app workload trend range query failed for ns=%s (range=%s), trying opencost_container_* fallback: %v", namespace, label, err)
+		log.Print("[opencost] app workload trend range query failed; trying opencost_container_* fallback")
 		result, err = client.QueryRange(ctx, buildApplicationTrendQuery(namespace, refs, true), start, end, step)
 		if err != nil {
-			log.Printf("[opencost] app workload trend fallback query failed for ns=%s (range=%s): %v", namespace, label, err)
+			log.Print("[opencost] app workload trend fallback query failed")
 			return nil, ReasonQueryError
 		}
 	}

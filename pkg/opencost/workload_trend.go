@@ -40,10 +40,10 @@ func ComputeWorkloadCostTrendFromProm(ctx context.Context, client *prom.Client, 
 	query := buildWorkloadTrendQuery(opts.Namespace, kind, opts.Name, false)
 	result, err := client.QueryRange(ctx, query, start, end, step)
 	if err != nil {
-		log.Printf("[opencost] workload trend range query failed for %s %s/%s (range=%s), trying opencost_container_* fallback: %v", kind, opts.Namespace, opts.Name, label, err)
+		log.Print("[opencost] workload trend range query failed; trying opencost_container_* fallback")
 		result, err = client.QueryRange(ctx, buildWorkloadTrendQuery(opts.Namespace, kind, opts.Name, true), start, end, step)
 		if err != nil {
-			log.Printf("[opencost] workload trend fallback query failed for %s %s/%s (range=%s): %v", kind, opts.Namespace, opts.Name, label, err)
+			log.Print("[opencost] workload trend fallback query failed")
 			resp.Available = false
 			resp.Reason = ReasonQueryError
 			return resp

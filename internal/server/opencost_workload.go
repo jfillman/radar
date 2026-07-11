@@ -13,6 +13,14 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
+type openCostWorkloadLookup struct {
+	Resource        any
+	DesiredReplicas int
+	Status          int
+	Message         string
+	Reason          string
+}
+
 func (s *Server) handleOpenCostWorkload(w http.ResponseWriter, r *http.Request) {
 	if !s.requireConnected(w) {
 		return
@@ -41,7 +49,7 @@ func (s *Server) handleOpenCostWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
-		log.Printf("[opencost] EnsureConnected failed (workload %s %s/%s): %v", kind, namespace, name, err)
+		log.Print("[opencost] EnsureConnected failed for workload cost")
 		resp.Available = false
 		resp.Reason = pkgopencost.ReasonNoPrometheus
 		s.writeJSON(w, resp)
@@ -80,7 +88,7 @@ func (s *Server) handleOpenCostWorkloadTrend(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
-		log.Printf("[opencost] EnsureConnected failed (workload trend %s %s/%s): %v", kind, namespace, name, err)
+		log.Print("[opencost] EnsureConnected failed for workload trend")
 		resp.Available = false
 		resp.Reason = pkgopencost.ReasonNoPrometheus
 		s.writeJSON(w, resp)
@@ -116,67 +124,95 @@ func (s *Server) parseOpenCostWorkloadRequest(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) loadOpenCostWorkloadResource(w http.ResponseWriter, kind, namespace, name string) (any, int, bool) {
+	lookup := s.lookupOpenCostWorkloadResource(kind, namespace, name)
+	if lookup.Status != 0 {
+		s.writeError(w, lookup.Status, lookup.Message)
+		return nil, 0, false
+	}
+	return lookup.Resource, lookup.DesiredReplicas, true
+}
+
+func (s *Server) lookupOpenCostWorkloadResource(kind, namespace, name string) openCostWorkloadLookup {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Resource cache not available")
-		return nil, 0, false
+		return openCostWorkloadLookup{
+			Status:  http.StatusServiceUnavailable,
+			Message: "Resource cache not available",
+			Reason:  pkgopencost.ReasonQueryError,
+		}
 	}
 
 	switch kind {
 	case "Deployment":
 		if cache.Deployments() == nil {
-			s.writeError(w, http.StatusForbidden, "insufficient permissions to access deployments")
-			return nil, 0, false
+			return openCostWorkloadLookup{
+				Status:  http.StatusForbidden,
+				Message: "insufficient permissions to access deployments",
+				Reason:  pkgopencost.ReasonAccessDenied,
+			}
 		}
 		deploy, err := cache.Deployments().Deployments(namespace).Get(name)
 		if err != nil {
-			s.writeOpenCostWorkloadGetError(w, kind, namespace, name, err)
-			return nil, 0, false
+			return openCostWorkloadGetError(kind, namespace, name, err)
 		}
 		replicas := int32(1)
 		if deploy.Spec.Replicas != nil {
 			replicas = *deploy.Spec.Replicas
 		}
-		return deploy, int(replicas), true
+		return openCostWorkloadLookup{Resource: deploy, DesiredReplicas: int(replicas)}
 	case "StatefulSet":
 		if cache.StatefulSets() == nil {
-			s.writeError(w, http.StatusForbidden, "insufficient permissions to access statefulsets")
-			return nil, 0, false
+			return openCostWorkloadLookup{
+				Status:  http.StatusForbidden,
+				Message: "insufficient permissions to access statefulsets",
+				Reason:  pkgopencost.ReasonAccessDenied,
+			}
 		}
 		sts, err := cache.StatefulSets().StatefulSets(namespace).Get(name)
 		if err != nil {
-			s.writeOpenCostWorkloadGetError(w, kind, namespace, name, err)
-			return nil, 0, false
+			return openCostWorkloadGetError(kind, namespace, name, err)
 		}
 		replicas := int32(1)
 		if sts.Spec.Replicas != nil {
 			replicas = *sts.Spec.Replicas
 		}
-		return sts, int(replicas), true
+		return openCostWorkloadLookup{Resource: sts, DesiredReplicas: int(replicas)}
 	case "DaemonSet":
 		if cache.DaemonSets() == nil {
-			s.writeError(w, http.StatusForbidden, "insufficient permissions to access daemonsets")
-			return nil, 0, false
+			return openCostWorkloadLookup{
+				Status:  http.StatusForbidden,
+				Message: "insufficient permissions to access daemonsets",
+				Reason:  pkgopencost.ReasonAccessDenied,
+			}
 		}
 		ds, err := cache.DaemonSets().DaemonSets(namespace).Get(name)
 		if err != nil {
-			s.writeOpenCostWorkloadGetError(w, kind, namespace, name, err)
-			return nil, 0, false
+			return openCostWorkloadGetError(kind, namespace, name, err)
 		}
-		return ds, int(ds.Status.DesiredNumberScheduled), true
+		return openCostWorkloadLookup{Resource: ds, DesiredReplicas: int(ds.Status.DesiredNumberScheduled)}
 	default:
-		s.writeError(w, http.StatusBadRequest, "only deployments, statefulsets, and daemonsets are supported")
-		return nil, 0, false
+		return openCostWorkloadLookup{
+			Status:  http.StatusBadRequest,
+			Message: "only deployments, statefulsets, and daemonsets are supported",
+			Reason:  pkgopencost.ReasonQueryError,
+		}
 	}
 }
 
-func (s *Server) writeOpenCostWorkloadGetError(w http.ResponseWriter, kind, namespace, name string, err error) {
+func openCostWorkloadGetError(kind, namespace, name string, err error) openCostWorkloadLookup {
 	if apierrors.IsNotFound(err) {
-		s.writeError(w, http.StatusNotFound, fmt.Sprintf("%s %s/%s not found", kind, namespace, name))
-		return
+		return openCostWorkloadLookup{
+			Status:  http.StatusNotFound,
+			Message: fmt.Sprintf("%s %s/%s not found", kind, namespace, name),
+			Reason:  pkgopencost.ReasonNotFound,
+		}
 	}
-	log.Printf("[opencost] Failed to get %s %s/%s: %v", kind, namespace, name, err)
-	s.writeError(w, http.StatusInternalServerError, "failed to get workload")
+	log.Print("[opencost] Failed to get workload for cost")
+	return openCostWorkloadLookup{
+		Status:  http.StatusInternalServerError,
+		Message: "failed to get workload",
+		Reason:  pkgopencost.ReasonQueryError,
+	}
 }
 
 func focusOpenCostWorkload(resp *pkgopencost.WorkloadCostResponse, kind, namespace, name string, desiredReplicas int) *pkgopencost.WorkloadCostDetailResponse {

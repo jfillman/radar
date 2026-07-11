@@ -56,4 +56,15 @@ describe('getApplicationCostState', () => {
   it('separates query load failures from absent app metrics', () => {
     expect(getApplicationCostState(undefined, undefined, { currentError: true })).toBe('load_error')
   })
+
+  it('surfaces app workload access and existence failures', () => {
+    const current: OpenCostApplicationCostResponse = {
+      available: false,
+      reason: 'access_denied',
+      totals: { hourlyCost: 0, cpuCost: 0, memoryCost: 0, replicas: 0 },
+      coverage: { total: 1, included: 0, unavailable: [{ kind: 'Deployment', namespace: 'prod', name: 'api', reason: 'access_denied' }] },
+    }
+
+    expect(getApplicationCostState(current, undefined, { currentLoading: false, trendLoading: false })).toBe('access_denied')
+  })
 })

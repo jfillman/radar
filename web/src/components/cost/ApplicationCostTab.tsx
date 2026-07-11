@@ -101,7 +101,14 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
     )
   }
 
-  if (state === 'no_prometheus' || state === 'no_metrics' || state === 'query_error' || state === 'load_error') {
+  if (
+    state === 'no_prometheus' ||
+    state === 'no_metrics' ||
+    state === 'query_error' ||
+    state === 'access_denied' ||
+    state === 'not_found' ||
+    state === 'load_error'
+  ) {
     const discoveryAgeMs = noPrometheusSince == null ? 0 : Date.now() - noPrometheusSince
     if (state === 'no_prometheus' && discoveryAgeMs < COST_DISCOVERY_GRACE_MS) {
       return (

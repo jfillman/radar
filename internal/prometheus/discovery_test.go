@@ -243,6 +243,30 @@ func TestProbeCandidatesConcurrently_KeepsBufferedSuccessOnBudgetExpiry(t *testi
 	}
 }
 
+// TestDiscover_StaleFlightGenerationDoesNotCommit verifies discover commits
+// against the generation its flight was keyed with, not a freshly-read one: a
+// flight keyed before a Reset must not adopt the post-Reset generation and
+// publish an endpoint, undoing the reset.
+func TestDiscover_StaleFlightGenerationDoesNotCommit(t *testing.T) {
+	srv := healthyServer(t, 0) // would connect if the generation matched
+
+	c := &Client{
+		httpClient:   &http.Client{Timeout: 5 * time.Second},
+		manualURL:    srv.URL,
+		contextName:  "ctx",
+		discoveryGen: 5, // current generation (a Reset already bumped it)
+	}
+
+	// Flight was keyed at generation 4 (before the Reset).
+	_, _, err := c.discover(context.Background(), 4)
+	if !errors.Is(err, errDiscoverySuperseded) {
+		t.Fatalf("err = %v, want errDiscoverySuperseded", err)
+	}
+	if c.baseURL != "" {
+		t.Fatalf("stale-generation discovery published baseURL=%q", c.baseURL)
+	}
+}
+
 // TestEnsureConnected_RetiredClientAborts verifies that a Client retired by
 // Reinitialize aborts discovery even when its singleflight goroutine starts
 // after the swap — it must not connect (and drive the shared port-forward) for

@@ -46,15 +46,20 @@ const directProbeBudget = 4 * time.Second
 // outside the cluster and can't reach in-cluster Service DNS directly.
 //
 // The lock is only held briefly to read/write state, not during network I/O.
-func (c *Client) discover(ctx context.Context) (string, string, error) {
+//
+// gen is the discovery generation the singleflight was keyed with, threaded
+// through so markConnected commits against *that* generation. Reading the live
+// generation here instead would let a flight keyed at an old generation adopt a
+// newer one after a Reset and commit under it, undoing the reset.
+func (c *Client) discover(ctx context.Context, gen uint64) (string, string, error) {
 	start := time.Now()
+	startGen := gen
 
 	// Layer 1: Manual URL override
 	c.mu.RLock()
 	manualURL := c.manualURL
 	contextName := c.contextName
 	k8sClient := c.k8sClient
-	startGen := c.discoveryGen
 	c.mu.RUnlock()
 
 	if manualURL != "" {

@@ -335,7 +335,8 @@ func (c *Client) discoverShared(ctx context.Context) (string, string, error) {
 	type result struct{ addr, basePath string }
 
 	c.mu.RLock()
-	key := fmt.Sprintf("%s#%d", c.contextName, c.discoveryGen)
+	gen := c.discoveryGen
+	key := fmt.Sprintf("%s#%d", c.contextName, gen)
 	c.mu.RUnlock()
 
 	ch := c.discoverySF.DoChan(key, func() (any, error) {
@@ -384,7 +385,7 @@ func (c *Client) discoverShared(ctx context.Context) (string, string, error) {
 			return result{addr, basePath}, nil
 		}
 
-		addr, basePath, derr := c.discover(dctx)
+		addr, basePath, derr := c.discover(dctx, gen)
 		if derr != nil {
 			return nil, derr
 		}

@@ -28,10 +28,10 @@ func TestComputeWorkloadCostTrendFromProm_DeploymentUsesOwnerMetrics(t *testing.
 	if !got.Available {
 		t.Fatalf("expected Available=true, got %+v", got)
 	}
-	if !strings.Contains(query, `kube_pod_owner{namespace="default", owner_kind="ReplicaSet"}`) {
+	if !strings.Contains(query, `kube_pod_owner{namespace="default", owner_kind="ReplicaSet", owner_is_controller="true"}`) {
 		t.Fatalf("deployment query does not join pod owners through ReplicaSets:\n%s", query)
 	}
-	if !strings.Contains(query, `kube_replicaset_owner{namespace="default", owner_kind="Deployment", owner_name="checkout"}`) {
+	if !strings.Contains(query, `kube_replicaset_owner{namespace="default", owner_kind="Deployment", owner_name="checkout", owner_is_controller="true"}`) {
 		t.Fatalf("deployment query does not join ReplicaSets to target Deployment:\n%s", query)
 	}
 	if !strings.Contains(query, `max by (namespace, pod, replicaset)`) {
@@ -66,7 +66,7 @@ func TestComputeWorkloadCostTrendFromProm_StatefulSetUsesDirectPodOwner(t *testi
 	if !got.Available {
 		t.Fatalf("expected Available=true, got %+v", got)
 	}
-	if !strings.Contains(query, `kube_pod_owner{namespace="db", owner_kind="StatefulSet", owner_name="postgres"}`) {
+	if !strings.Contains(query, `kube_pod_owner{namespace="db", owner_kind="StatefulSet", owner_name="postgres", owner_is_controller="true"}`) {
 		t.Fatalf("statefulset query does not use direct pod owner:\n%s", query)
 	}
 	if !strings.Contains(query, `max by (namespace, pod, owner_kind, owner_name)`) {

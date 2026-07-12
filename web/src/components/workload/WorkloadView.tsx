@@ -41,7 +41,7 @@ import {
 import { PrometheusCharts, isPrometheusSupported } from '../resource/PrometheusCharts'
 import { PrometheusChartsGrid } from '../resource/PrometheusChartsGrid'
 import { RestartEventLane } from '../resource/RestartChart'
-import { RightsizingStrip } from '../resource/RightsizingStrip'
+import { RequestFitPanel, RightsizingStrip } from '../resource/RightsizingStrip'
 import { WorkloadCostTab } from '../cost/WorkloadCostTab'
 import { isOpenCostWorkloadKind } from '../cost/kinds'
 import { useResourceAudit, useResourceIssues, useResources } from '../../api/client'
@@ -682,7 +682,10 @@ export function WorkloadView({
         <MetricsTabContent kind={kind} namespace={ns} name={n} resource={resource} expanded={expanded} />
       )}
       renderCostTab={({ kind, namespace: ns, name: n }) => (
-        <WorkloadCostTab kind={kind} namespace={ns} name={n} />
+        <div className="space-y-4">
+          <RequestFitPanel kind={kind} namespace={ns} name={n} />
+          <WorkloadCostTab kind={kind} namespace={ns} name={n} />
+        </div>
       )}
       isMetricsAvailable={(kind, res) =>
         isPrometheusSupported(kind) && !(kind === 'Pod' && res?.status?.phase === 'Pending')

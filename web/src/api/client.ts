@@ -1744,17 +1744,37 @@ export interface PrometheusPVCUsage {
   hasData: boolean
 }
 
-export type RightsizingTone = 'ok' | 'info' | 'warning' | 'alert' | 'critical'
+export type RequestFit = 'balanced' | 'oversized' | 'under_requested' | 'missing_request' | 'insufficient_history'
+export type RequestFitConfidence = 'low' | 'medium' | 'high'
+export type RequestFitOwnerCoverage = 'ksm_history' | 'current_pods'
 
 export interface RightsizingRow {
   container: string
   resource: 'cpu' | 'memory'
+  fit: RequestFit
+  confidence: RequestFitConfidence
   currentRequest?: string
+  currentRequestValue?: number
   currentLimit?: string
-  p95?: string
+  currentLimitValue?: number
+  observed?: {
+    name: 'P95' | 'P99'
+    value: number
+    formatted: string
+  }
   recommendedRequest?: string
-  tone: RightsizingTone
-  message: string
+  recommendedRequestValue?: number
+  recommendationReason?: string
+  sampleCount: number
+  expectedSamples: number
+  coverage: number
+  hpaManaged: boolean
+  throttleAvailable?: boolean
+  throttleRatio?: number
+  currentPodOOM?: boolean
+  windowOomEvidence?: boolean
+  limitConflict?: boolean
+  queryError?: string
 }
 
 export interface PrometheusRightsizing {
@@ -1762,8 +1782,21 @@ export interface PrometheusRightsizing {
   namespace: string
   name: string
   window: string
+  source: 'radar'
+  ownerCoverage: RequestFitOwnerCoverage
+  scaledToZero: boolean
   sampleAvailable: boolean
   rows: RightsizingRow[]
+  summary: {
+    balanced: number
+    oversized: number
+    underRequested: number
+    missingRequest: number
+    insufficientHistory: number
+    queryErrors: number
+    throttled: number
+    oomEvidence: number
+  }
   reason?: string
 }
 
@@ -1955,7 +1988,7 @@ export function usePrometheusRightsizing(kind: string, namespace: string, name: 
     queryKey: ['prometheus-rightsizing', kind, namespace, name],
     queryFn: () => fetchJSON(`/prometheus/rightsizing/${kind}/${namespace}/${name}`),
     enabled: enabled && Boolean(kind && namespace && name),
-    staleTime: 5 * 60 * 1000, // P95 over 24h is slow to shift; cache aggressively
+    staleTime: 5 * 60 * 1000,
     refetchInterval: 10 * 60 * 1000,
   })
 }

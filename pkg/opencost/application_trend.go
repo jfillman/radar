@@ -138,11 +138,11 @@ func buildApplicationTrendQuery(namespace string, refs []ApplicationWorkloadRef,
   (%s)
   * on(namespace, pod) group_left(replicaset)
     max by (namespace, pod, replicaset) (
-      label_replace(kube_pod_owner{namespace="%s", owner_kind="ReplicaSet"}, "replicaset", "$1", "owner_name", "(.+)")
+      label_replace(kube_pod_owner{namespace="%s", owner_kind="ReplicaSet", owner_is_controller="true"}, "replicaset", "$1", "owner_name", "(.+)")
     )
   * on(namespace, replicaset) group_left(owner_kind, owner_name)
     max by (namespace, replicaset, owner_kind, owner_name) (
-      kube_replicaset_owner{namespace="%s", owner_kind="Deployment", owner_name=~"%s"}
+      kube_replicaset_owner{namespace="%s", owner_kind="Deployment", owner_name=~"%s", owner_is_controller="true"}
     )
 )`, podCost, safeNS, safeNS, promRegexAlternation(names)))
 	}
@@ -152,7 +152,7 @@ func buildApplicationTrendQuery(namespace string, refs []ApplicationWorkloadRef,
   (%s)
   * on(namespace, pod) group_left(owner_kind, owner_name)
     max by (namespace, pod, owner_kind, owner_name) (
-      kube_pod_owner{namespace="%s", owner_kind="%s", owner_name=~"%s"}
+      kube_pod_owner{namespace="%s", owner_kind="%s", owner_name=~"%s", owner_is_controller="true"}
     )
 )`, podCost, safeNS, kind, promRegexAlternation(names)))
 		}

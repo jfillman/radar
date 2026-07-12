@@ -35,13 +35,13 @@ func TestComputeApplicationCostTrendFromProm_BatchesByNamespaceAndReportsPartial
 		t.Fatalf("expected one range query for one namespace, got %d", len(queries))
 	}
 	query := queries[0]
-	if !strings.Contains(query, `kube_replicaset_owner{namespace="default", owner_kind="Deployment", owner_name=~"api"}`) {
+	if !strings.Contains(query, `kube_replicaset_owner{namespace="default", owner_kind="Deployment", owner_name=~"api", owner_is_controller="true"}`) {
 		t.Fatalf("deployment selector missing from app trend query:\n%s", query)
 	}
-	if !strings.Contains(query, `kube_pod_owner{namespace="default", owner_kind="StatefulSet", owner_name=~"db"}`) {
+	if !strings.Contains(query, `kube_pod_owner{namespace="default", owner_kind="StatefulSet", owner_name=~"db", owner_is_controller="true"}`) {
 		t.Fatalf("statefulset selector missing from app trend query:\n%s", query)
 	}
-	if !strings.Contains(query, `kube_pod_owner{namespace="default", owner_kind="DaemonSet", owner_name=~"agent"}`) {
+	if !strings.Contains(query, `kube_pod_owner{namespace="default", owner_kind="DaemonSet", owner_name=~"agent", owner_is_controller="true"}`) {
 		t.Fatalf("daemonset selector missing from app trend query:\n%s", query)
 	}
 	if !got.Available || !got.Partial {

@@ -33,7 +33,6 @@ type Client struct {
 	prom     *prom.Client // rebuilt whenever baseURL/basePath changes
 
 	// Discovery state
-	discovered       bool
 	discoveryService *prom.ServiceInfo // discovered service info for port-forward
 	manualURL        string            // --prometheus-url override
 	headers          map[string]string
@@ -212,7 +211,6 @@ func Reset() {
 		globalClient.baseURL = ""
 		globalClient.basePath = ""
 		globalClient.prom = nil
-		globalClient.discovered = false
 		globalClient.discoveryService = nil
 		globalClient.discoveryGen++
 		cancel := globalClient.discoveryCancel
@@ -308,7 +306,6 @@ func (c *Client) EnsureConnected(ctx context.Context) (string, string, error) {
 			c.baseURL = ""
 			c.basePath = ""
 			c.prom = nil
-			c.discovered = false
 			c.mu.Unlock()
 		}
 	}

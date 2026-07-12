@@ -365,6 +365,5 @@ func (c *Client) markConnected(addr, basePath string, gen uint64) bool {
 	c.baseURL = addr
 	c.basePath = basePath
 	c.prom = nil
-	c.discovered = true
 	return true
 }

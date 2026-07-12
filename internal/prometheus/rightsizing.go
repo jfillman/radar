@@ -623,7 +623,7 @@ func classifyRequestFit(row *RightsizingRow, observed float64, req, lim *resourc
 		row.RecommendationReason = "hpa_managed"
 		return
 	}
-	if !row.HPAEvidenceAvailable {
+	if row.Fit == FitOversized && !row.HPAEvidenceAvailable {
 		row.RecommendationReason = "hpa_evidence_unavailable"
 		return
 	}

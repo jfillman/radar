@@ -251,6 +251,25 @@ func TestRecommendationSafetySuppressesUnknownHPAAndOOM(t *testing.T) {
 	}
 }
 
+func TestUnknownHPAEvidencePermitsIncreaseGuidance(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		req  *resource.Quantity
+		fit  RequestFit
+	}{
+		{name: "under-requested", req: mustQuantity(t, "100m"), fit: FitUnderRequested},
+		{name: "missing request", fit: FitMissingRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			row := RightsizingRow{HPAEvidenceAvailable: false}
+			classifyRequestFit(&row, 0.2, test.req, nil, "cpu")
+			if row.Fit != test.fit || row.RecommendedReq == nil || row.RecommendationReason != "" {
+				t.Fatalf("unknown HPA evidence suppressed increase guidance: %+v", row)
+			}
+		})
+	}
+}
+
 func TestMarkScanHPAAvailableIsNamespaceScoped(t *testing.T) {
 	workloads := map[string]*scanWorkload{
 		"a": {namespace: "team-a"},

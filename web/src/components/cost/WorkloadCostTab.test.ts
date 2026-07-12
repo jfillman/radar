@@ -16,6 +16,10 @@ describe('getWorkloadCostState', () => {
         cpuCost: 0,
         memoryCost: 0,
         replicas: 0,
+        cpuUsageAvailable: false,
+        memoryUsageAvailable: false,
+        cpuAllocationUse: 0,
+        memoryAllocationUse: 0,
       },
     }
     const trend: OpenCostWorkloadTrendResponse = {
@@ -43,6 +47,10 @@ describe('getWorkloadCostState', () => {
         cpuCost: 0.12,
         memoryCost: 0.08,
         replicas: 2,
+        cpuUsageAvailable: true,
+        memoryUsageAvailable: true,
+        cpuAllocationUse: 25,
+        memoryAllocationUse: 25,
       },
     }
     const trend: OpenCostWorkloadTrendResponse = {
@@ -70,6 +78,10 @@ describe('getWorkloadCostState', () => {
         cpuCost: 0.12,
         memoryCost: 0.08,
         replicas: 2,
+        cpuUsageAvailable: true,
+        memoryUsageAvailable: true,
+        cpuAllocationUse: 25,
+        memoryAllocationUse: 25,
       },
     }
 

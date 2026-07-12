@@ -119,7 +119,6 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
   const totalMem = namespaces.reduce((sum, ns) => sum + ns.memoryCost, 0)
   const totalStorage = data.totalStorageCost ?? 0
   const hasStorage = totalStorage > 0
-  const hasEfficiency = (data.clusterEfficiency ?? 0) > 0
   const hasSystemNamespaces = namespaces.some((ns) => isSystemCostNamespace(ns.name))
 
   // Compute split percentages (CPU + Memory + optional Storage)
@@ -172,18 +171,6 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
               onRefresh={() => refetch()}
               connectionState={connection.state}
             />
-            {hasEfficiency && (
-              <div className="flex flex-col items-end gap-0.5">
-                <div className="flex items-center gap-2 text-sm">
-                  <span className={efficiencyColor(data.clusterEfficiency ?? 0)}>
-                    {(data.clusterEfficiency ?? 0).toFixed(0)}% efficient
-                  </span>
-                </div>
-                <span className="text-[10px] text-theme-text-tertiary">
-                  {formatProjectedMonthlyRate(data.totalIdleCost ?? 0)} unused capacity
-                </span>
-              </div>
-            )}
             <div className="flex flex-col items-end">
               <div className="flex items-baseline gap-1">
                 <span className="text-2xl font-bold text-theme-text-primary tabular-nums">
@@ -248,7 +235,7 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
           {hasSystemNamespaces && <SystemNamespacesCostNote />}
 
           {/* Table header */}
-          <div className="grid grid-cols-[minmax(180px,1fr)_110px_90px_80px_minmax(160px,1fr)_150px] gap-2 px-4 py-2 border-b border-theme-border text-[11px] font-medium text-theme-text-tertiary uppercase tracking-wider">
+          <div className="grid grid-cols-[minmax(180px,1fr)_110px_90px_minmax(160px,1fr)_150px] gap-2 px-4 py-2 border-b border-theme-border text-[11px] font-medium text-theme-text-tertiary uppercase tracking-wider">
             <span>Namespace</span>
             <Tooltip
               content="Projected from current hourly rate — not historical spend"
@@ -257,12 +244,6 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
               <span className="cursor-help">Projected/mo*</span>
             </Tooltip>
             <span className="text-right">Hourly</span>
-            <Tooltip
-              content="% of reserved resources actually being used, weighted by cost"
-              wrapperClassName="!block text-right"
-            >
-              <span className="cursor-help">Efficiency</span>
-            </Tooltip>
             <span>CPU / Memory</span>
             <Tooltip
               content="Projected monthly CPU and memory allocation from the current hourly rate"
@@ -321,14 +302,11 @@ function NamespaceCostRow({
   const cpuPct = allocTotal > 0 ? (ns.cpuCost / allocTotal) * 100 : 50
   const memPct = allocTotal > 0 ? (ns.memoryCost / allocTotal) * 100 : 50
   const barWidth = maxCost > 0 ? (ns.hourlyCost / maxCost) * 100 : 0
-  const eff = ns.efficiency ?? 0
-  const hasEff = eff > 0
-
   return (
     <div>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full grid grid-cols-[minmax(180px,1fr)_110px_90px_80px_minmax(160px,1fr)_150px] gap-2 px-4 py-2.5 text-left hover:bg-theme-hover/50 transition-colors group"
+        className="w-full grid grid-cols-[minmax(180px,1fr)_110px_90px_minmax(160px,1fr)_150px] gap-2 px-4 py-2.5 text-left hover:bg-theme-hover/50 transition-colors group"
       >
         <span className="flex items-center gap-1.5 min-w-0">
           {expanded ? (
@@ -341,7 +319,7 @@ function NamespaceCostRow({
           </Tooltip>
           {isSystemCostNamespace(ns.name) && (
             <Tooltip
-              content="Usually platform overhead from Kubernetes and cluster add-ons. Review enabled add-ons before treating this as app waste."
+              content="Usually platform overhead from Kubernetes and cluster add-ons. Review enabled add-ons before treating this as an application optimization target."
               wrapperClassName="shrink-0"
             >
               <span className="rounded bg-theme-elevated px-1.5 py-0.5 text-[10px] font-medium text-theme-text-tertiary">
@@ -355,15 +333,6 @@ function NamespaceCostRow({
         </span>
         <span className="text-sm text-theme-text-secondary tabular-nums text-right">
           {formatCostPerHour(ns.hourlyCost)}
-        </span>
-        <span className="text-right flex items-center justify-end gap-1">
-          {hasEff ? (
-            <>
-              <span className={`text-xs font-medium tabular-nums ${efficiencyColor(eff)}`}>{eff.toFixed(0)}%</span>
-            </>
-          ) : (
-            <span className="text-xs text-theme-text-quaternary">-</span>
-          )}
         </span>
         <span className="flex items-center gap-2">
           <div
@@ -409,7 +378,7 @@ function SystemNamespacesCostNote() {
     <div className="border-b border-theme-border/50 bg-theme-elevated/30 px-4 py-2 text-xs text-theme-text-tertiary">
       Rows marked <span className="font-medium text-theme-text-secondary">system</span> are usually baseline Kubernetes,
       cloud-provider, or add-on overhead. Optimize by reviewing enabled add-ons, telemetry, or node count before
-      treating them as application waste.
+      treating them as application optimization targets.
     </div>
   )
 }
@@ -469,8 +438,6 @@ function WorkloadCostRow({
 }) {
   const cpuPct = wl.hourlyCost > 0 ? (wl.cpuCost / wl.hourlyCost) * 100 : 50
   const barWidth = maxCost > 0 ? (wl.hourlyCost / maxCost) * 100 : 0
-  const eff = wl.efficiency ?? 0
-  const hasEff = eff > 0
   const kindLabel = displayCostWorkloadKind(wl.kind)
   const resource = costWorkloadResource(wl, namespace)
   const canOpen = Boolean(resource && onOpenResource)
@@ -491,16 +458,6 @@ function WorkloadCostRow({
       <span className="text-xs text-theme-text-tertiary tabular-nums text-right">
         {formatCostPerHour(wl.hourlyCost)}
       </span>
-      <span className="text-right flex items-center justify-end gap-1">
-        {hasEff ? (
-          <>
-            <span className={`text-[10px] font-medium tabular-nums ${efficiencyColor(eff)}`}>{eff.toFixed(0)}%</span>
-            {eff < 25 && <span className="text-[9px] text-red-400">low</span>}
-          </>
-        ) : (
-          <span className="text-[10px] text-theme-text-quaternary">-</span>
-        )}
-      </span>
       <span className="flex items-center gap-2">
         <div
           className="flex-1 h-1.5 rounded-full overflow-hidden bg-theme-hover flex"
@@ -516,8 +473,7 @@ function WorkloadCostRow({
     </>
   )
 
-  const rowClass =
-    'grid grid-cols-[minmax(180px,1fr)_110px_90px_80px_minmax(160px,1fr)_150px] gap-2 px-4 py-2 text-left'
+  const rowClass = 'grid grid-cols-[minmax(180px,1fr)_110px_90px_minmax(160px,1fr)_150px] gap-2 px-4 py-2 text-left'
 
   if (canOpen && resource) {
     return (
@@ -723,9 +679,9 @@ function CostHelpDialog({ onClose }: { onClose: () => void }) {
               What do monthly, daily, and hourly cost mean?
             </h3>
             <p>
-              Each workload <strong>requests</strong> a certain amount of CPU and memory when it's deployed. These
-              requests reserve capacity on a node — that reserved capacity has a cost based on the node's cloud pricing,
-              whether the workload actually uses it or not.
+              OpenCost assigns CPU and memory allocation using the greater of a workload's request or observed use, then
+              applies the node's cloud pricing. Allocation cost is therefore useful for attribution, but it is not a
+              direct measurement of request headroom.
             </p>
             <p className="mt-1.5">
               Projected monthly and daily numbers multiply the current hourly allocation rate. They are useful for
@@ -734,47 +690,13 @@ function CostHelpDialog({ onClose }: { onClose: () => void }) {
             </p>
           </section>
 
-          {/* Efficiency */}
-          <section>
-            <h3 className="text-sm font-semibold text-theme-text-primary mb-1.5">What is efficiency?</h3>
-            <p>
-              Efficiency compares what you're <strong>actually using</strong> versus what you've{' '}
-              <strong>reserved</strong>, weighted by cost. If a namespace reserves $1/hr of resources but only uses
-              $0.40 worth, it's 40% efficient — the other $0.60/hr is idle capacity you're paying for but not using.
-            </p>
-            <p className="mt-2 text-theme-text-tertiary text-xs">
-              Some over-provisioning is normal and healthy — it gives your workloads room to handle traffic spikes
-              without running out of resources. Don't aim for 100%.
-            </p>
-            <div className="mt-2 space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                <span>
-                  <strong>50%+</strong> — well-utilized
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-amber-400" />
-                <span>
-                  <strong>25–50%</strong> — typical for most clusters, some room to optimize
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-red-400" />
-                <span>
-                  <strong>Below 25%</strong> — worth investigating, may be significantly over-provisioned
-                </span>
-              </div>
-            </div>
-          </section>
-
           {/* Time context */}
           <section>
             <h3 className="text-sm font-semibold text-theme-text-primary mb-1.5">How fresh is this data?</h3>
             <p>
-              Cost rates, efficiency, and breakdowns are <strong>snapshots based on the last 1 hour</strong> of data.
-              They update automatically every minute. The trend chart shows historical hourly allocation rate over the
-              selected time range (6 hours, 24 hours, or 7 days).
+              Cost rates and breakdowns are <strong>snapshots based on the last 1 hour</strong> of data. They update
+              automatically every minute. The trend chart shows historical hourly allocation rate over the selected time
+              range (6 hours, 24 hours, or 7 days).
             </p>
             <p className="mt-1.5">
               Because costs are based on a 1-hour window, short-lived spikes or dips may not be reflected. The trend
@@ -795,12 +717,4 @@ function CostHelpDialog({ onClose }: { onClose: () => void }) {
       </div>
     </div>
   )
-}
-
-// --- Utilities ---
-
-function efficiencyColor(efficiency: number): string {
-  if (efficiency >= 50) return 'text-emerald-400'
-  if (efficiency >= 25) return 'text-amber-400'
-  return 'text-red-400'
 }

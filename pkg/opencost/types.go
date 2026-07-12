@@ -62,16 +62,20 @@ type WorkloadCostDetailResponse struct {
 
 // WorkloadCost holds per-workload cost breakdown within a namespace.
 type WorkloadCost struct {
-	Name            string  `json:"name"`
-	Kind            string  `json:"kind"` // Deployment, StatefulSet, DaemonSet, Job, standalone, staticpod
-	HourlyCost      float64 `json:"hourlyCost"`
-	CPUCost         float64 `json:"cpuCost"`
-	MemoryCost      float64 `json:"memoryCost"`
-	Replicas        int     `json:"replicas"`
-	CPUUsageCost    float64 `json:"cpuUsageCost,omitempty"`
-	MemoryUsageCost float64 `json:"memoryUsageCost,omitempty"`
-	Efficiency      float64 `json:"efficiency,omitempty"` // 0-100
-	IdleCost        float64 `json:"idleCost,omitempty"`
+	Name                 string  `json:"name"`
+	Kind                 string  `json:"kind"` // Deployment, StatefulSet, DaemonSet, Job, standalone, staticpod
+	HourlyCost           float64 `json:"hourlyCost"`
+	CPUCost              float64 `json:"cpuCost"`
+	MemoryCost           float64 `json:"memoryCost"`
+	Replicas             int     `json:"replicas"`
+	CPUUsageCost         float64 `json:"cpuUsageCost,omitempty"`
+	MemoryUsageCost      float64 `json:"memoryUsageCost,omitempty"`
+	CPUUsageAvailable    bool    `json:"cpuUsageAvailable"`
+	MemoryUsageAvailable bool    `json:"memoryUsageAvailable"`
+	CPUAllocationUse     float64 `json:"cpuAllocationUse"`
+	MemoryAllocationUse  float64 `json:"memoryAllocationUse"`
+	Efficiency           float64 `json:"efficiency,omitempty"` // 0-100
+	IdleCost             float64 `json:"idleCost,omitempty"`
 }
 
 // CostTrendResponse is the response for the /api/opencost/trend endpoint.
@@ -129,14 +133,18 @@ type ApplicationWorkloadStatus struct {
 // ApplicationCostTotals holds summed current cost values for included app
 // workloads.
 type ApplicationCostTotals struct {
-	HourlyCost      float64 `json:"hourlyCost"`
-	CPUCost         float64 `json:"cpuCost"`
-	MemoryCost      float64 `json:"memoryCost"`
-	Replicas        int     `json:"replicas"`
-	CPUUsageCost    float64 `json:"cpuUsageCost,omitempty"`
-	MemoryUsageCost float64 `json:"memoryUsageCost,omitempty"`
-	Efficiency      float64 `json:"efficiency,omitempty"`
-	IdleCost        float64 `json:"idleCost,omitempty"`
+	HourlyCost           float64 `json:"hourlyCost"`
+	CPUCost              float64 `json:"cpuCost"`
+	MemoryCost           float64 `json:"memoryCost"`
+	Replicas             int     `json:"replicas"`
+	CPUUsageCost         float64 `json:"cpuUsageCost,omitempty"`
+	MemoryUsageCost      float64 `json:"memoryUsageCost,omitempty"`
+	CPUUsageAvailable    bool    `json:"cpuUsageAvailable"`
+	MemoryUsageAvailable bool    `json:"memoryUsageAvailable"`
+	CPUAllocationUse     float64 `json:"cpuAllocationUse"`
+	MemoryAllocationUse  float64 `json:"memoryAllocationUse"`
+	Efficiency           float64 `json:"efficiency,omitempty"`
+	IdleCost             float64 `json:"idleCost,omitempty"`
 }
 
 // ApplicationWorkloadCost is a current-cost row for one app workload.

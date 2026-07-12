@@ -613,6 +613,10 @@ export interface OpenCostWorkloadCost {
   replicas: number
   cpuUsageCost?: number
   memoryUsageCost?: number
+  cpuUsageAvailable: boolean
+  memoryUsageAvailable: boolean
+  cpuAllocationUse: number
+  memoryAllocationUse: number
   efficiency?: number
   idleCost?: number
 }
@@ -735,6 +739,10 @@ export interface OpenCostApplicationCostTotals {
   replicas: number
   cpuUsageCost?: number
   memoryUsageCost?: number
+  cpuUsageAvailable: boolean
+  memoryUsageAvailable: boolean
+  cpuAllocationUse: number
+  memoryAllocationUse: number
   efficiency?: number
   idleCost?: number
 }

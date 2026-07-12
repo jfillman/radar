@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { clsx } from 'clsx'
 import { AlertCircle, DollarSign, HelpCircle, Loader2, TrendingUp } from 'lucide-react'
 import type { AppRow, AppWorkload } from '@skyhook-io/k8s-ui'
 import {
@@ -23,6 +22,7 @@ import {
   formatProjectedMonthlyRate,
 } from './format'
 import { isOpenCostWorkloadKind } from './kinds'
+import { CurrentAllocationUse } from './CurrentAllocationUse'
 
 type ApplicationCostState =
   | 'loading'
@@ -123,17 +123,15 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
   const trend = trendData
   const hasCurrent = current?.available === true && (current.coverage?.included ?? 0) > 0
   const totals = hasCurrent ? current?.totals : undefined
-  const coverage = state === 'partial_missing_current'
-    ? (trend?.coverage ?? current?.coverage)
-    : (current?.coverage ?? trend?.coverage)
+  const coverage =
+    state === 'partial_missing_current'
+      ? (trend?.coverage ?? current?.coverage)
+      : (current?.coverage ?? trend?.coverage)
   const included = coverage?.included ?? 0
   const total = coverage?.total ?? workloads.length
   const unavailableCount = coverage?.unavailable?.length ?? 0
   const unsupportedCount = coverage?.unsupported?.length ?? 0
   const hourly = totals?.hourlyCost ?? 0
-  const currentSplit = (totals?.cpuCost ?? 0) + (totals?.memoryCost ?? 0)
-  const cpuPct = currentSplit > 0 ? ((totals?.cpuCost ?? 0) / currentSplit) * 100 : 0
-  const memoryPct = currentSplit > 0 ? ((totals?.memoryCost ?? 0) / currentSplit) * 100 : 0
   const points = trend?.available ? (trend.dataPoints ?? []) : []
   const hasTrend = points.length >= 2 && points.some((p) => p.value > 0)
   const rows = current?.workloads ?? []
@@ -169,7 +167,7 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
             <div>
               <div className="flex items-center gap-1.5">
                 <div className="text-sm font-semibold text-theme-text-primary">Application compute cost</div>
-                <CostInfoTooltip content="Dollars are based on OpenCost CPU and memory allocation over time, grouped by the workloads in this application. This is allocated/requested compute cost, not raw utilization alone." />
+                <CostInfoTooltip content="Dollars are based on OpenCost CPU and memory allocation over time, grouped by the workloads in this application. OpenCost allocation uses the greater of requested or observed resources." />
               </div>
               <div className="text-xs text-theme-text-tertiary">
                 OpenCost CPU and memory allocation rate ($/hr) for Deployment, StatefulSet, and DaemonSet workloads
@@ -222,21 +220,11 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
         </div>
       </section>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         <CostMetricTile
           label="Tracked workloads"
           value={`${included}/${total}`}
           subvalue={unsupportedCount > 0 ? `${unsupportedCount} unsupported` : 'All supported workloads included'}
-        />
-        <CostMetricTile
-          label="Efficiency"
-          value={totals ? `${(totals.efficiency ?? 0).toFixed(0)}%` : '—'}
-          subvalue={
-            totals
-              ? `${formatProjectedMonthlyRate(totals.idleCost ?? 0)} idle at current rate`
-              : 'Current allocation unavailable'
-          }
-          tooltip="Actual CPU and memory usage divided by allocated CPU and memory cost across included workloads. Low efficiency usually means requested capacity is sitting idle."
         />
         <CostMetricTile
           label="Projected daily"
@@ -245,49 +233,17 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
         />
       </div>
 
-      <section className="rounded-lg border border-theme-border bg-theme-surface/50 p-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-1.5">
-              <div className="text-sm font-semibold text-theme-text-primary">Current allocation split</div>
-              <CostInfoTooltip content="Last-hour allocated CPU and memory cost summed across included app workloads. Storage/PVC and network attribution remain at namespace and cluster level." />
-            </div>
-            <div className="text-xs text-theme-text-tertiary">Last 1h OpenCost allocation window</div>
-          </div>
-          <div className="text-right">
-            <div className="text-sm font-medium text-theme-text-primary tabular-nums">
-              {totals ? formatProjectedMonthlyRate(currentSplit) : '—'}
-            </div>
-            {totals && (
-              <div className="text-[10px] text-theme-text-tertiary tabular-nums">
-                {formatCostPerHour(currentSplit)} current rate
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="h-3 overflow-hidden rounded-full bg-theme-hover">
-          <div className="flex h-full">
-            {totals && (
-              <>
-                <div className="h-full bg-accent" style={{ width: `${cpuPct}%` }} />
-                <div className="h-full bg-amber-500" style={{ width: `${memoryPct}%` }} />
-              </>
-            )}
-          </div>
-        </div>
-        <div className="mt-3 grid gap-2 text-xs text-theme-text-secondary sm:grid-cols-2">
-          <CostLegendItem
-            colorClass="bg-accent"
-            label="CPU"
-            value={totals ? formatProjectedMonthlyRate(totals.cpuCost ?? 0) : '—'}
-          />
-          <CostLegendItem
-            colorClass="bg-amber-500"
-            label="Memory"
-            value={totals ? formatProjectedMonthlyRate(totals.memoryCost ?? 0) : '—'}
-          />
-        </div>
-      </section>
+      <CurrentAllocationUse
+        dataAvailable={Boolean(totals)}
+        cpuCost={totals?.cpuCost ?? 0}
+        memoryCost={totals?.memoryCost ?? 0}
+        hourlyCost={hourly}
+        cpuAllocationUse={totals?.cpuAllocationUse ?? 0}
+        memoryAllocationUse={totals?.memoryAllocationUse ?? 0}
+        cpuUsageAvailable={totals?.cpuUsageAvailable ?? false}
+        memoryUsageAvailable={totals?.memoryUsageAvailable ?? false}
+        scopeNote="Included workloads only"
+      />
 
       <section className="rounded-lg border border-theme-border bg-theme-surface/50">
         <div className="flex items-center justify-between border-b border-theme-border px-4 py-3">
@@ -537,17 +493,5 @@ function CostInfoTooltip({ content }: { content: string }) {
     <Tooltip content={content} className="max-w-[280px] whitespace-normal text-left" delay={150}>
       <HelpCircle className="h-3.5 w-3.5 cursor-help text-theme-text-tertiary transition-colors hover:text-theme-text-secondary" />
     </Tooltip>
-  )
-}
-
-function CostLegendItem({ colorClass, label, value }: { colorClass: string; label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-md bg-theme-base px-2.5 py-2">
-      <span className="flex items-center gap-2">
-        <span className={clsx('h-2.5 w-2.5 rounded-sm', colorClass)} />
-        {label}
-      </span>
-      <span className="font-medium tabular-nums text-theme-text-primary">{value}</span>
-    </div>
   )
 }

@@ -1,6 +1,10 @@
 package opencost
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestBuildApplicationCostResponse_PartialAndScaledToZero(t *testing.T) {
 	inputs := []ApplicationWorkloadCostInput{
@@ -18,14 +22,16 @@ func TestBuildApplicationCostResponse_PartialAndScaledToZero(t *testing.T) {
 			Available: true,
 			Namespace: "default",
 			Workloads: []WorkloadCost{{
-				Name:            "api",
-				Kind:            "Deployment",
-				HourlyCost:      0.2,
-				CPUCost:         0.12,
-				MemoryCost:      0.08,
-				Replicas:        2,
-				CPUUsageCost:    0.03,
-				MemoryUsageCost: 0.02,
+				Name:                 "api",
+				Kind:                 "Deployment",
+				HourlyCost:           0.2,
+				CPUCost:              0.12,
+				MemoryCost:           0.08,
+				Replicas:             2,
+				CPUUsageCost:         0.03,
+				MemoryUsageCost:      0.02,
+				CPUUsageAvailable:    true,
+				MemoryUsageAvailable: true,
 			}},
 		},
 	})
@@ -55,6 +61,12 @@ func TestBuildApplicationCostResponse_PartialAndScaledToZero(t *testing.T) {
 	if got.Totals.HourlyCost != 0.2 || got.Totals.CPUCost != 0.12 || got.Totals.MemoryCost != 0.08 || got.Totals.Replicas != 2 {
 		t.Fatalf("totals = %+v", got.Totals)
 	}
+	if got.Totals.CPUAllocationUse != 25 || got.Totals.MemoryAllocationUse != 25 {
+		t.Fatalf("allocation use = cpu:%v memory:%v, want 25/25", got.Totals.CPUAllocationUse, got.Totals.MemoryAllocationUse)
+	}
+	if !got.Totals.CPUUsageAvailable || !got.Totals.MemoryUsageAvailable {
+		t.Fatalf("usage availability = cpu:%t memory:%t, want both true", got.Totals.CPUUsageAvailable, got.Totals.MemoryUsageAvailable)
+	}
 
 	var scaled *ApplicationWorkloadCost
 	for i := range got.Workloads {
@@ -75,6 +87,37 @@ func TestBuildApplicationCostResponse_PartialAndScaledToZero(t *testing.T) {
 	}
 	if private == nil || private.Available || private.Reason != ReasonAccessDenied {
 		t.Fatalf("prevalidated unavailable row not preserved: %+v", private)
+	}
+}
+
+func TestApplicationCostTotals_IncompleteUsageSuppressesAggregatePercentage(t *testing.T) {
+	total := ApplicationCostTotals{}
+	addApplicationCostTotal(&total, WorkloadCost{
+		CPUCost: 1, MemoryCost: 1, CPUUsageCost: 0.5, MemoryUsageCost: 0.5,
+		CPUUsageAvailable: true, MemoryUsageAvailable: true,
+	})
+	addApplicationCostTotal(&total, WorkloadCost{
+		CPUCost: 1, MemoryCost: 1, CPUUsageCost: 0.25, MemoryUsageCost: 0.5,
+		CPUUsageAvailable: false, MemoryUsageAvailable: true,
+	})
+	finalizeApplicationCostTotals(&total)
+
+	if total.CPUUsageAvailable || total.CPUAllocationUse != 0 {
+		t.Fatalf("incomplete CPU aggregate = available:%t use:%v, want false/0", total.CPUUsageAvailable, total.CPUAllocationUse)
+	}
+	if !total.MemoryUsageAvailable || total.MemoryAllocationUse != 50 {
+		t.Fatalf("complete memory aggregate = available:%t use:%v, want true/50", total.MemoryUsageAvailable, total.MemoryAllocationUse)
+	}
+}
+
+func TestApplicationCostTotals_UsageAvailabilityAlwaysSerialized(t *testing.T) {
+	body, err := json.Marshal(ApplicationCostTotals{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonBody := string(body)
+	if !strings.Contains(jsonBody, `"cpuUsageAvailable":false`) || !strings.Contains(jsonBody, `"memoryUsageAvailable":false`) {
+		t.Fatalf("required availability fields missing from %s", jsonBody)
 	}
 }
 

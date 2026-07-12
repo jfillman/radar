@@ -7,7 +7,7 @@ describe('getApplicationCostState', () => {
     const current: OpenCostApplicationCostResponse = {
       available: true,
       partial: true,
-      totals: { hourlyCost: 0.4, cpuCost: 0.25, memoryCost: 0.15, replicas: 3 },
+      totals: { hourlyCost: 0.4, cpuCost: 0.25, memoryCost: 0.15, replicas: 3, cpuUsageAvailable: true, memoryUsageAvailable: true, cpuAllocationUse: 40, memoryAllocationUse: 60 },
       coverage: { total: 3, included: 2, unavailable: [{ kind: 'Deployment', namespace: 'prod', name: 'worker', reason: 'no_metrics' }] },
       workloads: [],
     }
@@ -25,7 +25,7 @@ describe('getApplicationCostState', () => {
     const current: OpenCostApplicationCostResponse = {
       available: false,
       reason: 'no_metrics',
-      totals: { hourlyCost: 0, cpuCost: 0, memoryCost: 0, replicas: 0 },
+      totals: { hourlyCost: 0, cpuCost: 0, memoryCost: 0, replicas: 0, cpuUsageAvailable: false, memoryUsageAvailable: false, cpuAllocationUse: 0, memoryAllocationUse: 0 },
       coverage: { total: 2, included: 0 },
     }
     const trend: OpenCostApplicationCostTrendResponse = {
@@ -45,9 +45,9 @@ describe('getApplicationCostState', () => {
   it('treats all tracked workloads scaled to zero as valid zero state', () => {
     const current: OpenCostApplicationCostResponse = {
       available: true,
-      totals: { hourlyCost: 0, cpuCost: 0, memoryCost: 0, replicas: 0 },
+      totals: { hourlyCost: 0, cpuCost: 0, memoryCost: 0, replicas: 0, cpuUsageAvailable: false, memoryUsageAvailable: false, cpuAllocationUse: 0, memoryAllocationUse: 0 },
       coverage: { total: 1, included: 1 },
-      workloads: [{ kind: 'Deployment', namespace: 'prod', name: 'api', available: true, scaledToZero: true, current: { name: 'api', kind: 'Deployment', hourlyCost: 0, cpuCost: 0, memoryCost: 0, replicas: 0 } }],
+      workloads: [{ kind: 'Deployment', namespace: 'prod', name: 'api', available: true, scaledToZero: true, current: { name: 'api', kind: 'Deployment', hourlyCost: 0, cpuCost: 0, memoryCost: 0, replicas: 0, cpuUsageAvailable: false, memoryUsageAvailable: false, cpuAllocationUse: 0, memoryAllocationUse: 0 } }],
     }
 
     expect(getApplicationCostState(current, undefined, { currentLoading: false, trendLoading: false })).toBe('zero')
@@ -61,7 +61,7 @@ describe('getApplicationCostState', () => {
     const current: OpenCostApplicationCostResponse = {
       available: false,
       reason: 'access_denied',
-      totals: { hourlyCost: 0, cpuCost: 0, memoryCost: 0, replicas: 0 },
+      totals: { hourlyCost: 0, cpuCost: 0, memoryCost: 0, replicas: 0, cpuUsageAvailable: false, memoryUsageAvailable: false, cpuAllocationUse: 0, memoryAllocationUse: 0 },
       coverage: { total: 1, included: 0, unavailable: [{ kind: 'Deployment', namespace: 'prod', name: 'api', reason: 'access_denied' }] },
     }
 

@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { clsx } from 'clsx'
 import { AlertCircle, DollarSign, HelpCircle, Loader2, TrendingUp } from 'lucide-react'
 import {
   ApiError,
@@ -13,13 +12,8 @@ import {
 } from '../../api/client'
 import { Tooltip } from '../ui/Tooltip'
 import { CostTimeRangeSelector, StackedAreaChart } from './CostTrendChart'
-import {
-  formatCost,
-  formatCostPerHour,
-  formatProjectedDailyRate,
-  formatProjectedMonthlyCost,
-  formatProjectedMonthlyRate,
-} from './format'
+import { formatCost, formatCostPerHour, formatProjectedDailyRate, formatProjectedMonthlyCost } from './format'
+import { CurrentAllocationUse } from './CurrentAllocationUse'
 
 type WorkloadCostState =
   | 'loading'
@@ -109,9 +103,6 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
   const windowTotal = trend?.available ? (trend.windowTotalCost ?? 0) : 0
   const cpuCost = current?.cpuCost ?? 0
   const memoryCost = current?.memoryCost ?? 0
-  const splitTotal = cpuCost + memoryCost
-  const cpuPct = splitTotal > 0 ? (cpuCost / splitTotal) * 100 : 0
-  const memoryPct = splitTotal > 0 ? (memoryCost / splitTotal) * 100 : 0
   const windowSpendValue = hasTrend
     ? `~${formatCost(windowTotal)}`
     : trendLoading || state === 'partial_missing_history'
@@ -127,7 +118,7 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
             <div>
               <div className="flex items-center gap-1.5">
                 <div className="text-sm font-semibold text-theme-text-primary">Historical compute cost</div>
-                <MetricInfoTooltip content="Dollars are based on OpenCost CPU and memory allocation over time, not raw utilization. Efficiency compares actual usage against that allocated cost." />
+                <MetricInfoTooltip content="Dollars are based on OpenCost CPU and memory allocation over time, not raw utilization. OpenCost allocation uses the greater of requested or observed resources." />
               </div>
               <div className="text-xs text-theme-text-tertiary">
                 OpenCost CPU and memory allocation rate ($/hr) attributed by workload ownership
@@ -182,18 +173,8 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         <MetricTile label="Replicas" value={hasCurrent ? String(current?.replicas ?? 0) : '—'} />
-        <MetricTile
-          label="Efficiency"
-          value={hasCurrent ? (current?.efficiency ? `${current.efficiency.toFixed(0)}%` : '0%') : '—'}
-          subvalue={
-            hasCurrent
-              ? `${formatProjectedMonthlyRate(current?.idleCost ?? 0)} idle at current rate`
-              : 'Current allocation unavailable'
-          }
-          tooltip="Actual CPU and memory usage divided by allocated CPU and memory cost for the last hour. Low efficiency usually means requested capacity is sitting idle."
-        />
         <MetricTile
           label="Projected daily"
           value={hasCurrent ? formatProjectedDailyRate(hourly) : '—'}
@@ -201,49 +182,16 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
         />
       </div>
 
-      <section className="rounded-lg border border-theme-border bg-theme-surface/50 p-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-1.5">
-              <div className="text-sm font-semibold text-theme-text-primary">Current allocation split</div>
-              <MetricInfoTooltip content="Last-hour allocated CPU and memory cost for this workload. This is the cost of reserved/requested capacity, not only what the containers used." />
-            </div>
-            <div className="text-xs text-theme-text-tertiary">Last 1h OpenCost allocation window</div>
-          </div>
-          <div className="text-right">
-            <div className="text-sm font-medium text-theme-text-primary tabular-nums">
-              {hasCurrent ? formatProjectedMonthlyRate(splitTotal) : '—'}
-            </div>
-            {hasCurrent && (
-              <div className="text-[10px] text-theme-text-tertiary tabular-nums">
-                {formatCostPerHour(splitTotal)} current rate
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="h-3 overflow-hidden rounded-full bg-theme-hover">
-          <div className="flex h-full">
-            {hasCurrent && (
-              <>
-                <div className="h-full bg-accent" style={{ width: `${cpuPct}%` }} />
-                <div className="h-full bg-amber-500" style={{ width: `${memoryPct}%` }} />
-              </>
-            )}
-          </div>
-        </div>
-        <div className="mt-3 grid gap-2 text-xs text-theme-text-secondary sm:grid-cols-2">
-          <LegendItem
-            colorClass="bg-accent"
-            label="CPU"
-            value={hasCurrent ? formatProjectedMonthlyRate(cpuCost) : '—'}
-          />
-          <LegendItem
-            colorClass="bg-amber-500"
-            label="Memory"
-            value={hasCurrent ? formatProjectedMonthlyRate(memoryCost) : '—'}
-          />
-        </div>
-      </section>
+      <CurrentAllocationUse
+        dataAvailable={hasCurrent}
+        cpuCost={cpuCost}
+        memoryCost={memoryCost}
+        hourlyCost={hourly}
+        cpuAllocationUse={current?.cpuAllocationUse ?? 0}
+        memoryAllocationUse={current?.memoryAllocationUse ?? 0}
+        cpuUsageAvailable={current?.cpuUsageAvailable ?? false}
+        memoryUsageAvailable={current?.memoryUsageAvailable ?? false}
+      />
 
       <div className="text-xs text-theme-text-tertiary">
         Powered by OpenCost via Prometheus. Historical spend uses the selected range; projected monthly values multiply
@@ -379,17 +327,5 @@ function MetricInfoTooltip({ content }: { content: string }) {
     <Tooltip content={content} className="max-w-[280px] whitespace-normal text-left" delay={150}>
       <HelpCircle className="h-3.5 w-3.5 cursor-help text-theme-text-tertiary transition-colors hover:text-theme-text-secondary" />
     </Tooltip>
-  )
-}
-
-function LegendItem({ colorClass, label, value }: { colorClass: string; label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-md bg-theme-base px-2.5 py-2">
-      <span className="flex items-center gap-2">
-        <span className={clsx('h-2.5 w-2.5 rounded-sm', colorClass)} />
-        {label}
-      </span>
-      <span className="font-medium tabular-nums text-theme-text-primary">{value}</span>
-    </div>
   )
 }

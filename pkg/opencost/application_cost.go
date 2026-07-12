@@ -139,6 +139,20 @@ func zeroApplicationWorkloadCost(kind, name string) *WorkloadCost {
 }
 
 func addApplicationCostTotal(total *ApplicationCostTotals, wl WorkloadCost) {
+	if wl.CPUCost > 0 {
+		if total.CPUCost == 0 {
+			total.CPUUsageAvailable = wl.CPUUsageAvailable
+		} else {
+			total.CPUUsageAvailable = total.CPUUsageAvailable && wl.CPUUsageAvailable
+		}
+	}
+	if wl.MemoryCost > 0 {
+		if total.MemoryCost == 0 {
+			total.MemoryUsageAvailable = wl.MemoryUsageAvailable
+		} else {
+			total.MemoryUsageAvailable = total.MemoryUsageAvailable && wl.MemoryUsageAvailable
+		}
+	}
 	total.HourlyCost += wl.HourlyCost
 	total.CPUCost += wl.CPUCost
 	total.MemoryCost += wl.MemoryCost
@@ -150,6 +164,12 @@ func addApplicationCostTotal(total *ApplicationCostTotals, wl WorkloadCost) {
 func finalizeApplicationCostTotals(total *ApplicationCostTotals) {
 	allocCost := total.CPUCost + total.MemoryCost
 	usageCost := total.CPUUsageCost + total.MemoryUsageCost
+	if total.CPUUsageAvailable {
+		total.CPUAllocationUse = efficiencyPct(total.CPUUsageCost, total.CPUCost)
+	}
+	if total.MemoryUsageAvailable {
+		total.MemoryAllocationUse = efficiencyPct(total.MemoryUsageCost, total.MemoryCost)
+	}
 	total.HourlyCost = roundTo(total.HourlyCost, 4)
 	total.CPUCost = roundTo(total.CPUCost, 4)
 	total.MemoryCost = roundTo(total.MemoryCost, 4)

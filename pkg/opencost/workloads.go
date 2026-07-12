@@ -87,6 +87,7 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 
 	type podCost struct {
 		cpuCost, memoryCost, cpuUsage, memoryUsage float64
+		cpuUsageAvailable, memoryUsageAvailable    bool
 	}
 	podCosts := make(map[string]*podCost)
 	setPodLast := func(result *prom.QueryResult, set func(*podCost, float64)) {
@@ -109,8 +110,8 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 	setPodLast(cpuResult, func(pc *podCost, v float64) { pc.cpuCost = v })
 	setPodLast(memResult, func(pc *podCost, v float64) { pc.memoryCost = v })
 	for pod, pc := range podCosts {
-		pc.cpuUsage = podCPUUsage[pod]
-		pc.memoryUsage = podMemUsage[pod]
+		pc.cpuUsage, pc.cpuUsageAvailable = podCPUUsage[pod]
+		pc.memoryUsage, pc.memoryUsageAvailable = podMemUsage[pod]
 	}
 
 	workloadMap := make(map[WorkloadOwner]*WorkloadCost)
@@ -127,13 +128,24 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 
 		wl, exists := workloadMap[owner]
 		if !exists {
-			wl = &WorkloadCost{Name: owner.Name, Kind: owner.Kind}
+			wl = &WorkloadCost{
+				Name:                 owner.Name,
+				Kind:                 owner.Kind,
+				CPUUsageAvailable:    true,
+				MemoryUsageAvailable: true,
+			}
 			workloadMap[owner] = wl
 		}
 		wl.CPUCost += pc.cpuCost
 		wl.MemoryCost += pc.memoryCost
 		wl.CPUUsageCost += pc.cpuUsage
 		wl.MemoryUsageCost += pc.memoryUsage
+		if pc.cpuCost > 0 && !pc.cpuUsageAvailable {
+			wl.CPUUsageAvailable = false
+		}
+		if pc.memoryCost > 0 && !pc.memoryUsageAvailable {
+			wl.MemoryUsageAvailable = false
+		}
 		wl.Replicas++
 	}
 
@@ -142,6 +154,8 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 		allocCost := wl.CPUCost + wl.MemoryCost
 		usageCost := wl.CPUUsageCost + wl.MemoryUsageCost
 		wl.HourlyCost = allocCost
+		wl.CPUAllocationUse = efficiencyPct(wl.CPUUsageCost, wl.CPUCost)
+		wl.MemoryAllocationUse = efficiencyPct(wl.MemoryUsageCost, wl.MemoryCost)
 		wl.Efficiency = efficiencyPct(usageCost, allocCost)
 		wl.IdleCost = idleFromUsage(usageCost, allocCost)
 		wl.HourlyCost = roundTo(wl.HourlyCost, 4)

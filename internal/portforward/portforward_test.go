@@ -65,3 +65,18 @@ func TestGetAddressPrefersOwn(t *testing.T) {
 		t.Fatalf("prometheus fallback got %q, want peer :2222", got)
 	}
 }
+
+// TestStopBumpsEpochWhileEstablishing pins the invariant that a Stop lands even
+// while a forward is still coming up (not yet active): stopForwardLocked must
+// bump epoch for an inactive forward too, so the in-flight Start sees the change
+// and refuses to publish a connection the caller already asked to stop. Reverting
+// to an early-return-when-inactive reintroduces the "Stop misses in-flight
+// establish" bug.
+func TestStopBumpsEpochWhileEstablishing(t *testing.T) {
+	f := &metricsForward{} // establishing: not yet active
+	before := f.epoch
+	stopForwardLocked(f)
+	if f.epoch == before {
+		t.Fatal("epoch not bumped for an inactive forward — a Stop during establishment would be silently lost")
+	}
+}

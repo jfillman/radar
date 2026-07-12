@@ -43,6 +43,12 @@ type metricsForward struct {
 	// establishment.
 	establishMu sync.Mutex
 
+	// epoch bumps on every teardown (Stop, or Start replacing this owner's
+	// forward). Start captures it before establishing and refuses to publish if it
+	// changed meanwhile — so a Stop that lands while a forward is still coming up
+	// (e.g. a context-switch Reset) is not silently lost when readyCh then wins.
+	epoch uint64
+
 	active      bool
 	localPort   int
 	namespace   string
@@ -144,6 +150,7 @@ func Start(owner Owner, ctx context.Context, namespace, serviceName string, targ
 		return info, nil
 	}
 	stopForwardLocked(f) // replace only this owner's existing forward
+	startEpoch := f.epoch
 	reg.mu.Unlock()
 
 	// Establish the forward WITHOUT holding reg.mu.
@@ -190,6 +197,15 @@ func Start(owner Owner, ctx context.Context, namespace, serviceName string, targ
 	select {
 	case <-readyCh:
 		reg.mu.Lock()
+		// A Stop (or a replacing Start) that landed while we were establishing
+		// bumped the epoch. Honor it: tear this forward down instead of publishing
+		// a connection the caller already asked to stop (e.g. after a context
+		// switch), which would otherwise report the wrong cluster as connected.
+		if f.epoch != startEpoch {
+			reg.mu.Unlock()
+			teardown()
+			return nil, fmt.Errorf("port-forward superseded during establishment")
+		}
 		f.active = true
 		f.localPort = localPort
 		f.namespace = namespace
@@ -230,7 +246,14 @@ func Stop(owner Owner) {
 
 // stopForwardLocked stops one owner's forward (caller must hold reg.mu).
 func stopForwardLocked(f *metricsForward) {
-	if f == nil || !f.active {
+	if f == nil {
+		return
+	}
+	// Bump before the active check so a Stop that lands while a forward is still
+	// establishing (not yet active) still invalidates it — the in-flight Start
+	// checks this epoch before publishing.
+	f.epoch++
+	if !f.active {
 		return
 	}
 

@@ -21,8 +21,8 @@ import {
   type ScanClass,
 } from './model'
 
-export const REQUEST_FIT_SCAN_DESCRIPTION = 'Find workload requests worth changing, ranked by operational impact. Radar never changes requests.'
-export const REQUEST_FIT_SCAN_METHODOLOGY = 'Based on the last 7 days: CPU P95 and memory P99, with 15% headroom.'
+export const REQUEST_FIT_SCAN_DESCRIPTION = 'Find workload requests to increase, reduce, or review. Radar never changes requests.'
+export const REQUEST_FIT_SCAN_METHODOLOGY = 'Based on 7 days of history: CPU P95 and memory maximum, plus 15% headroom.'
 
 export type RequestFitScanSurfaceState = 'discovering' | 'prometheus_required' | 'first_run' | 'scanning' | 'fatal_error' | 'unavailable' | 'results'
 
@@ -150,7 +150,7 @@ export function RequestFitScanView({ namespaces }: RequestFitScanViewProps) {
         <CostViewTabs />
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold text-theme-text-primary">Request fit</h2>
+            <h2 className="text-base font-semibold text-theme-text-primary">Rightsizing</h2>
             <p className="mt-0.5 text-sm text-theme-text-secondary">{REQUEST_FIT_SCAN_DESCRIPTION}</p>
           </div>
           <div className="flex items-center gap-3">
@@ -172,17 +172,17 @@ export function RequestFitScanView({ namespaces }: RequestFitScanViewProps) {
         ) : surfaceState === 'prometheus_required' ? (
           <CenteredState
             title="Prometheus is required"
-            body="Request fit uses Prometheus history. Cost Overview can still use OpenCost independently."
+            body="Rightsizing uses Prometheus history. Cost Overview can still use OpenCost independently."
             action={<button type="button" onClick={() => retryPrometheus()} className="btn-brand px-3 py-1.5 text-xs font-medium">Check again</button>}
           />
         ) : surfaceState === 'first_run' ? (
           <FirstRunState namespaces={namespaces} onRun={runScan} />
         ) : surfaceState === 'scanning' ? (
-          <CenteredState loading title="Scanning workload requests…" body="Comparing recent demand with requests across the current scope." />
+          <CenteredState loading title="Analyzing workload requests…" body="Comparing 7 days of CPU and memory usage with configured requests." />
         ) : surfaceState === 'fatal_error' ? (
-          <CenteredState title="Request fit scan failed" body={errorMessage(scan.error)} action={<button type="button" onClick={runScan} className="btn-brand px-3 py-1.5 text-xs font-medium">Try again</button>} />
+          <CenteredState title="Rightsizing scan failed" body={errorMessage(scan.error)} action={<button type="button" onClick={runScan} className="btn-brand px-3 py-1.5 text-xs font-medium">Try again</button>} />
         ) : surfaceState === 'unavailable' && result ? (
-          <CenteredState title="Request fit is unavailable" body={unavailableMessage(result.reason)} action={<button type="button" onClick={runScan} disabled={scan.isPending} className="btn-brand px-3 py-1.5 text-xs font-medium">Try again</button>} />
+          <CenteredState title="Rightsizing is unavailable" body={unavailableMessage(result.reason)} action={<button type="button" onClick={runScan} disabled={scan.isPending} className="btn-brand px-3 py-1.5 text-xs font-medium">Try again</button>} />
         ) : result ? (
           <div className={`flex flex-col gap-4 transition-opacity ${scan.isPending ? 'opacity-70' : ''}`}>
             {scan.error && <Notice tone="warning" text={`Refresh failed; showing results from ${formatScanTime(result.scannedAt)}. ${errorMessage(scan.error)}`} />}
@@ -205,7 +205,7 @@ export function RequestFitScanView({ namespaces }: RequestFitScanViewProps) {
                 ) : (
                   <div>
                     <div className="grid grid-cols-[minmax(260px,1.1fr)_minmax(360px,1.6fr)_minmax(220px,.9fr)_28px] gap-4 border-b border-theme-border px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-theme-text-tertiary">
-                      <span>Workload / container</span><span>Recommendation</span><span>Across replicas</span><span />
+                      <span>Workload / container</span><span>Suggested next step</span><span>Across replicas</span><span />
                     </div>
                     <div className="table-divide-subtle">
                       {visibleRows.map((row) => (
@@ -233,8 +233,8 @@ function FirstRunState({ namespaces, onRun }: { namespaces: string[]; onRun: () 
   return (
     <div className="rounded-xl border border-theme-border bg-theme-surface p-8 text-center shadow-theme-sm">
       <Gauge className="mx-auto h-9 w-9 text-theme-text-tertiary" />
-      <h2 className="mt-3 text-base font-semibold text-theme-text-primary">Find requests worth changing</h2>
-      <p className="mx-auto mt-1 max-w-xl text-sm text-theme-text-secondary">Scan {scope} for meaningful reductions, missing requests, reliability risks, and autoscaling decisions that need review.</p>
+      <h2 className="mt-3 text-base font-semibold text-theme-text-primary">Review workload requests</h2>
+      <p className="mx-auto mt-1 max-w-xl text-sm text-theme-text-secondary">Scan {scope} to find CPU and memory requests to increase, reduce, or review alongside autoscaling.</p>
       <p className="mt-3 text-xs text-theme-text-tertiary">{REQUEST_FIT_SCAN_METHODOLOGY}</p>
       <button type="button" onClick={onRun} className="btn-brand mt-5 px-4 py-2 text-sm font-medium">Scan visible workloads</button>
     </div>
@@ -375,12 +375,16 @@ function ImpactCell({ row }: { row: RequestFitScanRow }) {
 
 function FitWhy({ label, row }: { label: string; row?: RightsizingRow }) {
   if (!row) return <div><div className="text-[11px] font-medium uppercase tracking-wide text-theme-text-tertiary">{label}</div><p className="mt-1 text-xs text-theme-text-secondary">No result returned.</p></div>
-  const percentile = row.observed?.name === 'P95' ? '95%' : '99%'
   const history = row.coverage >= 0.95 ? 'Full 7-day history.' : `${Math.max(row.coverage * 7, 0).toFixed(1)} days of usable history.`
+  const observation = row.observed
+    ? row.observed.name === 'Max'
+      ? `${label} peaked at ${row.observed.formatted} during the measured period. `
+      : `${label} stayed below ${row.observed.formatted} for ${row.observed.name === 'P95' ? '95%' : '99%'} of the measured period. `
+    : ''
   return (
     <div>
       <div className="text-[11px] font-medium uppercase tracking-wide text-theme-text-tertiary">Why this {label.toLowerCase()} guidance</div>
-      <p className="mt-1 text-xs text-theme-text-secondary">{row.observed ? `${label} stayed below ${row.observed.formatted} for ${percentile} of the measured period. ` : ''}{history}</p>
+      <p className="mt-1 text-xs text-theme-text-secondary">{observation}{history}</p>
       <EvidenceNote row={row} />
     </div>
   )
@@ -393,12 +397,15 @@ function EvidenceNote({ row }: { row: RightsizingRow }) {
   if (row.recommendationReason === 'oom_evidence_unavailable') return <p className="mt-1 text-xs text-theme-text-tertiary">Radar could not verify restart history before suggesting a lower memory request.</p>
   if (row.limitConflict) return <p className="mt-1 text-xs text-theme-text-tertiary">The calculated request would exceed the current limit.</p>
   if (row.fit === 'insufficient_history') return <p className="mt-1 text-xs text-theme-text-tertiary">Wait for more runtime history before changing this request.</p>
-  if (row.recommendedRequest) return <p className="mt-1 text-xs text-theme-text-tertiary">The target includes 15% headroom and is rounded to a practical Kubernetes request.</p>
+  if (row.reductionLimited && row.calculatedRequest && row.recommendedRequest) {
+    return <p className="mt-1 text-xs text-theme-text-tertiary">Demand-based target: {row.calculatedRequest}. Radar suggests {row.recommendedRequest} as a conservative next step; observe another full window before reducing further.{row.bursty && row.peak ? ` CPU P99 reached ${row.peak.formatted}.` : ''}</p>
+  }
+  if (row.recommendedRequest) return <p className="mt-1 text-xs text-theme-text-tertiary">The target includes 15% headroom, a practical minimum, and scale-aware rounding.</p>
   return null
 }
 
 function CenteredState({ loading, title, body, action }: { loading?: boolean; title: string; body: string; action?: React.ReactNode }) {
-  return <div className="flex min-h-64 items-center justify-center rounded-xl border border-theme-border bg-theme-surface"><div className="flex max-w-lg flex-col items-center px-6 text-center">{loading ? <Loader2 className="h-8 w-8 animate-spin text-theme-text-tertiary" /> : <Gauge className="h-8 w-8 text-theme-text-tertiary" />}<h2 className="mt-3 text-base font-semibold text-theme-text-primary">{title}</h2><p className="mt-1 text-sm text-theme-text-secondary">{body}</p>{action && <div className="mt-4">{action}</div>}</div></div>
+  return <div className="flex min-h-48 items-center justify-center rounded-xl border border-theme-border bg-theme-surface"><div className="flex max-w-lg flex-col items-center px-6 text-center">{loading ? <Loader2 className="h-8 w-8 animate-spin text-theme-text-tertiary" /> : <Gauge className="h-8 w-8 text-theme-text-tertiary" />}<h2 className="mt-3 text-base font-semibold text-theme-text-primary">{title}</h2><p className="mt-1 text-sm text-theme-text-secondary">{body}</p>{action && <div className="mt-4">{action}</div>}</div></div>
 }
 
 function formatCPUChange(value: number): string {
@@ -414,7 +421,7 @@ function formatMemoryChange(value: number): string {
 }
 
 function signalLabel(signal: RequestFitScanRow['signals'] extends Set<infer T> ? T : never): string {
-  return { hpa: 'HPA', oom: 'OOM', throttling: 'Throttling', query_error: 'Query error', scaled_zero: 'Scaled to zero' }[signal]
+  return { hpa: 'HPA', oom: 'OOM', bursty: 'Bursty usage', throttling: 'Throttling', query_error: 'Query error', scaled_zero: 'Scaled to zero' }[signal]
 }
 
 function errorMessage(error: unknown): string {
@@ -423,7 +430,7 @@ function errorMessage(error: unknown): string {
 
 function unavailableMessage(reason?: string): string {
   if (reason === 'workload_kinds_unavailable') return 'No supported workload kinds are available with your current Kubernetes access.'
-  if (reason === 'owner_metrics_missing') return 'kube-state-metrics ownership metrics were not found. Request fit needs kube_pod_owner to map samples to workloads.'
+  if (reason === 'owner_metrics_missing') return 'kube-state-metrics ownership metrics were not found. Rightsizing needs kube_pod_owner to map samples to workloads.'
   if (reason === 'deployment_owner_metrics_missing') return 'Deployment history cannot be mapped because kube_replicaset_owner is unavailable from kube-state-metrics.'
   if (reason === 'owner_metrics_query_failed') return 'Radar found Prometheus, but could not query kube-state-metrics ownership data.'
   if (reason === 'scan_incomplete') return 'The scan could not evaluate any workloads in the current scope.'
@@ -434,7 +441,7 @@ function warningMessage(code: string): string {
   if (code === 'scan_deadline_exceeded') return 'The scan reached its time limit. Results from completed batches are shown.'
   if (code === 'owner_metrics_query_failed') return 'Workload ownership data could not be queried.'
   if (code.endsWith('_query_failed')) return `Some ${code.replace('_query_failed', '').replaceAll('_', ' ')} data could not be queried.`
-  return 'Some request-fit data was unavailable. Completed recommendations are shown.'
+  return 'Some rightsizing data was unavailable. Completed recommendations are shown.'
 }
 
 function formatScanTime(value: string): string {

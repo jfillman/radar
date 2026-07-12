@@ -408,7 +408,7 @@ func buildScanRow(container containerSpec, resourceName string, key scanKey, exp
 	series := evidence.cpu[key]
 	if resourceName == "memory" {
 		request, limit = container.memReq, container.memLim
-		statistic = "P99"
+		statistic = "Max"
 		series = evidence.memory[key]
 		row.CurrentPodOOM = workload.currentPodOOM[container.name]
 		row.OOMEvidenceAvailable = evidence.errors["oom"] == nil
@@ -424,7 +424,11 @@ func buildScanRow(container containerSpec, resourceName string, key scanKey, exp
 	}
 	observed := percentile(series, 0.95)
 	if resourceName == "memory" {
-		observed = percentile(series, 0.99)
+		observed = maxFinite(series)
+	} else {
+		peak := percentile(series, 0.99)
+		row.Peak = &ObservedStatistic{Name: "P99", Value: peak, Formatted: formatObservedValue(peak, resourceName)}
+		row.Bursty = isBurstyCPU(observed, peak)
 	}
 	row.Observed = &ObservedStatistic{Name: statistic, Value: observed, Formatted: formatObservedValue(observed, resourceName)}
 	row.SampleCount = len(series)

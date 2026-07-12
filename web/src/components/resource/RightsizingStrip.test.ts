@@ -42,6 +42,21 @@ describe('request-fit presentation', () => {
     expect(getRequestFitExplanation(row({ throttleAvailable: false }))).toContain('throttling metrics are unavailable')
   })
 
+  it('separates the demand target from a conservative reduction step', () => {
+    const explanation = getRequestFitExplanation(row({
+      fit: 'oversized',
+      currentRequest: '1',
+      recommendedRequest: '500m',
+      calculatedRequest: '10m',
+      reductionLimited: true,
+      bursty: true,
+      peak: { name: 'P99', value: 0.2, formatted: '200m' },
+    }))
+    expect(explanation).toContain('Demand-based target: 10m')
+    expect(explanation).toContain('conservative next step')
+    expect(explanation).toContain('CPU P99 reached 200m')
+  })
+
   it('does not revive the misleading efficiency vocabulary', () => {
     const copy = [
       getRequestFitPresentation('balanced').label,
@@ -55,7 +70,8 @@ describe('request-fit presentation', () => {
   it('sets the workload-level scope and methodology without promising savings or changes', () => {
     expect(REQUEST_FIT_SUMMARY).toContain('this workload')
     expect(REQUEST_FIT_SUMMARY).toContain('not a savings estimate or automatic change')
-    expect(REQUEST_FIT_METHODOLOGY).toContain('CPU P95 and memory P99')
+    expect(REQUEST_FIT_METHODOLOGY).toContain('CPU P95 and memory maximum')
+    expect(REQUEST_FIT_METHODOLOGY).toContain('Reductions are staged')
     expect(REQUEST_FIT_METHODOLOGY).toContain('Radar does not change requests')
     expect(REQUEST_FIT_DOCS_URL).toContain('/features/request-fit')
   })

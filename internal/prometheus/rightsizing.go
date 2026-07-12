@@ -73,8 +73,13 @@ type RightsizingRow struct {
 	CurrentLimit            *string              `json:"currentLimit,omitempty"`
 	CurrentLimitValue       *float64             `json:"currentLimitValue,omitempty"`
 	Observed                *ObservedStatistic   `json:"observed,omitempty"`
+	Peak                    *ObservedStatistic   `json:"peak,omitempty"`
+	CalculatedReq           *string              `json:"calculatedRequest,omitempty"`
+	CalculatedRequestValue  *float64             `json:"calculatedRequestValue,omitempty"`
 	RecommendedReq          *string              `json:"recommendedRequest,omitempty"`
 	RecommendedRequestValue *float64             `json:"recommendedRequestValue,omitempty"`
+	ReductionLimited        bool                 `json:"reductionLimited,omitempty"`
+	Bursty                  bool                 `json:"bursty,omitempty"`
 	RecommendationReason    string               `json:"recommendationReason,omitempty"`
 	SampleCount             int                  `json:"sampleCount"`
 	ExpectedSamples         int                  `json:"expectedSamples"`
@@ -119,6 +124,8 @@ const (
 	rightsizingWindow       = 7 * 24 * time.Hour
 	rightsizingStep         = 5 * time.Minute
 	rightsizingHeadroom     = 1.15
+	rightsizingCPUMin       = 0.01
+	rightsizingMemoryMin    = 64 * 1024 * 1024
 	rightsizingMinSamples   = 72
 	rightsizingHighCoverage = 0.8
 	rightsizingMedCoverage  = 0.14
@@ -472,8 +479,9 @@ func buildRightsizingQueries(namespace string, selection metricSelection) map[st
 	oom := fmt.Sprintf(`max by (container) (kube_pod_container_status_last_terminated_timestamp{namespace="%s"%s} * on (namespace,pod,container) group_left() max by (namespace,pod,container) (kube_pod_container_status_last_terminated_reason{namespace="%s"%s,reason="OOMKilled"}) %s) > (time() - 604800)`, ns, podMatcher, ns, podMatcher, selection.join)
 	return map[string]string{
 		"cpu_stat":        fmt.Sprintf(`quantile_over_time(0.95, (%s)[7d:5m])`, cpu),
+		"cpu_peak":        fmt.Sprintf(`quantile_over_time(0.99, (%s)[7d:5m])`, cpu),
 		"cpu_coverage":    fmt.Sprintf(`count_over_time((%s)[7d:5m])`, cpu),
-		"memory_stat":     fmt.Sprintf(`quantile_over_time(0.99, (%s)[7d:5m])`, memory),
+		"memory_stat":     fmt.Sprintf(`max_over_time((%s)[7d:5m])`, memory),
 		"memory_coverage": fmt.Sprintf(`count_over_time((%s)[7d:5m])`, memory),
 		"throttle":        fmt.Sprintf(`max_over_time(((%s) / (%s))[7d:5m])`, throttled, periods),
 		"oom":             oom,
@@ -529,7 +537,7 @@ func buildRightsizingRow(container containerSpec, resourceName string, expected 
 		req, lim = container.cpuReq, container.cpuLim
 	} else {
 		req, lim = container.memReq, container.memLim
-		statistic = "P99"
+		statistic = "Max"
 		row.CurrentPodOOM = workload.currentPodOOM[container.name]
 		if oom := results["oom"]; oom.err == nil {
 			row.OOMEvidenceAvailable = true
@@ -552,6 +560,15 @@ func buildRightsizingRow(container containerSpec, resourceName string, expected 
 		return row
 	}
 	row.Observed = &ObservedStatistic{Name: statistic, Value: observed, Formatted: formatObservedValue(observed, resourceName)}
+	if resourceName == "cpu" {
+		peak := results["cpu_peak"]
+		if peak.err == nil {
+			if value, present := peak.values[container.name]; present {
+				row.Peak = &ObservedStatistic{Name: "P99", Value: value, Formatted: formatObservedValue(value, resourceName)}
+				row.Bursty = isBurstyCPU(observed, value)
+			}
+		}
+	}
 	row.SampleCount = int(coverage.values[container.name])
 	row.Coverage = math.Min(float64(row.SampleCount)/float64(expected), 1)
 	row.Confidence = confidenceFor(row.SampleCount, row.Coverage, ownerCoverage)
@@ -601,7 +618,13 @@ func confidenceFor(samples int, coverage float64, ownerCoverage OwnerCoverage) R
 }
 
 func classifyRequestFit(row *RightsizingRow, observed float64, req, lim *resource.Quantity, resourceName string) {
-	candidate := observed * rightsizingHeadroom
+	calculated := calculatedRequest(observed, resourceName)
+	calculatedValue := quantityToFloat(resource.MustParse(calculated), resourceName)
+	minimum := float64(rightsizingMemoryMin)
+	if resourceName == "cpu" {
+		minimum = rightsizingCPUMin
+	}
+	candidate := max(observed*rightsizingHeadroom, minimum)
 	if req == nil || quantityToFloat(*req, resourceName) <= 0 {
 		row.Fit = FitMissingRequest
 	} else {
@@ -619,8 +642,10 @@ func classifyRequestFit(row *RightsizingRow, observed float64, req, lim *resourc
 		row.RecommendationReason = "request_within_fit_range"
 		return
 	}
-	recommended := recommendRequest(observed, resourceName)
+	recommended, reductionLimited := recommendRequest(observed, req, resourceName, row.Bursty || (row.ThrottleRatio != nil && *row.ThrottleRatio >= 0.1))
 	recommendedValue := quantityToFloat(resource.MustParse(recommended), resourceName)
+	row.CalculatedReq = &calculated
+	row.CalculatedRequestValue = &calculatedValue
 	if req != nil {
 		requestValue := quantityToFloat(*req, resourceName)
 		if (row.Fit == FitOversized && recommendedValue >= requestValue) ||
@@ -653,6 +678,7 @@ func classifyRequestFit(row *RightsizingRow, observed float64, req, lim *resourc
 	}
 	row.RecommendedReq = &recommended
 	row.RecommendedRequestValue = &recommendedValue
+	row.ReductionLimited = reductionLimited
 }
 
 func addFitSummary(summary *RightsizingSummary, row RightsizingRow) {
@@ -680,8 +706,43 @@ func addFitSummary(summary *RightsizingSummary, row RightsizingRow) {
 	}
 }
 
-func recommendRequest(observed float64, resourceName string) string {
-	return formatRightsizingValue(observed*rightsizingHeadroom, resourceName)
+func calculatedRequest(observed float64, resourceName string) string {
+	minimum := float64(rightsizingMemoryMin)
+	if resourceName == "cpu" {
+		minimum = rightsizingCPUMin
+	}
+	return formatRightsizingValue(max(observed*rightsizingHeadroom, minimum), resourceName)
+}
+
+func recommendRequest(observed float64, current *resource.Quantity, resourceName string, conservative bool) (string, bool) {
+	calculated := calculatedRequest(observed, resourceName)
+	calculatedValue := quantityToFloat(resource.MustParse(calculated), resourceName)
+	if current == nil {
+		return calculated, false
+	}
+	currentValue := quantityToFloat(*current, resourceName)
+	if calculatedValue >= currentValue {
+		return calculated, false
+	}
+	floor := reductionFloor(currentValue, resourceName, conservative)
+	if calculatedValue >= floor {
+		return calculated, false
+	}
+	return formatRightsizingValue(floor, resourceName), true
+}
+
+func reductionFloor(current float64, resourceName string, conservative bool) float64 {
+	if resourceName == "memory" || conservative || current >= 1 {
+		return current * 0.5
+	}
+	if current >= 0.1 {
+		return current * 0.25
+	}
+	return rightsizingCPUMin
+}
+
+func isBurstyCPU(p95, p99 float64) bool {
+	return p99-p95 >= 0.05 && p99 >= p95*3
 }
 
 // quantityToFloat converts a K8s Quantity to a float in the same units as
@@ -703,18 +764,21 @@ func formatRightsizingValue(v float64, resKind string) string {
 	switch resKind {
 	case "cpu":
 		millis := int64(math.Ceil(v * 1000))
-		if millis < 1 {
-			millis = 1
-		} else if millis >= 1000 {
-			millis = (millis + 99) / 100 * 100
-		} else if millis >= 100 {
-			millis = (millis + 9) / 10 * 10
+		millis = max(millis, 10)
+		switch {
+		case millis < 100:
+			millis = roundUp(millis, 10)
+		case millis < 1000:
+			millis = roundUp(millis, 50)
+		case millis < 4000:
+			millis = roundUp(millis, 500)
+		default:
+			millis = roundUp(millis, 1000)
 		}
 		if millis < 1000 {
 			return fmt.Sprintf("%dm", millis)
 		}
 		cores := float64(millis) / 1000.0
-		// Trim trailing .0
 		if cores == float64(int64(cores)) {
 			return fmt.Sprintf("%d", int64(cores))
 		}
@@ -722,14 +786,28 @@ func formatRightsizingValue(v float64, resKind string) string {
 	case "memory":
 		const Mi = 1024 * 1024
 		const Gi = 1024 * Mi
-		if v >= float64(Gi) {
-			return fmt.Sprintf("%.1fGi", v/float64(Gi))
+		mib := int64(math.Ceil(v / float64(Mi)))
+		preferred := []int64{64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192}
+		for _, candidate := range preferred {
+			if mib <= candidate {
+				if candidate >= 1024 {
+					gib := float64(candidate) / 1024
+					if gib == float64(int64(gib)) {
+						return fmt.Sprintf("%dGi", int64(gib))
+					}
+					return fmt.Sprintf("%.1fGi", gib)
+				}
+				return fmt.Sprintf("%dMi", candidate)
+			}
 		}
-		// Round up to next 16Mi to give a clean recommendation.
-		mib := max(int64(v/float64(Mi)+15)/16*16, 16)
-		return fmt.Sprintf("%dMi", mib)
+		gib := roundUp(mib, 2*1024) / 1024
+		return fmt.Sprintf("%dGi", gib)
 	}
 	return ""
+}
+
+func roundUp(value, step int64) int64 {
+	return (value + step - 1) / step * step
 }
 
 func formatObservedValue(v float64, resourceName string) string {

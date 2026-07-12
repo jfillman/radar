@@ -4,9 +4,9 @@ import { getRequestFitScanSurfaceState, REQUEST_FIT_SCAN_DESCRIPTION, REQUEST_FI
 describe('request-fit scan copy', () => {
   it('sets expectations without claiming efficiency or savings', () => {
     const copy = `${REQUEST_FIT_SCAN_DESCRIPTION} ${REQUEST_FIT_SCAN_METHODOLOGY}`
-    expect(copy).toContain('operational impact')
+    expect(copy).toContain('increase, reduce, or review')
     expect(copy).toContain('Radar never changes requests')
-    expect(copy).toContain('CPU P95 and memory P99')
+    expect(copy).toContain('CPU P95 and memory maximum')
     expect(copy.toLowerCase()).not.toContain('efficiency')
     expect(copy.toLowerCase()).not.toContain('savings')
   })

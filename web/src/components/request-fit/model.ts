@@ -1,7 +1,7 @@
 import type { RequestFitScanResponse, RightsizingRow } from '../../api/client'
 
 export type ScanClass = 'increase' | 'reduction' | 'review' | 'in_range' | 'need_data'
-export type ScanSignal = 'hpa' | 'oom' | 'throttling' | 'query_error' | 'scaled_zero'
+export type ScanSignal = 'hpa' | 'oom' | 'bursty' | 'throttling' | 'query_error' | 'scaled_zero'
 
 export interface RequestFitImpact {
   replicas: number
@@ -80,6 +80,7 @@ export function flattenScanResults(scan: RequestFitScanResponse): RequestFitScan
       const signals = new Set<ScanSignal>()
       if (rows.some((row) => row.hpaManaged)) signals.add('hpa')
       if (rows.some((row) => row.currentPodOOM || row.windowOomEvidence)) signals.add('oom')
+      if (rows.some((row) => row.bursty)) signals.add('bursty')
       if (rows.some((row) => (row.throttleRatio ?? 0) >= 0.1)) signals.add('throttling')
       if (rows.some((row) => row.queryError)) signals.add('query_error')
       if (workload.scaledToZero) signals.add('scaled_zero')

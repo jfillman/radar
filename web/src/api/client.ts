@@ -1758,12 +1758,21 @@ export interface RightsizingRow {
   currentLimit?: string
   currentLimitValue?: number
   observed?: {
-    name: 'P95' | 'P99'
+    name: 'P95' | 'P99' | 'Max'
     value: number
     formatted: string
   }
+  peak?: {
+    name: 'P99'
+    value: number
+    formatted: string
+  }
+  calculatedRequest?: string
+  calculatedRequestValue?: number
   recommendedRequest?: string
   recommendedRequestValue?: number
+  reductionLimited?: boolean
+  bursty?: boolean
   recommendationReason?: string
   sampleCount: number
   expectedSamples: number

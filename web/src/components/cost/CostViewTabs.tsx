@@ -7,7 +7,7 @@ export function CostViewTabs() {
   return (
     <div className="flex items-center gap-1 border-b border-theme-border" role="tablist" aria-label="Cost views">
       <CostTab to="/cost" active={!requestFit}>Overview</CostTab>
-      <CostTab to="/cost/request-fit" active={requestFit}>Request fit</CostTab>
+      <CostTab to="/cost/request-fit" active={requestFit}>Rightsizing</CostTab>
     </div>
   )
 }

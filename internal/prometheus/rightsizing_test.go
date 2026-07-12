@@ -63,7 +63,7 @@ func TestClassifyRequestFit(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			row := RightsizingRow{HPAManaged: tc.hpa, CurrentPodOOM: tc.oom}
+			row := RightsizingRow{HPAManaged: tc.hpa, HPAEvidenceAvailable: true, CurrentPodOOM: tc.oom, OOMEvidenceAvailable: true}
 			classifyRequestFit(&row, tc.observed, tc.req, tc.lim, tc.resource)
 			if row.Fit != tc.wantFit {
 				t.Errorf("fit = %s, want %s", row.Fit, tc.wantFit)
@@ -125,6 +125,7 @@ func TestComputeRightsizingUsesGroupedEvidence(t *testing.T) {
 		}},
 		currentPodOOM: map[string]bool{},
 		hpaManaged:    map[string]bool{},
+		hpaAvailable:  true,
 	}
 	querier := fakeRightsizingQuerier(func(query string) (*prom.QueryResult, error) {
 		switch {

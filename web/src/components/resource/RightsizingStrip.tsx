@@ -1,4 +1,5 @@
 import { ArrowRight, ExternalLink, Gauge, HelpCircle, Loader2 } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { Badge } from '@skyhook-io/k8s-ui/components/ui/Badge'
 import {
   usePrometheusRightsizing,
@@ -11,8 +12,8 @@ import {
 import { Tooltip } from '../ui/Tooltip'
 
 const RIGHTSIZING_KINDS = new Set(['Deployment', 'StatefulSet', 'DaemonSet'])
-const REQUEST_FIT_DOCS_URL = 'https://radarhq.io/docs/features/request-fit'
-export const REQUEST_FIT_SUMMARY = 'Workload-level guidance from recent demand, not a fleet scan or savings estimate.'
+export const REQUEST_FIT_DOCS_URL = 'https://radarhq.io/docs/features/request-fit'
+export const REQUEST_FIT_SUMMARY = 'Evidence-based guidance for this workload, not a savings estimate or automatic change.'
 export const REQUEST_FIT_METHODOLOGY = 'Uses seven days of 5-minute samples: CPU P95 and memory P99, plus 15% headroom. Radar does not change requests.'
 
 interface RequestFitProps {
@@ -60,7 +61,10 @@ export function RequestFitPanel(props: RequestFitProps) {
             </p>
           </div>
         </div>
-        {state.data && <RequestFitContext data={state.data} />}
+        <div className="flex items-center gap-3">
+          {state.data && <RequestFitContext data={state.data} />}
+          <Link to="/request-fit" className="text-xs font-medium text-accent-text hover:underline">Scan visible workloads</Link>
+        </div>
       </header>
       <div className="p-4">
         <RequestFitBody state={state} compact={false} />
@@ -236,7 +240,9 @@ export function getRequestFitExplanation(row: RightsizingRow): string | undefine
     request_within_fit_range: 'The configured request is within 30% of the evidence-based target.',
     insufficient_history: 'At least six hours of samples are required before suggesting a request.',
     hpa_managed: `The HPA manages ${row.resource}; review its target before changing this request.`,
+    hpa_evidence_unavailable: 'Radar could not verify HPA ownership, so it withheld a suggested request.',
     oom_evidence: 'A lower memory request is withheld because OOM evidence exists.',
+    oom_evidence_unavailable: 'Radar could not verify recent OOM history, so it withheld a lower memory request.',
     recommended_request_exceeds_limit: 'The evidence-based request would exceed the current limit; review the limit first.',
   }
   const message = row.queryError ? `Partial result: ${row.queryError}.` : messages[row.recommendationReason ?? '']

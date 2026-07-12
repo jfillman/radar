@@ -22,6 +22,7 @@ import { HelmView } from './components/helm/HelmView'
 import { HelmCompareRoute } from './components/helm/HelmCompareRoute'
 import { TrafficView } from './components/traffic/TrafficView'
 import { CostView } from './components/cost/CostView'
+import { RequestFitScanView } from './components/request-fit/RequestFitScanView'
 import { AuditView } from './components/audit/AuditView'
 import { IssuesPane } from './components/issues/IssuesPane'
 import { GitOpsView } from './components/gitops/GitOpsView'
@@ -115,7 +116,7 @@ const FLEET_MODE_KINDS = new Set<NodeKind>([
 
 // Convert API resource name back to topology node ID prefix
 // Extended MainView type that includes traffic and cost
-type ExtendedMainView = MainView | 'traffic' | 'cost' | 'workload' | 'checks' | 'gitops' | 'compare' | 'helmCompare' | 'issues' | 'applications'
+type ExtendedMainView = MainView | 'traffic' | 'cost' | 'request-fit' | 'workload' | 'checks' | 'gitops' | 'compare' | 'helmCompare' | 'issues' | 'applications'
 
 // Extract view from URL path
 function getViewFromPath(pathname: string): ExtendedMainView {
@@ -128,6 +129,7 @@ function getViewFromPath(pathname: string): ExtendedMainView {
   if (path === 'helm') return 'helm'
   if (path === 'traffic') return 'traffic'
   if (path === 'cost') return 'cost'
+  if (path === 'request-fit') return 'request-fit'
   if (path === 'workload') return 'workload'
   if (path === 'checks' || path === 'audit') return 'checks'  // /audit = legacy → checks
   if (path === 'gitops') return 'gitops'
@@ -222,6 +224,7 @@ function radarPageTitle(pathname: string, search = '', apiResources?: { name: st
 
   // The landing view reads "Overview" rather than "Home" in the tab.
   if (view === 'home') return 'Overview'
+  if (view === 'request-fit') return 'Request fit'
   // Every other view's label is its id capitalized — getViewFromPath has already
   // normalized aliases (e.g. /audit → 'checks'), so no lookup table is needed.
   return capitalize(view)
@@ -763,7 +766,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   const VIEW_SHORTCUT_KEYS: Record<ExtendedMainView, string> = {
     home: 'g h', resources: 'g r', issues: 'g i', topology: 'g t',
     applications: 'g a', timeline: 'g l', traffic: 'g f', helm: 'g m',
-    gitops: 'g o', checks: 'g u', cost: 'g c',
+    gitops: 'g o', checks: 'g u', 'request-fit': 'g q', cost: 'g c',
     // Non-rail views (reachable via deep links / actions, not the rail) get no
     // dedicated mnemonic — listed for exhaustiveness so the type stays total.
     workload: '', compare: '', helmCompare: '',
@@ -2184,6 +2187,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         {/* Cost detail view */}
         {mainView === 'cost' && (
           <CostView onBack={() => setMainView('home')} onOpenResource={navigateToResource} />
+        )}
+
+        {mainView === 'request-fit' && (
+          <RequestFitScanView namespaces={namespaces} />
         )}
 
         {/* Takeover splash. When the host claims the current view via

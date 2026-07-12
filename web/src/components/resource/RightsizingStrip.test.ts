@@ -4,6 +4,7 @@ import {
   getRequestFitExplanation,
   getRequestFitPresentation,
   REQUEST_FIT_METHODOLOGY,
+  REQUEST_FIT_DOCS_URL,
   REQUEST_FIT_SUMMARY,
 } from './RightsizingStrip'
 
@@ -16,6 +17,8 @@ const row = (overrides: Partial<RightsizingRow> = {}): RightsizingRow => ({
   expectedSamples: 2016,
   coverage: 1,
   hpaManaged: false,
+  hpaEvidenceAvailable: true,
+  oomEvidenceAvailable: true,
   throttleAvailable: true,
   ...overrides,
 })
@@ -34,6 +37,8 @@ describe('request-fit presentation', () => {
   it('explains why recommendations are withheld without inventing a zero-risk result', () => {
     expect(getRequestFitExplanation(row({ recommendationReason: 'hpa_managed' }))).toContain('HPA manages cpu')
     expect(getRequestFitExplanation(row({ resource: 'memory', recommendationReason: 'oom_evidence' }))).toContain('OOM evidence')
+    expect(getRequestFitExplanation(row({ recommendationReason: 'hpa_evidence_unavailable' }))).toContain('could not verify HPA')
+    expect(getRequestFitExplanation(row({ resource: 'memory', recommendationReason: 'oom_evidence_unavailable' }))).toContain('could not verify recent OOM')
     expect(getRequestFitExplanation(row({ throttleAvailable: false }))).toContain('throttling metrics are unavailable')
   })
 
@@ -48,9 +53,10 @@ describe('request-fit presentation', () => {
   })
 
   it('sets the workload-level scope and methodology without promising savings or changes', () => {
-    expect(REQUEST_FIT_SUMMARY).toContain('Workload-level guidance')
-    expect(REQUEST_FIT_SUMMARY).toContain('not a fleet scan or savings estimate')
+    expect(REQUEST_FIT_SUMMARY).toContain('this workload')
+    expect(REQUEST_FIT_SUMMARY).toContain('not a savings estimate or automatic change')
     expect(REQUEST_FIT_METHODOLOGY).toContain('CPU P95 and memory P99')
     expect(REQUEST_FIT_METHODOLOGY).toContain('Radar does not change requests')
+    expect(REQUEST_FIT_DOCS_URL).toContain('/features/request-fit')
   })
 })

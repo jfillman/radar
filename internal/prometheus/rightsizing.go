@@ -80,10 +80,12 @@ type RightsizingRow struct {
 	ExpectedSamples         int                  `json:"expectedSamples"`
 	Coverage                float64              `json:"coverage"`
 	HPAManaged              bool                 `json:"hpaManaged"`
+	HPAEvidenceAvailable    bool                 `json:"hpaEvidenceAvailable"`
 	ThrottleAvailable       bool                 `json:"throttleAvailable,omitempty"`
 	ThrottleRatio           *float64             `json:"throttleRatio,omitempty"`
 	CurrentPodOOM           bool                 `json:"currentPodOOM,omitempty"`
 	WindowOOMEvidence       bool                 `json:"windowOomEvidence,omitempty"`
+	OOMEvidenceAvailable    bool                 `json:"oomEvidenceAvailable"`
 	LimitConflict           bool                 `json:"limitConflict,omitempty"`
 	QueryError              string               `json:"queryError,omitempty"`
 }
@@ -203,6 +205,7 @@ type rightsizingWorkload struct {
 	podNames      []string
 	currentPodOOM map[string]bool
 	hpaManaged    map[string]bool
+	hpaAvailable  bool
 	scaledToZero  bool
 }
 
@@ -251,10 +254,12 @@ func loadRightsizingWorkload(kind, namespace, name string) (rightsizingWorkload,
 		return rightsizingWorkload{}, errCacheNotReady
 	}
 
+	hpaManaged, hpaAvailable := loadHPAManagedResources(cache, kind, namespace, name)
 	workload := rightsizingWorkload{
 		containers:    extractRuntimeContainers(podTemplate),
 		currentPodOOM: map[string]bool{},
-		hpaManaged:    loadHPAManagedResources(cache, kind, namespace, name),
+		hpaManaged:    hpaManaged,
+		hpaAvailable:  hpaAvailable,
 		scaledToZero:  scaledToZero,
 	}
 	if cache.Pods() == nil {
@@ -306,14 +311,14 @@ func collectCurrentPodOOM(dst map[string]bool, statuses []corev1.ContainerStatus
 	}
 }
 
-func loadHPAManagedResources(cache *k8s.ResourceCache, kind, namespace, name string) map[string]bool {
+func loadHPAManagedResources(cache *k8s.ResourceCache, kind, namespace, name string) (map[string]bool, bool) {
 	managed := map[string]bool{}
-	if cache.HorizontalPodAutoscalers() == nil {
-		return managed
+	if !cache.IsDeferredSynced() || cache.HorizontalPodAutoscalers() == nil {
+		return managed, false
 	}
 	hpas, err := cache.HorizontalPodAutoscalers().HorizontalPodAutoscalers(namespace).List(labels.Everything())
 	if err != nil {
-		return managed
+		return managed, false
 	}
 	for _, hpa := range hpas {
 		ref := hpa.Spec.ScaleTargetRef
@@ -330,7 +335,7 @@ func loadHPAManagedResources(cache *k8s.ResourceCache, kind, namespace, name str
 			}
 		}
 	}
-	return managed
+	return managed, true
 }
 
 // extractRuntimeContainers returns containers + native-sidecar init containers
@@ -517,7 +522,7 @@ func resultByContainer(result *prom.QueryResult) map[string]float64 {
 }
 
 func buildRightsizingRow(container containerSpec, resourceName string, expected int, ownerCoverage OwnerCoverage, workload rightsizingWorkload, results map[string]queryOutcome) RightsizingRow {
-	row := RightsizingRow{Container: container.name, Resource: resourceName, Fit: FitInsufficientHistory, Confidence: ConfidenceLow, ExpectedSamples: expected, HPAManaged: workload.hpaManaged[resourceName]}
+	row := RightsizingRow{Container: container.name, Resource: resourceName, Fit: FitInsufficientHistory, Confidence: ConfidenceLow, ExpectedSamples: expected, HPAManaged: workload.hpaManaged[resourceName], HPAEvidenceAvailable: workload.hpaAvailable}
 	var req, lim *resource.Quantity
 	statistic := "P95"
 	if resourceName == "cpu" {
@@ -527,6 +532,7 @@ func buildRightsizingRow(container containerSpec, resourceName string, expected 
 		statistic = "P99"
 		row.CurrentPodOOM = workload.currentPodOOM[container.name]
 		if oom := results["oom"]; oom.err == nil {
+			row.OOMEvidenceAvailable = true
 			_, row.WindowOOMEvidence = oom.values[container.name]
 		}
 	}
@@ -617,8 +623,16 @@ func classifyRequestFit(row *RightsizingRow, observed float64, req, lim *resourc
 		row.RecommendationReason = "hpa_managed"
 		return
 	}
+	if !row.HPAEvidenceAvailable {
+		row.RecommendationReason = "hpa_evidence_unavailable"
+		return
+	}
 	if resourceName == "memory" && row.Fit == FitOversized && (row.CurrentPodOOM || row.WindowOOMEvidence) {
 		row.RecommendationReason = "oom_evidence"
+		return
+	}
+	if resourceName == "memory" && row.Fit == FitOversized && !row.OOMEvidenceAvailable {
+		row.RecommendationReason = "oom_evidence_unavailable"
 		return
 	}
 	recommended := recommendRequest(observed, resourceName)

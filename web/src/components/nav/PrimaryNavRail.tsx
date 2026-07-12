@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react'
 import type { ReactNode } from 'react'
-import { Home, Network, List, Clock, AlertTriangle, Package, GitBranch, Boxes, Activity, DollarSign, ShieldCheck, Settings, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { Home, Network, List, Clock, AlertTriangle, Package, GitBranch, Boxes, Activity, DollarSign, Gauge, ShieldCheck, Settings, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { clsx } from 'clsx'
 import type { MainView } from '../../types'
 import { Tooltip } from '../ui/Tooltip'
@@ -8,7 +8,7 @@ import { Tooltip } from '../ui/Tooltip'
 // The views the rail can navigate to. Broader than k8s-ui's ExtendedMainView
 // (which omits 'applications') — it mirrors the navigable subset of App.tsx's
 // own view union, so onNavigate accepts App's setMainView directly.
-type NavRailView = MainView | 'issues' | 'traffic' | 'gitops' | 'applications' | 'cost' | 'checks'
+type NavRailView = MainView | 'issues' | 'traffic' | 'gitops' | 'applications' | 'cost' | 'capacity' | 'checks'
 
 // Primary left nav rail for standalone (non-embedded) Radar.
 //
@@ -41,6 +41,7 @@ interface NavItemDef {
 const NAV_ITEMS: NavItemDef[] = [
   { view: 'home', icon: Home, label: 'Home' },
   { view: 'resources', icon: List, label: 'Resources' },
+  { view: 'capacity', icon: Gauge, label: 'Capacity' },
   { view: 'issues', icon: AlertTriangle, label: 'Issues' },
   { view: 'topology', icon: Network, label: 'Topology' },
   { view: 'applications', icon: Boxes, label: 'Applications' },
@@ -69,9 +70,10 @@ interface PrimaryNavRailProps {
   // which self-nulls without auth so the row vanishes in no-auth OSS).
   onOpenSettings?: () => void
   accountSlot?: ReactNode
+  showCapacity?: boolean
 }
 
-export function PrimaryNavRail({ activeView, onNavigate, pinned, onTogglePinned, showPinToggle = true, onOpenSettings, accountSlot }: PrimaryNavRailProps) {
+export function PrimaryNavRail({ activeView, onNavigate, pinned, onTogglePinned, showPinToggle = true, onOpenSettings, accountSlot, showCapacity = false }: PrimaryNavRailProps) {
   return (
     <aside
       aria-label="Primary navigation"
@@ -103,7 +105,7 @@ export function PrimaryNavRail({ activeView, onNavigate, pinned, onTogglePinned,
           pinned && 'flex-1 min-h-0 overflow-y-auto',
         )}
       >
-        {NAV_ITEMS.map((item) => (
+        {NAV_ITEMS.filter((item) => item.view !== 'capacity' || showCapacity).map((item) => (
           <NavRailItem
             key={item.view}
             item={item}

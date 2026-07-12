@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
-import { Home, Network, List, Clock, Package, Activity, Sun, Stethoscope, DollarSign, ShieldCheck, GitBranch, AlertTriangle, Boxes, Server } from 'lucide-react'
+import { Home, Network, List, Clock, Package, Activity, Sun, Stethoscope, DollarSign, Gauge, ShieldCheck, GitBranch, AlertTriangle, Boxes, Server } from 'lucide-react'
 import { useNamespaces, useContexts } from '../../api/client'
-import { CORE_RESOURCES, useAPIResources } from '../../api/apiResources'
+import { CORE_RESOURCES, hasKarpenterNodePools, useAPIResources } from '../../api/apiResources'
 import { getResourceIcon } from '../../utils/resource-icons'
 import { parseContextName } from '../../utils/context-name'
 
@@ -13,7 +13,7 @@ function stripSourceSuffix(name: string, source?: string): string {
   return name.replace(new RegExp(`\\s+\\(${escaped}(?:\\s+#\\d+)?\\)$`), '')
 }
 
-export type MainView = 'home' | 'topology' | 'resources' | 'timeline' | 'issues' | 'helm' | 'traffic' | 'cost' | 'checks' | 'gitops' | 'applications'
+export type MainView = 'home' | 'topology' | 'resources' | 'timeline' | 'issues' | 'helm' | 'traffic' | 'cost' | 'capacity' | 'checks' | 'gitops' | 'applications'
 
 export interface CommandItem {
   id: string
@@ -85,6 +85,7 @@ export interface CommandItemCallbacks {
 const VIEW_ENTRIES: { view: MainView; label: string; icon: React.ComponentType<{ className?: string }>; shortcut: string }[] = [
   { view: 'home', label: 'Home', icon: Home, shortcut: 'g h' },
   { view: 'resources', label: 'Resources', icon: List, shortcut: 'g r' },
+  { view: 'capacity', label: 'Capacity', icon: Gauge, shortcut: 'g p' },
   { view: 'issues', label: 'Issues', icon: AlertTriangle, shortcut: 'g i' },
   { view: 'topology', label: 'Topology', icon: Network, shortcut: 'g t' },
   { view: 'applications', label: 'Applications', icon: Boxes, shortcut: 'g a' },
@@ -107,7 +108,9 @@ export function useCommandItems(cb: CommandItemCallbacks): CommandItem[] {
   return useMemo<CommandItem[]>(() => {
     const result: CommandItem[] = []
 
+    const hasKarpenter = hasKarpenterNodePools(apiResources)
     for (const v of VIEW_ENTRIES) {
+      if (v.view === 'capacity' && !hasKarpenter) continue
       result.push({ id: `view-${v.view}`, label: `Go to ${v.label}`, category: 'Views', icon: v.icon, shortcut: v.shortcut, action: () => cb.onNavigateView(v.view) })
     }
 

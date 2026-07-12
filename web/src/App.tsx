@@ -11,7 +11,7 @@ import { useDiagnoseLayout } from './components/diagnose/DiagnoseContext'
 import { DiagnoseSurface } from './components/diagnose/DiagnoseSurface'
 import { TopologyGraph, TopologySearch, TopologyFilterSidebar, TopologyControls, FreshnessControl, gitOpsRouteForKind, gitOpsRouteForResource, ScopePill, PaneLoader } from '@skyhook-io/k8s-ui'
 import { initNavigationMap } from '@skyhook-io/k8s-ui/utils/navigation'
-import { useAPIResources, CORE_RESOURCES } from './api/apiResources'
+import { useAPIResources, CORE_RESOURCES, hasKarpenterNodePools } from './api/apiResources'
 import { TimelineView } from './components/timeline/TimelineView'
 import { ResourcesView } from './components/resources/ResourcesView'
 import { serializeColumnFilters } from './components/resources/resource-utils'
@@ -22,6 +22,7 @@ import { HelmView } from './components/helm/HelmView'
 import { HelmCompareRoute } from './components/helm/HelmCompareRoute'
 import { TrafficView } from './components/traffic/TrafficView'
 import { CostView } from './components/cost/CostView'
+import { CapacityView } from './components/capacity/CapacityView'
 import { AuditView } from './components/audit/AuditView'
 import { IssuesPane } from './components/issues/IssuesPane'
 import { GitOpsView } from './components/gitops/GitOpsView'
@@ -56,7 +57,7 @@ import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
 import { useDocumentTitle } from './hooks/useDocumentTitle'
 import type { ClusterLoadState } from './types/clusterLoadState'
 import { useClusterLoadState } from './hooks/useClusterLoadState'
-import { Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, SquareTerminal, ShieldCheck, GitBranch, HelpCircle, Loader2, RefreshCw } from 'lucide-react'
+import { Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, SquareTerminal, ShieldCheck, GitBranch, Gauge, HelpCircle, Loader2, RefreshCw } from 'lucide-react'
 import { useTheme } from './context/ThemeContext'
 import { Tooltip } from './components/ui/Tooltip'
 import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
@@ -114,8 +115,8 @@ const FLEET_MODE_KINDS = new Set<NodeKind>([
 ])
 
 // Convert API resource name back to topology node ID prefix
-// Extended MainView type that includes traffic and cost
-type ExtendedMainView = MainView | 'traffic' | 'cost' | 'workload' | 'checks' | 'gitops' | 'compare' | 'helmCompare' | 'issues' | 'applications'
+// App-only routes extend the shared navigable view vocabulary with detail flows.
+type ExtendedMainView = MainView | 'traffic' | 'cost' | 'capacity' | 'workload' | 'checks' | 'gitops' | 'compare' | 'helmCompare' | 'issues' | 'applications'
 
 // Extract view from URL path
 function getViewFromPath(pathname: string): ExtendedMainView {
@@ -128,6 +129,7 @@ function getViewFromPath(pathname: string): ExtendedMainView {
   if (path === 'helm') return 'helm'
   if (path === 'traffic') return 'traffic'
   if (path === 'cost') return 'cost'
+  if (path === 'capacity') return 'capacity'
   if (path === 'workload') return 'workload'
   if (path === 'checks' || path === 'audit') return 'checks'  // /audit = legacy → checks
   if (path === 'gitops') return 'gitops'
@@ -157,6 +159,12 @@ function namespaceFilterDisabled(
     return {
       disabled: true,
       tooltip: 'Cost is reported per namespace across the whole cluster — the namespace filter doesn’t apply here.',
+    }
+  }
+  if (view === 'capacity') {
+    return {
+      disabled: true,
+      tooltip: 'Capacity is reported across the cluster — the namespace filter doesn’t apply here.',
     }
   }
   const segments = pathname.replace(/^\//, '').split('/')
@@ -380,8 +388,9 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   // mount) so the omnibar can open a CRD hit with an irregular plural from any
   // view — kindToPlural would otherwise English-guess the route before a
   // resources view has run initNavigationMap().
-  const { data: navApiResources } = useAPIResources()
+  const { data: navApiResources, isLoading: apiResourcesLoading } = useAPIResources()
   useEffect(() => { if (navApiResources) initNavigationMap(navApiResources) }, [navApiResources])
+  const hasKarpenter = hasKarpenterNodePools(navApiResources)
 
   // View-aware namespace scope: disabled on cluster-scoped surfaces so the
   // chip isn't a dead control next to the cluster switcher.
@@ -764,12 +773,13 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     home: 'g h', resources: 'g r', issues: 'g i', topology: 'g t',
     applications: 'g a', timeline: 'g l', traffic: 'g f', helm: 'g m',
     gitops: 'g o', checks: 'g u', cost: 'g c',
+    capacity: 'g p',
     // Non-rail views (reachable via deep links / actions, not the rail) get no
     // dedicated mnemonic — listed for exhaustiveness so the type stays total.
     workload: '', compare: '', helmCompare: '',
   }
   const views = Object.keys(VIEW_SHORTCUT_KEYS).filter(
-    (v): v is ExtendedMainView => VIEW_SHORTCUT_KEYS[v as ExtendedMainView] !== '',
+    (v): v is ExtendedMainView => VIEW_SHORTCUT_KEYS[v as ExtendedMainView] !== '' && (v !== 'capacity' || hasKarpenter),
   )
   useRegisterShortcuts([
     ...views.map((view) => ({
@@ -1593,6 +1603,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           showPinToggle={!railForcedSlim}
           onOpenSettings={() => setShowSettings(true)}
           accountSlot={<UserMenu variant="rail" pinned={navRailEffectivePinned} />}
+          showCapacity={hasKarpenter}
         />
       )}
       {/* `relative` makes this column the containing block for the absolute
@@ -1704,6 +1715,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
             { view: 'home' as const, icon: Home, label: 'Home' },
             { view: 'topology' as const, icon: Network, label: 'Topology' },
             { view: 'resources' as const, icon: List, label: 'Resources' },
+            ...(hasKarpenter ? [{ view: 'capacity' as const, icon: Gauge, label: 'Capacity' }] : []),
             { view: 'timeline' as const, icon: Clock, label: 'Timeline' },
             { view: 'helm' as const, icon: Package, label: 'Helm' },
             { view: 'gitops' as const, icon: GitBranch, label: 'GitOps' },
@@ -2203,6 +2215,14 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         {/* Cost detail view */}
         {mainView === 'cost' && (
           <CostView onBack={() => setMainView('home')} />
+        )}
+
+        {mainView === 'capacity' && (
+          <CapacityView
+            available={hasKarpenter}
+            discovering={apiResourcesLoading}
+            onOpenResource={(resource) => navigateToResource(resource)}
+          />
         )}
 
         {/* Takeover splash. When the host claims the current view via

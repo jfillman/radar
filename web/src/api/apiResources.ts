@@ -26,3 +26,9 @@ export function useAPIResources() {
     staleTime: 5 * 60 * 1000, // 5 minutes - resources don't change often
   })
 }
+
+export function hasKarpenterNodePools(resources: APIResource[] | undefined): boolean {
+  return resources?.some((resource) =>
+    resource.name === 'nodepools' && resource.group === 'karpenter.sh' && resource.verbs?.includes('list')
+  ) ?? false
+}

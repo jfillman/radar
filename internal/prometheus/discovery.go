@@ -73,7 +73,7 @@ func (c *Client) discover(ctx context.Context) (string, string, error) {
 	}
 
 	// Layer 2: Reuse traffic system's existing port-forward if present
-	if pfAddr := portforward.GetAddress(contextName); pfAddr != "" {
+	if pfAddr := portforward.GetAddress(portforward.OwnerPrometheus, contextName); pfAddr != "" {
 		if c.probe(ctx, pfAddr) {
 			log.Printf("[prometheus] connected via traffic port-forward %s (%s)", pfAddr, took(start))
 			if !c.markConnected(pfAddr, "", startGen) {

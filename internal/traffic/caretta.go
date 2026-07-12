@@ -275,7 +275,7 @@ func (c *CarettaSource) discoverPrometheus(ctx context.Context) string {
 	}
 
 	// Check for active managed port-forward first
-	if pfAddr := portforward.GetAddress(c.currentContext); pfAddr != "" {
+	if pfAddr := portforward.GetAddress(portforward.OwnerTraffic, c.currentContext); pfAddr != "" {
 		if c.tryMetricsEndpointLocked(ctx, pfAddr) {
 			log.Printf("[caretta] Using managed port-forward at %s", pfAddr)
 			c.prometheusAddr = pfAddr
@@ -563,7 +563,7 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 	}
 
 	// Check if there's already a valid managed port-forward for this context
-	if pfAddr := portforward.GetAddress(contextName); pfAddr != "" {
+	if pfAddr := portforward.GetAddress(portforward.OwnerTraffic, contextName); pfAddr != "" {
 		pfTestAddr := pfAddr + metricsInfo.basePath
 		if c.tryMetricsEndpointLocked(ctx, pfTestAddr) {
 			log.Printf("[caretta] Using existing port-forward at %s", pfAddr)

@@ -32,14 +32,37 @@ func TestOwnerScoping(t *testing.T) {
 	}
 
 	// GetAddress peeks across owners (read-only reuse) and is context-scoped.
-	if GetAddress("ctxA") == "" {
+	if GetAddress(OwnerTraffic, "ctxA") == "" {
 		t.Fatal("GetAddress should surface traffic's forward for ctxA")
 	}
-	if GetAddress("ctxB") != "" {
+	if GetAddress(OwnerTraffic, "ctxB") != "" {
 		t.Fatal("GetAddress must not match a different context")
 	}
 	if !IsConnectedForContext("ctxA") || IsConnectedForContext("ctxB") {
 		t.Fatal("IsConnectedForContext scoping wrong")
+	}
+}
+
+// TestGetAddressPrefersOwn verifies GetAddress returns the caller's own forward
+// when it has one, rather than an arbitrary peer's — so a caller reuses its own
+// live forward instead of probing an incompatible one.
+func TestGetAddressPrefersOwn(t *testing.T) {
+	saved := reg
+	t.Cleanup(func() { reg = saved })
+	reg = &registry{forwards: map[Owner]*metricsForward{}}
+	reg.forwards[OwnerPrometheus] = &metricsForward{active: true, localPort: 1111, contextName: "ctxA"}
+	reg.forwards[OwnerTraffic] = &metricsForward{active: true, localPort: 2222, contextName: "ctxA"}
+
+	if got := GetAddress(OwnerPrometheus, "ctxA"); got != "http://localhost:1111" {
+		t.Fatalf("prometheus got %q, want its own :1111", got)
+	}
+	if got := GetAddress(OwnerTraffic, "ctxA"); got != "http://localhost:2222" {
+		t.Fatalf("traffic got %q, want its own :2222", got)
+	}
+	// With no own forward, fall back to the peer's.
+	Stop(OwnerPrometheus)
+	if got := GetAddress(OwnerPrometheus, "ctxA"); got != "http://localhost:2222" {
+		t.Fatalf("prometheus fallback got %q, want peer :2222", got)
 	}
 }
 

@@ -226,14 +226,20 @@ func stopForwardLocked(f *metricsForward) {
 	f.cancel = nil
 }
 
-// GetAddress returns the address of any active metrics forward for the given
-// context, so an owner can opportunistically reuse another owner's compatible
-// endpoint (read-only — it never takes ownership). Empty if none.
-func GetAddress(currentContext string) string {
+// GetAddress returns the address of an active metrics forward for the given
+// context, preferring the caller's own forward (preferOwner) before falling back
+// to another owner's compatible endpoint (read-only reuse — the caller never
+// takes ownership). Preferring the caller's own forward keeps selection
+// deterministic and avoids probing an incompatible peer (e.g. Hubble's relay)
+// while the caller's own forward is still live. Empty if none.
+func GetAddress(preferOwner Owner, currentContext string) string {
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()
-	for _, f := range reg.forwards {
-		if f.active && f.contextName == currentContext {
+	if f := reg.forwards[preferOwner]; f != nil && f.active && f.contextName == currentContext {
+		return fmt.Sprintf("http://localhost:%d", f.localPort)
+	}
+	for owner, f := range reg.forwards {
+		if owner != preferOwner && f.active && f.contextName == currentContext {
 			return fmt.Sprintf("http://localhost:%d", f.localPort)
 		}
 	}

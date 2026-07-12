@@ -2,6 +2,7 @@ package opencost
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -32,7 +33,7 @@ func handleSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
 		log.Printf("[opencost] EnsureConnected failed (summary): %v", err)
-		writeJSON(w, http.StatusOK, pkgopencost.CostSummary{Available: false, Reason: pkgopencost.ReasonNoPrometheus})
+		writeJSON(w, http.StatusOK, pkgopencost.CostSummary{Available: false, Reason: ConnectionFailureReason(err)})
 		return
 	}
 	writeJSON(w, http.StatusOK, pkgopencost.ComputeCostSummaryFromProm(
@@ -62,7 +63,7 @@ func handleWorkloads(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
 		log.Printf("[opencost] EnsureConnected failed (workloads): %v", err)
-		writeJSON(w, http.StatusOK, pkgopencost.WorkloadCostResponse{Namespace: ns, Reason: pkgopencost.ReasonNoPrometheus})
+		writeJSON(w, http.StatusOK, pkgopencost.WorkloadCostResponse{Namespace: ns, Reason: ConnectionFailureReason(err)})
 		return
 	}
 
@@ -124,7 +125,7 @@ func handleTrend(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
 		log.Printf("[opencost] EnsureConnected failed (trend): %v", err)
-		writeJSON(w, http.StatusOK, pkgopencost.CostTrendResponse{Available: false, Reason: pkgopencost.ReasonNoPrometheus})
+		writeJSON(w, http.StatusOK, pkgopencost.CostTrendResponse{Available: false, Reason: ConnectionFailureReason(err)})
 		return
 	}
 	writeJSON(w, http.StatusOK, pkgopencost.ComputeCostTrendFromProm(
@@ -140,12 +141,19 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
 		log.Printf("[opencost] EnsureConnected failed (nodes): %v", err)
-		writeJSON(w, http.StatusOK, pkgopencost.NodeCostResponse{Available: false, Reason: pkgopencost.ReasonNoPrometheus})
+		writeJSON(w, http.StatusOK, pkgopencost.NodeCostResponse{Available: false, Reason: ConnectionFailureReason(err)})
 		return
 	}
 	resp := pkgopencost.ComputeNodeCosts(r.Context(), client.Prom())
 	attachNodeProviderIDs(resp)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func ConnectionFailureReason(err error) string {
+	if errors.Is(err, prometheuspkg.ErrPrometheusNotFound) {
+		return pkgopencost.ReasonNoPrometheus
+	}
+	return pkgopencost.ReasonQueryError
 }
 
 func attachNodeProviderIDs(resp *pkgopencost.NodeCostResponse) {

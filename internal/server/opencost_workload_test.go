@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"testing"
 
+	internalopencost "github.com/skyhook-io/radar/internal/opencost"
 	prometheuspkg "github.com/skyhook-io/radar/internal/prometheus"
 	pkgopencost "github.com/skyhook-io/radar/pkg/opencost"
 )
 
 func TestOpenCostConnectionFailureReason(t *testing.T) {
-	if got := openCostConnectionFailureReason(fmt.Errorf("wrapped: %w", prometheuspkg.ErrPrometheusNotFound)); got != pkgopencost.ReasonNoPrometheus {
+	if got := internalopencost.ConnectionFailureReason(fmt.Errorf("wrapped: %w", prometheuspkg.ErrPrometheusNotFound)); got != pkgopencost.ReasonNoPrometheus {
 		t.Fatalf("not-found reason = %q, want %q", got, pkgopencost.ReasonNoPrometheus)
 	}
-	if got := openCostConnectionFailureReason(errors.New("manual URL unreachable")); got != pkgopencost.ReasonQueryError {
+	if got := internalopencost.ConnectionFailureReason(errors.New("manual URL unreachable")); got != pkgopencost.ReasonQueryError {
 		t.Fatalf("connection-error reason = %q, want %q", got, pkgopencost.ReasonQueryError)
 	}
 }

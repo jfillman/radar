@@ -137,6 +137,9 @@ func TestComputeWorkloads_UsageAvailabilityRequiresEveryAllocatedPod(t *testing.
 	if workload.MemoryAllocationUse == 0 {
 		t.Error("MemoryAllocationUse=0 with complete non-zero usage")
 	}
+	if workload.Efficiency != 0 || workload.IdleCost != 0 {
+		t.Errorf("combined usage values = efficiency:%v idle:%v with incomplete coverage, want 0/0", workload.Efficiency, workload.IdleCost)
+	}
 }
 
 func TestComputeWorkloads_UsageAvailabilityDistinguishesZeroFromMissing(t *testing.T) {

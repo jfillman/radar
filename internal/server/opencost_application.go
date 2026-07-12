@@ -36,7 +36,7 @@ func (s *Server) handleOpenCostApplication(w http.ResponseWriter, r *http.Reques
 	}
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
 		log.Print("[opencost] EnsureConnected failed for application cost")
-		s.writeJSON(w, pkgopencost.UnavailableApplicationCostResponse(inputs, unavailable, unsupported, openCostConnectionFailureReason(err)))
+		s.writeJSON(w, pkgopencost.UnavailableApplicationCostResponse(inputs, unavailable, unsupported, internalopencost.ConnectionFailureReason(err)))
 		return
 	}
 
@@ -79,7 +79,7 @@ func (s *Server) handleOpenCostApplicationTrend(w http.ResponseWriter, r *http.R
 			Range:             req.Range,
 			Workloads:         refs,
 			Unavailable:       unavailable,
-			UnavailableReason: openCostConnectionFailureReason(err),
+			UnavailableReason: internalopencost.ConnectionFailureReason(err),
 		}))
 		return
 	}

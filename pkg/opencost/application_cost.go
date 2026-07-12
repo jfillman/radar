@@ -175,8 +175,10 @@ func finalizeApplicationCostTotals(total *ApplicationCostTotals) {
 	total.MemoryCost = roundTo(total.MemoryCost, 4)
 	total.CPUUsageCost = roundTo(total.CPUUsageCost, 4)
 	total.MemoryUsageCost = roundTo(total.MemoryUsageCost, 4)
-	total.Efficiency = efficiencyPct(usageCost, allocCost)
-	total.IdleCost = roundTo(idleFromUsage(usageCost, allocCost), 4)
+	if total.CPUUsageAvailable && total.MemoryUsageAvailable {
+		total.Efficiency = efficiencyPct(usageCost, allocCost)
+		total.IdleCost = roundTo(idleFromUsage(usageCost, allocCost), 4)
+	}
 }
 
 func applicationUnavailableReason(statuses []ApplicationWorkloadStatus) string {

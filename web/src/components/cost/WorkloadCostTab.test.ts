@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { getWorkloadCostState } from './WorkloadCostTab'
 import { buildLineChart } from './chart'
-import type { OpenCostWorkloadDetailResponse, OpenCostWorkloadTrendResponse } from '../../api/client'
+import { ApiError, type OpenCostWorkloadDetailResponse, type OpenCostWorkloadTrendResponse } from '../../api/client'
 
 describe('getWorkloadCostState', () => {
   it('treats scaled-to-zero as a valid zero state', () => {
@@ -124,6 +124,20 @@ describe('getWorkloadCostState', () => {
 
     expect(getWorkloadCostState(current, undefined, false)).toBe('access_denied')
     expect(getWorkloadCostState(undefined, missing, false)).toBe('not_found')
+    expect(getWorkloadCostState(undefined, undefined, { currentError: new ApiError('denied', 403) })).toBe('access_denied')
+    expect(getWorkloadCostState(undefined, undefined, { trendError: new ApiError('missing', 404) })).toBe('not_found')
+  })
+
+  it('shows Prometheus discovery as soon as one query reports it', () => {
+    const current: OpenCostWorkloadDetailResponse = {
+      available: false,
+      reason: 'no_prometheus',
+      namespace: 'default',
+      kind: 'Deployment',
+      name: 'checkout',
+    }
+
+    expect(getWorkloadCostState(current, undefined, { trendLoading: true })).toBe('no_prometheus')
   })
 })
 

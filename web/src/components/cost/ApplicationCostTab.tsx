@@ -129,7 +129,9 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
   const trend = trendData
   const hasCurrent = current?.available === true && (current.coverage?.included ?? 0) > 0
   const totals = hasCurrent ? current?.totals : undefined
-  const coverage = current?.coverage ?? trend?.coverage
+  const coverage = state === 'partial_missing_current'
+    ? (trend?.coverage ?? current?.coverage)
+    : (current?.coverage ?? trend?.coverage)
   const included = coverage?.included ?? 0
   const total = coverage?.total ?? workloads.length
   const unavailableCount = coverage?.unavailable?.length ?? 0
@@ -366,12 +368,12 @@ export function getApplicationCostState(
     return 'data'
   }
   if (trendHasData) return 'partial_missing_current'
-  if (queryError) return 'load_error'
-  if (loading) return 'loading'
-
   const reason = current?.reason ?? trend?.reason
   if (reason === 'no_prometheus' || reason === 'query_error' || reason === 'access_denied' || reason === 'not_found')
     return reason
+  if (queryError) return 'load_error'
+  if (loading) return 'loading'
+
   return 'no_metrics'
 }
 

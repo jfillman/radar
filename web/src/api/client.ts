@@ -42,7 +42,7 @@ const DASHBOARD_REFRESH_INTERVAL_MS = 30_000
 const AUDIT_REFRESH_INTERVAL_MS = 60_000
 const ISSUES_REFRESH_INTERVAL_MS = 30_000
 const COST_REFRESH_INTERVAL_MS = 60_000
-const COST_DISCOVERY_RETRY_INTERVAL_MS = 2_000
+const COST_DISCOVERY_RETRY_INTERVAL_MS = 5_000
 export const COST_DISCOVERY_GRACE_MS = 30_000
 const COST_TREND_REFRESH_INTERVAL_MS = 120_000
 const CHANGES_REFRESH_INTERVAL_MS = 60_000
@@ -630,7 +630,7 @@ export function useOpenCostWorkloads(namespace: string, options?: { enabled?: bo
     queryKey: ['opencost-workloads', namespace],
     queryFn: () => fetchJSON(`/opencost/workloads?namespace=${encodeURIComponent(namespace)}`),
     enabled: (options?.enabled ?? true) && Boolean(namespace),
-    refetchInterval: costRefetchInterval(false, clusterInfo.data?.context),
+    refetchInterval: costRefetchInterval(COST_REFRESH_INTERVAL_MS, clusterInfo.data?.context),
     staleTime: 30000,
   })
 }

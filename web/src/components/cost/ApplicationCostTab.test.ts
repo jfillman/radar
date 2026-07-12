@@ -66,5 +66,6 @@ describe('getApplicationCostState', () => {
     }
 
     expect(getApplicationCostState(current, undefined, { currentLoading: false, trendLoading: false })).toBe('access_denied')
+    expect(getApplicationCostState(current, undefined, { trendError: true })).toBe('access_denied')
   })
 })

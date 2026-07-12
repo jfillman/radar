@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { clsx } from 'clsx'
 import { AlertCircle, DollarSign, HelpCircle, Loader2, TrendingUp } from 'lucide-react'
 import {
+  ApiError,
   useOpenCostWorkload,
   useOpenCostWorkloadTrend,
   COST_DISCOVERY_GRACE_MS,
@@ -40,8 +41,8 @@ type WorkloadCostState =
 interface WorkloadCostQueryStatus {
   currentLoading?: boolean
   trendLoading?: boolean
-  currentError?: boolean
-  trendError?: boolean
+  currentError?: unknown
+  trendError?: unknown
 }
 
 interface WorkloadCostTabProps {
@@ -62,8 +63,8 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
   const state = getWorkloadCostState(currentQuery.data, trendData, {
     currentLoading: currentQuery.isLoading,
     trendLoading,
-    currentError: currentQuery.isError,
-    trendError: trendQuery.isError,
+    currentError: currentQuery.error,
+    trendError: trendQuery.error,
   })
 
   useEffect(() => {
@@ -296,13 +297,24 @@ export function getWorkloadCostState(
     return 'data'
   }
   if (trendHasData) return 'partial_missing_current'
+  const reason =
+    current?.reason ??
+    trend?.reason ??
+    costUnavailableReasonFromError(queryStatus.currentError) ??
+    costUnavailableReasonFromError(queryStatus.trendError)
+  if (reason === 'no_prometheus' || reason === 'query_error' || reason === 'access_denied' || reason === 'not_found')
+    return reason
   if (queryError) return 'load_error'
   if (loading) return 'loading'
 
-  const reason = current?.reason ?? trend?.reason
-  if (reason === 'no_prometheus' || reason === 'query_error' || reason === 'access_denied' || reason === 'not_found')
-    return reason
   return 'no_metrics'
+}
+
+function costUnavailableReasonFromError(error: unknown): CostUnavailableReason | undefined {
+  if (!(error instanceof ApiError)) return undefined
+  if (error.status === 403) return 'access_denied'
+  if (error.status === 404) return 'not_found'
+  return undefined
 }
 
 function WorkloadCostDiscovering({ isFetching, onRetry }: { isFetching: boolean; onRetry: () => void }) {

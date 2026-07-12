@@ -71,6 +71,12 @@ func (c *Client) discover(ctx context.Context, gen uint64) (string, string, erro
 			}
 			return addr, "", nil
 		}
+		// A cancelled probe means the run was superseded (Reset / config change),
+		// not that the operator's URL is bad — don't slander it in errorlog.
+		if err := ctx.Err(); err != nil {
+			logDiscoveryEnded(start, err)
+			return "", "", err
+		}
 		if !discoveryDiagnosticsSuppressed(ctx) {
 			errorlog.Record("prometheus", "error", "manual Prometheus URL %s not reachable", addr)
 		}
@@ -103,6 +109,12 @@ func (c *Client) discover(ctx context.Context, gen uint64) (string, string, erro
 	})
 	if err != nil {
 		log.Printf("[prometheus] Discover error: %v", err)
+	}
+	// A cancelled enumeration returns no candidates; that's supersession, not an
+	// empty cluster — surface it instead of recording "no Prometheus found".
+	if err := ctx.Err(); err != nil {
+		logDiscoveryEnded(start, err)
+		return "", "", err
 	}
 	if len(candidates) == 0 {
 		if !discoveryDiagnosticsSuppressed(ctx) {

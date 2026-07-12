@@ -663,24 +663,22 @@ func enrichScanHPA(cache *k8s.ResourceCache, scopes map[string][]string, workloa
 	}
 	namespaces := scanScopeNamespaces(scopes)
 	var hpas []*autoscalingv2.HorizontalPodAutoscaler
-	var err error
 	if namespaces == nil {
+		var err error
 		hpas, err = lister.List(labels.Everything())
+		if err != nil {
+			return
+		}
+		markScanHPAAvailable(workloads, "")
 	} else {
 		for _, namespace := range namespaces {
-			var items []*autoscalingv2.HorizontalPodAutoscaler
-			items, err = lister.HorizontalPodAutoscalers(namespace).List(labels.Everything())
+			items, err := lister.HorizontalPodAutoscalers(namespace).List(labels.Everything())
 			if err != nil {
-				break
+				continue
 			}
 			hpas = append(hpas, items...)
+			markScanHPAAvailable(workloads, namespace)
 		}
-	}
-	if err != nil {
-		return
-	}
-	for _, workload := range workloads {
-		workload.workload.hpaAvailable = true
 	}
 	for _, hpa := range hpas {
 		ref := hpa.Spec.ScaleTargetRef
@@ -695,6 +693,14 @@ func enrichScanHPA(cache *k8s.ResourceCache, scopes map[string][]string, workloa
 					workload.workload.hpaManaged[resourceName] = true
 				}
 			}
+		}
+	}
+}
+
+func markScanHPAAvailable(workloads map[string]*scanWorkload, namespace string) {
+	for _, workload := range workloads {
+		if namespace == "" || workload.namespace == namespace {
+			workload.workload.hpaAvailable = true
 		}
 	}
 }

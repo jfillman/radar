@@ -250,3 +250,14 @@ func TestRecommendationSafetySuppressesUnknownHPAAndOOM(t *testing.T) {
 		t.Fatalf("unknown OOM evidence did not suppress memory downsize: %+v", memory)
 	}
 }
+
+func TestMarkScanHPAAvailableIsNamespaceScoped(t *testing.T) {
+	workloads := map[string]*scanWorkload{
+		"a": {namespace: "team-a"},
+		"b": {namespace: "team-b"},
+	}
+	markScanHPAAvailable(workloads, "team-a")
+	if !workloads["a"].workload.hpaAvailable || workloads["b"].workload.hpaAvailable {
+		t.Fatalf("HPA evidence availability crossed namespaces: %+v", workloads)
+	}
+}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   formatCostPerHour,
+  formatHistoricalSpend,
   formatProjectedDailyRate,
   formatProjectedMonthlyCost,
   formatProjectedMonthlyRate,
@@ -15,5 +16,12 @@ describe('cost formatters', () => {
 
   it('keeps hourly rates explicit', () => {
     expect(formatCostPerHour(0.1)).toBe('$0.100/hr')
+  })
+
+  it('does not turn insufficient history into zero spend', () => {
+    expect(formatHistoricalSpend(1, 0, false)).toBe('—')
+    expect(formatHistoricalSpend(2, 0, false)).toBe('$0.00')
+    expect(formatHistoricalSpend(2, 1.25, false)).toBe('~$1.25')
+    expect(formatHistoricalSpend(2, 1.25, true)).toBe('—')
   })
 })

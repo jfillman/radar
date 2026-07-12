@@ -12,9 +12,10 @@ import (
 )
 
 type ApplicationTrendOptions struct {
-	Range       string
-	Workloads   []ApplicationWorkloadRef
-	Unavailable []ApplicationWorkloadStatus
+	Range             string
+	Workloads         []ApplicationWorkloadRef
+	Unavailable       []ApplicationWorkloadStatus
+	UnavailableReason string
 }
 
 func ComputeApplicationCostTrendFromProm(ctx context.Context, client *prom.Client, opts ApplicationTrendOptions) *ApplicationCostTrendResponse {
@@ -29,9 +30,13 @@ func ComputeApplicationCostTrendFromProm(ctx context.Context, client *prom.Clien
 		},
 	}
 	if client == nil {
+		reason := opts.UnavailableReason
+		if reason == "" {
+			reason = ReasonNoPrometheus
+		}
 		resp.Available = false
-		resp.Reason = ReasonNoPrometheus
-		resp.Coverage.Unavailable = append(resp.Coverage.Unavailable, applicationStatusesForRefs(supported, ReasonNoPrometheus)...)
+		resp.Reason = reason
+		resp.Coverage.Unavailable = append(resp.Coverage.Unavailable, applicationStatusesForRefs(supported, reason)...)
 		sortApplicationStatuses(resp.Coverage.Unavailable)
 		resp.Partial = len(resp.Coverage.Unsupported) > 0 || len(opts.Unavailable) > 0
 		return resp

@@ -36,7 +36,7 @@ func (s *Server) handleOpenCostApplication(w http.ResponseWriter, r *http.Reques
 	}
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
 		log.Print("[opencost] EnsureConnected failed for application cost")
-		s.writeJSON(w, pkgopencost.UnavailableApplicationCostResponse(inputs, unavailable, unsupported, pkgopencost.ReasonNoPrometheus))
+		s.writeJSON(w, pkgopencost.UnavailableApplicationCostResponse(inputs, unavailable, unsupported, openCostConnectionFailureReason(err)))
 		return
 	}
 
@@ -76,9 +76,10 @@ func (s *Server) handleOpenCostApplicationTrend(w http.ResponseWriter, r *http.R
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
 		log.Print("[opencost] EnsureConnected failed for application trend")
 		s.writeJSON(w, pkgopencost.ComputeApplicationCostTrendFromProm(r.Context(), nil, pkgopencost.ApplicationTrendOptions{
-			Range:       req.Range,
-			Workloads:   refs,
-			Unavailable: unavailable,
+			Range:             req.Range,
+			Workloads:         refs,
+			Unavailable:       unavailable,
+			UnavailableReason: openCostConnectionFailureReason(err),
 		}))
 		return
 	}

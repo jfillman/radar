@@ -12,7 +12,7 @@ import {
 } from '../../api/client'
 import { Tooltip } from '../ui/Tooltip'
 import { CostTimeRangeSelector, StackedAreaChart } from './CostTrendChart'
-import { formatCost, formatCostPerHour, formatProjectedDailyRate, formatProjectedMonthlyCost } from './format'
+import { formatCostPerHour, formatHistoricalSpend, formatProjectedDailyRate, formatProjectedMonthlyCost } from './format'
 import { CurrentAllocationUse } from './CurrentAllocationUse'
 
 type WorkloadCostState =
@@ -103,11 +103,11 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
   const windowTotal = trend?.available ? (trend.windowTotalCost ?? 0) : 0
   const cpuCost = current?.cpuCost ?? 0
   const memoryCost = current?.memoryCost ?? 0
-  const windowSpendValue = hasTrend
-    ? `~${formatCost(windowTotal)}`
-    : trendLoading || state === 'partial_missing_history'
-      ? '—'
-      : formatCost(0)
+  const windowSpendValue = formatHistoricalSpend(
+    points.length,
+    windowTotal,
+    trendLoading || state === 'partial_missing_history',
+  )
 
   return (
     <div className="mx-auto w-full max-w-[1600px] space-y-4">

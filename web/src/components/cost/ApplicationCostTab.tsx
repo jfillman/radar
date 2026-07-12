@@ -15,8 +15,8 @@ import {
 import { Tooltip } from '../ui/Tooltip'
 import { ChartLegend, CostTimeRangeSelector, StackedAreaChart } from './CostTrendChart'
 import {
-  formatCost,
   formatCostPerHour,
+  formatHistoricalSpend,
   formatProjectedDailyRate,
   formatProjectedMonthlyCost,
   formatProjectedMonthlyRate,
@@ -181,13 +181,11 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
           <div className="space-y-4">
             <CostMetricBlock
               label={`Spend over ${range}`}
-              value={
-                hasTrend
-                  ? `~${formatCost(trend?.windowTotalCost ?? 0)}`
-                  : trendLoading || state === 'partial_missing_history'
-                    ? '—'
-                    : formatCost(0)
-              }
+              value={formatHistoricalSpend(
+                points.length,
+                trend?.windowTotalCost ?? 0,
+                trendLoading || state === 'partial_missing_history',
+              )}
               subvalue={
                 state === 'partial_missing_history'
                   ? 'Historical data incomplete'

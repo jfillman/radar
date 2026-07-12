@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -51,7 +52,7 @@ func (s *Server) handleOpenCostWorkload(w http.ResponseWriter, r *http.Request) 
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
 		log.Print("[opencost] EnsureConnected failed for workload cost")
 		resp.Available = false
-		resp.Reason = pkgopencost.ReasonNoPrometheus
+		resp.Reason = openCostConnectionFailureReason(err)
 		s.writeJSON(w, resp)
 		return
 	}
@@ -90,7 +91,7 @@ func (s *Server) handleOpenCostWorkloadTrend(w http.ResponseWriter, r *http.Requ
 	if _, _, err := client.EnsureConnected(r.Context()); err != nil {
 		log.Print("[opencost] EnsureConnected failed for workload trend")
 		resp.Available = false
-		resp.Reason = pkgopencost.ReasonNoPrometheus
+		resp.Reason = openCostConnectionFailureReason(err)
 		s.writeJSON(w, resp)
 		return
 	}
@@ -101,6 +102,13 @@ func (s *Server) handleOpenCostWorkloadTrend(w http.ResponseWriter, r *http.Requ
 		Kind:      kind,
 		Name:      name,
 	}))
+}
+
+func openCostConnectionFailureReason(err error) string {
+	if errors.Is(err, prometheuspkg.ErrPrometheusNotFound) {
+		return pkgopencost.ReasonNoPrometheus
+	}
+	return pkgopencost.ReasonQueryError
 }
 
 func (s *Server) parseOpenCostWorkloadRequest(w http.ResponseWriter, r *http.Request) (kind, namespace, name string, ok bool) {

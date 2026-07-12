@@ -131,6 +131,12 @@ func TestComputeWorkloads_UsageAvailabilityRequiresEveryAllocatedPod(t *testing.
 	if !workload.MemoryUsageAvailable {
 		t.Error("MemoryUsageAvailable=false with complete pod coverage")
 	}
+	if workload.CPUAllocationUse != 0 {
+		t.Errorf("CPUAllocationUse=%v with incomplete usage, want 0", workload.CPUAllocationUse)
+	}
+	if workload.MemoryAllocationUse == 0 {
+		t.Error("MemoryAllocationUse=0 with complete non-zero usage")
+	}
 }
 
 func TestComputeWorkloads_UsageAvailabilityDistinguishesZeroFromMissing(t *testing.T) {

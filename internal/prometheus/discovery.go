@@ -2,6 +2,7 @@ package prometheus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"github.com/skyhook-io/radar/internal/portforward"
 	"github.com/skyhook-io/radar/pkg/prom"
 )
+
+var ErrPrometheusNotFound = errors.New("no Prometheus service found in cluster")
 
 // discover finds and connects to Prometheus using a multi-layer approach:
 //  1. Manual URL override (--prometheus-url)
@@ -70,10 +73,13 @@ func (c *Client) discover(ctx context.Context) (string, string, error) {
 		log.Printf("[prometheus] Discover error: %v", err)
 	}
 	if len(candidates) == 0 {
+		if err != nil {
+			return "", "", fmt.Errorf("Prometheus discovery failed: %w", err)
+		}
 		if !discoveryDiagnosticsSuppressed(ctx) {
 			errorlog.Record("prometheus", "warning", "no Prometheus service found in cluster")
 		}
-		return "", "", fmt.Errorf("no Prometheus service found in cluster")
+		return "", "", ErrPrometheusNotFound
 	}
 
 	log.Printf("[prometheus] Found %d candidate(s), probing...", len(candidates))
@@ -129,7 +135,7 @@ func (c *Client) discover(ctx context.Context) (string, string, error) {
 	if lastErr != nil {
 		return "", "", lastErr
 	}
-	return "", "", fmt.Errorf("no Prometheus service found in cluster")
+	return "", "", ErrPrometheusNotFound
 }
 
 // setDiscoveryServiceFromCandidate records the discovered service metadata

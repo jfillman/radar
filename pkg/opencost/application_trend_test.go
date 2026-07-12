@@ -67,6 +67,19 @@ func TestComputeApplicationCostTrendFromProm_BatchesByNamespaceAndReportsPartial
 	}
 }
 
+func TestComputeApplicationCostTrendFromProm_PreservesConnectionFailureReason(t *testing.T) {
+	ref := ApplicationWorkloadRef{Namespace: "default", Kind: "Deployment", Name: "api"}
+	got := ComputeApplicationCostTrendFromProm(context.Background(), nil, ApplicationTrendOptions{
+		Range:             "24h",
+		Workloads:         []ApplicationWorkloadRef{ref},
+		UnavailableReason: ReasonQueryError,
+	})
+
+	if got.Reason != ReasonQueryError || len(got.Coverage.Unavailable) != 1 || got.Coverage.Unavailable[0].Reason != ReasonQueryError {
+		t.Fatalf("connection failure reason was not preserved: %+v", got)
+	}
+}
+
 func applicationTrendProm(t *testing.T, bodyForQuery func(string) string) *prom.Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

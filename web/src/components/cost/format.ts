@@ -24,6 +24,11 @@ export function formatCostPerHour(value: number): string {
   return `${formatCost(value)}/hr`
 }
 
+export function formatHistoricalSpend(pointCount: number, windowTotalCost: number, unavailable: boolean): string {
+  if (unavailable || pointCount < 2) return '—'
+  return windowTotalCost > 0 ? `~${formatCost(windowTotalCost)}` : formatCost(0)
+}
+
 export function formatProjectedDailyCost(hourlyCost: number): string {
   return `~${formatCost(hourlyCost * COST_HOURS_PER_DAY)}`
 }

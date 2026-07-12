@@ -59,6 +59,7 @@ func TestClassifyRequestFit(t *testing.T) {
 		{"recommended request above limit is withheld", 0.95, q("100m"), q("1"), "cpu", false, false, FitUnderRequested, false, true, "recommended_request_exceeds_limit"},
 		{"rounded CPU request above limit is withheld", 0.095, q("50m"), q("105m"), "cpu", false, false, FitUnderRequested, false, true, "recommended_request_exceeds_limit"},
 		{"rounded memory request above limit is withheld", 100 * 1024 * 1024, q("64Mi"), q("120Mi"), "memory", false, false, FitUnderRequested, false, true, "recommended_request_exceeds_limit"},
+		{"rounded target equal to request is in range", 0, q("1m"), nil, "cpu", false, false, FitBalanced, false, false, "request_within_fit_range"},
 	}
 
 	for _, tc := range tests {
@@ -91,15 +92,13 @@ func TestRecommendRequest(t *testing.T) {
 		resKind string
 		want    string
 	}{
-		// CPU — 15% headroom, round to a clean 10m step, floor at 10m. Exact
-		// step depends on float repr (1.15× a non-representable value can
-		// round down by one step), but the result is always a clean 10m
-		// boundary — the "no noisy 137m recommendations" promise.
+		// CPU — 15% headroom, rounded up so the displayed target never drops
+		// below the protected demand estimate.
 		{"cpu sub-milli rounds to 1m", 0.0001, "cpu", "1m"},
-		{"cpu 100m → ~115m → clean 110m step", 0.100, "cpu", "110m"},
-		{"cpu 1 core → ~1150m → 1.1 cores (round-half-to-even)", 1.0, "cpu", "1.1"},
-		{"cpu integer cores trim trailing zero", 0.870, "cpu", "1"},
-		{"cpu floor at 10m", 0.001, "cpu", "10m"},
+		{"cpu 100m → 115m → clean 120m step", 0.100, "cpu", "120m"},
+		{"cpu 1 core → 1150m → 1.2 cores", 1.0, "cpu", "1.2"},
+		{"cpu crossing one core uses 100m steps", 0.870, "cpu", "1.1"},
+		{"cpu low usage keeps milli precision", 0.001, "cpu", "2m"},
 
 		// Memory — 15% headroom, round up to next 16Mi, floor at 16Mi.
 		{"memory tiny floors at 16Mi", 1024, "memory", "16Mi"},

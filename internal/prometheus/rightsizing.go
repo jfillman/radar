@@ -619,6 +619,17 @@ func classifyRequestFit(row *RightsizingRow, observed float64, req, lim *resourc
 		row.RecommendationReason = "request_within_fit_range"
 		return
 	}
+	recommended := recommendRequest(observed, resourceName)
+	recommendedValue := quantityToFloat(resource.MustParse(recommended), resourceName)
+	if req != nil {
+		requestValue := quantityToFloat(*req, resourceName)
+		if (row.Fit == FitOversized && recommendedValue >= requestValue) ||
+			(row.Fit == FitUnderRequested && recommendedValue <= requestValue) {
+			row.Fit = FitBalanced
+			row.RecommendationReason = "request_within_fit_range"
+			return
+		}
+	}
 	if row.HPAManaged {
 		row.RecommendationReason = "hpa_managed"
 		return
@@ -635,8 +646,6 @@ func classifyRequestFit(row *RightsizingRow, observed float64, req, lim *resourc
 		row.RecommendationReason = "oom_evidence_unavailable"
 		return
 	}
-	recommended := recommendRequest(observed, resourceName)
-	recommendedValue := quantityToFloat(resource.MustParse(recommended), resourceName)
 	if lim != nil && recommendedValue > quantityToFloat(*lim, resourceName) {
 		row.LimitConflict = true
 		row.RecommendationReason = "recommended_request_exceeds_limit"
@@ -693,11 +702,14 @@ func quantityToFloat(q resource.Quantity, resKind string) float64 {
 func formatRightsizingValue(v float64, resKind string) string {
 	switch resKind {
 	case "cpu":
-		if v < 0.001 {
-			return "1m"
+		millis := int64(math.Ceil(v * 1000))
+		if millis < 1 {
+			millis = 1
+		} else if millis >= 1000 {
+			millis = (millis + 99) / 100 * 100
+		} else if millis >= 100 {
+			millis = (millis + 9) / 10 * 10
 		}
-		// Round to the nearest 10m to avoid noisy recommendations like 137m.
-		millis := max(int64(v*1000.0+5)/10*10, 10)
 		if millis < 1000 {
 			return fmt.Sprintf("%dm", millis)
 		}

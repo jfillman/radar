@@ -59,6 +59,7 @@ type RightsizingScanWorkload struct {
 	Kind         string             `json:"kind"`
 	Namespace    string             `json:"namespace"`
 	Name         string             `json:"name"`
+	Replicas     int                `json:"replicas"`
 	ScaledToZero bool               `json:"scaledToZero"`
 	Rows         []RightsizingRow   `json:"rows"`
 	Summary      RightsizingSummary `json:"summary"`
@@ -85,6 +86,7 @@ type scanWorkload struct {
 	kind      string
 	namespace string
 	name      string
+	replicas  int
 	workload  rightsizingWorkload
 }
 
@@ -383,8 +385,8 @@ func scanSeriesKey(labels map[string]string) (scanKey, bool) {
 }
 
 func buildScanWorkload(input scanWorkload, evidence scanBatchEvidence) RightsizingScanWorkload {
-	out := RightsizingScanWorkload{Kind: input.kind, Namespace: input.namespace, Name: input.name, ScaledToZero: input.workload.scaledToZero, Rows: make([]RightsizingRow, 0, len(input.workload.containers)*2)}
-	expected := int(rightsizingWindow / rightsizingStep)
+	out := RightsizingScanWorkload{Kind: input.kind, Namespace: input.namespace, Name: input.name, Replicas: input.replicas, ScaledToZero: input.workload.scaledToZero, Rows: make([]RightsizingRow, 0, len(input.workload.containers)*2)}
+	expected := int(rightsizingWindow/rightsizingStep) + 1
 	for _, container := range input.workload.containers {
 		key := scanKey{namespace: input.namespace, kind: input.kind, workload: input.name, container: container.name}
 		for _, resourceName := range []string{"cpu", "memory"} {
@@ -554,9 +556,9 @@ func sortScanWorkloads(workloads []scanWorkload) {
 func snapshotScanWorkloads(cache *k8s.ResourceCache, scopes map[string][]string) ([]scanWorkload, []string) {
 	workloads := map[string]*scanWorkload{}
 	var unavailable []string
-	add := func(kind, namespace, name string, podSpec *corev1.PodSpec, scaledToZero bool) {
+	add := func(kind, namespace, name string, replicas int, podSpec *corev1.PodSpec, scaledToZero bool) {
 		key := workloadIdentity(kind, namespace, name)
-		workloads[key] = &scanWorkload{kind: kind, namespace: namespace, name: name, workload: rightsizingWorkload{
+		workloads[key] = &scanWorkload{kind: kind, namespace: namespace, name: name, replicas: replicas, workload: rightsizingWorkload{
 			containers: extractRuntimeContainers(podSpec), currentPodOOM: map[string]bool{}, hpaManaged: map[string]bool{}, scaledToZero: scaledToZero,
 		}}
 	}
@@ -569,7 +571,11 @@ func snapshotScanWorkloads(cache *k8s.ResourceCache, scopes map[string][]string)
 			unavailable = append(unavailable, "Deployment")
 		} else {
 			for _, item := range items {
-				add("Deployment", item.Namespace, item.Name, &item.Spec.Template.Spec, item.Spec.Replicas != nil && *item.Spec.Replicas == 0)
+				replicas := int32(1)
+				if item.Spec.Replicas != nil {
+					replicas = *item.Spec.Replicas
+				}
+				add("Deployment", item.Namespace, item.Name, int(replicas), &item.Spec.Template.Spec, replicas == 0)
 			}
 		}
 	}
@@ -581,7 +587,11 @@ func snapshotScanWorkloads(cache *k8s.ResourceCache, scopes map[string][]string)
 			unavailable = append(unavailable, "StatefulSet")
 		} else {
 			for _, item := range items {
-				add("StatefulSet", item.Namespace, item.Name, &item.Spec.Template.Spec, item.Spec.Replicas != nil && *item.Spec.Replicas == 0)
+				replicas := int32(1)
+				if item.Spec.Replicas != nil {
+					replicas = *item.Spec.Replicas
+				}
+				add("StatefulSet", item.Namespace, item.Name, int(replicas), &item.Spec.Template.Spec, replicas == 0)
 			}
 		}
 	}
@@ -593,7 +603,7 @@ func snapshotScanWorkloads(cache *k8s.ResourceCache, scopes map[string][]string)
 			unavailable = append(unavailable, "DaemonSet")
 		} else {
 			for _, item := range items {
-				add("DaemonSet", item.Namespace, item.Name, &item.Spec.Template.Spec, item.Status.DesiredNumberScheduled == 0)
+				add("DaemonSet", item.Namespace, item.Name, int(item.Status.DesiredNumberScheduled), &item.Spec.Template.Spec, item.Status.DesiredNumberScheduled == 0)
 			}
 		}
 	}

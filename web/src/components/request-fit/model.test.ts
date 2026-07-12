@@ -5,44 +5,52 @@ import { classifyRows, flattenScanResults, scanClassCounts } from './model'
 function metric(overrides: Partial<RightsizingRow> = {}): RightsizingRow {
   return {
     container: 'app', resource: 'cpu', fit: 'balanced', confidence: 'high',
-    sampleCount: 2016, expectedSamples: 2016, coverage: 1, hpaManaged: false,
+    sampleCount: 2017, expectedSamples: 2017, coverage: 1, hpaManaged: false,
     hpaEvidenceAvailable: true, oomEvidenceAvailable: true,
     ...overrides,
   }
 }
 
-function response(rows: RightsizingRow[]): RequestFitScanResponse {
+function response(rows: RightsizingRow[], replicas = 1, namespace = 'shop'): RequestFitScanResponse {
   return {
     state: 'complete', scannedAt: '2026-07-12T10:00:00Z', window: '7d', source: 'radar',
     summary: { workloads: 1, actionableWorkloads: 0, recommendations: 0, fit: { balanced: 2, oversized: 0, underRequested: 0, missingRequest: 0, insufficientHistory: 0, queryErrors: 0, throttled: 0, oomEvidence: 0 } },
     coverage: { workloadsDiscovered: 1, workloadsEvaluated: 1, workloadsWithData: 1, batches: 1, completedBatches: 1 },
-    workloads: [{ kind: 'Deployment', namespace: 'shop', name: 'api', scaledToZero: false, rows }],
+    workloads: [{ kind: 'Deployment', namespace, name: 'api', replicas, scaledToZero: false, rows }],
   }
 }
 
 describe('request-fit scan model', () => {
-  it('prioritizes safety and missing requests over reductions', () => {
-    expect(classifyRows([metric({ fit: 'oversized' }), metric({ resource: 'memory', fit: 'missing_request' })])).toBe('needs_review')
-    expect(classifyRows([metric({ fit: 'oversized', recommendedRequest: '115m' })])).toBe('potential_reduction')
+  it('prioritizes reliability guidance and explicit safety review', () => {
+    expect(classifyRows([
+      metric({ fit: 'oversized', currentRequestValue: 0.1, recommendedRequestValue: 0.02, recommendedRequest: '20m' }),
+      metric({ resource: 'memory', fit: 'missing_request', recommendedRequestValue: 64 * 1024 * 1024, recommendedRequest: '64Mi' }),
+    ])).toBe('increase')
+    expect(classifyRows([metric({ fit: 'oversized', hpaManaged: true, recommendationReason: 'hpa_managed' })])).toBe('review')
+    expect(classifyRows([metric({ fit: 'oversized', recommendationReason: 'hpa_evidence_unavailable' })])).toBe('review')
   })
 
-  it('keeps incomplete evidence out of the in-range bucket', () => {
+  it('suppresses reductions that are not meaningful across replicas', () => {
+    const tiny = metric({ fit: 'oversized', currentRequestValue: 0.005, recommendedRequestValue: 0.001, recommendedRequest: '1m' })
+    const meaningful = metric({ fit: 'oversized', currentRequestValue: 0.1, recommendedRequestValue: 0.02, recommendedRequest: '20m' })
+    expect(classifyRows([tiny], 9)).toBe('in_range')
+    expect(classifyRows([meaningful], 1)).toBe('reduction')
+  })
+
+  it('keeps incomplete history out of no-change results', () => {
     expect(classifyRows([metric({ fit: 'insufficient_history' })])).toBe('need_data')
     expect(classifyRows([metric({ queryError: 'query failed' })])).toBe('need_data')
-    expect(classifyRows([metric({ fit: 'oversized', recommendationReason: 'hpa_evidence_unavailable' })])).toBe('need_data')
-    expect(classifyRows([metric({ resource: 'memory', fit: 'oversized', recommendationReason: 'oom_evidence_unavailable' })])).toBe('need_data')
-    expect(classifyRows([metric({ fit: 'oversized', hpaManaged: true })])).toBe('needs_review')
   })
 
-  it('groups CPU and memory into one container result and records safety signals', () => {
+  it('groups resources, calculates replica impact, and tags system workloads', () => {
     const rows = flattenScanResults(response([
-      metric({ throttleRatio: 0.2 }),
+      metric({ fit: 'under_requested', currentRequestValue: 0.1, recommendedRequestValue: 0.2, recommendedRequest: '200m', throttleRatio: 0.2 }),
       metric({ resource: 'memory', currentPodOOM: true }),
-    ]))
+    ], 3, 'kube-system'))
     expect(rows).toHaveLength(1)
-    expect(rows[0].cpu?.resource).toBe('cpu')
-    expect(rows[0].memory?.resource).toBe('memory')
+    expect(rows[0].impact.cpuChange).toBeCloseTo(0.3)
+    expect(rows[0].system).toBe(true)
     expect(rows[0].signals).toEqual(new Set(['oom', 'throttling']))
-    expect(scanClassCounts(rows).needs_review).toBe(1)
+    expect(scanClassCounts(rows).increase).toBe(1)
   })
 })

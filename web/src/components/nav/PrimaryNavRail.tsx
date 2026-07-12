@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react'
 import type { ReactNode } from 'react'
-import { Home, Network, List, Clock, AlertTriangle, Package, GitBranch, Boxes, Activity, DollarSign, Gauge, ShieldCheck, Settings, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { Home, Network, List, Clock, AlertTriangle, Package, GitBranch, Boxes, Activity, DollarSign, ShieldCheck, Settings, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { clsx } from 'clsx'
 import type { MainView } from '../../types'
 import { Tooltip } from '../ui/Tooltip'
@@ -8,7 +8,7 @@ import { Tooltip } from '../ui/Tooltip'
 // The views the rail can navigate to. Broader than k8s-ui's ExtendedMainView
 // (which omits 'applications') — it mirrors the navigable subset of App.tsx's
 // own view union, so onNavigate accepts App's setMainView directly.
-type NavRailView = MainView | 'issues' | 'traffic' | 'gitops' | 'applications' | 'cost' | 'request-fit' | 'checks'
+type NavRailView = MainView | 'issues' | 'traffic' | 'gitops' | 'applications' | 'cost' | 'checks'
 
 // Primary left nav rail for standalone (non-embedded) Radar.
 //
@@ -49,7 +49,6 @@ const NAV_ITEMS: NavItemDef[] = [
   { view: 'helm', icon: Package, label: 'Helm' },
   { view: 'gitops', icon: GitBranch, label: 'GitOps' },
   { view: 'checks', icon: ShieldCheck, label: 'Checks' },
-  { view: 'request-fit', icon: Gauge, label: 'Request fit' },
   { view: 'cost', icon: DollarSign, label: 'Cost' },
 ]
 

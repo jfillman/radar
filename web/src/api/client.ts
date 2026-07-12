@@ -1808,6 +1808,7 @@ export interface RequestFitScanWorkload {
   kind: string
   namespace: string
   name: string
+  replicas: number
   scaledToZero: boolean
   rows: RightsizingRow[]
   summary?: PrometheusRightsizing['summary']

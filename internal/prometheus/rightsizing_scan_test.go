@@ -42,7 +42,7 @@ func (f *fakeScanQuerier) QueryRange(_ context.Context, query string, _, _ time.
 }
 
 func scanTestWorkload(kind, namespace, name, container string) scanWorkload {
-	return scanWorkload{kind: kind, namespace: namespace, name: name, workload: rightsizingWorkload{
+	return scanWorkload{kind: kind, namespace: namespace, name: name, replicas: 3, workload: rightsizingWorkload{
 		containers:    []containerSpec{{name: container, cpuReq: mustQuantityNoTest("500m"), memReq: mustQuantityNoTest("512Mi")}},
 		currentPodOOM: map[string]bool{}, hpaManaged: map[string]bool{}, hpaAvailable: true,
 	}}
@@ -131,6 +131,9 @@ func TestComputeRightsizingScanKeepsSameNamedContainersSeparate(t *testing.T) {
 	first, second := resp.Workloads[0].Rows[0].Observed, resp.Workloads[1].Rows[0].Observed
 	if first == nil || second == nil || first.Value != 0.1 || second.Value != 0.4 {
 		t.Fatalf("same-named containers collided: first=%+v second=%+v", first, second)
+	}
+	if resp.Workloads[0].Replicas != 3 || resp.Workloads[0].Rows[0].ExpectedSamples != 2017 {
+		t.Fatalf("scan impact metadata = %+v", resp.Workloads[0])
 	}
 }
 

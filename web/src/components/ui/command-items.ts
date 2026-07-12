@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Home, Network, List, Clock, Package, Activity, Sun, Stethoscope, DollarSign, Gauge, ShieldCheck, GitBranch, AlertTriangle, Boxes, Server } from 'lucide-react'
+import { Home, Network, List, Clock, Package, Activity, Sun, Stethoscope, DollarSign, ShieldCheck, GitBranch, AlertTriangle, Boxes, Server } from 'lucide-react'
 import { useNamespaces, useContexts } from '../../api/client'
 import { CORE_RESOURCES, useAPIResources } from '../../api/apiResources'
 import { getResourceIcon } from '../../utils/resource-icons'
@@ -13,7 +13,7 @@ function stripSourceSuffix(name: string, source?: string): string {
   return name.replace(new RegExp(`\\s+\\(${escaped}(?:\\s+#\\d+)?\\)$`), '')
 }
 
-export type MainView = 'home' | 'topology' | 'resources' | 'timeline' | 'issues' | 'helm' | 'traffic' | 'cost' | 'request-fit' | 'checks' | 'gitops' | 'applications'
+export type MainView = 'home' | 'topology' | 'resources' | 'timeline' | 'issues' | 'helm' | 'traffic' | 'cost' | 'checks' | 'gitops' | 'applications'
 
 export interface CommandItem {
   id: string
@@ -93,7 +93,6 @@ const VIEW_ENTRIES: { view: MainView; label: string; icon: React.ComponentType<{
   { view: 'gitops', label: 'GitOps', icon: GitBranch, shortcut: 'g o' },
   { view: 'traffic', label: 'Live Traffic', icon: Activity, shortcut: 'g f' },
   { view: 'checks', label: 'Checks', icon: ShieldCheck, shortcut: 'g u' },
-  { view: 'request-fit', label: 'Request fit', icon: Gauge, shortcut: 'g q' },
   { view: 'cost', label: 'Cost', icon: DollarSign, shortcut: 'g c' },
 ]
 

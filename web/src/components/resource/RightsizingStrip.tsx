@@ -63,7 +63,7 @@ export function RequestFitPanel(props: RequestFitProps) {
         </div>
         <div className="flex items-center gap-3">
           {state.data && <RequestFitContext data={state.data} />}
-          <Link to="/request-fit" className="text-xs font-medium text-accent-text hover:underline">Scan visible workloads</Link>
+          <Link to="/cost/request-fit" className="text-xs font-medium text-accent-text hover:underline">Scan visible workloads</Link>
         </div>
       </header>
       <div className="p-4">

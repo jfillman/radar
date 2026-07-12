@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { AlertTriangle, ChevronRight, ExternalLink, Gauge, Loader2, RefreshCw, Search, X } from 'lucide-react'
-import { EmptyState, Input, PageHeader } from '@skyhook-io/k8s-ui'
+import { AlertTriangle, DollarSign, ExternalLink, Gauge, Loader2, RefreshCw } from 'lucide-react'
+import { Collapse, CollapseChevron, EmptyState, PageHeader, SearchBox, SelectMenu } from '@skyhook-io/k8s-ui'
 import { Badge } from '@skyhook-io/k8s-ui/components/ui/Badge'
 import {
   useAutoPromConnect,
@@ -10,12 +10,19 @@ import {
   useRequestFitScan,
   type RightsizingRow,
 } from '../../api/client'
-import { REQUEST_FIT_DOCS_URL, getRequestFitExplanation, getRequestFitPresentation } from '../resource/RightsizingStrip'
+import { REQUEST_FIT_DOCS_URL } from '../resource/RightsizingStrip'
 import { buildWorkloadPath } from '../../utils/navigation'
-import { flattenScanResults, scanClassCounts, type RequestFitScanRow, type ScanClass, type ScanSignal } from './model'
+import { CostViewTabs } from '../cost/CostViewTabs'
+import {
+  flattenScanResults,
+  isActionableClass,
+  scanClassCounts,
+  type RequestFitScanRow,
+  type ScanClass,
+} from './model'
 
-export const REQUEST_FIT_SCAN_DESCRIPTION = 'Compare CPU and memory requests with recent demand across your visible workloads. Advisory only; Radar never changes requests.'
-export const REQUEST_FIT_SCAN_METHODOLOGY = 'Uses seven days of 5-minute samples: CPU P95 and memory P99, plus 15% headroom.'
+export const REQUEST_FIT_SCAN_DESCRIPTION = 'Find workload requests worth changing, ranked by operational impact. Radar never changes requests.'
+export const REQUEST_FIT_SCAN_METHODOLOGY = 'Based on the last 7 days: CPU P95 and memory P99, with 15% headroom.'
 
 export type RequestFitScanSurfaceState = 'discovering' | 'prometheus_required' | 'first_run' | 'scanning' | 'fatal_error' | 'unavailable' | 'results'
 
@@ -41,18 +48,15 @@ interface RequestFitScanViewProps {
   namespaces: string[]
 }
 
-const CLASS_META: Record<ScanClass, { label: string; severity: 'warning' | 'info' | 'success' | 'neutral'; helper: string }> = {
-  needs_review: { label: 'Needs review', severity: 'warning', helper: 'Too low, missing, or safety signal' },
-  potential_reduction: { label: 'Potential reductions', severity: 'info', helper: 'Requests may be higher than demand' },
-  in_range: { label: 'In range', severity: 'success', helper: 'Requests match recent demand' },
-  need_data: { label: 'Need data', severity: 'neutral', helper: 'History, ownership, or query incomplete' },
-}
-
-const SIGNAL_LABEL: Record<ScanSignal, string> = {
-  hpa: 'HPA', oom: 'OOM', throttling: 'Throttling', query_error: 'Query error', scaled_zero: 'Scaled to zero',
-}
-
+type ScanResult = NonNullable<ReturnType<typeof useRequestFitScan>['data']>
+type ClassFilter = ScanClass | 'actions'
 const ROW_PAGE_SIZE = 50
+
+const ACTION_META: Record<'increase' | 'reduction' | 'review', { label: string; severity: 'warning' | 'info' | 'neutral'; helper: string }> = {
+  reduction: { label: 'Reduce requests', severity: 'info', helper: 'Reclaim meaningful capacity' },
+  increase: { label: 'Increase or add', severity: 'warning', helper: 'Reduce reliability risk' },
+  review: { label: 'Review autoscaling', severity: 'neutral', helper: 'A safety signal needs context' },
+}
 
 export function RequestFitScanView({ namespaces }: RequestFitScanViewProps) {
   useAutoPromConnect()
@@ -72,7 +76,6 @@ export function RequestFitScanView({ namespaces }: RequestFitScanViewProps) {
     setResult(undefined)
     setOpenRow(null)
     scan.reset()
-    // A result belongs to exactly one cluster + namespace scope.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey])
 
@@ -82,17 +85,18 @@ export function RequestFitScanView({ namespaces }: RequestFitScanViewProps) {
       const next = await scan.mutateAsync()
       if (scopeKeyRef.current === startedForScope) setResult(next)
     } catch {
-      // Keep a same-scope snapshot visible when a refresh fails.
+      // A same-scope snapshot stays visible when refresh fails.
     }
   }
 
   const rows = useMemo(() => result ? flattenScanResults(result) : [], [result])
-  const counts = useMemo(() => scanClassCounts(rows), [rows])
-  const classFilter = params.get('rfClass') as ScanClass | null
+  const includeSystem = params.get('rfScope') === 'all'
+  const scopeRows = includeSystem ? rows : rows.filter((row) => !row.system)
+  const counts = useMemo(() => scanClassCounts(scopeRows), [scopeRows])
+  const classFilter = (params.get('rfClass') as ClassFilter | null) ?? 'actions'
   const search = params.get('rfQ') ?? ''
   const kindFilter = params.get('rfKind') ?? ''
   const namespaceFilter = params.get('rfNs') ?? ''
-  const signalFilter = params.get('rfSignal') as ScanSignal | null
   const setFilter = (key: string, value?: string) => {
     const next = new URLSearchParams(params)
     if (value) next.set(key, value)
@@ -101,14 +105,13 @@ export function RequestFitScanView({ namespaces }: RequestFitScanViewProps) {
   }
   const clearFilters = () => {
     const next = new URLSearchParams(params)
-    for (const key of ['rfClass', 'rfQ', 'rfKind', 'rfNs', 'rfSignal']) next.delete(key)
+    for (const key of ['rfClass', 'rfQ', 'rfKind', 'rfNs', 'rfScope']) next.delete(key)
     setParams(next, { replace: true })
   }
-  const filteredRows = rows.filter((row) => {
-    if (classFilter && row.classification !== classFilter) return false
+  const filteredRows = scopeRows.filter((row) => {
+    if (classFilter === 'actions' ? !isActionableClass(row.classification) : row.classification !== classFilter) return false
     if (kindFilter && row.kind !== kindFilter) return false
     if (namespaceFilter && row.namespace !== namespaceFilter) return false
-    if (signalFilter && !row.signals.has(signalFilter)) return false
     if (search && !`${row.namespace} ${row.name} ${row.container} ${row.kind}`.toLowerCase().includes(search.toLowerCase())) return false
     return true
   })
@@ -116,10 +119,12 @@ export function RequestFitScanView({ namespaces }: RequestFitScanViewProps) {
 
   useEffect(() => {
     setVisibleLimit(ROW_PAGE_SIZE)
-  }, [classFilter, search, kindFilter, namespaceFilter, signalFilter])
-  const kinds = [...new Set(rows.map((row) => row.kind))].sort()
-  const resultNamespaces = [...new Set(rows.map((row) => row.namespace))].sort()
-  const activeFilters = Boolean(classFilter || search || kindFilter || namespaceFilter || signalFilter)
+  }, [classFilter, search, kindFilter, namespaceFilter, includeSystem])
+
+  const kinds = [...new Set(scopeRows.map((row) => row.kind))].sort()
+  const resultNamespaces = [...new Set(scopeRows.map((row) => row.namespace))].sort()
+  const activeFilters = classFilter !== 'actions' || Boolean(search || kindFilter || namespaceFilter || includeSystem)
+  const hiddenSystem = rows.length - rows.filter((row) => !row.system).length
   const surfaceState = getRequestFitScanSurfaceState({
     statusLoading,
     hasStatus: Boolean(promStatus),
@@ -138,83 +143,69 @@ export function RequestFitScanView({ namespaces }: RequestFitScanViewProps) {
     <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="mx-auto flex w-full max-w-[1920px] flex-col gap-4 px-6 py-6">
         <PageHeader
-          icon={Gauge}
-          title="Request fit"
-          description={REQUEST_FIT_SCAN_DESCRIPTION}
-          actions={
-            <>
-              <a href={REQUEST_FIT_DOCS_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-accent-text hover:underline">
-                How it works <ExternalLink className="h-3 w-3" />
-              </a>
-              {result?.scannedAt && <span className="text-xs text-theme-text-tertiary">Scanned {formatScanTime(result.scannedAt)}</span>}
-              {result && (
-                <button type="button" onClick={runScan} disabled={scan.isPending} className="btn-brand inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium">
-                  <RefreshCw className={`h-3.5 w-3.5 ${scan.isPending ? 'animate-spin' : ''}`} />
-                  {scan.isPending ? 'Scanning…' : 'Run again'}
-                </button>
-              )}
-            </>
-          }
+          icon={DollarSign}
+          title="Cost Insights"
+          description="Understand current allocation and find workload requests worth tuning."
         />
+        <CostViewTabs />
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-theme-text-primary">Request fit</h2>
+            <p className="mt-0.5 text-sm text-theme-text-secondary">{REQUEST_FIT_SCAN_DESCRIPTION}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <a href={REQUEST_FIT_DOCS_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-accent-text hover:underline">
+              Methodology <ExternalLink className="h-3 w-3" />
+            </a>
+            {result?.scannedAt && <span className="text-xs text-theme-text-tertiary">Scanned {formatScanTime(result.scannedAt)}</span>}
+            {result && (
+              <button type="button" onClick={runScan} disabled={scan.isPending} className="btn-brand inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium">
+                <RefreshCw className={`h-3.5 w-3.5 ${scan.isPending ? 'animate-spin' : ''}`} />
+                {scan.isPending ? 'Scanning…' : 'Run again'}
+              </button>
+            )}
+          </div>
+        </div>
 
         {surfaceState === 'discovering' ? (
           <CenteredState loading title="Looking for Prometheus…" body="Radar is checking the current cluster for workload metrics." />
         ) : surfaceState === 'prometheus_required' ? (
           <CenteredState
             title="Prometheus is required"
-            body="Connect Prometheus to scan workload request fit. Radar reads metrics only and never changes requests."
+            body="Request fit uses Prometheus history. Cost Overview can still use OpenCost independently."
             action={<button type="button" onClick={() => retryPrometheus()} className="btn-brand px-3 py-1.5 text-xs font-medium">Check again</button>}
           />
         ) : surfaceState === 'first_run' ? (
           <FirstRunState namespaces={namespaces} onRun={runScan} />
         ) : surfaceState === 'scanning' ? (
-          <CenteredState loading title="Scanning workload requests…" body="Querying recent CPU and memory demand for the current scope. This can take a moment on large clusters." />
+          <CenteredState loading title="Scanning workload requests…" body="Comparing recent demand with requests across the current scope." />
         ) : surfaceState === 'fatal_error' ? (
-          <CenteredState
-            title="Request fit scan failed"
-            body={errorMessage(scan.error)}
-            action={<button type="button" onClick={runScan} className="btn-brand px-3 py-1.5 text-xs font-medium">Try again</button>}
-          />
+          <CenteredState title="Request fit scan failed" body={errorMessage(scan.error)} action={<button type="button" onClick={runScan} className="btn-brand px-3 py-1.5 text-xs font-medium">Try again</button>} />
         ) : surfaceState === 'unavailable' && result ? (
-          <CenteredState
-            title="Request fit is unavailable"
-            body={unavailableMessage(result.reason)}
-            action={<button type="button" onClick={runScan} disabled={scan.isPending} className="btn-brand px-3 py-1.5 text-xs font-medium">Try again</button>}
-          />
+          <CenteredState title="Request fit is unavailable" body={unavailableMessage(result.reason)} action={<button type="button" onClick={runScan} disabled={scan.isPending} className="btn-brand px-3 py-1.5 text-xs font-medium">Try again</button>} />
         ) : result ? (
           <div className={`flex flex-col gap-4 transition-opacity ${scan.isPending ? 'opacity-70' : ''}`}>
-            {scan.error && (
-              <Notice tone="warning" text={`Refresh failed; showing results from ${formatScanTime(result.scannedAt)}. ${errorMessage(scan.error)}`} />
-            )}
+            {scan.error && <Notice tone="warning" text={`Refresh failed; showing results from ${formatScanTime(result.scannedAt)}. ${errorMessage(scan.error)}`} />}
             {scan.isPending && <Notice text="Scanning the current scope. Previous results remain visible until the scan completes." />}
-            <ScanSummary result={result} counts={counts} selected={classFilter} onSelect={(value) => setFilter('rfClass', classFilter === value ? undefined : value)} />
+            <ScanSummary result={result} counts={counts} selected={classFilter} onSelect={(value) => setFilter('rfClass', value === 'actions' ? undefined : value)} />
             <ScanNotices result={result} rows={rows} />
             {result.coverage.workloadsDiscovered === 0 || rows.length === 0 ? (
-              <EmptyState
-                variant="card"
-                headline="No supported workloads in this scope"
-                body="No Deployment, StatefulSet, or DaemonSet containers are visible in the selected namespaces."
-              />
+              <EmptyState variant="card" headline="No supported workloads in this scope" body="No Deployment, StatefulSet, or DaemonSet containers are visible in the selected namespaces." />
             ) : (
-              <section className="overflow-hidden rounded-xl border border-theme-border bg-theme-surface shadow-theme-sm">
+              <section className="overflow-visible rounded-xl border border-theme-border bg-theme-surface shadow-theme-sm">
                 <ScanFilters
                   search={search} onSearch={(value) => setFilter('rfQ', value || undefined)}
                   kind={kindFilter} kinds={kinds} onKind={(value) => setFilter('rfKind', value || undefined)}
                   namespace={namespaceFilter} namespaces={resultNamespaces} onNamespace={(value) => setFilter('rfNs', value || undefined)}
-                  signal={signalFilter} onSignal={(value) => setFilter('rfSignal', value || undefined)}
-                  shown={filteredRows.length} total={rows.length} onClear={clearFilters} active={activeFilters}
+                  includeSystem={includeSystem} hiddenSystem={hiddenSystem} onScope={(value) => setFilter('rfScope', value === 'all' ? 'all' : undefined)}
+                  shown={filteredRows.length} total={scopeRows.length} onClear={clearFilters} active={activeFilters}
                 />
                 {filteredRows.length === 0 ? (
-                  <EmptyState
-                    tone="filtered"
-                    headline="No results match the current filters"
-                    body="Clear a filter to see more scan results."
-                    action={<button type="button" onClick={clearFilters} className="badge badge-sm border border-theme-border bg-theme-elevated text-theme-text-primary">Clear all filters</button>}
-                  />
+                  <EmptyState tone="filtered" headline="No results match the current filters" body="Choose another result type or clear a filter." action={<button type="button" onClick={clearFilters} className="badge badge-sm border border-theme-border bg-theme-elevated text-theme-text-primary">Show recommended actions</button>} />
                 ) : (
                   <div>
-                    <div className="grid grid-cols-[minmax(260px,1.35fr)_minmax(190px,1fr)_minmax(190px,1fr)_minmax(150px,.8fr)_28px] gap-3 border-b border-theme-border px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-theme-text-tertiary">
-                      <span>Workload / container</span><span>CPU request</span><span>Memory request</span><span>Signals</span><span />
+                    <div className="grid grid-cols-[minmax(260px,1.1fr)_minmax(360px,1.6fr)_minmax(220px,.9fr)_28px] gap-4 border-b border-theme-border px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-theme-text-tertiary">
+                      <span>Workload / container</span><span>Recommendation</span><span>Across replicas</span><span />
                     </div>
                     <div className="table-divide-subtle">
                       {visibleRows.map((row) => (
@@ -222,9 +213,7 @@ export function RequestFitScanView({ namespaces }: RequestFitScanViewProps) {
                       ))}
                       {visibleRows.length < filteredRows.length && (
                         <div className="flex justify-center border-t border-theme-border px-4 py-3">
-                          <button type="button" onClick={() => setVisibleLimit((value) => value + ROW_PAGE_SIZE)} className="text-xs font-medium text-accent-text hover:underline">
-                            Show {Math.min(ROW_PAGE_SIZE, filteredRows.length - visibleRows.length)} more
-                          </button>
+                          <button type="button" onClick={() => setVisibleLimit((value) => value + ROW_PAGE_SIZE)} className="text-xs font-medium text-accent-text hover:underline">Show {Math.min(ROW_PAGE_SIZE, filteredRows.length - visibleRows.length)} more</button>
                         </div>
                       )}
                     </div>
@@ -244,62 +233,50 @@ function FirstRunState({ namespaces, onRun }: { namespaces: string[]; onRun: () 
   return (
     <div className="rounded-xl border border-theme-border bg-theme-surface p-8 text-center shadow-theme-sm">
       <Gauge className="mx-auto h-9 w-9 text-theme-text-tertiary" />
-      <h2 className="mt-3 text-base font-semibold text-theme-text-primary">Find requests that need attention</h2>
-      <p className="mx-auto mt-1 max-w-xl text-sm text-theme-text-secondary">Scan {scope} for workloads whose CPU or memory requests may be too high, too low, or missing.</p>
+      <h2 className="mt-3 text-base font-semibold text-theme-text-primary">Find requests worth changing</h2>
+      <p className="mx-auto mt-1 max-w-xl text-sm text-theme-text-secondary">Scan {scope} for meaningful reductions, missing requests, reliability risks, and autoscaling decisions that need review.</p>
       <p className="mt-3 text-xs text-theme-text-tertiary">{REQUEST_FIT_SCAN_METHODOLOGY}</p>
       <button type="button" onClick={onRun} className="btn-brand mt-5 px-4 py-2 text-sm font-medium">Scan visible workloads</button>
     </div>
   )
 }
 
-function ScanSummary({ result, counts, selected, onSelect }: {
-  result: NonNullable<ReturnType<typeof useRequestFitScan>['data']>
-  counts: ReturnType<typeof scanClassCounts>
-  selected: ScanClass | null
-  onSelect: (value: ScanClass) => void
-}) {
+function ScanSummary({ result, counts, selected, onSelect }: { result: ScanResult; counts: ReturnType<typeof scanClassCounts>; selected: ClassFilter; onSelect: (value: ClassFilter) => void }) {
   const evaluated = result.coverage.workloadsEvaluated ?? result.workloads.length
-  const withData = result.coverage.workloadsWithData ?? result.workloads.length
   const discovered = result.coverage.workloadsDiscovered ?? result.workloads.length
   return (
     <section className="rounded-xl border border-theme-border bg-theme-surface p-4 shadow-theme-sm">
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-        {(Object.keys(CLASS_META) as ScanClass[]).map((key) => {
-          const meta = CLASS_META[key]
+      <div className="grid gap-2 md:grid-cols-3">
+        {(Object.keys(ACTION_META) as Array<keyof typeof ACTION_META>).map((key) => {
+          const meta = ACTION_META[key]
           return (
-            <button key={key} type="button" onClick={() => onSelect(key)} className={`rounded-lg border p-3 text-left transition-colors ${selected === key ? 'border-accent bg-accent-muted' : 'border-theme-border bg-theme-base/50 hover:bg-theme-hover'}`}>
-              <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium text-theme-text-primary">{meta.label}</span><Badge severity={meta.severity} size="sm">{counts[key]} containers</Badge></div>
+            <button key={key} type="button" onClick={() => onSelect(selected === key ? 'actions' : key)} className={`rounded-lg border p-3 text-left transition-colors ${selected === key ? 'border-accent bg-accent-muted' : 'border-theme-border bg-theme-base/50 hover:bg-theme-hover'}`}>
+              <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium text-theme-text-primary">{meta.label}</span><Badge severity={meta.severity} size="sm">{counts[key]}</Badge></div>
               <p className="mt-1 text-xs text-theme-text-tertiary">{meta.helper}</p>
             </button>
           )
         })}
       </div>
-      <div className="mt-3 text-xs text-theme-text-tertiary">{evaluated} of {discovered} visible workloads evaluated · {withData} with demand data · {result.window || '7d'} window · 5m samples</div>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-theme-text-tertiary">
+        <span>{evaluated} of {discovered} visible workloads evaluated · {result.window || '7d'} history</span>
+        <span className="flex items-center gap-3">
+          <button type="button" onClick={() => onSelect('in_range')} className="hover:text-theme-text-primary">{counts.in_range} no meaningful change</button>
+          <button type="button" onClick={() => onSelect('need_data')} className="hover:text-theme-text-primary">{counts.need_data} not analyzed</button>
+          {selected !== 'actions' && <button type="button" onClick={() => onSelect('actions')} className="font-medium text-accent-text hover:underline">Recommended actions</button>}
+        </span>
+      </div>
     </section>
   )
 }
 
-function ScanNotices({ result, rows }: { result: NonNullable<ReturnType<typeof useRequestFitScan>['data']>; rows: RequestFitScanRow[] }) {
-  const notices: { tone?: 'warning'; text: string }[] = []
-  if (result.state === 'partial') {
-    const insufficient = rows.filter((row) => row.classification === 'need_data').length
-    const queryErrors = rows.filter((row) => row.signals.has('query_error')).length
-    notices.push({ text: `Scan completed with partial coverage. ${insufficient} containers need more evidence; ${queryErrors} had query errors.` })
-  }
-  if ((result.coverage.restrictedKinds?.length ?? 0) > 0) {
-    notices.push({ text: 'Some workload kinds or namespaces were excluded by your Kubernetes access.' })
-  }
-  if ((result.coverage.unavailableKinds?.length ?? 0) > 0) {
-    notices.push({ text: 'Some workload kinds could not be evaluated with the available cache or ownership evidence.' })
-  }
-  for (const warning of result.warnings ?? []) notices.push({ text: warningMessage(warning.code) })
-  if (rows.length > 0 && rows.every((row) => row.classification === 'need_data')) {
-    notices.push({ text: 'There is not enough recent evidence to classify any container yet.' })
-  }
-  if (rows.length > 0 && rows.every((row) => row.classification === 'in_range')) {
-    notices.push({ text: 'Requests are in range for every container with enough evidence.' })
-  }
-  return notices.length > 0 ? <div className="flex flex-col gap-2">{notices.map((notice, i) => <Notice key={`${i}-${notice.text}`} {...notice} />)}</div> : null
+function ScanNotices({ result, rows }: { result: ScanResult; rows: RequestFitScanRow[] }) {
+  const notices: string[] = []
+  if (result.state === 'partial') notices.push('Some workloads could not be fully analyzed. Completed recommendations are shown.')
+  if ((result.coverage.restrictedKinds?.length ?? 0) > 0) notices.push('Some workload kinds or namespaces were excluded by your Kubernetes access.')
+  if ((result.coverage.unavailableKinds?.length ?? 0) > 0) notices.push('Some workload kinds could not be evaluated with the available ownership data.')
+  for (const warning of result.warnings ?? []) notices.push(warningMessage(warning.code))
+  if (rows.length > 0 && rows.every((row) => row.classification === 'need_data')) notices.push('There is not enough recent history to recommend request changes yet.')
+  return notices.length > 0 ? <div className="flex flex-col gap-2">{notices.map((text) => <Notice key={text} text={text} />)}</div> : null
 }
 
 function Notice({ text, tone }: { text: string; tone?: 'warning' }) {
@@ -310,64 +287,134 @@ function ScanFilters(props: {
   search: string; onSearch: (value: string) => void
   kind: string; kinds: string[]; onKind: (value: string) => void
   namespace: string; namespaces: string[]; onNamespace: (value: string) => void
-  signal: ScanSignal | null; onSignal: (value: string) => void
+  includeSystem: boolean; hiddenSystem: number; onScope: (value: string) => void
   shown: number; total: number; active: boolean; onClear: () => void
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-theme-border p-3">
-      <div className="relative mr-auto min-w-56">
-        <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-theme-text-tertiary" />
-        <Input value={props.search} onChange={(event) => props.onSearch(event.target.value)} placeholder="Search workloads…" className="h-8 w-64 pl-8 pr-7 text-xs" />
-        {props.search && <button type="button" aria-label="Clear search" onClick={() => props.onSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-theme-text-tertiary hover:text-theme-text-primary"><X className="h-3.5 w-3.5" /></button>}
-      </div>
-      <Select value={props.namespace} onChange={props.onNamespace} label="All namespaces" options={props.namespaces} />
-      <Select value={props.kind} onChange={props.onKind} label="All kinds" options={props.kinds} />
-      <Select value={props.signal ?? ''} onChange={props.onSignal} label="All signals" options={Object.entries(SIGNAL_LABEL).map(([value, label]) => ({ value, label }))} />
-      <span className="text-xs tabular-nums text-theme-text-tertiary">{props.shown} of {props.total}</span>
-      {props.active && <button type="button" onClick={props.onClear} className="text-xs text-accent-text hover:underline">Clear filters</button>}
+      <SearchBox value={props.search} onChange={props.onSearch} scope="global" shortcutId="request-fit-search" placeholder="Search workloads…" className="mr-auto w-72" />
+      <SelectMenu ariaLabel="Filter by namespace" value={props.namespace} onChange={props.onNamespace} className="w-48" options={[{ value: '', label: 'All namespaces' }, ...props.namespaces.map((value) => ({ value, label: value }))]} />
+      <SelectMenu ariaLabel="Filter by workload kind" value={props.kind} onChange={props.onKind} className="w-36" options={[{ value: '', label: 'All kinds' }, ...props.kinds.map((value) => ({ value, label: value }))]} />
+      {props.hiddenSystem > 0 && <SelectMenu ariaLabel="Choose workload scope" value={props.includeSystem ? 'all' : 'applications'} onChange={props.onScope} className="w-48" options={[{ value: 'applications', label: 'Hide system workloads' }, { value: 'all', label: `Include system workloads (+${props.hiddenSystem})` }]} />}
+      <span className="text-xs tabular-nums text-theme-text-tertiary">{props.shown} results</span>
+      {props.active && <button type="button" onClick={props.onClear} className="text-xs text-accent-text hover:underline">Reset view</button>}
     </div>
   )
 }
 
-function Select({ value, onChange, label, options }: { value: string; onChange: (value: string) => void; label: string; options: (string | { value: string; label: string })[] }) {
-  return <select value={value} onChange={(event) => onChange(event.target.value)} className="h-8 rounded-md border border-theme-border bg-theme-elevated px-2 text-xs text-theme-text-secondary"><option value="">{label}</option>{options.map((option) => { const item = typeof option === 'string' ? { value: option, label: option } : option; return <option key={item.value} value={item.value}>{item.label}</option> })}</select>
-}
-
 function ScanResultRow({ row, open, onToggle, onOpen }: { row: RequestFitScanRow; open: boolean; onToggle: () => void; onOpen: () => void }) {
   return (
-    <div className="border-b border-theme-border/50 last:border-b-0">
-      <button type="button" onClick={onToggle} aria-expanded={open} className="grid w-full grid-cols-[minmax(260px,1.35fr)_minmax(190px,1fr)_minmax(190px,1fr)_minmax(150px,.8fr)_28px] items-center gap-3 px-4 py-3 text-left hover:bg-theme-hover/50">
-        <div className="min-w-0"><div className="flex items-center gap-2"><Badge kind={row.kind} size="sm">{row.kind}</Badge><span className="truncate text-sm font-medium text-theme-text-primary">{row.name}</span></div><div className="mt-1 truncate text-xs text-theme-text-tertiary">{row.namespace} · {row.container}</div></div>
-        <FitCell row={row.cpu} />
-        <FitCell row={row.memory} />
-        <div className="flex flex-wrap gap-1">{[...row.signals].map((signal) => <Badge key={signal} severity={signal === 'oom' || signal === 'query_error' ? 'error' : signal === 'throttling' ? 'warning' : 'neutral'} size="sm">{SIGNAL_LABEL[signal]}</Badge>)}{row.signals.size === 0 && <span className="text-xs text-theme-text-tertiary">None</span>}</div>
-        <ChevronRight className={`h-4 w-4 text-theme-text-tertiary transition-transform ${open ? 'rotate-90' : ''}`} />
+    <div>
+      <button type="button" onClick={onToggle} aria-expanded={open} className="grid w-full grid-cols-[minmax(260px,1.1fr)_minmax(360px,1.6fr)_minmax(220px,.9fr)_28px] items-center gap-4 px-4 py-3 text-left hover:bg-theme-hover/50">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2"><Badge kind={row.kind} size="sm">{row.kind}</Badge><span className="truncate text-sm font-medium text-theme-text-primary">{row.name}</span></div>
+          <div className="mt-1 truncate text-xs text-theme-text-tertiary">{row.namespace} · {row.container}</div>
+        </div>
+        <RecommendationCell row={row} />
+        <ImpactCell row={row} />
+        <CollapseChevron open={open} className="h-4 w-4" />
       </button>
-      {open && (
+      <Collapse open={open} mountLazily>
         <div className="grid gap-4 border-t border-theme-border bg-theme-base/40 px-4 py-3 md:grid-cols-[1fr_1fr_auto]">
           <FitWhy label="CPU" row={row.cpu} />
           <FitWhy label="Memory" row={row.memory} />
           <button type="button" onClick={onOpen} className="self-start text-xs font-medium text-accent-text hover:underline">Open workload</button>
         </div>
-      )}
+      </Collapse>
     </div>
   )
 }
 
-function FitCell({ row }: { row?: RightsizingRow }) {
-  if (!row) return <span className="text-xs text-theme-text-tertiary">No result</span>
-  const presentation = getRequestFitPresentation(row.fit, row.queryError)
-  return <div className="min-w-0"><div className="flex items-center gap-1.5 text-xs tabular-nums"><span className="text-theme-text-secondary">{row.currentRequest ?? 'Unset'}</span>{row.recommendedRequest && <><span className="text-theme-text-tertiary">→</span><span className="font-medium text-theme-text-primary">{row.recommendedRequest}</span></>}</div><Badge severity={presentation.severity} size="sm" className="mt-1">{presentation.label === 'Balanced' ? 'In range' : presentation.label}</Badge></div>
+function RecommendationCell({ row }: { row: RequestFitScanRow }) {
+  if (row.classification === 'in_range') {
+    return <span className="text-xs text-theme-text-tertiary">No meaningful request change</span>
+  }
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <ResourceAction label="CPU" row={row.cpu} />
+      <ResourceAction label="Memory" row={row.memory} />
+    </div>
+  )
+}
+
+function ResourceAction({ label, row }: { label: string; row?: RightsizingRow }) {
+  if (!row) return <span className="text-xs text-theme-text-tertiary">{label}: no result</span>
+  const reason = row.recommendationReason
+  if (row.hpaManaged) return <span className="text-xs font-medium text-theme-text-secondary">Review {label} with the HPA</span>
+  if (reason === 'hpa_evidence_unavailable') return <span className="text-xs font-medium text-theme-text-secondary">Review {label}; HPA status is unavailable</span>
+  if (reason === 'oom_evidence') return <span className="text-xs font-medium text-theme-text-secondary">Keep {label}; an out-of-memory restart was seen</span>
+  if (reason === 'oom_evidence_unavailable') return <span className="text-xs font-medium text-theme-text-secondary">Review {label}; restart history is incomplete</span>
+  if (row.limitConflict) return <span className="text-xs font-medium text-theme-text-secondary">Raise the {label} limit before its request</span>
+  if (row.queryError) return <span className="text-xs text-theme-text-tertiary">{label}: metrics query failed</span>
+  if (row.fit === 'insufficient_history') return <span className="text-xs text-theme-text-tertiary">{label}: not enough history</span>
+  if (row.recommendedRequest) {
+    if (!row.currentRequest || row.currentRequestValue === 0) return <span className="text-xs font-medium text-theme-text-primary">Add {label} request: {row.recommendedRequest}</span>
+    const verb = (row.recommendedRequestValue ?? 0) > (row.currentRequestValue ?? 0) ? 'Increase' : 'Reduce'
+    return <span className="text-xs font-medium text-theme-text-primary">{verb} {label}: <span className="tabular-nums">{row.currentRequest} → {row.recommendedRequest}</span></span>
+  }
+  return <span className="text-xs text-theme-text-tertiary">{label}: no meaningful change</span>
+}
+
+function ImpactCell({ row }: { row: RequestFitScanRow }) {
+  if (row.classification === 'in_range') {
+    return <div className="text-xs text-theme-text-tertiary">Below action threshold</div>
+  }
+  const changes: string[] = []
+  if (row.impact.cpuChange !== 0) changes.push(formatCPUChange(row.impact.cpuChange))
+  if (row.impact.memoryChange !== 0) changes.push(formatMemoryChange(row.impact.memoryChange))
+  return (
+    <div className="min-w-0 text-xs text-theme-text-secondary">
+      <div>{row.replicas === 1 ? '1 replica' : `${row.replicas} replicas`}</div>
+      {changes.length > 0 ? changes.map((change) => <div key={change} className="mt-0.5 tabular-nums text-theme-text-tertiary">{change}</div>) : <div className="mt-0.5 text-theme-text-tertiary">No calculated capacity change</div>}
+      <div className="mt-1 flex flex-wrap gap-1">
+        {[...row.signals].map((signal) => <Badge key={signal} severity={signal === 'oom' || signal === 'query_error' ? 'error' : signal === 'throttling' ? 'warning' : 'neutral'} size="sm">{signalLabel(signal)}</Badge>)}
+      </div>
+    </div>
+  )
 }
 
 function FitWhy({ label, row }: { label: string; row?: RightsizingRow }) {
   if (!row) return <div><div className="text-[11px] font-medium uppercase tracking-wide text-theme-text-tertiary">{label}</div><p className="mt-1 text-xs text-theme-text-secondary">No result returned.</p></div>
-  const explanation = getRequestFitExplanation(row)
-  return <div><div className="text-[11px] font-medium uppercase tracking-wide text-theme-text-tertiary">{label} evidence</div><p className="mt-1 text-xs text-theme-text-secondary">{row.observed ? `${row.observed.name} ${row.observed.formatted} · ` : ''}{row.sampleCount} of {row.expectedSamples} samples{row.confidence ? ` · ${row.confidence} confidence` : ''}.</p>{explanation && <p className="mt-1 text-xs text-theme-text-tertiary">{explanation}</p>}</div>
+  const percentile = row.observed?.name === 'P95' ? '95%' : '99%'
+  const history = row.coverage >= 0.95 ? 'Full 7-day history.' : `${Math.max(row.coverage * 7, 0).toFixed(1)} days of usable history.`
+  return (
+    <div>
+      <div className="text-[11px] font-medium uppercase tracking-wide text-theme-text-tertiary">Why this {label.toLowerCase()} guidance</div>
+      <p className="mt-1 text-xs text-theme-text-secondary">{row.observed ? `${label} stayed below ${row.observed.formatted} for ${percentile} of the measured period. ` : ''}{history}</p>
+      <EvidenceNote row={row} />
+    </div>
+  )
+}
+
+function EvidenceNote({ row }: { row: RightsizingRow }) {
+  if (row.hpaManaged) return <p className="mt-1 text-xs text-theme-text-tertiary">The HPA uses this request when calculating scale, so Radar does not suggest changing it directly.</p>
+  if (row.recommendationReason === 'oom_evidence') return <p className="mt-1 text-xs text-theme-text-tertiary">A recent out-of-memory restart makes a lower memory request unsafe to suggest.</p>
+  if (row.recommendationReason === 'hpa_evidence_unavailable') return <p className="mt-1 text-xs text-theme-text-tertiary">Radar could not verify whether autoscaling depends on this request.</p>
+  if (row.recommendationReason === 'oom_evidence_unavailable') return <p className="mt-1 text-xs text-theme-text-tertiary">Radar could not verify restart history before suggesting a lower memory request.</p>
+  if (row.limitConflict) return <p className="mt-1 text-xs text-theme-text-tertiary">The calculated request would exceed the current limit.</p>
+  if (row.fit === 'insufficient_history') return <p className="mt-1 text-xs text-theme-text-tertiary">Wait for more runtime history before changing this request.</p>
+  if (row.recommendedRequest) return <p className="mt-1 text-xs text-theme-text-tertiary">The target includes 15% headroom and is rounded to a practical Kubernetes request.</p>
+  return null
 }
 
 function CenteredState({ loading, title, body, action }: { loading?: boolean; title: string; body: string; action?: React.ReactNode }) {
   return <div className="flex min-h-64 items-center justify-center rounded-xl border border-theme-border bg-theme-surface"><div className="flex max-w-lg flex-col items-center px-6 text-center">{loading ? <Loader2 className="h-8 w-8 animate-spin text-theme-text-tertiary" /> : <Gauge className="h-8 w-8 text-theme-text-tertiary" />}<h2 className="mt-3 text-base font-semibold text-theme-text-primary">{title}</h2><p className="mt-1 text-sm text-theme-text-secondary">{body}</p>{action && <div className="mt-4">{action}</div>}</div></div>
+}
+
+function formatCPUChange(value: number): string {
+  const prefix = value > 0 ? '+' : '−'
+  const absolute = Math.abs(value)
+  return absolute >= 1 ? `${prefix}${absolute.toFixed(1)} CPU requested` : `${prefix}${Math.round(absolute * 1000)}m CPU requested`
+}
+
+function formatMemoryChange(value: number): string {
+  const prefix = value > 0 ? '+' : '−'
+  const mib = Math.abs(value) / (1024 * 1024)
+  return mib >= 1024 ? `${prefix}${(mib / 1024).toFixed(1)}Gi memory requested` : `${prefix}${Math.round(mib)}Mi memory requested`
+}
+
+function signalLabel(signal: RequestFitScanRow['signals'] extends Set<infer T> ? T : never): string {
+  return { hpa: 'HPA', oom: 'OOM', throttling: 'Throttling', query_error: 'Query error', scaled_zero: 'Scaled to zero' }[signal]
 }
 
 function errorMessage(error: unknown): string {
@@ -385,9 +432,9 @@ function unavailableMessage(reason?: string): string {
 
 function warningMessage(code: string): string {
   if (code === 'scan_deadline_exceeded') return 'The scan reached its time limit. Results from completed batches are shown.'
-  if (code === 'owner_metrics_query_failed') return 'Workload ownership evidence could not be queried.'
-  if (code.endsWith('_query_failed')) return `Some ${code.replace('_query_failed', '').replaceAll('_', ' ')} evidence could not be queried.`
-  return 'Some request-fit evidence was unavailable. Available results are shown.'
+  if (code === 'owner_metrics_query_failed') return 'Workload ownership data could not be queried.'
+  if (code.endsWith('_query_failed')) return `Some ${code.replace('_query_failed', '').replaceAll('_', ' ')} data could not be queried.`
+  return 'Some request-fit data was unavailable. Completed recommendations are shown.'
 }
 
 function formatScanTime(value: string): string {

@@ -56,7 +56,9 @@ func TestClassifyRequestFit(t *testing.T) {
 		{"HPA suppresses only its resource", 0.05, q("200m"), q("1"), "cpu", true, false, FitOversized, false, false, "hpa_managed"},
 		{"memory OOM suppresses shrink", 50 * 1024 * 1024, q("256Mi"), q("1Gi"), "memory", false, true, FitOversized, false, false, "oom_evidence"},
 		{"memory OOM permits increase", 300 * 1024 * 1024, q("128Mi"), q("1Gi"), "memory", false, true, FitUnderRequested, true, false, ""},
-		{"candidate above limit is withheld", 0.9, q("100m"), q("1"), "cpu", false, false, FitUnderRequested, false, true, "recommended_request_exceeds_limit"},
+		{"recommended request above limit is withheld", 0.95, q("100m"), q("1"), "cpu", false, false, FitUnderRequested, false, true, "recommended_request_exceeds_limit"},
+		{"rounded CPU request above limit is withheld", 0.095, q("50m"), q("105m"), "cpu", false, false, FitUnderRequested, false, true, "recommended_request_exceeds_limit"},
+		{"rounded memory request above limit is withheld", 100 * 1024 * 1024, q("64Mi"), q("120Mi"), "memory", false, false, FitUnderRequested, false, true, "recommended_request_exceeds_limit"},
 	}
 
 	for _, tc := range tests {

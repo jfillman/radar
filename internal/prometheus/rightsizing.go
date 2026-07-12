@@ -621,14 +621,15 @@ func classifyRequestFit(row *RightsizingRow, observed float64, req, lim *resourc
 		row.RecommendationReason = "oom_evidence"
 		return
 	}
-	if lim != nil && candidate > quantityToFloat(*lim, resourceName) {
+	recommended := recommendRequest(observed, resourceName)
+	recommendedValue := quantityToFloat(resource.MustParse(recommended), resourceName)
+	if lim != nil && recommendedValue > quantityToFloat(*lim, resourceName) {
 		row.LimitConflict = true
 		row.RecommendationReason = "recommended_request_exceeds_limit"
 		return
 	}
-	recommended := recommendRequest(observed, resourceName)
 	row.RecommendedReq = &recommended
-	row.RecommendedRequestValue = &candidate
+	row.RecommendedRequestValue = &recommendedValue
 }
 
 func addFitSummary(summary *RightsizingSummary, row RightsizingRow) {

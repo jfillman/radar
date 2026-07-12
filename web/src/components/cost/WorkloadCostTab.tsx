@@ -217,9 +217,9 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
           tooltip="Actual CPU and memory usage divided by allocated CPU and memory cost for the last hour. Low efficiency usually means requested capacity is sitting idle."
         />
         <MetricTile
-          label="Current rate"
-          value={hasCurrent ? formatCostPerHour(hourly) : '—'}
-          subvalue={hasCurrent ? `${formatProjectedDailyRate(hourly)} at this rate` : 'Current allocation unavailable'}
+          label="Projected daily"
+          value={hasCurrent ? formatProjectedDailyRate(hourly) : '—'}
+          subvalue={hasCurrent ? `${formatCostPerHour(hourly)} current hourly rate` : 'Current allocation unavailable'}
         />
       </div>
 
@@ -227,13 +227,20 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-1.5">
-              <div className="text-sm font-semibold text-theme-text-primary">Current cost split</div>
+              <div className="text-sm font-semibold text-theme-text-primary">Current allocation split</div>
               <MetricInfoTooltip content="Last-hour allocated CPU and memory cost for this workload. This is the cost of reserved/requested capacity, not only what the containers used." />
             </div>
             <div className="text-xs text-theme-text-tertiary">Last 1h OpenCost allocation window</div>
           </div>
-          <div className="text-sm font-medium text-theme-text-primary tabular-nums">
-            {hasCurrent ? formatCostPerHour(splitTotal) : '—'}
+          <div className="text-right">
+            <div className="text-sm font-medium text-theme-text-primary tabular-nums">
+              {hasCurrent ? formatProjectedMonthlyRate(splitTotal) : '—'}
+            </div>
+            {hasCurrent && (
+              <div className="text-[10px] text-theme-text-tertiary tabular-nums">
+                {formatCostPerHour(splitTotal)} current rate
+              </div>
+            )}
           </div>
         </div>
         <div className="h-3 overflow-hidden rounded-full bg-theme-hover">
@@ -241,17 +248,21 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
             {hasCurrent && (
               <>
                 <div className="h-full bg-accent" style={{ width: `${cpuPct}%` }} />
-                <div className="h-full bg-[var(--color-info)]" style={{ width: `${memoryPct}%` }} />
+                <div className="h-full bg-amber-500" style={{ width: `${memoryPct}%` }} />
               </>
             )}
           </div>
         </div>
         <div className="mt-3 grid gap-2 text-xs text-theme-text-secondary sm:grid-cols-2">
-          <LegendItem colorClass="bg-accent" label="CPU" value={hasCurrent ? formatCostPerHour(cpuCost) : '—'} />
           <LegendItem
-            colorClass="bg-[var(--color-info)]"
+            colorClass="bg-accent"
+            label="CPU"
+            value={hasCurrent ? formatProjectedMonthlyRate(cpuCost) : '—'}
+          />
+          <LegendItem
+            colorClass="bg-amber-500"
             label="Memory"
-            value={hasCurrent ? formatCostPerHour(memoryCost) : '—'}
+            value={hasCurrent ? formatProjectedMonthlyRate(memoryCost) : '—'}
           />
         </div>
       </section>
@@ -289,12 +300,7 @@ export function getWorkloadCostState(
   if (loading) return 'loading'
 
   const reason = current?.reason ?? trend?.reason
-  if (
-    reason === 'no_prometheus' ||
-    reason === 'query_error' ||
-    reason === 'access_denied' ||
-    reason === 'not_found'
-  )
+  if (reason === 'no_prometheus' || reason === 'query_error' || reason === 'access_denied' || reason === 'not_found')
     return reason
   return 'no_metrics'
 }

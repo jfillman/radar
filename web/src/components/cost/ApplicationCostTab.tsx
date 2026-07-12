@@ -258,9 +258,9 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
           tooltip="Actual CPU and memory usage divided by allocated CPU and memory cost across included workloads. Low efficiency usually means requested capacity is sitting idle."
         />
         <CostMetricTile
-          label="Current rate"
-          value={totals ? formatCostPerHour(hourly) : '—'}
-          subvalue={totals ? `${formatProjectedDailyRate(hourly)} at this rate` : 'Current allocation unavailable'}
+          label="Projected daily"
+          value={totals ? formatProjectedDailyRate(hourly) : '—'}
+          subvalue={totals ? `${formatCostPerHour(hourly)} current hourly rate` : 'Current allocation unavailable'}
         />
       </div>
 
@@ -268,13 +268,20 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-1.5">
-              <div className="text-sm font-semibold text-theme-text-primary">Current split</div>
+              <div className="text-sm font-semibold text-theme-text-primary">Current allocation split</div>
               <CostInfoTooltip content="Last-hour allocated CPU and memory cost summed across included app workloads. Storage/PVC and network attribution remain at namespace and cluster level." />
             </div>
             <div className="text-xs text-theme-text-tertiary">Last 1h OpenCost allocation window</div>
           </div>
-          <div className="text-sm font-medium text-theme-text-primary tabular-nums">
-            {totals ? formatCostPerHour(currentSplit) : '—'}
+          <div className="text-right">
+            <div className="text-sm font-medium text-theme-text-primary tabular-nums">
+              {totals ? formatProjectedMonthlyRate(currentSplit) : '—'}
+            </div>
+            {totals && (
+              <div className="text-[10px] text-theme-text-tertiary tabular-nums">
+                {formatCostPerHour(currentSplit)} current rate
+              </div>
+            )}
           </div>
         </div>
         <div className="h-3 overflow-hidden rounded-full bg-theme-hover">
@@ -282,7 +289,7 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
             {totals && (
               <>
                 <div className="h-full bg-accent" style={{ width: `${cpuPct}%` }} />
-                <div className="h-full bg-[var(--color-info)]" style={{ width: `${memoryPct}%` }} />
+                <div className="h-full bg-amber-500" style={{ width: `${memoryPct}%` }} />
               </>
             )}
           </div>
@@ -291,12 +298,12 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
           <CostLegendItem
             colorClass="bg-accent"
             label="CPU"
-            value={totals ? formatCostPerHour(totals.cpuCost ?? 0) : '—'}
+            value={totals ? formatProjectedMonthlyRate(totals.cpuCost ?? 0) : '—'}
           />
           <CostLegendItem
-            colorClass="bg-[var(--color-info)]"
+            colorClass="bg-amber-500"
             label="Memory"
-            value={totals ? formatCostPerHour(totals.memoryCost ?? 0) : '—'}
+            value={totals ? formatProjectedMonthlyRate(totals.memoryCost ?? 0) : '—'}
           />
         </div>
       </section>
@@ -363,7 +370,8 @@ export function getApplicationCostState(
   if (loading) return 'loading'
 
   const reason = current?.reason ?? trend?.reason
-  if (reason === 'no_prometheus' || reason === 'query_error' || reason === 'access_denied' || reason === 'not_found') return reason
+  if (reason === 'no_prometheus' || reason === 'query_error' || reason === 'access_denied' || reason === 'not_found')
+    return reason
   return 'no_metrics'
 }
 
@@ -406,12 +414,14 @@ function ApplicationWorkloadCostRow({
         <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-theme-hover" style={{ maxWidth: `${barWidth}%` }}>
           <div className="flex h-full">
             <div className="h-full bg-accent" style={{ width: `${cpuPct}%` }} />
-            <div className="h-full bg-[var(--color-info)]" style={{ width: `${100 - cpuPct}%` }} />
+            <div className="h-full bg-amber-500" style={{ width: `${100 - cpuPct}%` }} />
           </div>
         </div>
       </div>
       <div className="hidden text-right text-xs tabular-nums text-theme-text-tertiary lg:block">
-        {current ? `${formatCost(current.cpuCost)} / ${formatCost(current.memoryCost)}` : '—'}
+        {current
+          ? `${formatProjectedMonthlyCost(current.cpuCost)} / ${formatProjectedMonthlyCost(current.memoryCost)}`
+          : '—'}
       </div>
     </>
   )
@@ -495,9 +505,9 @@ function ApplicationCostUnavailable({
           ? 'Cost data is unavailable because these workloads are not accessible with your current permissions.'
           : state === 'not_found'
             ? 'Cost data is unavailable because the referenced workloads no longer exist.'
-        : state === 'load_error'
-          ? 'Could not load application cost data. Check access to these workloads and try again.'
-          : 'OpenCost workload metrics were not found for this application.')
+            : state === 'load_error'
+              ? 'Could not load application cost data. Check access to these workloads and try again.'
+              : 'OpenCost workload metrics were not found for this application.')
   return (
     <div className="flex h-full min-h-[320px] items-center justify-center">
       <div className="flex max-w-md flex-col items-center gap-3 text-center text-theme-text-secondary">

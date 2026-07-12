@@ -12,7 +12,6 @@ import { PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
 import { CostTrendChart } from './CostTrendChart'
 import {
   COST_HOURS_PER_MONTH,
-  formatCost,
   formatCostPerHour,
   formatProjectedDailyRate,
   formatProjectedMonthlyCost,
@@ -28,6 +27,8 @@ interface CostViewProps {
   onBack: () => void
   onOpenResource?: (resource: SelectedResource) => void
 }
+
+const SYSTEM_COST_NAMESPACES = new Set(['kube-system', 'kube-public', 'kube-node-lease'])
 
 export function CostView({ onBack, onOpenResource }: CostViewProps) {
   const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useOpenCostSummary()
@@ -119,6 +120,7 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
   const totalStorage = data.totalStorageCost ?? 0
   const hasStorage = totalStorage > 0
   const hasEfficiency = (data.clusterEfficiency ?? 0) > 0
+  const hasSystemNamespaces = namespaces.some((ns) => isSystemCostNamespace(ns.name))
 
   // Compute split percentages (CPU + Memory + optional Storage)
   const allocTotal = totalCpu + totalMem + totalStorage
@@ -131,7 +133,7 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-[1600px] px-6 py-6 space-y-6">
+      <div className="mx-auto w-full max-w-[1920px] px-6 py-6 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -205,24 +207,24 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
             <span className="text-xs font-medium text-theme-text-secondary">Cluster Resource Cost</span>
             <div className="flex items-center gap-4 text-xs text-theme-text-tertiary">
               <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm bg-blue-500" />
-                CPU {formatCostPerHour(totalCpu)}
+                <span className="w-2.5 h-2.5 rounded-sm bg-accent" />
+                CPU {formatProjectedMonthlyRate(totalCpu)}
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm bg-purple-500" />
-                Memory {formatCostPerHour(totalMem)}
+                <span className="w-2.5 h-2.5 rounded-sm bg-amber-500" />
+                Memory {formatProjectedMonthlyRate(totalMem)}
               </span>
               {hasStorage && (
                 <span className="flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-sm bg-teal-500" />
-                  Storage {formatCostPerHour(totalStorage)}
+                  Storage {formatProjectedMonthlyRate(totalStorage)}
                 </span>
               )}
             </div>
           </div>
           <div className="h-3 rounded-full overflow-hidden bg-theme-hover flex">
-            <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${cpuPct}%` }} />
-            <div className="h-full bg-purple-500 transition-all duration-300" style={{ width: `${memPct}%` }} />
+            <div className="h-full bg-accent transition-all duration-300" style={{ width: `${cpuPct}%` }} />
+            <div className="h-full bg-amber-500 transition-all duration-300" style={{ width: `${memPct}%` }} />
             {hasStorage && (
               <div className="h-full bg-teal-500 transition-all duration-300" style={{ width: `${storagePct}%` }} />
             )}
@@ -243,9 +245,10 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
               <span className="text-xs text-theme-text-tertiary">{namespaces.length} namespaces</span>
             </div>
           </div>
+          {hasSystemNamespaces && <SystemNamespacesCostNote />}
 
           {/* Table header */}
-          <div className="grid grid-cols-[minmax(180px,1fr)_100px_90px_80px_minmax(160px,1fr)_120px] gap-2 px-4 py-2 border-b border-theme-border text-[11px] font-medium text-theme-text-tertiary uppercase tracking-wider">
+          <div className="grid grid-cols-[minmax(180px,1fr)_110px_90px_80px_minmax(160px,1fr)_150px] gap-2 px-4 py-2 border-b border-theme-border text-[11px] font-medium text-theme-text-tertiary uppercase tracking-wider">
             <span>Namespace</span>
             <Tooltip
               content="Projected from current hourly rate — not historical spend"
@@ -261,7 +264,12 @@ export function CostView({ onBack, onOpenResource }: CostViewProps) {
               <span className="cursor-help">Efficiency</span>
             </Tooltip>
             <span>CPU / Memory</span>
-            <span className="text-right">Cost Split</span>
+            <Tooltip
+              content="Projected monthly CPU and memory allocation from the current hourly rate"
+              wrapperClassName="!block text-right"
+            >
+              <span className="cursor-help">CPU / Memory/mo*</span>
+            </Tooltip>
           </div>
 
           {/* Namespace rows */}
@@ -320,7 +328,7 @@ function NamespaceCostRow({
     <div>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full grid grid-cols-[minmax(180px,1fr)_100px_90px_80px_minmax(160px,1fr)_120px] gap-2 px-4 py-2.5 text-left hover:bg-theme-hover/50 transition-colors group"
+        className="w-full grid grid-cols-[minmax(180px,1fr)_110px_90px_80px_minmax(160px,1fr)_150px] gap-2 px-4 py-2.5 text-left hover:bg-theme-hover/50 transition-colors group"
       >
         <span className="flex items-center gap-1.5 min-w-0">
           {expanded ? (
@@ -331,6 +339,16 @@ function NamespaceCostRow({
           <Tooltip content={`Namespace ${ns.name}`} wrapperClassName="min-w-0">
             <span className="block truncate text-sm text-theme-text-primary font-medium">{ns.name}</span>
           </Tooltip>
+          {isSystemCostNamespace(ns.name) && (
+            <Tooltip
+              content="Usually platform overhead from Kubernetes and cluster add-ons. Review enabled add-ons before treating this as app waste."
+              wrapperClassName="shrink-0"
+            >
+              <span className="rounded bg-theme-elevated px-1.5 py-0.5 text-[10px] font-medium text-theme-text-tertiary">
+                system
+              </span>
+            </Tooltip>
+          )}
         </span>
         <span className="text-sm font-medium text-theme-text-primary tabular-nums text-right">
           {formatProjectedMonthlyCost(ns.hourlyCost)}
@@ -352,21 +370,46 @@ function NamespaceCostRow({
             className="flex-1 h-2 rounded-full overflow-hidden bg-theme-hover flex"
             style={{ maxWidth: `${Math.max(barWidth, 3)}%` }}
           >
-            <div className="h-full bg-blue-500/70" style={{ width: `${cpuPct}%` }} />
-            <div className="h-full bg-purple-500/70" style={{ width: `${memPct}%` }} />
+            <div className="h-full bg-accent" style={{ width: `${cpuPct}%` }} />
+            <div className="h-full bg-amber-500" style={{ width: `${memPct}%` }} />
             {hasStorage && (ns.storageCost ?? 0) > 0 && (
-              <div className="h-full bg-teal-500/70" style={{ width: `${100 - cpuPct - memPct}%` }} />
+              <div className="h-full bg-teal-500" style={{ width: `${100 - cpuPct - memPct}%` }} />
             )}
           </div>
         </span>
         <span className="text-[11px] text-theme-text-tertiary tabular-nums text-right">
-          {formatCost(ns.cpuCost)} / {formatCost(ns.memoryCost)}
-          {hasStorage && (ns.storageCost ?? 0) > 0 && ` / ${formatCost(ns.storageCost ?? 0)}`}
+          {formatProjectedMonthlyCost(ns.cpuCost)} / {formatProjectedMonthlyCost(ns.memoryCost)}
+          {hasStorage && (ns.storageCost ?? 0) > 0 && ` / ${formatProjectedMonthlyCost(ns.storageCost ?? 0)}`}
         </span>
       </button>
 
       {/* Expanded workload rows */}
+      {expanded && isSystemCostNamespace(ns.name) && <SystemNamespaceCostNote namespace={ns.name} />}
       {expanded && <WorkloadRows namespace={ns.name} onOpenResource={onOpenResource} />}
+    </div>
+  )
+}
+
+function isSystemCostNamespace(namespace: string): boolean {
+  return SYSTEM_COST_NAMESPACES.has(namespace)
+}
+
+function SystemNamespaceCostNote({ namespace }: { namespace: string }) {
+  return (
+    <div className="border-t border-theme-border/30 bg-theme-elevated/30 px-10 py-2 text-xs text-theme-text-tertiary">
+      <span className="font-medium text-theme-text-secondary">{namespace}</span> is usually baseline cluster overhead:
+      Kubernetes components, cloud-provider agents, and installed add-ons. Optimize by reviewing add-ons, logging,
+      monitoring, or node count rather than deleting system workloads directly.
+    </div>
+  )
+}
+
+function SystemNamespacesCostNote() {
+  return (
+    <div className="border-b border-theme-border/50 bg-theme-elevated/30 px-4 py-2 text-xs text-theme-text-tertiary">
+      Rows marked <span className="font-medium text-theme-text-secondary">system</span> are usually baseline Kubernetes,
+      cloud-provider, or add-on overhead. Optimize by reviewing enabled add-ons, telemetry, or node count before
+      treating them as application waste.
     </div>
   )
 }
@@ -463,18 +506,18 @@ function WorkloadCostRow({
           className="flex-1 h-1.5 rounded-full overflow-hidden bg-theme-hover flex"
           style={{ maxWidth: `${Math.max(barWidth, 3)}%` }}
         >
-          <div className="h-full bg-blue-500/50" style={{ width: `${cpuPct}%` }} />
-          <div className="h-full bg-purple-500/50" style={{ width: `${100 - cpuPct}%` }} />
+          <div className="h-full bg-accent" style={{ width: `${cpuPct}%` }} />
+          <div className="h-full bg-amber-500" style={{ width: `${100 - cpuPct}%` }} />
         </div>
       </span>
       <span className="text-[10px] text-theme-text-tertiary tabular-nums text-right">
-        {formatCost(wl.cpuCost)} / {formatCost(wl.memoryCost)}
+        {formatProjectedMonthlyCost(wl.cpuCost)} / {formatProjectedMonthlyCost(wl.memoryCost)}
       </span>
     </>
   )
 
   const rowClass =
-    'grid grid-cols-[minmax(180px,1fr)_100px_90px_80px_minmax(160px,1fr)_120px] gap-2 px-4 py-2 text-left'
+    'grid grid-cols-[minmax(180px,1fr)_110px_90px_80px_minmax(160px,1fr)_150px] gap-2 px-4 py-2 text-left'
 
   if (canOpen && resource) {
     return (
@@ -518,7 +561,7 @@ function NodeCostTable({
       </div>
 
       {/* Table header */}
-      <div className="grid grid-cols-[minmax(200px,1fr)_minmax(120px,1fr)_100px_90px_140px] gap-2 px-4 py-2 border-b border-theme-border text-[11px] font-medium text-theme-text-tertiary uppercase tracking-wider">
+      <div className="grid grid-cols-[minmax(200px,1fr)_minmax(120px,1fr)_110px_90px_150px] gap-2 px-4 py-2 border-b border-theme-border text-[11px] font-medium text-theme-text-tertiary uppercase tracking-wider">
         <span>Node</span>
         <span>Instance Type</span>
         <Tooltip
@@ -528,7 +571,12 @@ function NodeCostTable({
           <span className="cursor-help">Projected/mo*</span>
         </Tooltip>
         <span className="text-right">Hourly</span>
-        <span className="text-right">CPU / Memory</span>
+        <Tooltip
+          content="Projected monthly CPU and memory portions of this node's current price"
+          wrapperClassName="!block text-right"
+        >
+          <span className="cursor-help">CPU / Memory/mo*</span>
+        </Tooltip>
       </div>
 
       {/* Node rows */}
@@ -552,7 +600,7 @@ function NodeCostRow({
   const openNode = () => onOpenResource?.({ kind: 'nodes', namespace: '', name: node.name })
 
   return (
-    <div className="grid grid-cols-[minmax(200px,1fr)_minmax(120px,1fr)_100px_90px_140px] gap-2 px-4 py-2.5">
+    <div className="grid grid-cols-[minmax(200px,1fr)_minmax(120px,1fr)_110px_90px_150px] gap-2 px-4 py-2.5">
       <span className="flex min-w-0 items-center gap-1.5">
         <Tooltip content={`Open Node ${node.name}`} wrapperClassName="!block min-w-0">
           {onOpenResource ? (
@@ -591,7 +639,7 @@ function NodeCostRow({
         {formatCostPerHour(node.hourlyCost)}
       </span>
       <span className="text-[11px] text-theme-text-tertiary tabular-nums text-right">
-        {formatCost(node.cpuCost)} / {formatCost(node.memoryCost)}
+        {formatProjectedMonthlyCost(node.cpuCost)} / {formatProjectedMonthlyCost(node.memoryCost)}
       </span>
     </div>
   )

@@ -331,82 +331,111 @@ func (c *Client) EnsureConnected(ctx context.Context) (string, string, error) {
 func (c *Client) discoverShared(ctx context.Context) (string, string, error) {
 	type result struct{ addr, basePath string }
 
-	c.mu.RLock()
-	gen := c.discoveryGen
-	key := fmt.Sprintf("%s#%d", c.contextName, gen)
-	c.mu.RUnlock()
-
-	ch := c.discoverySF.DoChan(key, func() (any, error) {
-		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discoveryTimeout)
-		defer cancel()
-
-		// Publish the cancel so Reset/Reinitialize can abort this detached run.
-		// A sequence number identifies this run's handle: two runs can overlap
-		// on one Client (an old-gen run cancelled by Reset while a new-gen run
-		// starts), and the ending run must not clear the newer run's cancel.
-		// Also honor retirement: if this Client was swapped out by Reinitialize
-		// before the goroutine got here, abort — cancelling wasn't possible then
-		// because the handle wasn't published yet.
-		c.mu.Lock()
-		if c.retired {
-			c.mu.Unlock()
-			return nil, context.Canceled
-		}
-		c.discoveryCancelSeq++
-		mySeq := c.discoveryCancelSeq
-		c.discoveryCancel = cancel
-		c.mu.Unlock()
-		defer func() {
-			c.mu.Lock()
-			if c.discoveryCancelSeq == mySeq {
-				c.discoveryCancel = nil
-			}
-			c.mu.Unlock()
-		}()
-
-		// Serialize across the process, but abandon the wait if this run is
-		// cancelled (superseded) so it can't wedge a newer discovery.
-		select {
-		case discoveryGate <- struct{}{}:
-			defer func() { <-discoveryGate }()
-		case <-dctx.Done():
-			return nil, dctx.Err()
+	// Loop so a run superseded by a mid-flight config change (Reset /
+	// SetManualURL / SetHeaders) rediscovers under the new generation instead of
+	// returning a spurious failure to callers like opencost. Every supersession
+	// bumps discoveryGen, so each retry keys a fresh flight and can't spin without
+	// progress; the caller's own context bounds the loop.
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", "", err
 		}
 
-		// Another discovery may have connected this client while we waited on
-		// the gate; if so, adopt its result instead of rediscovering.
 		c.mu.RLock()
-		addr, basePath := c.baseURL, c.basePath
+		gen := c.discoveryGen
+		key := fmt.Sprintf("%s#%d", c.contextName, gen)
 		c.mu.RUnlock()
-		if addr != "" {
+
+		ch := c.discoverySF.DoChan(key, func() (any, error) {
+			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discoveryTimeout)
+			defer cancel()
+
+			// Publish the cancel so Reset/Reinitialize can abort this detached run.
+			// A sequence number identifies this run's handle: two runs can overlap
+			// on one Client (an old-gen run cancelled by Reset while a new-gen run
+			// starts), and the ending run must not clear the newer run's cancel.
+			// Also honor retirement: if this Client was swapped out by Reinitialize
+			// before the goroutine got here, abort — cancelling wasn't possible then
+			// because the handle wasn't published yet.
+			c.mu.Lock()
+			if c.retired {
+				c.mu.Unlock()
+				return nil, context.Canceled
+			}
+			c.discoveryCancelSeq++
+			mySeq := c.discoveryCancelSeq
+			c.discoveryCancel = cancel
+			c.mu.Unlock()
+			defer func() {
+				c.mu.Lock()
+				if c.discoveryCancelSeq == mySeq {
+					c.discoveryCancel = nil
+				}
+				c.mu.Unlock()
+			}()
+
+			// Serialize across the process, but abandon the wait if this run is
+			// cancelled (superseded) so it can't wedge a newer discovery.
+			select {
+			case discoveryGate <- struct{}{}:
+				defer func() { <-discoveryGate }()
+			case <-dctx.Done():
+				return nil, dctx.Err()
+			}
+
+			// Another discovery may have connected this client while we waited on
+			// the gate; if so, adopt its result instead of rediscovering.
+			c.mu.RLock()
+			addr, basePath := c.baseURL, c.basePath
+			c.mu.RUnlock()
+			if addr != "" {
+				return result{addr, basePath}, nil
+			}
+
+			addr, basePath, derr := c.discover(dctx, gen)
+			if derr != nil {
+				return nil, derr
+			}
 			return result{addr, basePath}, nil
-		}
+		})
 
-		addr, basePath, derr := c.discover(dctx, gen)
-		if derr != nil {
-			return nil, derr
-		}
-		return result{addr, basePath}, nil
-	})
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case res := <-ch:
+			// A retired client (replaced by Reinitialize) can never make progress,
+			// so it must return the error rather than retry — retrying would spin
+			// forever since retirement is permanent and gen never advances.
+			c.mu.RLock()
+			retired := c.retired
+			c.mu.RUnlock()
 
-	select {
-	case <-ctx.Done():
-		return "", "", ctx.Err()
-	case res := <-ch:
-		if res.Err != nil {
-			return "", "", res.Err
+			if res.Err != nil {
+				// A supersession — a config change cancelled the detached flight —
+				// is not the caller's failure. While the caller's own context is
+				// live (and this client isn't retired), retry under the new
+				// generation. context.Canceled here comes only from the flight's
+				// detached context (Reset/Reinitialize), never the caller's; a
+				// genuine hang surfaces as DeadlineExceeded and is returned.
+				if ctx.Err() == nil && !retired && (errors.Is(res.Err, errDiscoverySuperseded) || errors.Is(res.Err, context.Canceled)) {
+					continue
+				}
+				return "", "", res.Err
+			}
+			r := res.Val.(result)
+			// Guard against a hollow success: between the run committing and our
+			// return, a Reset can clear baseURL, or Reinitialize can retire this
+			// client (leaving baseURL set) — either way the result belongs to a
+			// superseded context. Retry under the new generation while our own
+			// context is live; give up only if the caller itself is done or retired.
+			if !c.connectionLive(r.addr) {
+				if ctx.Err() == nil && !retired {
+					continue
+				}
+				return "", "", errDiscoverySuperseded
+			}
+			return r.addr, r.basePath, nil
 		}
-		r := res.Val.(result)
-		// Guard against a hollow success: between the run committing and our
-		// return, a Reset can clear baseURL, or Reinitialize can retire this
-		// client (leaving baseURL set) — either way the result belongs to a
-		// superseded context. If the connection isn't live on the current client,
-		// report supersession so the caller rediscovers rather than querying the
-		// previous cluster.
-		if !c.connectionLive(r.addr) {
-			return "", "", errDiscoverySuperseded
-		}
-		return r.addr, r.basePath, nil
 	}
 }
 

@@ -14,7 +14,7 @@ import {
   type OpenCostTrendSeries,
 } from '../../api/client'
 import { Tooltip } from '../ui/Tooltip'
-import { ChartLegend, StackedAreaChart } from './CostTrendChart'
+import { ChartLegend, CostTimeRangeSelector, StackedAreaChart } from './CostTrendChart'
 import {
   formatCost,
   formatCostPerHour,
@@ -23,12 +23,6 @@ import {
   formatProjectedMonthlyRate,
 } from './format'
 import { isOpenCostWorkloadKind } from './kinds'
-
-const TIME_RANGES: { value: CostTimeRange; label: string }[] = [
-  { value: '6h', label: '6h' },
-  { value: '24h', label: '24h' },
-  { value: '7d', label: '7d' },
-]
 
 type ApplicationCostState =
   | 'loading'
@@ -178,26 +172,11 @@ export function ApplicationCostTab({ app, workloads, onSelectWorkloadCost }: App
                 <CostInfoTooltip content="Dollars are based on OpenCost CPU and memory allocation over time, grouped by the workloads in this application. This is allocated/requested compute cost, not raw utilization alone." />
               </div>
               <div className="text-xs text-theme-text-tertiary">
-                OpenCost CPU and memory allocation for Deployment, StatefulSet, and DaemonSet workloads
+                OpenCost CPU and memory allocation rate ($/hr) for Deployment, StatefulSet, and DaemonSet workloads
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-1">
-            {TIME_RANGES.map((tr) => (
-              <button
-                key={tr.value}
-                onClick={() => setRange(tr.value)}
-                className={clsx(
-                  'rounded-md px-2 py-1 text-xs transition-colors',
-                  range === tr.value
-                    ? 'bg-accent-muted font-medium text-accent-text'
-                    : 'text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary',
-                )}
-              >
-                {tr.label}
-              </button>
-            ))}
-          </div>
+          <CostTimeRangeSelector value={range} onChange={setRange} />
         </div>
 
         <div className="grid gap-4 p-4 lg:grid-cols-[240px_minmax(0,1fr)]">

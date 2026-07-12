@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { clsx } from 'clsx'
 import { AlertCircle, DollarSign, HelpCircle, Loader2, TrendingUp } from 'lucide-react'
 import {
@@ -8,26 +8,18 @@ import {
   COST_DISCOVERY_GRACE_MS,
   type CostTimeRange,
   type CostUnavailableReason,
-  type OpenCostTrendDataPoint,
   type OpenCostWorkloadDetailResponse,
   type OpenCostWorkloadTrendResponse,
 } from '../../api/client'
 import { Tooltip } from '../ui/Tooltip'
-import { buildLineChart, formatChartTime } from './chart'
+import { CostTimeRangeSelector, StackedAreaChart } from './CostTrendChart'
 import {
   formatCost,
-  formatCostAxis,
   formatCostPerHour,
   formatProjectedDailyRate,
   formatProjectedMonthlyCost,
   formatProjectedMonthlyRate,
 } from './format'
-
-const TIME_RANGES: { value: CostTimeRange; label: string }[] = [
-  { value: '6h', label: '6h' },
-  { value: '24h', label: '24h' },
-  { value: '7d', label: '7d' },
-]
 
 type WorkloadCostState =
   | 'loading'
@@ -138,26 +130,11 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
                 <MetricInfoTooltip content="Dollars are based on OpenCost CPU and memory allocation over time, not raw utilization. Efficiency compares actual usage against that allocated cost." />
               </div>
               <div className="text-xs text-theme-text-tertiary">
-                CPU and memory allocation attributed by workload ownership
+                OpenCost CPU and memory allocation rate ($/hr) attributed by workload ownership
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-1">
-            {TIME_RANGES.map((tr) => (
-              <button
-                key={tr.value}
-                onClick={() => setRange(tr.value)}
-                className={clsx(
-                  'rounded-md px-2 py-1 text-xs transition-colors',
-                  range === tr.value
-                    ? 'bg-accent-muted text-accent-text font-medium'
-                    : 'text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary',
-                )}
-              >
-                {tr.label}
-              </button>
-            ))}
-          </div>
+          <CostTimeRangeSelector value={range} onChange={setRange} />
         </div>
 
         <div className="grid gap-4 p-4 lg:grid-cols-[220px_minmax(0,1fr)]">
@@ -180,7 +157,7 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
                 Loading historical cost…
               </div>
             ) : hasTrend ? (
-              <WorkloadCostLineChart points={points} />
+              <StackedAreaChart series={[{ namespace: 'Allocation rate', dataPoints: points }]} />
             ) : (
               <div className="flex h-[240px] items-center justify-center rounded-md border border-dashed border-theme-border bg-theme-base/60 text-sm text-theme-text-tertiary">
                 No historical workload owner cost points for this range.
@@ -413,41 +390,6 @@ function LegendItem({ colorClass, label, value }: { colorClass: string; label: s
         {label}
       </span>
       <span className="font-medium tabular-nums text-theme-text-primary">{value}</span>
-    </div>
-  )
-}
-
-function WorkloadCostLineChart({ points }: { points: OpenCostTrendDataPoint[] }) {
-  const chart = useMemo(() => buildLineChart(points), [points])
-  if (!chart) return null
-
-  return (
-    <div className="h-[240px] w-full">
-      <svg viewBox="0 0 720 240" className="h-full w-full overflow-visible">
-        {chart.yTicks.map((tick) => (
-          <g key={tick.y}>
-            <line x1="44" x2="704" y1={tick.y} y2={tick.y} stroke="var(--border-subtle)" />
-            <text x="34" y={tick.y + 4} textAnchor="end" className="fill-theme-text-tertiary text-[10px]">
-              {formatCostAxis(tick.value)}
-            </text>
-          </g>
-        ))}
-        <path d={chart.areaPath} fill="var(--accent-muted)" />
-        <path
-          d={chart.linePath}
-          fill="none"
-          stroke="var(--accent)"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <text x="44" y="232" className="fill-theme-text-tertiary text-[10px]">
-          {formatChartTime(points[0]?.timestamp)}
-        </text>
-        <text x="704" y="232" textAnchor="end" className="fill-theme-text-tertiary text-[10px]">
-          {formatChartTime(points[points.length - 1]?.timestamp)}
-        </text>
-      </svg>
     </div>
   )
 }

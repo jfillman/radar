@@ -48,25 +48,10 @@ export function CostTrendChart() {
           <TrendingUp className="w-4 h-4 text-theme-text-tertiary" />
           <div>
             <div className="text-xs font-medium text-theme-text-secondary">Cost rate trend</div>
-            <div className="text-[10px] text-theme-text-tertiary">Historical OpenCost hourly allocation</div>
+            <div className="text-[10px] text-theme-text-tertiary">Historical OpenCost allocation rate ($/hr)</div>
           </div>
         </div>
-        <div className="flex items-center gap-1">
-          {TIME_RANGES.map((tr) => (
-            <button
-              key={tr.value}
-              onClick={() => setTimeRange(tr.value)}
-              className={clsx(
-                'px-2 py-1 text-xs rounded-md transition-colors',
-                timeRange === tr.value
-                  ? 'bg-accent-muted text-accent-text font-medium'
-                  : 'text-theme-text-quaternary hover:text-theme-text-tertiary',
-              )}
-            >
-              {tr.label}
-            </button>
-          ))}
-        </div>
+        <CostTimeRangeSelector value={timeRange} onChange={setTimeRange} />
       </div>
       <div className="p-4">
         <StackedAreaChart series={data.series} />
@@ -360,10 +345,12 @@ export function StackedAreaChart({ series }: { series: OpenCostTrendSeries[] }) 
                   </span>
                 </div>
               ))}
-            <div className="border-t border-theme-border/50 mt-1 pt-1 flex justify-between text-theme-text-primary font-semibold">
-              <span>Total</span>
-              <span className="tabular-nums">{formatCostTooltip(hoverData.total)}</span>
-            </div>
+            {series.length > 1 && (
+              <div className="border-t border-theme-border/50 mt-1 pt-1 flex justify-between text-theme-text-primary font-semibold">
+                <span>Total</span>
+                <span className="tabular-nums">{formatCostTooltip(hoverData.total)}</span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -382,6 +369,35 @@ export function ChartLegend({ series }: { series: OpenCostTrendSeries[] }) {
           />
           <span>{s.namespace}</span>
         </div>
+      ))}
+    </div>
+  )
+}
+
+export function CostTimeRangeSelector({
+  value,
+  onChange,
+}: {
+  value: CostTimeRange
+  onChange: (value: CostTimeRange) => void
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      {TIME_RANGES.map((range) => (
+        <button
+          key={range.value}
+          type="button"
+          aria-pressed={value === range.value}
+          onClick={() => onChange(range.value)}
+          className={clsx(
+            'rounded-md px-2 py-1 text-xs transition-colors',
+            value === range.value
+              ? 'bg-accent-muted font-medium text-accent-text'
+              : 'text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary',
+          )}
+        >
+          {range.label}
+        </button>
       ))}
     </div>
   )

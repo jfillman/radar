@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { getWorkloadCostState } from './WorkloadCostTab'
-import { buildLineChart } from './chart'
 import { ApiError, type OpenCostWorkloadDetailResponse, type OpenCostWorkloadTrendResponse } from '../../api/client'
 
 describe('getWorkloadCostState', () => {
@@ -138,20 +137,5 @@ describe('getWorkloadCostState', () => {
     }
 
     expect(getWorkloadCostState(current, undefined, { trendLoading: true })).toBe('no_prometheus')
-  })
-})
-
-describe('buildLineChart', () => {
-  it('returns stable paths for a non-empty workload series', () => {
-    const chart = buildLineChart([
-      { timestamp: 1700000000, value: 1 },
-      { timestamp: 1700003600, value: 2 },
-      { timestamp: 1700007200, value: 1 },
-    ])
-
-    expect(chart?.linePath).toContain('M 44.0')
-    expect(chart?.linePath).toContain('L 374.0')
-    expect(chart?.areaPath.endsWith('Z')).toBe(true)
-    expect(chart?.yTicks).toHaveLength(3)
   })
 })

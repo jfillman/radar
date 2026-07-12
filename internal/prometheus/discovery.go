@@ -175,6 +175,12 @@ func (c *Client) discover(ctx context.Context, gen uint64) (string, string, erro
 
 		connInfo, pfErr := portforward.Start(portforward.OwnerPrometheus, ctx, cand.Namespace, cand.Name, cand.TargetPort, contextName)
 		if pfErr != nil {
+			// A cancelled Start means the run was superseded, not that the
+			// port-forward genuinely failed — surface it instead of recording one.
+			if err := ctx.Err(); err != nil {
+				logDiscoveryEnded(start, err)
+				return "", "", err
+			}
 			lastErr = fmt.Errorf("port-forward to %s/%s failed: %w", cand.Namespace, cand.Name, pfErr)
 			if !discoveryDiagnosticsSuppressed(ctx) {
 				errorlog.Record("prometheus", "error", "port-forward to %s/%s failed: %v", cand.Namespace, cand.Name, pfErr)
@@ -199,6 +205,12 @@ func (c *Client) discover(ctx context.Context, gen uint64) (string, string, erro
 		}
 
 		portforward.Stop(portforward.OwnerPrometheus)
+		// A failed probe on a cancelled context is supersession, not a dead
+		// Prometheus — don't slander the endpoint in errorlog.
+		if err := ctx.Err(); err != nil {
+			logDiscoveryEnded(start, err)
+			return "", "", err
+		}
 		lastErr = fmt.Errorf("Prometheus at %s/%s not responding after port-forward", cand.Namespace, cand.Name)
 		if !discoveryDiagnosticsSuppressed(ctx) {
 			errorlog.Record("prometheus", "error", "Prometheus at %s/%s not responding after port-forward", cand.Namespace, cand.Name)

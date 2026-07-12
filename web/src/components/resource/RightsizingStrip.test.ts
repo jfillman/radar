@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { RightsizingRow } from '../../api/client'
-import { getRequestFitExplanation, getRequestFitPresentation } from './RightsizingStrip'
+import {
+  getRequestFitExplanation,
+  getRequestFitPresentation,
+  REQUEST_FIT_METHODOLOGY,
+  REQUEST_FIT_SUMMARY,
+} from './RightsizingStrip'
 
 const row = (overrides: Partial<RightsizingRow> = {}): RightsizingRow => ({
   container: 'server',
@@ -40,5 +45,12 @@ describe('request-fit presentation', () => {
     ].join(' ').toLowerCase()
     expect(copy).not.toContain('efficien')
     expect(copy).not.toContain('waste')
+  })
+
+  it('sets the workload-level scope and methodology without promising savings or changes', () => {
+    expect(REQUEST_FIT_SUMMARY).toContain('Workload-level guidance')
+    expect(REQUEST_FIT_SUMMARY).toContain('not a fleet scan or savings estimate')
+    expect(REQUEST_FIT_METHODOLOGY).toContain('CPU P95 and memory P99')
+    expect(REQUEST_FIT_METHODOLOGY).toContain('Radar does not change requests')
   })
 })

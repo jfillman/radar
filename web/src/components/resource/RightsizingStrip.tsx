@@ -1,4 +1,4 @@
-import { ArrowRight, Gauge, HelpCircle, Loader2 } from 'lucide-react'
+import { ArrowRight, ExternalLink, Gauge, HelpCircle, Loader2 } from 'lucide-react'
 import { Badge } from '@skyhook-io/k8s-ui/components/ui/Badge'
 import {
   usePrometheusRightsizing,
@@ -11,6 +11,9 @@ import {
 import { Tooltip } from '../ui/Tooltip'
 
 const RIGHTSIZING_KINDS = new Set(['Deployment', 'StatefulSet', 'DaemonSet'])
+const REQUEST_FIT_DOCS_URL = 'https://radarhq.io/docs/features/request-fit'
+export const REQUEST_FIT_SUMMARY = 'Workload-level guidance from recent demand, not a fleet scan or savings estimate.'
+export const REQUEST_FIT_METHODOLOGY = 'Uses seven days of 5-minute samples: CPU P95 and memory P99, plus 15% headroom. Radar does not change requests.'
 
 interface RequestFitProps {
   kind: string
@@ -39,11 +42,22 @@ export function RequestFitPanel(props: RequestFitProps) {
           <div>
             <div className="flex items-center gap-1.5">
               <h3 className="text-sm font-semibold text-theme-text-primary">Request fit</h3>
-              <Tooltip content="Compares each container's CPU P95 and memory P99 with its configured requests. Suggested requests include 15% headroom; they are evidence, not an automatic change.">
+              <Tooltip content={REQUEST_FIT_METHODOLOGY}>
                 <HelpCircle className="h-3.5 w-3.5 text-theme-text-tertiary" />
               </Tooltip>
             </div>
-            <p className="text-xs text-theme-text-tertiary">Scheduler requests compared with observed demand</p>
+            <p className="text-xs text-theme-text-tertiary">
+              {REQUEST_FIT_SUMMARY}{' '}
+              <a
+                href={REQUEST_FIT_DOCS_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-accent-text hover:underline"
+              >
+                How it works
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            </p>
           </div>
         </div>
         {state.data && <RequestFitContext data={state.data} />}
@@ -61,7 +75,12 @@ export function RightsizingStrip(props: RequestFitProps) {
   return (
     <section className="mb-3 rounded-lg border border-theme-border bg-theme-surface/40 p-3">
       <header className="mb-2 flex items-center justify-between gap-3">
-        <h3 className="text-sm font-medium text-theme-text-primary">Request fit</h3>
+        <div className="flex items-center gap-1.5">
+          <h3 className="text-sm font-medium text-theme-text-primary">Request fit</h3>
+          <Tooltip content={REQUEST_FIT_METHODOLOGY}>
+            <HelpCircle className="h-3.5 w-3.5 text-theme-text-tertiary" />
+          </Tooltip>
+        </div>
         {state.data && <RequestFitContext data={state.data} compact />}
       </header>
       <RequestFitBody state={state} compact />
@@ -158,7 +177,7 @@ function FitCard({ row, window }: { row: RightsizingRow; window: string }) {
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3 border-t border-theme-border pt-3 text-xs">
         <Metric label={`${row.observed?.name ?? (row.resource === 'cpu' ? 'P95' : 'P99')} observed`} value={row.observed?.formatted ?? 'No samples'} />
-        <Metric label={`Evidence · ${window}`} value={`${confidenceLabel(row)} · ${Math.round(row.coverage * 100)}%`} />
+        <Metric label={`Evidence · ${window}`} value={`${confidenceLabel(row)} · 5m samples`} />
       </div>
       <FitExplanation row={row} />
     </div>

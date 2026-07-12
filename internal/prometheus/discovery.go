@@ -142,10 +142,16 @@ func (c *Client) discover(ctx context.Context) (string, string, error) {
 
 	// Fallback: try port-forwarding candidates in priority order. This is the
 	// primary path off-cluster (where Service DNS can't resolve from the user's
-	// machine) and a backstop in-cluster. Serial by necessity — the port-forward
-	// lifecycle is a process-wide singleton shared with the traffic system.
+	// machine) and a backstop in-cluster. Serial by necessity — port-forwarding
+	// mutates the owner's shared forward state.
 	var lastErr error
 	for _, cand := range candidates {
+		// Bail promptly if the run was superseded mid-fallback (Reset / context
+		// switch) rather than churning the rest of the list while holding the gate.
+		if err := ctx.Err(); err != nil {
+			logDiscoveryEnded(start, err)
+			return "", "", err
+		}
 		log.Printf("[prometheus] port-forward → %s/%s:%d (source=%s, score=%d)...",
 			cand.Namespace, cand.Name, cand.TargetPort, cand.Source, cand.Score)
 		c.setDiscoveryServiceFromCandidate(cand)

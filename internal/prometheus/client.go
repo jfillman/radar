@@ -3,6 +3,7 @@ package prometheus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"maps"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -35,6 +37,28 @@ type Client struct {
 	manualURL        string            // --prometheus-url override
 	headers          map[string]string
 
+	// discoveryGen increments whenever configuration that invalidates a
+	// discovery result changes (Reset, SetManualURL, SetHeaders). It keys the
+	// singleflight and gates markConnected so a discovery started under an old
+	// configuration can't publish its (now stale) endpoint after the change.
+	discoveryGen uint64
+
+	// discoveryCancel aborts the in-flight detached discovery (if any). Reset /
+	// Reinitialize call it so a superseded run — e.g. an old context's pre-warm
+	// after a context switch — stops promptly and releases the discovery gate,
+	// rather than holding it while the new context waits. discoveryCancelSeq
+	// identifies the run that owns the handle so an ending run only clears its
+	// own cancel, never a newer run's.
+	discoveryCancel    context.CancelFunc
+	discoveryCancelSeq uint64
+
+	// retired is set by Reinitialize on the outgoing Client. A discovery whose
+	// singleflight goroutine hadn't started yet when the swap happened (so
+	// discoveryCancel was still nil and couldn't be cancelled) checks this at
+	// launch and aborts — otherwise the orphaned run could grab the discovery
+	// gate and drive the shared port-forward for the retired context.
+	retired bool
+
 	// K8s clients for discovery
 	k8sClient   kubernetes.Interface
 	k8sConfig   *rest.Config
@@ -45,13 +69,44 @@ type Client struct {
 
 	// Dedicated HTTP client for the MCP path
 	mcpHTTPClient *http.Client
+
+	// discoverySF coalesces concurrent discovery attempts. A cold start fires
+	// several EnsureConnected calls at once (opencost summary/nodes/trend,
+	// traffic), and discovery drives the process-wide port-forward singleton;
+	// without coalescing, parallel discoveries clobber each other's forwards.
+	discoverySF singleflight.Group
 }
+
+// discoveryTimeout is a hang backstop for a single coalesced discovery, not a
+// per-attempt budget. Discovery detaches from the caller's request context, so
+// this bounds how long a run may take before every waiting caller gets an
+// error: enough headroom for a few serial port-forward attempts (each ~10s)
+// plus probes, without letting a wedged run block discovery indefinitely.
+const discoveryTimeout = 60 * time.Second
 
 // Global client instance
 var (
 	globalClient *Client
 	clientMu     sync.RWMutex
 )
+
+// discoveryGate serializes Prometheus discovery across the whole process. Per-
+// client singleflight coalesces concurrent callers of the same Client, but
+// discovery drives the process-global port-forward singleton, and a client
+// reinit on context setup can leave two Client instances discovering at once —
+// e.g. the startup pre-warm and the first request landing on either side of the
+// swap. Without this gate those independent Prometheus discoveries race the
+// single port-forward, each tearing down the other's forward. It runs them one
+// at a time; a re-check of the connection after acquiring it lets the loser
+// return the winner's endpoint instead of rediscovering.
+//
+// A buffered channel (not a Mutex) so acquisition can be abandoned when the
+// run's context is cancelled — a Reset/Reinitialize that supersedes this run
+// must not leave it blocked on the gate. Scope note: this covers Prometheus
+// discovery only; the traffic subsystem drives the same port-forward singleton
+// without participating, so cross-subsystem arbitration remains a separate
+// concern (tracked for a follow-up in the portforward package).
+var discoveryGate = make(chan struct{}, 1)
 
 type suppressDiscoveryDiagnosticsKey struct{}
 
@@ -101,6 +156,13 @@ func SetManualURL(rawURL string) {
 	globalClient.mu.Lock()
 	defer globalClient.mu.Unlock()
 	globalClient.manualURL = strings.TrimRight(rawURL, "/")
+	globalClient.discoveryGen++
+	// Abort any in-flight discovery started under the old config so it releases
+	// the discovery gate promptly rather than stalling rediscovery. Safe under
+	// the lock: cancel only signals the context.
+	if globalClient.discoveryCancel != nil {
+		globalClient.discoveryCancel()
+	}
 }
 
 // SetHeaders sets HTTP headers attached to every Prometheus request on the
@@ -118,6 +180,10 @@ func SetHeaders(h map[string]string) {
 	// Drop the cached prom.Client so the next request rebuilds its transport
 	// with the new headers.
 	globalClient.prom = nil
+	globalClient.discoveryGen++
+	if globalClient.discoveryCancel != nil {
+		globalClient.discoveryCancel() // release the gate for the new config
+	}
 }
 
 func copyHeaders(h map[string]string) map[string]string {
@@ -147,7 +213,12 @@ func Reset() {
 		globalClient.prom = nil
 		globalClient.discovered = false
 		globalClient.discoveryService = nil
+		globalClient.discoveryGen++
+		cancel := globalClient.discoveryCancel
 		globalClient.mu.Unlock()
+		if cancel != nil {
+			cancel() // abort any in-flight discovery started under the old config
+		}
 	}
 }
 
@@ -158,15 +229,21 @@ func Reinitialize(client kubernetes.Interface, config *rest.Config, contextName 
 
 	manualURL := ""
 	var headers map[string]string
+	var oldCancel context.CancelFunc
 	if globalClient != nil {
 		// SetManualURL / SetHeaders write these under the per-client mutex
 		// after dropping clientMu, so reading without c.mu here would race
 		// even though we hold clientMu exclusively. copyHeaders also detaches
 		// the map from the old client so a late mutation can't bleed through.
-		globalClient.mu.RLock()
+		globalClient.mu.Lock()
 		manualURL = globalClient.manualURL
 		headers = copyHeaders(globalClient.headers)
-		globalClient.mu.RUnlock()
+		oldCancel = globalClient.discoveryCancel
+		globalClient.retired = true // abort even a flight that hasn't started yet
+		globalClient.mu.Unlock()
+	}
+	if oldCancel != nil {
+		oldCancel() // stop the outgoing client's detached discovery, if any
 	}
 
 	globalClient = &Client{
@@ -231,7 +308,111 @@ func (c *Client) EnsureConnected(ctx context.Context) (string, string, error) {
 		}
 	}
 
-	return c.discover(ctx)
+	return c.discoverShared(ctx)
+}
+
+// discoverShared runs discover() under a singleflight so a burst of concurrent
+// EnsureConnected callers triggers exactly one discovery and all share its
+// result. This is what stops parallel discoveries from fighting over the shared
+// port-forward singleton.
+//
+// The flight key includes the discovery generation, so a caller arriving after
+// a config change (Reset / SetManualURL / SetHeaders) never joins a flight
+// started under the old configuration — it runs a fresh discovery instead.
+//
+// The shared discovery detaches from the leader's request context
+// (context.WithoutCancel + its own timeout) so it completes for every waiter
+// even if the caller that happened to start it goes away. Each caller then
+// selects on its OWN context, so a cancelled request returns promptly instead
+// of blocking on the detached discovery. Context values (e.g. suppressed
+// discovery diagnostics) are preserved.
+func (c *Client) discoverShared(ctx context.Context) (string, string, error) {
+	type result struct{ addr, basePath string }
+
+	c.mu.RLock()
+	key := fmt.Sprintf("%s#%d", c.contextName, c.discoveryGen)
+	c.mu.RUnlock()
+
+	ch := c.discoverySF.DoChan(key, func() (any, error) {
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discoveryTimeout)
+		defer cancel()
+
+		// Publish the cancel so Reset/Reinitialize can abort this detached run.
+		// A sequence number identifies this run's handle: two runs can overlap
+		// on one Client (an old-gen run cancelled by Reset while a new-gen run
+		// starts), and the ending run must not clear the newer run's cancel.
+		// Also honor retirement: if this Client was swapped out by Reinitialize
+		// before the goroutine got here, abort — cancelling wasn't possible then
+		// because the handle wasn't published yet.
+		c.mu.Lock()
+		if c.retired {
+			c.mu.Unlock()
+			return nil, context.Canceled
+		}
+		c.discoveryCancelSeq++
+		mySeq := c.discoveryCancelSeq
+		c.discoveryCancel = cancel
+		c.mu.Unlock()
+		defer func() {
+			c.mu.Lock()
+			if c.discoveryCancelSeq == mySeq {
+				c.discoveryCancel = nil
+			}
+			c.mu.Unlock()
+		}()
+
+		// Serialize across the process, but abandon the wait if this run is
+		// cancelled (superseded) so it can't wedge a newer discovery.
+		select {
+		case discoveryGate <- struct{}{}:
+			defer func() { <-discoveryGate }()
+		case <-dctx.Done():
+			return nil, dctx.Err()
+		}
+
+		// Another discovery may have connected this client while we waited on
+		// the gate; if so, adopt its result instead of rediscovering.
+		c.mu.RLock()
+		addr, basePath := c.baseURL, c.basePath
+		c.mu.RUnlock()
+		if addr != "" {
+			return result{addr, basePath}, nil
+		}
+
+		addr, basePath, derr := c.discover(dctx)
+		if derr != nil {
+			return nil, derr
+		}
+		return result{addr, basePath}, nil
+	})
+
+	select {
+	case <-ctx.Done():
+		return "", "", ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return "", "", res.Err
+		}
+		r := res.Val.(result)
+		// Guard against a hollow success: between the run committing and our
+		// return, a Reset can clear baseURL, or Reinitialize can retire this
+		// client (leaving baseURL set) — either way the result belongs to a
+		// superseded context. If the connection isn't live on the current client,
+		// report supersession so the caller rediscovers rather than querying the
+		// previous cluster.
+		if !c.connectionLive(r.addr) {
+			return "", "", errDiscoverySuperseded
+		}
+		return r.addr, r.basePath, nil
+	}
+}
+
+// connectionLive reports whether addr is the client's current, non-retired
+// connection.
+func (c *Client) connectionLive(addr string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL == addr && !c.retired
 }
 
 // Prom returns the underlying pkg/prom.Client for callers that compose
@@ -299,6 +480,15 @@ func (c *Client) PromForMCP() *prom.Client {
 // and empty instances, which would otherwise silently fall through the
 // discovery candidate list.
 func (c *Client) probe(ctx context.Context, addr string) bool {
+	return c.probeReachable(ctx, addr, true)
+}
+
+// probeReachable is probe with control over rejection logging. The concurrent
+// direct-probe pass passes logReject=false and summarizes the whole pass in a
+// single line, rather than emitting one "unreachable" entry per candidate — the
+// noisy tail that dominated cold-start logs on clusters with several
+// Prometheus-like services.
+func (c *Client) probeReachable(ctx context.Context, addr string, logReject bool) bool {
 	c.mu.RLock()
 	httpC := c.httpClient
 	headers := copyHeaders(c.headers)
@@ -306,7 +496,7 @@ func (c *Client) probe(ctx context.Context, addr string) bool {
 	tr := prom.NewHTTPTransport(addr, "", httpC)
 	tr.Headers = headers
 	ok, reason := prom.NewClient(tr).Probe(ctx)
-	if !ok {
+	if !ok && logReject {
 		logProbeRejection(addr, reason, !discoveryDiagnosticsSuppressed(ctx))
 	}
 	return ok

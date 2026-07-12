@@ -354,11 +354,14 @@ func (c *Client) discoverShared(ctx context.Context) (string, string, error) {
 			// A sequence number identifies this run's handle: two runs can overlap
 			// on one Client (an old-gen run cancelled by Reset while a new-gen run
 			// starts), and the ending run must not clear the newer run's cancel.
-			// Also honor retirement: if this Client was swapped out by Reinitialize
-			// before the goroutine got here, abort — cancelling wasn't possible then
-			// because the handle wasn't published yet.
+			// Abort here if this run was already superseded before it could publish
+			// its handle: retirement (Reinitialize) or a generation bump
+			// (Reset/SetManualURL/SetHeaders) whose cancel() no-op'd because the
+			// handle was still nil. Without the gen check such a run would hold the
+			// discovery gate and a live detached context for up to discoveryTimeout,
+			// blocking rediscovery under the new configuration.
 			c.mu.Lock()
-			if c.retired {
+			if c.retired || c.discoveryGen != gen {
 				c.mu.Unlock()
 				return nil, context.Canceled
 			}

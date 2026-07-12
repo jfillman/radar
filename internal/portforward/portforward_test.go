@@ -1,0 +1,72 @@
+package portforward
+
+import "testing"
+
+// TestOwnerScoping verifies that each owner's forward is independent: stopping
+// one owner never tears down another's, and status/reuse lookups are scoped
+// correctly. This is the invariant that stops prometheus discovery and the
+// traffic subsystem from clobbering each other's metrics tunnel.
+func TestOwnerScoping(t *testing.T) {
+	saved := reg
+	t.Cleanup(func() { reg = saved })
+	reg = &registry{forwards: map[Owner]*metricsForward{}}
+
+	// Two owners hold live forwards in the same context.
+	reg.forwards[OwnerPrometheus] = &metricsForward{active: true, localPort: 1111, namespace: "monitoring", serviceName: "prometheus", contextName: "ctxA"}
+	reg.forwards[OwnerTraffic] = &metricsForward{active: true, localPort: 2222, namespace: "caretta", serviceName: "caretta-vm", contextName: "ctxA"}
+
+	if got := GetConnectionInfo(OwnerPrometheus); !got.Connected || got.LocalPort != 1111 {
+		t.Fatalf("prometheus info = %+v", got)
+	}
+	if got := GetConnectionInfo(OwnerTraffic); !got.Connected || got.LocalPort != 2222 {
+		t.Fatalf("traffic info = %+v", got)
+	}
+
+	// Stopping prometheus's forward must not touch traffic's — the core fix.
+	Stop(OwnerPrometheus)
+	if GetConnectionInfo(OwnerPrometheus).Connected {
+		t.Fatal("prometheus forward not stopped")
+	}
+	if !GetConnectionInfo(OwnerTraffic).Connected {
+		t.Fatal("traffic forward was torn down by prometheus Stop (cross-owner clobber)")
+	}
+
+	// GetAddress peeks across owners (read-only reuse) and is context-scoped.
+	if GetAddress("ctxA") == "" {
+		t.Fatal("GetAddress should surface traffic's forward for ctxA")
+	}
+	if GetAddress("ctxB") != "" {
+		t.Fatal("GetAddress must not match a different context")
+	}
+	if !IsConnectedForContext("ctxA") || IsConnectedForContext("ctxB") {
+		t.Fatal("IsConnectedForContext scoping wrong")
+	}
+}
+
+// TestGetConnectionInfoForContext verifies the context lookup used for traffic's
+// reuse status is *live* — it reports connected only while a forward is actually
+// active, never a stale snapshot.
+func TestGetConnectionInfoForContext(t *testing.T) {
+	saved := reg
+	t.Cleanup(func() { reg = saved })
+	reg = &registry{forwards: map[Owner]*metricsForward{}}
+
+	if GetConnectionInfoForContext("ctxA").Connected {
+		t.Fatal("expected disconnected with no forwards")
+	}
+
+	// Traffic reusing prometheus's forward: it surfaces for the context.
+	reg.forwards[OwnerPrometheus] = &metricsForward{active: true, localPort: 1234, contextName: "ctxA", namespace: "opencost", serviceName: "prometheus-server"}
+	if info := GetConnectionInfoForContext("ctxA"); !info.Connected || info.LocalPort != 1234 {
+		t.Fatalf("want connected on 1234, got %+v", info)
+	}
+	if GetConnectionInfoForContext("ctxB").Connected {
+		t.Fatal("must not match a different context")
+	}
+
+	// Owner stops it → status goes disconnected immediately (no stale cache).
+	Stop(OwnerPrometheus)
+	if GetConnectionInfoForContext("ctxA").Connected {
+		t.Fatal("stale: reported connected after the forward was stopped")
+	}
+}

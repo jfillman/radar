@@ -581,7 +581,7 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 
 	// Start a new managed port-forward
 	log.Printf("[caretta] Starting port-forward to %s/%s:%d (targetPort=%d)", metricsInfo.namespace, metricsInfo.name, metricsInfo.port, metricsInfo.targetPort)
-	connInfo, err := portforward.Start(ctx, metricsInfo.namespace, metricsInfo.name, metricsInfo.targetPort, contextName)
+	connInfo, err := portforward.Start(portforward.OwnerTraffic, ctx, metricsInfo.namespace, metricsInfo.name, metricsInfo.targetPort, contextName)
 	if err != nil {
 		return &portforward.ConnectionInfo{
 			Connected:   false,

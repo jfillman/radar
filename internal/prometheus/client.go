@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/skyhook-io/radar/internal/errorlog"
+	"github.com/skyhook-io/radar/internal/portforward"
 	"github.com/skyhook-io/radar/pkg/prom"
 )
 
@@ -219,6 +220,10 @@ func Reset() {
 		if cancel != nil {
 			cancel() // abort any in-flight discovery started under the old config
 		}
+		// Tear down our own metrics forward. With per-owner forwards, traffic's
+		// Reset no longer stops ours incidentally, so we must clean it up here
+		// (context switch and config change both route through Reset).
+		portforward.Stop(portforward.OwnerPrometheus)
 	}
 }
 

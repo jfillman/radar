@@ -150,7 +150,7 @@ func (c *Client) discover(ctx context.Context) (string, string, error) {
 			cand.Namespace, cand.Name, cand.TargetPort, cand.Source, cand.Score)
 		c.setDiscoveryServiceFromCandidate(cand)
 
-		connInfo, pfErr := portforward.Start(ctx, cand.Namespace, cand.Name, cand.TargetPort, contextName)
+		connInfo, pfErr := portforward.Start(portforward.OwnerPrometheus, ctx, cand.Namespace, cand.Name, cand.TargetPort, contextName)
 		if pfErr != nil {
 			lastErr = fmt.Errorf("port-forward to %s/%s failed: %w", cand.Namespace, cand.Name, pfErr)
 			if !discoveryDiagnosticsSuppressed(ctx) {
@@ -164,7 +164,7 @@ func (c *Client) discover(ctx context.Context) (string, string, error) {
 			if !c.markConnected(addr, cand.BasePath, startGen) {
 				// Superseded: don't leave the shared forward up for an endpoint
 				// we're discarding.
-				portforward.Stop()
+				portforward.Stop(portforward.OwnerPrometheus)
 				c.mu.Lock()
 				c.discoveryService = nil
 				c.mu.Unlock()
@@ -175,7 +175,7 @@ func (c *Client) discover(ctx context.Context) (string, string, error) {
 			return addr, cand.BasePath, nil
 		}
 
-		portforward.Stop()
+		portforward.Stop(portforward.OwnerPrometheus)
 		lastErr = fmt.Errorf("Prometheus at %s/%s not responding after port-forward", cand.Namespace, cand.Name)
 		if !discoveryDiagnosticsSuppressed(ctx) {
 			errorlog.Record("prometheus", "error", "Prometheus at %s/%s not responding after port-forward", cand.Namespace, cand.Name)

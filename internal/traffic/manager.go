@@ -499,7 +499,7 @@ func (m *Manager) Close() error {
 // Reset cleans up for context switching
 func Reset() {
 	// Stop any active metrics port-forward first
-	portforward.Stop()
+	portforward.Stop(portforward.OwnerTraffic)
 
 	if manager != nil {
 		manager.Close()
@@ -535,28 +535,31 @@ func (m *Manager) Connect(ctx context.Context) (*portforward.ConnectionInfo, err
 		}, nil
 	}
 
-	// Check if source supports Connect
-	if caretta, ok := source.(*CarettaSource); ok {
-		return caretta.Connect(ctx, contextName)
+	switch s := source.(type) {
+	case *CarettaSource:
+		return s.Connect(ctx, contextName)
+	case *HubbleSource:
+		return s.Connect(ctx, contextName)
+	case *IstioSource:
+		return s.Connect(ctx, contextName)
+	default:
+		// For sources without Connect support, just report connected.
+		return &portforward.ConnectionInfo{Connected: true}, nil
 	}
-
-	if hubble, ok := source.(*HubbleSource); ok {
-		return hubble.Connect(ctx, contextName)
-	}
-
-	if istio, ok := source.(*IstioSource); ok {
-		return istio.Connect(ctx, contextName)
-	}
-
-	// For sources without Connect support, just return connected
-	return &portforward.ConnectionInfo{
-		Connected: true,
-	}, nil
 }
 
-// GetConnectionInfo returns current connection status
+// GetConnectionInfo returns live traffic connection status. Traffic's own metrics
+// forward if it has one, else any active forward for the context (it may be
+// reusing another owner's read-only). Reading the live registry avoids reporting
+// a forward that has since been stopped.
 func (m *Manager) GetConnectionInfo() *portforward.ConnectionInfo {
-	return portforward.GetConnectionInfo()
+	if info := portforward.GetConnectionInfo(portforward.OwnerTraffic); info.Connected {
+		return info
+	}
+	m.mu.RLock()
+	contextName := m.contextName
+	m.mu.RUnlock()
+	return portforward.GetConnectionInfoForContext(contextName)
 }
 
 // SetContextName updates the current context name

@@ -614,8 +614,9 @@ function costWorkloadResource(wl: OpenCostWorkloadCost, namespace: string): Sele
   }
 }
 
-function resourceKindForCostWorkload(kind: string): string | null {
-  if (kind === 'standalone' || kind === 'staticpod') return 'Pod'
+export function resourceKindForCostWorkload(kind: string): string | null {
+  if (kind === 'staticpod') return 'Pod'
+  if (kind === 'standalone') return null
   if (kind === 'Deployment' || kind === 'StatefulSet' || kind === 'DaemonSet') return kind
   if (kind === 'Job' || kind === 'CronJob') return kind
   if (kind === 'Node') return kind

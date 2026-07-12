@@ -103,6 +103,28 @@ describe('getWorkloadCostState', () => {
   it('separates load failures from absent workload metrics', () => {
     expect(getWorkloadCostState(undefined, undefined, { currentError: true })).toBe('load_error')
   })
+
+  it('surfaces workload access and existence failures', () => {
+    const current: OpenCostWorkloadDetailResponse = {
+      available: false,
+      reason: 'access_denied',
+      namespace: 'prod',
+      kind: 'Deployment',
+      name: 'checkout',
+    }
+
+    const missing: OpenCostWorkloadTrendResponse = {
+      available: false,
+      reason: 'not_found',
+      namespace: 'prod',
+      kind: 'Deployment',
+      name: 'checkout',
+      range: '24h',
+    }
+
+    expect(getWorkloadCostState(current, undefined, false)).toBe('access_denied')
+    expect(getWorkloadCostState(undefined, missing, false)).toBe('not_found')
+  })
 })
 
 describe('buildLineChart', () => {

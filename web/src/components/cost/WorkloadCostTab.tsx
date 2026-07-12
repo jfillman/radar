@@ -83,7 +83,14 @@ export function WorkloadCostTab({ kind, namespace, name }: WorkloadCostTabProps)
     )
   }
 
-  if (state === 'no_prometheus' || state === 'no_metrics' || state === 'query_error' || state === 'load_error') {
+  if (
+    state === 'no_prometheus' ||
+    state === 'no_metrics' ||
+    state === 'query_error' ||
+    state === 'access_denied' ||
+    state === 'not_found' ||
+    state === 'load_error'
+  ) {
     const discoveryAgeMs = noPrometheusSince == null ? 0 : Date.now() - noPrometheusSince
     if (state === 'no_prometheus' && discoveryAgeMs < COST_DISCOVERY_GRACE_MS) {
       return (
@@ -282,7 +289,13 @@ export function getWorkloadCostState(
   if (loading) return 'loading'
 
   const reason = current?.reason ?? trend?.reason
-  if (reason === 'no_prometheus' || reason === 'query_error') return reason
+  if (
+    reason === 'no_prometheus' ||
+    reason === 'query_error' ||
+    reason === 'access_denied' ||
+    reason === 'not_found'
+  )
+    return reason
   return 'no_metrics'
 }
 
@@ -315,9 +328,13 @@ function WorkloadCostUnavailable({ state }: { state: CostUnavailableReason | 'lo
       ? 'Prometheus not found. OpenCost workload cost requires Prometheus or VictoriaMetrics.'
       : state === 'query_error'
         ? 'Cost data is temporarily unavailable. Prometheus was found, but workload cost queries failed.'
-        : state === 'load_error'
-          ? 'Could not load workload cost data. Check access to this workload and try again.'
-          : 'OpenCost workload metrics were not found for this workload.'
+        : state === 'access_denied'
+          ? 'You do not have access to view cost for this workload.'
+          : state === 'not_found'
+            ? 'This workload no longer exists.'
+            : state === 'load_error'
+              ? 'Could not load workload cost data. Check access to this workload and try again.'
+              : 'OpenCost workload metrics were not found for this workload.'
 
   return (
     <div className="flex h-full min-h-[320px] items-center justify-center">

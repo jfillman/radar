@@ -266,27 +266,6 @@ func GetConnectionInfo(owner Owner) *ConnectionInfo {
 	}
 }
 
-// GetConnectionInfoForContext returns any active forward for the context (across
-// owners), so a consumer that may be reusing another owner's forward can report
-// live status without caching a snapshot that could go stale. Disconnected if none.
-func GetConnectionInfoForContext(contextName string) *ConnectionInfo {
-	reg.mu.RLock()
-	defer reg.mu.RUnlock()
-	for _, f := range reg.forwards {
-		if f.active && f.contextName == contextName {
-			return &ConnectionInfo{
-				Connected:   true,
-				LocalPort:   f.localPort,
-				Address:     fmt.Sprintf("http://localhost:%d", f.localPort),
-				Namespace:   f.namespace,
-				ServiceName: f.serviceName,
-				ContextName: f.contextName,
-			}
-		}
-	}
-	return &ConnectionInfo{Connected: false}
-}
-
 // IsConnectedForContext reports whether any owner has an active forward for the context.
 func IsConnectedForContext(contextName string) bool {
 	reg.mu.RLock()

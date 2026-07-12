@@ -548,18 +548,14 @@ func (m *Manager) Connect(ctx context.Context) (*portforward.ConnectionInfo, err
 	}
 }
 
-// GetConnectionInfo returns live traffic connection status. Traffic's own metrics
-// forward if it has one, else any active forward for the context (it may be
-// reusing another owner's read-only). Reading the live registry avoids reporting
-// a forward that has since been stopped.
+// GetConnectionInfo returns live traffic connection status — traffic's own
+// metrics forward, read from the live registry so a forward that has since been
+// stopped isn't reported as connected. It deliberately does NOT report another
+// owner's forward: traffic's data path always uses its own (Caretta/Hubble bring
+// one up), so a Prometheus forward for the same context means Prometheus is
+// connected, not traffic.
 func (m *Manager) GetConnectionInfo() *portforward.ConnectionInfo {
-	if info := portforward.GetConnectionInfo(portforward.OwnerTraffic); info.Connected {
-		return info
-	}
-	m.mu.RLock()
-	contextName := m.contextName
-	m.mu.RUnlock()
-	return portforward.GetConnectionInfoForContext(contextName)
+	return portforward.GetConnectionInfo(portforward.OwnerTraffic)
 }
 
 // SetContextName updates the current context name

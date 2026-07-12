@@ -65,31 +65,3 @@ func TestGetAddressPrefersOwn(t *testing.T) {
 		t.Fatalf("prometheus fallback got %q, want peer :2222", got)
 	}
 }
-
-// TestGetConnectionInfoForContext verifies the context lookup used for traffic's
-// reuse status is *live* — it reports connected only while a forward is actually
-// active, never a stale snapshot.
-func TestGetConnectionInfoForContext(t *testing.T) {
-	saved := reg
-	t.Cleanup(func() { reg = saved })
-	reg = &registry{forwards: map[Owner]*metricsForward{}}
-
-	if GetConnectionInfoForContext("ctxA").Connected {
-		t.Fatal("expected disconnected with no forwards")
-	}
-
-	// Traffic reusing prometheus's forward: it surfaces for the context.
-	reg.forwards[OwnerPrometheus] = &metricsForward{active: true, localPort: 1234, contextName: "ctxA", namespace: "opencost", serviceName: "prometheus-server"}
-	if info := GetConnectionInfoForContext("ctxA"); !info.Connected || info.LocalPort != 1234 {
-		t.Fatalf("want connected on 1234, got %+v", info)
-	}
-	if GetConnectionInfoForContext("ctxB").Connected {
-		t.Fatal("must not match a different context")
-	}
-
-	// Owner stops it → status goes disconnected immediately (no stale cache).
-	Stop(OwnerPrometheus)
-	if GetConnectionInfoForContext("ctxA").Connected {
-		t.Fatal("stale: reported connected after the forward was stopped")
-	}
-}

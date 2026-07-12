@@ -129,7 +129,7 @@ function resourcePressure(provisioned: Record<string, string>, limits: Record<st
 
 function buildNode(node: any, metric: TopNodeMetrics | undefined): CapacityNode {
   const labels = node.metadata?.labels ?? {}
-  const hasMetrics = !!metric && (metric.cpu > 0 || metric.memory > 0)
+  const hasMetrics = !!metric
   return {
     resource: node,
     name: node.metadata?.name ?? '',

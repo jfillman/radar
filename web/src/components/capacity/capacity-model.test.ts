@@ -80,6 +80,22 @@ describe('buildCapacitySummary', () => {
     expect(result.pools[0].actual.memoryPercent).toBeNull()
   })
 
+  it('treats an idle zero-usage sample as metrics coverage', () => {
+    const result = buildCapacitySummary(
+      [pool()],
+      [],
+      [node('node-a')],
+      [{ name: 'node-a', cpu: 0, memory: 0, podCount: 0, cpuAllocatable: 0, memoryAllocatable: 0 }],
+    )
+
+    expect(result.pools[0].nodes[0].hasMetrics).toBe(true)
+    expect(result.pools[0].actual).toMatchObject({
+      metricsNodes: 1,
+      cpuPercent: 0,
+      memoryPercent: 0,
+    })
+  })
+
   it('supports pools without limits and arbitrary extended-resource limits', () => {
     const unlimited = buildCapacitySummary([pool({ spec: {}, status: { resources: { cpu: '4' } } })], [], [], [])
     expect(unlimited.pools[0].pressure).toEqual([])

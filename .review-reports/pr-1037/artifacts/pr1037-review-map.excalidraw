@@ -1,0 +1,76 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "https://excalidraw.com",
+  "elements": [
+    {"id":"title","type":"text","x":50,"y":28,"width":760,"height":32,"text":"PR #1037 — Reachability architecture + review map","fontSize":26,"fontFamily":5,"textAlign":"left","strokeColor":"#1e1e1e","seed":1001},
+    {"id":"runtime-label","type":"text","x":50,"y":82,"width":240,"height":24,"text":"Runtime evidence flow","fontSize":20,"fontFamily":5,"textAlign":"left","strokeColor":"#1e1e1e","seed":1002},
+
+    {"id":"cache-box","type":"rectangle","x":50,"y":145,"width":220,"height":110,"strokeColor":"#495057","backgroundColor":"#dee2e6","fillStyle":"solid","strokeWidth":2,"roughness":1,"roundness":{"type":3},"seed":1003},
+    {"id":"cache-text","type":"text","x":68,"y":166,"width":184,"height":66,"text":"K8s informer caches\nServices · Pods · Endpoints\nIngress · Gateway API · NetPol","fontSize":15,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1004},
+
+    {"id":"callers-box","type":"rectangle","x":50,"y":310,"width":220,"height":105,"strokeColor":"#228be6","backgroundColor":"#228be6","fillStyle":"solid","strokeWidth":2,"roughness":1,"roundness":{"type":3},"seed":1005},
+    {"id":"callers-text","type":"text","x":70,"y":332,"width":180,"height":62,"text":"Operator entry points\nREST · Radar UI\nMCP diagnose","fontSize":16,"fontFamily":5,"textAlign":"center","strokeColor":"#ffffff","seed":1006},
+
+    {"id":"static-box","type":"rectangle","x":340,"y":125,"width":290,"height":150,"strokeColor":"#495057","backgroundColor":"#dee2e6","fillStyle":"solid","strokeWidth":2,"roughness":1,"roundness":{"type":3},"seed":1007},
+    {"id":"static-text","type":"text","x":365,"y":145,"width":240,"height":108,"text":"STATIC PATH ENGINE\ninternal/trace\nentries.go: graph + K8s semantics\nfindings/netpol/egress/controller\ntrace.go: preliminary verdict","fontSize":15,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1008},
+
+    {"id":"inline-box","type":"rectangle","x":340,"y":315,"width":290,"height":125,"strokeColor":"#228be6","backgroundColor":"#a5d8ff","fillStyle":"solid","strokeWidth":2,"roughness":1,"roundness":{"type":3},"seed":1009},
+    {"id":"inline-text","type":"text","x":360,"y":334,"width":250,"height":88,"text":"INLINE ACTIVE PROBES\npkg/probe + trace/probes.go\nDirect DNS/TCP/TLS/HTTP = real*\nAPI-server proxy = indirect\n*depends where Radar runs","fontSize":14,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1010},
+
+    {"id":"job-box","type":"rectangle","x":340,"y":485,"width":290,"height":125,"strokeColor":"#e03131","backgroundColor":"#ffec99","fillStyle":"solid","strokeWidth":3,"roughness":1,"roundness":{"type":3},"seed":1011},
+    {"id":"job-text","type":"text","x":360,"y":501,"width":250,"height":94,"text":"IN-CLUSTER CONFIRMATION\ninternal/reachability\nCaller-impersonated short-lived Job\nRestricted pod · no SA token\nREAL dataplane — MUTATING","fontSize":14,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1012},
+
+    {"id":"trace-box","type":"rectangle","x":740,"y":218,"width":250,"height":170,"strokeColor":"#228be6","backgroundColor":"#228be6","fillStyle":"solid","strokeWidth":3,"roughness":1,"roundness":{"type":3},"seed":1013},
+    {"id":"trace-text","type":"text","x":765,"y":240,"width":200,"height":128,"text":"TRACE CONTRACT\nsubject\nupstream + downstream hops\nfindings + probe facts\nroutes + skips\nJSON shared by all surfaces","fontSize":16,"fontFamily":5,"textAlign":"center","strokeColor":"#ffffff","seed":1014},
+
+    {"id":"coverage-box","type":"rectangle","x":1070,"y":218,"width":250,"height":170,"strokeColor":"#f08c00","backgroundColor":"#ffec99","fillStyle":"solid","strokeWidth":3,"roughness":1,"roundness":{"type":3},"seed":1015},
+    {"id":"coverage-text","type":"text","x":1092,"y":239,"width":206,"height":130,"text":"HONESTY PROJECTION\ncoverage.go\nroute outcome + confidence\nreal vs indirect evidence\nheadline + diagnosis\ncanonical final verdict","fontSize":16,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1016},
+
+    {"id":"ui-box","type":"rectangle","x":1410,"y":105,"width":180,"height":90,"strokeColor":"#2f9e44","backgroundColor":"#b2f2bb","fillStyle":"solid","strokeWidth":2,"roughness":1,"roundness":{"type":3},"seed":1017},
+    {"id":"ui-text","type":"text","x":1430,"y":126,"width":140,"height":48,"text":"Reachability tab\ndiagram + matrix","fontSize":15,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1018},
+    {"id":"drawer-box","type":"rectangle","x":1410,"y":258,"width":180,"height":90,"strokeColor":"#2f9e44","backgroundColor":"#b2f2bb","fillStyle":"solid","strokeWidth":2,"roughness":1,"roundness":{"type":3},"seed":1019},
+    {"id":"drawer-text","type":"text","x":1430,"y":280,"width":140,"height":48,"text":"Resource drawer\npassive summary","fontSize":15,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1020},
+    {"id":"mcp-box","type":"rectangle","x":1410,"y":410,"width":180,"height":90,"strokeColor":"#2f9e44","backgroundColor":"#b2f2bb","fillStyle":"solid","strokeWidth":2,"roughness":1,"roundness":{"type":3},"seed":1021},
+    {"id":"mcp-text","type":"text","x":1430,"y":432,"width":140,"height":48,"text":"MCP diagnose\nagent-shaped view","fontSize":15,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1022},
+
+    {"id":"cache-static","type":"arrow","x":270,"y":195,"width":70,"height":0,"strokeColor":"#495057","strokeWidth":2,"roughness":1,"points":[[0,0],[70,0]],"seed":1023},
+    {"id":"call-static","type":"arrow","x":270,"y":340,"width":70,"height":-100,"strokeColor":"#495057","strokeWidth":2,"roughness":1,"points":[[0,0],[70,-100]],"seed":1024},
+    {"id":"call-inline","type":"arrow","x":270,"y":365,"width":70,"height":5,"strokeColor":"#495057","strokeWidth":2,"roughness":1,"points":[[0,0],[70,5]],"seed":1025},
+    {"id":"call-job","type":"arrow","x":270,"y":392,"width":70,"height":145,"strokeColor":"#e03131","strokeWidth":2,"roughness":1,"points":[[0,0],[70,145]],"seed":1026},
+    {"id":"static-trace","type":"arrow","x":630,"y":200,"width":110,"height":65,"strokeColor":"#495057","strokeWidth":2,"roughness":1,"points":[[0,0],[110,65]],"seed":1027},
+    {"id":"inline-trace","type":"arrow","x":630,"y":375,"width":110,"height":-30,"strokeColor":"#228be6","strokeWidth":2,"roughness":1,"points":[[0,0],[110,-30]],"seed":1028},
+    {"id":"job-trace","type":"arrow","x":630,"y":545,"width":110,"height":-185,"strokeColor":"#e03131","strokeWidth":2,"roughness":1,"points":[[0,0],[110,-185]],"seed":1029},
+    {"id":"trace-coverage","type":"arrow","x":990,"y":303,"width":80,"height":0,"strokeColor":"#f08c00","strokeWidth":3,"roughness":1,"points":[[0,0],[80,0]],"seed":1030},
+    {"id":"coverage-ui","type":"arrow","x":1320,"y":270,"width":90,"height":-110,"strokeColor":"#2f9e44","strokeWidth":2,"roughness":1,"points":[[0,0],[90,-110]],"seed":1031},
+    {"id":"coverage-drawer","type":"arrow","x":1320,"y":303,"width":90,"height":0,"strokeColor":"#2f9e44","strokeWidth":2,"roughness":1,"points":[[0,0],[90,0]],"seed":1032},
+    {"id":"coverage-mcp","type":"arrow","x":1320,"y":335,"width":90,"height":120,"strokeColor":"#2f9e44","strokeWidth":2,"roughness":1,"points":[[0,0],[90,120]],"seed":1033},
+
+    {"id":"auth-label","type":"text","x":650,"y":518,"width":220,"height":44,"text":"AUTH + MUTATION BOUNDARY\nRBAC · Cloud role · cleanup","fontSize":13,"fontFamily":5,"textAlign":"center","strokeColor":"#e03131","seed":1034},
+    {"id":"honesty-label","type":"text","x":995,"y":405,"width":400,"height":44,"text":"HONESTY BOUNDARY\nNever false-condemn; never overclaim unverified traffic","fontSize":14,"fontFamily":5,"textAlign":"center","strokeColor":"#f08c00","seed":1035},
+
+    {"id":"divider","type":"line","x":50,"y":670,"width":1540,"height":0,"strokeColor":"#495057","strokeWidth":2,"roughness":1,"points":[[0,0],[1540,0]],"seed":1036},
+    {"id":"review-label","type":"text","x":50,"y":700,"width":430,"height":28,"text":"Divide-and-conquer review lanes","fontSize":22,"fontFamily":5,"textAlign":"left","strokeColor":"#1e1e1e","seed":1037},
+
+    {"id":"lane1","type":"rectangle","x":50,"y":770,"width":220,"height":125,"strokeColor":"#495057","backgroundColor":"#dee2e6","fillStyle":"solid","strokeWidth":2,"roughness":1,"roundness":{"type":3},"seed":1038},
+    {"id":"lane1t","type":"text","x":67,"y":788,"width":186,"height":90,"text":"1 · PATH SEMANTICS\nentries + findings\nGateway/Ingress/Service\nNetPol + RBAC redaction","fontSize":14,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1039},
+    {"id":"lane2","type":"rectangle","x":310,"y":770,"width":220,"height":125,"strokeColor":"#228be6","backgroundColor":"#a5d8ff","fillStyle":"solid","strokeWidth":2,"roughness":1,"roundness":{"type":3},"seed":1040},
+    {"id":"lane2t","type":"text","x":327,"y":788,"width":186,"height":90,"text":"2 · PROBE SEMANTICS\nDNS/TCP/TLS/HTTP\nvantage classification\ntimeouts + HTTP meanings","fontSize":14,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1041},
+    {"id":"lane3","type":"rectangle","x":570,"y":770,"width":220,"height":125,"strokeColor":"#e03131","backgroundColor":"#ffec99","fillStyle":"solid","strokeWidth":2,"roughness":1,"roundness":{"type":3},"seed":1042},
+    {"id":"lane3t","type":"text","x":587,"y":788,"width":186,"height":90,"text":"3 · JOB + SECURITY\nimpersonation + SSAR\npod hardening + image\ncleanup + fallback commands","fontSize":14,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1043},
+    {"id":"lane4","type":"rectangle","x":830,"y":770,"width":220,"height":125,"strokeColor":"#f08c00","backgroundColor":"#ffec99","fillStyle":"solid","strokeWidth":3,"roughness":1,"roundness":{"type":3},"seed":1044},
+    {"id":"lane4t","type":"text","x":847,"y":788,"width":186,"height":90,"text":"4 · HONESTY MODEL\ncoverage + verdict\nroute identity + folding\nproperty/invariant matrix","fontSize":14,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1045},
+    {"id":"lane5","type":"rectangle","x":1090,"y":770,"width":220,"height":125,"strokeColor":"#2f9e44","backgroundColor":"#b2f2bb","fillStyle":"solid","strokeWidth":2,"roughness":1,"roundness":{"type":3},"seed":1046},
+    {"id":"lane5t","type":"text","x":1107,"y":788,"width":186,"height":90,"text":"5 · UI + CONTRACT\nReact state/races\ngraph/matrix semantics\npublic k8s-ui surface + UX","fontSize":14,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1047},
+    {"id":"lane6","type":"rectangle","x":1350,"y":770,"width":240,"height":125,"strokeColor":"#e03131","backgroundColor":"#ffc9c9","fillStyle":"solid","strokeWidth":3,"roughness":1,"roundness":{"type":3},"seed":1048},
+    {"id":"lane6t","type":"text","x":1367,"y":788,"width":206,"height":90,"text":"6 · CURRENT-MAIN MERGE\n52 commits ahead\n20 overlapping files\ncompile/tests + API drift","fontSize":14,"fontFamily":5,"textAlign":"center","strokeColor":"#1e1e1e","seed":1049},
+
+    {"id":"lane1-4","type":"arrow","x":270,"y":925,"width":620,"height":0,"strokeColor":"#495057","strokeWidth":2,"roughness":1,"points":[[0,0],[620,0]],"seed":1050},
+    {"id":"lane2-4","type":"arrow","x":530,"y":945,"width":360,"height":0,"strokeColor":"#228be6","strokeWidth":2,"roughness":1,"points":[[0,0],[360,0]],"seed":1051},
+    {"id":"lane3-4","type":"arrow","x":790,"y":965,"width":100,"height":0,"strokeColor":"#e03131","strokeWidth":2,"roughness":1,"points":[[0,0],[100,0]],"seed":1052},
+    {"id":"lane4-5","type":"arrow","x":1050,"y":930,"width":40,"height":0,"strokeColor":"#2f9e44","strokeWidth":2,"roughness":1,"points":[[0,0],[40,0]],"seed":1053},
+    {"id":"lane-seam-note","type":"text","x":505,"y":990,"width":610,"height":42,"text":"Lanes 1–3 produce evidence; lane 4 challenges every combination;\nlane 5 verifies the exact same truth reaches humans; lane 6 rebases the whole system.","fontSize":14,"fontFamily":5,"textAlign":"center","strokeColor":"#495057","seed":1054}
+  ],
+  "appState": {"viewBackgroundColor":"#ffffff","gridSize":null},
+  "files": {}
+}

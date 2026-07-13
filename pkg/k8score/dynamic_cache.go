@@ -46,16 +46,21 @@ type informerEntry struct {
 // resources. It is safe for concurrent use. Application-specific callbacks
 // (timeline, metrics) are injected via DynamicCacheConfig.
 type DynamicResourceCache struct {
-	factory         dynamicinformer.DynamicSharedInformerFactory
-	nsFactories     map[string]dynamicinformer.DynamicSharedInformerFactory // one per watched namespace, lazily created
-	informers       map[informerKey]*informerEntry
-	stopCh          chan struct{} // global shutdown; parent of every per-informer context
-	stopOnce        sync.Once
-	mu              sync.RWMutex
-	config          DynamicCacheConfig
-	discoveryStatus CRDDiscoveryStatus
-	discoveryMu     sync.RWMutex
-	discoveryDone   chan struct{} // closed when DiscoverAllCRDs() completes
+	factory     dynamicinformer.DynamicSharedInformerFactory
+	nsFactories map[string]dynamicinformer.DynamicSharedInformerFactory // one per watched namespace, lazily created
+	informers   map[informerKey]*informerEntry
+	// fallbackResolved marks GVRs whose "all namespaces" scope was already
+	// probed and fanned out across the fallback namespaces. Without it every
+	// all-namespaces read of a fallback-scoped GVR would re-probe cluster-wide
+	// plus each candidate namespace. Guarded by mu.
+	fallbackResolved map[schema.GroupVersionResource]bool
+	stopCh           chan struct{} // global shutdown; parent of every per-informer context
+	stopOnce         sync.Once
+	mu               sync.RWMutex
+	config           DynamicCacheConfig
+	discoveryStatus  CRDDiscoveryStatus
+	discoveryMu      sync.RWMutex
+	discoveryDone    chan struct{} // closed when DiscoverAllCRDs() completes
 
 	// gvrHandlers holds change handlers registered via AddGVRChangeHandler,
 	// keyed by GVR. They are re-applied to every informer started for that GVR
@@ -83,19 +88,22 @@ func NewDynamicResourceCache(cfg DynamicCacheConfig) (*DynamicResourceCache, err
 	)
 	if cfg.NamespaceScoped && cfg.Namespace != "" {
 		log.Printf("Using namespace-scoped dynamic informers for namespace %q", cfg.Namespace)
+	} else if len(cfg.NamespaceFallbacks) > 0 {
+		log.Printf("Using namespace fallbacks for dynamic informers: %q", cfg.NamespaceFallbacks)
 	} else if cfg.NamespaceFallback != "" {
 		log.Printf("Using namespace fallback for dynamic informers: %q", cfg.NamespaceFallback)
 	}
 
 	d := &DynamicResourceCache{
-		factory:         factory,
-		nsFactories:     make(map[string]dynamicinformer.DynamicSharedInformerFactory),
-		informers:       make(map[informerKey]*informerEntry),
-		stopCh:          make(chan struct{}),
-		config:          cfg,
-		discoveryStatus: CRDDiscoveryIdle,
-		discoveryDone:   make(chan struct{}),
-		gvrHandlers:     make(map[schema.GroupVersionResource][]cache.ResourceEventHandler),
+		factory:          factory,
+		nsFactories:      make(map[string]dynamicinformer.DynamicSharedInformerFactory),
+		fallbackResolved: make(map[schema.GroupVersionResource]bool),
+		informers:        make(map[informerKey]*informerEntry),
+		stopCh:           make(chan struct{}),
+		config:           cfg,
+		discoveryStatus:  CRDDiscoveryIdle,
+		discoveryDone:    make(chan struct{}),
+		gvrHandlers:      make(map[schema.GroupVersionResource][]cache.ResourceEventHandler),
 	}
 
 	log.Println("Dynamic resource cache initialized")
@@ -160,14 +168,27 @@ func (d *DynamicResourceCache) ensureWatching(gvr schema.GroupVersionResource, p
 		}
 	}
 
-	// Probe access (cluster-wide first, then a specific namespace) BEFORE
-	// acquiring the write lock; the result tells us which scope to watch.
-	scopeNS, err := d.probeScope(gvr, preferredNS)
+	// Probe access (cluster-wide first, then fallback namespaces) BEFORE
+	// acquiring the write lock; the result tells us which scopes to watch.
+	scopes, err := d.probeScopes(gvr, preferredNS)
 	if err != nil {
 		return fmt.Errorf("no access to %s.%s/%s: %w", gvr.Resource, gvr.Group, gvr.Version, err)
 	}
 
-	return d.startWatching(gvr, scopeNS)
+	for _, scopeNS := range scopes {
+		if err := d.startWatching(gvr, scopeNS); err != nil {
+			return err
+		}
+	}
+	if preferredNS == "" {
+		// The all-namespaces scope for this GVR is now settled — informers
+		// exist for every granted scope. Mark it so the next all-namespaces
+		// read doesn't re-probe cluster-wide plus every candidate.
+		d.mu.Lock()
+		d.fallbackResolved[gvr] = true
+		d.mu.Unlock()
+	}
+	return nil
 }
 
 // hasCoveringInformer reports whether an existing informer already serves
@@ -186,7 +207,10 @@ func (d *DynamicResourceCache) hasCoveringInformer(gvr schema.GroupVersionResour
 		return true
 	}
 	if ns == "" {
-		return false
+		// Covered without a cluster-wide informer only when a previous
+		// all-namespaces ensureWatching already fanned out across the
+		// fallback namespaces; readEntries(gvr, "") unions those.
+		return d.fallbackResolved[gvr]
 	}
 	_, ok := d.informers[informerKey{gvr: gvr, ns: ns}]
 	return ok
@@ -289,13 +313,26 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 	return nil
 }
 
-// probeScope decides which namespace to watch for gvr via a limit=1 list
-// probe. It returns the scope ("" = cluster-wide) on success, or a forbidden
-// error when the identity can list the resource neither cluster-wide nor in
-// the candidate namespace. preferredNS is the namespace the caller actually
-// wants; when cluster-wide is denied it becomes the fallback target (falling
-// back to the configured NamespaceFallback only when the caller named none).
-func (d *DynamicResourceCache) probeScope(gvr schema.GroupVersionResource, preferredNS string) (string, error) {
+// fallbackNamespaces returns the configured namespace-fallback candidates,
+// preferring the multi-namespace form.
+func (d *DynamicResourceCache) fallbackNamespaces() []string {
+	if len(d.config.NamespaceFallbacks) > 0 {
+		return d.config.NamespaceFallbacks
+	}
+	if d.config.NamespaceFallback != "" {
+		return []string{d.config.NamespaceFallback}
+	}
+	return nil
+}
+
+// probeScopes decides which scopes to watch for gvr via limit=1 list probes.
+// It returns the scope namespaces to start informers for — [""] means one
+// cluster-wide informer — or a forbidden error when the identity can list
+// the resource neither cluster-wide nor in any candidate namespace.
+// preferredNS is the namespace the caller actually wants; when cluster-wide
+// is denied and the caller named none, every configured fallback namespace
+// is probed and each granted one becomes a scope.
+func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, preferredNS string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -304,33 +341,51 @@ func (d *DynamicResourceCache) probeScope(gvr schema.GroupVersionResource, prefe
 	// so they fall through to the cluster-wide path below — pinning them to a
 	// namespace would list nothing.
 	if d.config.NamespaceScoped && d.config.Namespace != "" && d.gvrIsNamespaced(gvr) {
-		return d.classifyScope(gvr, d.config.Namespace, d.listProbe(ctx, gvr, d.config.Namespace))
+		ns, err := d.classifyScope(gvr, d.config.Namespace, d.listProbe(ctx, gvr, d.config.Namespace))
+		if err != nil {
+			return nil, err
+		}
+		return []string{ns}, nil
 	}
 
 	// Cluster-wide first — one informer then serves every namespace.
 	err := d.listProbe(ctx, gvr, "")
 	if err == nil {
-		return "", nil
+		return []string{""}, nil
 	}
 	if !isAuthProbeError(err) {
 		// Transient/NotFound on proxy-fronted clusters — fail open to a
 		// cluster-wide informer rather than disabling the kind; real
 		// problems surface when the informer lists.
 		log.Printf("[dynamic cache] Cluster-wide probe for %s.%s/%s returned non-auth error (allowing): %v", gvr.Resource, gvr.Group, gvr.Version, err)
-		return "", nil
+		return []string{""}, nil
 	}
 	if !d.gvrIsNamespaced(gvr) {
-		return "", err // cluster-scoped resource, no namespace to fall back to
+		return nil, err // cluster-scoped resource, no namespace to fall back to
 	}
 
-	fallbackNS := preferredNS
-	if fallbackNS == "" {
-		fallbackNS = d.config.NamespaceFallback
+	if preferredNS != "" {
+		ns, err := d.classifyScope(gvr, preferredNS, d.listProbe(ctx, gvr, preferredNS))
+		if err != nil {
+			return nil, err
+		}
+		return []string{ns}, nil
 	}
-	if fallbackNS == "" {
-		return "", err
+
+	fallbacks := d.fallbackNamespaces()
+	if len(fallbacks) == 0 {
+		return nil, err
 	}
-	return d.classifyScope(gvr, fallbackNS, d.listProbe(ctx, gvr, fallbackNS))
+	granted := make([]string, 0, len(fallbacks))
+	for _, ns := range fallbacks {
+		if scoped, nsErr := d.classifyScope(gvr, ns, d.listProbe(ctx, gvr, ns)); nsErr == nil {
+			granted = append(granted, scoped)
+		}
+	}
+	if len(granted) == 0 {
+		return nil, err // original cluster-wide forbidden — no candidate granted either
+	}
+	return granted, nil
 }
 
 func (d *DynamicResourceCache) listProbe(ctx context.Context, gvr schema.GroupVersionResource, namespace string) error {
@@ -433,8 +488,14 @@ func (d *DynamicResourceCache) probeCountList(ctx context.Context, gvr schema.Gr
 	if err == nil {
 		return list, nil
 	}
-	if isAuthProbeError(err) && d.config.NamespaceFallback != "" && d.gvrIsNamespaced(gvr) {
-		return d.config.DynamicClient.Resource(gvr).Namespace(d.config.NamespaceFallback).List(ctx, metav1.ListOptions{Limit: 1})
+	if isAuthProbeError(err) && d.gvrIsNamespaced(gvr) {
+		// Size heuristic only — the first granted fallback namespace is a
+		// good-enough sample for the eager-warm decision.
+		for _, ns := range d.fallbackNamespaces() {
+			if nsList, nsErr := d.config.DynamicClient.Resource(gvr).Namespace(ns).List(ctx, metav1.ListOptions{Limit: 1}); nsErr == nil {
+				return nsList, nil
+			}
+		}
 	}
 	return list, err
 }
@@ -629,14 +690,14 @@ func (d *DynamicResourceCache) readEntries(gvr schema.GroupVersionResource, ns s
 		return nil
 	}
 	// ns == "" ("all namespaces") with no cluster-wide informer. When Radar
-	// connects with a namespace-restricted identity (NamespaceFallback set),
+	// connects with a namespace-restricted identity (fallbacks configured),
 	// cluster-wide list was denied so the only informers for this GVR are
 	// per-namespace — union them, otherwise an all-namespaces read returns
 	// nothing even though the per-namespace informers are synced. A cluster-wide
-	// cache (NamespaceFallback == "") stays empty here, preserving the
+	// cache (no fallbacks configured) stays empty here, preserving the
 	// deterministic cluster-wide-only contract that keeps incidental
 	// per-namespace informers from leaking across users.
-	if d.config.NamespaceFallback == "" {
+	if len(d.fallbackNamespaces()) == 0 {
 		return nil
 	}
 	var out []*informerEntry
@@ -735,11 +796,11 @@ func (d *DynamicResourceCache) Count(gvr schema.GroupVersionResource, namespaces
 	}
 
 	if len(namespaces) == 0 {
-		// No cluster-wide informer. In namespace-scoped mode (NamespaceFallback
-		// set) union the per-namespace informers so Count agrees with
+		// No cluster-wide informer. In namespace-fallback mode union the
+		// per-namespace informers so Count agrees with
 		// readEntries on an all-namespaces read; a cluster-wide cache keeps the
 		// strict cluster-wide-only contract and errors.
-		if d.config.NamespaceFallback == "" {
+		if len(d.fallbackNamespaces()) == 0 {
 			return 0, fmt.Errorf("informer not found or not synced for %v", gvr)
 		}
 		total := 0
@@ -813,7 +874,7 @@ func (d *DynamicResourceCache) CountWatched(namespaces []string) map[schema.Grou
 				counts[gvr] = len(set.clusterWide.informer.GetIndexer().List())
 				continue
 			}
-			if d.config.NamespaceFallback == "" {
+			if len(d.fallbackNamespaces()) == 0 {
 				continue
 			}
 			total := 0
@@ -1241,18 +1302,18 @@ func (d *DynamicResourceCache) WarmupParallel(gvrs []schema.GroupVersionResource
 
 	const maxConcurrentProbes = 50
 	type probeResult struct {
-		gvr   schema.GroupVersionResource
-		scope string
-		ok    bool
+		gvr    schema.GroupVersionResource
+		scopes []string
+		ok     bool
 	}
 	results := make(chan probeResult, len(gvrs))
 	sem := make(chan struct{}, maxConcurrentProbes)
 	for _, gvr := range gvrs {
 		go func(g schema.GroupVersionResource) {
 			sem <- struct{}{}
-			scope, err := d.probeScope(g, "")
+			scopes, err := d.probeScopes(g, "")
 			<-sem
-			results <- probeResult{gvr: g, scope: scope, ok: err == nil}
+			results <- probeResult{gvr: g, scopes: scopes, ok: err == nil}
 		}(gvr)
 	}
 
@@ -1270,8 +1331,18 @@ func (d *DynamicResourceCache) WarmupParallel(gvrs []schema.GroupVersionResource
 
 	var started []informerKey
 	for _, r := range accessible {
-		if err := d.startWatching(r.gvr, r.scope); err == nil {
-			started = append(started, informerKey{gvr: r.gvr, ns: r.scope})
+		allStarted := true
+		for _, scope := range r.scopes {
+			if err := d.startWatching(r.gvr, scope); err == nil {
+				started = append(started, informerKey{gvr: r.gvr, ns: scope})
+			} else {
+				allStarted = false
+			}
+		}
+		if allStarted {
+			d.mu.Lock()
+			d.fallbackResolved[r.gvr] = true
+			d.mu.Unlock()
 		}
 	}
 

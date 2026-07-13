@@ -43,8 +43,10 @@ func InitDynamicResourceCache(changeCh chan k8score.ResourceChange) error {
 		// cluster-wide is denied); per-user namespace filtering happens at
 		// the HTTP layer (see internal/server/namespace_scope.go).
 		var nsFallback string
+		var nsFallbacks []string
 		if permResult := GetCachedPermissionResult(); permResult != nil && permResult.NamespaceScoped && permResult.Namespace != "" {
 			nsFallback = permResult.Namespace
+			nsFallbacks = permResult.ScopeCandidates
 		}
 
 		// --namespace-scope pins namespaced CRD informers to the target namespace
@@ -70,13 +72,14 @@ func InitDynamicResourceCache(changeCh chan k8score.ResourceChange) error {
 		recordClusterContext := ActiveClusterContext()
 
 		core, err := k8score.NewDynamicResourceCache(k8score.DynamicCacheConfig{
-			DynamicClient:     client,
-			Discovery:         sharedDiscovery,
-			Changes:           changeCh,
-			NamespaceFallback: nsFallback,
-			NamespaceScoped:   nsScoped,
-			Namespace:         nsTarget,
-			DebugEvents:       DebugEvents,
+			DynamicClient:      client,
+			Discovery:          sharedDiscovery,
+			Changes:            changeCh,
+			NamespaceFallback:  nsFallback,
+			NamespaceFallbacks: nsFallbacks,
+			NamespaceScoped:    nsScoped,
+			Namespace:          nsTarget,
+			DebugEvents:        DebugEvents,
 			OnReceived: func(kind string) {
 				timeline.IncrementReceived(kind)
 			},
@@ -344,9 +347,12 @@ func RegisterSupportedCRDFallbacks() {
 		return
 	}
 
-	nsFallback := ""
+	var nsFallbacks []string
 	if permResult := GetCachedPermissionResult(); permResult != nil && permResult.NamespaceScoped && permResult.Namespace != "" {
-		nsFallback = permResult.Namespace
+		nsFallbacks = permResult.ScopeCandidates
+		if len(nsFallbacks) == 0 {
+			nsFallbacks = []string{permResult.Namespace}
+		}
 	}
 
 	const maxConcurrentProbes = 12
@@ -371,7 +377,7 @@ func RegisterSupportedCRDFallbacks() {
 
 			for _, version := range c.Versions {
 				gvr := schema.GroupVersionResource{Group: c.Group, Version: version, Resource: c.Resource}
-				namespace, ok := fallbackListProbe(client, gvr, c.Namespaced, nsFallback)
+				namespace, ok := fallbackListProbe(client, gvr, c.Namespaced, nsFallbacks)
 				if !ok {
 					continue
 				}
@@ -402,7 +408,7 @@ func RegisterSupportedCRDFallbacks() {
 	}
 }
 
-func fallbackListProbe(client dynamic.Interface, gvr schema.GroupVersionResource, namespaced bool, nsFallback string) (string, bool) {
+func fallbackListProbe(client dynamic.Interface, gvr schema.GroupVersionResource, namespaced bool, nsFallbacks []string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -410,18 +416,26 @@ func fallbackListProbe(client dynamic.Interface, gvr schema.GroupVersionResource
 	if err == nil {
 		return "", true
 	}
-	if namespaced && nsFallback != "" {
+	if namespaced && len(nsFallbacks) > 0 {
 		if !isExpectedFallbackProbeDenial(err) {
 			log.Printf("[crd-fallback] Cluster-wide list probe failed for %s.%s/%s: %v", gvr.Resource, gvr.Group, gvr.Version, err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, err = client.Resource(gvr).Namespace(nsFallback).List(ctx, metav1.ListOptions{Limit: 1})
-		if err == nil {
-			return nsFallback, true
-		}
-		if !isExpectedFallbackProbeDenial(err) {
-			log.Printf("[crd-fallback] Namespace list probe failed for %s.%s/%s in ns=%q: %v", gvr.Resource, gvr.Group, gvr.Version, nsFallback, err)
+		// Registration probe only — the dynamic cache re-probes every
+		// candidate per-GVR when it starts watching, so first grant is
+		// enough to prove the CRD exists and is readable somewhere.
+		for _, ns := range nsFallbacks {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			nsErr := func() error {
+				defer cancel()
+				_, e := client.Resource(gvr).Namespace(ns).List(ctx, metav1.ListOptions{Limit: 1})
+				return e
+			}()
+			if nsErr == nil {
+				return ns, true
+			}
+			if !isExpectedFallbackProbeDenial(nsErr) {
+				log.Printf("[crd-fallback] Namespace list probe failed for %s.%s/%s in ns=%q: %v", gvr.Resource, gvr.Group, gvr.Version, ns, nsErr)
+			}
 		}
 		return "", false
 	}

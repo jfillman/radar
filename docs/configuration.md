@@ -134,7 +134,7 @@ kubectl radar --namespaces ns1,ns2,ns3
 
 Radar probes each listed namespace for access and watches every namespace where access is granted — resource views then cover all of them, not just the first. When Radar opens the browser itself, the list is also applied as the initial namespace selection. The picker can then switch between those namespaces or keep several selected at once.
 
-This currently applies to built-in resource types. Custom resources (CRDs — GitOps, Gateway API, etc.) still fall back to the first granted namespace when cluster-wide listing is denied; full multi-namespace CRD coverage is tracked separately. The list is capped by `--max-scope-candidates` (default 20) — startup fails with a clear error rather than silently probing a subset.
+This covers built-in resource types and custom resources alike: CRDs (GitOps, Gateway API, etc.) are probed per-kind across the same list and watched in every granted namespace. The list is capped by `--max-scope-candidates` (default 20) — startup fails with a clear error rather than silently probing a subset.
 
 When Radar starts with `--namespace-scope`, the picker controls the process-wide cache scope instead of just a view filter. Namespaced informer caches are pinned to one namespace while cluster-scoped resources remain cluster-wide. Local/no-auth sessions can switch the scoped namespace, which rebuilds the cache in place. Auth-enabled and Radar Cloud sessions lock the picker to the startup namespace so one user cannot reshape the shared backend cache for everyone.
 

@@ -33,12 +33,35 @@ func TestFallbackListProbeUsesNamespaceFallback(t *testing.T) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}, "", nil)
 	})
 
-	namespace, ok := fallbackListProbe(client, gvr, true, "team-a")
+	namespace, ok := fallbackListProbe(client, gvr, true, []string{"team-a"})
 	if !ok {
 		t.Fatal("expected namespace fallback probe to succeed")
 	}
 	if namespace != "team-a" {
 		t.Fatalf("namespace = %q, want team-a", namespace)
+	}
+}
+
+func TestFallbackListProbeWalksCandidatesToLaterGrant(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "networking.istio.io", Version: "v1", Resource: "virtualservices"}
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{gvr: "VirtualServiceList"},
+	)
+	client.PrependReactor("list", "virtualservices", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		listAction := action.(k8stesting.ListAction)
+		if listAction.GetNamespace() == "team-b" {
+			return false, nil, nil
+		}
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}, "", nil)
+	})
+
+	namespace, ok := fallbackListProbe(client, gvr, true, []string{"team-a", "team-b"})
+	if !ok {
+		t.Fatal("expected probe to find the later candidate grant")
+	}
+	if namespace != "team-b" {
+		t.Fatalf("namespace = %q, want team-b", namespace)
 	}
 }
 
@@ -56,7 +79,7 @@ func TestFallbackListProbeDoesNotNamespaceFallbackClusterScoped(t *testing.T) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}, "", nil)
 	})
 
-	if _, ok := fallbackListProbe(client, gvr, false, "team-a"); ok {
+	if _, ok := fallbackListProbe(client, gvr, false, []string{"team-a"}); ok {
 		t.Fatal("expected cluster-scoped fallback probe to fail after cluster-wide denial")
 	}
 }

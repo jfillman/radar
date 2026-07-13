@@ -38,6 +38,12 @@ export function CapacityView({ available, discovering = false, onOpenResource }:
   ].filter(Boolean) as string[]
 
   const refresh = () => Promise.all([nodePools.refetch(), nodeClaims.refetch(), nodes.refetch(), metrics.refetch()])
+  const inspectPool = (name: string) => {
+    setSelectedName(name)
+    requestAnimationFrame(() => {
+      document.getElementById('capacity-pool-inspector')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
 
   if (discovering) return <PaneLoader label="Discovering capacity providers…" className="flex-1 min-h-0" />
 
@@ -119,7 +125,7 @@ export function CapacityView({ available, discovering = false, onOpenResource }:
         <section className="overflow-hidden rounded-xl border border-theme-border bg-theme-surface shadow-theme-sm">
           <div className="border-b-subtle px-4 py-3">
             <h2 className="font-medium text-theme-text-primary">NodePools</h2>
-            <p className="text-xs text-theme-text-tertiary">Select a pool to inspect its capacity and fleet composition.</p>
+            <p className="text-xs text-theme-text-tertiary">Select a pool to inspect it below, or use the arrow to open the resource.</p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1040px] text-left">
@@ -140,7 +146,7 @@ export function CapacityView({ available, discovering = false, onOpenResource }:
                     key={pool.name}
                     pool={pool}
                     selected={selected?.name === pool.name}
-                    onSelect={() => setSelectedName(pool.name)}
+                    onSelect={() => inspectPool(pool.name)}
                     onOpen={() => onOpenResource({ kind: 'nodepools', namespace: '', name: pool.name, group: 'karpenter.sh' })}
                   />
                 ))}
@@ -149,9 +155,7 @@ export function CapacityView({ available, discovering = false, onOpenResource }:
           </div>
         </section>
 
-        {selected && (
-          <PoolInspector pool={selected} onOpenResource={onOpenResource} />
-        )}
+        {selected && <PoolInspector pool={selected} onOpenResource={onOpenResource} />}
       </div>
     </div>
   )
@@ -184,6 +188,8 @@ function PoolRow({ pool, selected, onSelect, onOpen }: { pool: CapacityPool; sel
       }}
       tabIndex={0}
       aria-selected={selected}
+      aria-label={`Inspect ${pool.name} capacity`}
+      title={`Inspect ${pool.name} capacity`}
     >
       <td className="px-4 py-3">
         <div className="flex items-center gap-2">
@@ -233,6 +239,7 @@ function PoolRow({ pool, selected, onSelect, onOpen }: { pool: CapacityPool; sel
           type="button"
           className="rounded-md p-1 text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary"
           aria-label={`Open ${pool.name} NodePool`}
+          title={`Open ${pool.name} NodePool`}
           onClick={(event) => { event.stopPropagation(); onOpen() }}
         >
           <ChevronRight className="h-4 w-4" />
@@ -259,7 +266,7 @@ function ActualUsageBar({ label, percent, covered, total }: { label: string; per
 
 function PoolInspector({ pool, onOpenResource }: { pool: CapacityPool; onOpenResource: (resource: SelectedResource) => void }) {
   return (
-    <section className="rounded-xl border border-theme-border bg-theme-surface shadow-theme-sm">
+    <section id="capacity-pool-inspector" className="scroll-mt-5 rounded-xl border border-theme-border bg-theme-surface shadow-theme-sm">
       <div className="flex items-center justify-between gap-4 border-b-subtle px-4 py-3">
         <div>
           <div className="flex items-center gap-2">

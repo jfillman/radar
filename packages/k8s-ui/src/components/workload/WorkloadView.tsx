@@ -29,6 +29,7 @@ import {
   X,
   BarChart3,
   Network,
+  DollarSign,
 } from 'lucide-react'
 import type { TimelineEvent, ResourceRef, Relationships, SelectedResource, ResolvedEnvFrom, Topology, TopologyNode, HPADiagnosis, WorkloadPodInfo } from '../../types'
 import type { GitOpsStatus } from '../../types/gitops'
@@ -64,7 +65,7 @@ import {
 } from '../resources/resource-utils'
 import { ServicePortCards, type ServicePortRenderProps } from '../resources/renderers/ServiceRenderer'
 
-export type WorkloadTabType = 'overview' | 'topology' | 'timeline' | 'logs' | 'metrics' | 'yaml'
+export type WorkloadTabType = 'overview' | 'topology' | 'timeline' | 'logs' | 'metrics' | 'cost' | 'yaml'
 type TabType = WorkloadTabType
 
 export interface ResourceOwnershipContext {
@@ -257,6 +258,8 @@ interface WorkloadViewProps {
   }) => ReactNode
   /** Render the metrics tab content */
   renderMetricsTab?: (props: { kind: string; namespace: string; name: string }) => ReactNode
+  /** Render the cost tab content */
+  renderCostTab?: (props: { kind: string; namespace: string; name: string }) => ReactNode
   /** Render a read-only YAML view for a related object from the workload's
    *  neighborhood. Providing this turns the YAML tab into an object explorer
    *  (rail of the workload + its Services/config/policies/pods); omitting it
@@ -265,6 +268,8 @@ interface WorkloadViewProps {
   renderRelatedYaml?: (ref: { kind: string; namespace: string; name: string; group?: string }) => ReactNode
   /** Whether metrics are available for this resource kind */
   isMetricsAvailable?: (kind: string, resource: any) => boolean
+  /** Whether cost is available for this resource kind */
+  isCostAvailable?: (kind: string, resource: any) => boolean
   /** Render extra content at the bottom of the overview tab (e.g. audit findings) */
   renderOverviewExtra?: (props: { kind: string; namespace: string; name: string }) => ReactNode
   /** Render lightweight overview intro content before the default renderer. */
@@ -359,7 +364,9 @@ export function WorkloadView({
   renderExpandedOverview,
   renderRelatedYaml,
   renderMetricsTab,
+  renderCostTab,
   isMetricsAvailable,
+  isCostAvailable,
   // Duplicate
   onDuplicate,
   onDownload,
@@ -644,8 +651,10 @@ export function WorkloadView({
   })
 
   const showMetricsTab = isMetricsAvailable ? isMetricsAvailable(kind, resource) : false
+  const showCostTab = isCostAvailable ? isCostAvailable(kind, resource) : false
   const logsTabVisible = Boolean(renderLogsTab) && (allPods.length > 0 || LOGS_TAB_WITHOUT_PODS_KINDS.has(kindToPlural(kind).toLowerCase()))
   const metricsTabVisible = Boolean(showMetricsTab && renderMetricsTab)
+  const costTabVisible = Boolean(showCostTab && renderCostTab)
   const podEvidenceLoading = resourceLoading || workloadPodsLoading || eventsLoading
   const logsFallbackReady = !renderLogsTab || (!logsTabVisible && !podEvidenceLoading)
   const requestedTab: TabType = activeTab
@@ -660,6 +669,7 @@ export function WorkloadView({
     },
     { id: 'logs', label: 'Logs', icon: <Terminal className="w-4 h-4" />, hidden: !logsTabVisible },
     { id: 'metrics', label: 'Metrics', icon: <BarChart3 className="w-4 h-4" />, hidden: !metricsTabVisible },
+    { id: 'cost', label: 'Cost', icon: <DollarSign className="w-4 h-4" />, hidden: !costTabVisible },
     { id: 'yaml', label: 'YAML', icon: <FileText className="w-4 h-4" /> },
   ]
   const requestedTabAvailable = tabs.some((tab) => tab.id === requestedTab && !tab.hidden)
@@ -670,6 +680,7 @@ export function WorkloadView({
     (
       (requestedTab === 'topology' && topologyTabHidden) ||
       (requestedTab === 'metrics' && (!renderMetricsTab || (!!resource && !resourceLoading && !showMetricsTab))) ||
+      (requestedTab === 'cost' && (!renderCostTab || (!!resource && !resourceLoading && !showCostTab))) ||
       (requestedTab === 'logs' && logsFallbackReady)
     )
   useEffect(() => {
@@ -1036,6 +1047,11 @@ export function WorkloadView({
         {effectiveTab === 'metrics' && renderMetricsTab && (
           <div className="h-full overflow-auto p-4">
             {renderMetricsTab({ kind: resource?.kind || kind, namespace, name })}
+          </div>
+        )}
+        {effectiveTab === 'cost' && renderCostTab && (
+          <div className="h-full overflow-auto p-4">
+            {renderCostTab({ kind: resource?.kind || kind, namespace, name })}
           </div>
         )}
         {effectiveTab === 'yaml' && (
@@ -3410,7 +3426,9 @@ function ConfigurationInputsCard({
   onNavigate?: NavigateToResource
   onSwitchToTopology?: () => void
 }) {
-  const configRefs = dedupeResourceRefs(relationships?.configRefs ?? [])
+  const configRefs = dedupeResourceRefs(relationships?.configRefs ?? []).filter((ref) =>
+    ['ConfigMap', 'Secret', 'SealedSecret'].includes(ref.kind),
+  )
   const policyRefs = dedupeResourceRefs([
     ...(relationships?.pdbs ?? []),
     ...(relationships?.networkPolicies ?? []),

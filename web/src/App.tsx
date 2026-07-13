@@ -73,7 +73,7 @@ import type { ContextSwitcherHandle } from './components/ContextSwitcher'
 const ALL_NODE_KINDS: NodeKind[] = [
   'Internet', 'Ingress', 'Gateway', 'HTTPRoute', 'GRPCRoute', 'TCPRoute', 'TLSRoute',
   'Service', 'Deployment', 'Rollout', 'DaemonSet', 'StatefulSet',
-  'ReplicaSet', 'Pod', 'PodGroup', 'ConfigMap', 'Secret', 'HorizontalPodAutoscaler', 'Job', 'CronJob', 'PersistentVolumeClaim', 'Namespace',
+  'ReplicaSet', 'Pod', 'PodGroup', 'ConfigMap', 'Secret', 'ServiceAccount', 'SealedSecret', 'ServiceMonitor', 'PodMonitor', 'HorizontalPodAutoscaler', 'Job', 'CronJob', 'PersistentVolumeClaim', 'Namespace',
   'Application', 'Kustomization', 'HelmRelease', 'GitRepository',
   'KnativeService', 'KnativeConfiguration', 'KnativeRevision', 'KnativeRoute',
   'Broker', 'Trigger', 'PingSource', 'ApiServerSource', 'ContainerSource', 'SinkBinding', 'Channel',
@@ -155,7 +155,10 @@ function namespaceFilterDisabled(
   pathname: string,
   apiResources?: { name: string; kind: string; namespaced: boolean }[],
 ): { disabled: boolean; tooltip?: string } {
-  if (view === 'cost') {
+  if (
+    view === 'cost' &&
+    !pathname.startsWith('/cost/rightsizing')
+  ) {
     return {
       disabled: true,
       tooltip: 'Cost is reported per namespace across the whole cluster — the namespace filter doesn’t apply here.',
@@ -2219,7 +2222,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
         {/* Cost detail view */}
         {mainView === 'cost' && (
-          <CostView onBack={() => setMainView('home')} />
+          <CostView namespaces={namespaces} onBack={() => setMainView('home')} onOpenResource={navigateToResource} />
         )}
 
         {mainView === 'capacity' && (

@@ -40,7 +40,7 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 	safeNS := prom.SanitizeLabelValue(namespace)
 
 	cpuResult, err := client.Query(ctx,
-		`sum by (pod) ((avg_over_time(container_cpu_allocation{exported_namespace="`+safeNS+`"}[1h]) or avg_over_time(container_cpu_allocation{namespace="`+safeNS+`", exported_namespace=""}[1h])) * on(node) group_left() node_cpu_hourly_cost)`)
+		`sum by (pod) ((avg_over_time(container_cpu_allocation{exported_namespace="`+safeNS+`"}[1h]) or avg_over_time(container_cpu_allocation{namespace="`+safeNS+`", exported_namespace=""}[1h])) * on(node) group_left() `+nodeCPUHourlyCostExpr+`)`)
 	if err != nil {
 		log.Printf("[opencost] workloads CPU query failed for ns=%q, trying opencost_container_cpu_cost_total: %v", namespace, err)
 		cpuResult, err = client.Query(ctx,
@@ -52,7 +52,7 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 	}
 
 	memResult, err := client.Query(ctx,
-		`sum by (pod) ((avg_over_time(container_memory_allocation_bytes{exported_namespace="`+safeNS+`"}[1h]) or avg_over_time(container_memory_allocation_bytes{namespace="`+safeNS+`", exported_namespace=""}[1h])) / 1073741824 * on(node) group_left() node_ram_hourly_cost)`)
+		`sum by (pod) ((avg_over_time(container_memory_allocation_bytes{exported_namespace="`+safeNS+`"}[1h]) or avg_over_time(container_memory_allocation_bytes{namespace="`+safeNS+`", exported_namespace=""}[1h])) / 1073741824 * on(node) group_left() `+nodeRAMHourlyCostExpr+`)`)
 	if err != nil {
 		log.Printf("[opencost] workloads memory query failed for ns=%q, trying opencost_container_memory_cost_total: %v", namespace, err)
 		memResult, err = client.Query(ctx,
@@ -64,12 +64,12 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 	}
 
 	cpuUsageResult, cpuUsageErr := client.Query(ctx,
-		`sum by (pod) (label_replace(rate(container_cpu_usage_seconds_total{container!="", namespace="`+safeNS+`"}[1h]), "node", "$1", "instance", "(.+?)(?::\\d+)?$") * on(node) group_left() node_cpu_hourly_cost)`)
+		`sum by (pod) (label_replace(rate(container_cpu_usage_seconds_total{container!="", namespace="`+safeNS+`"}[1h]), "node", "$1", "instance", "(.+?)(?::\\d+)?$") * on(node) group_left() `+nodeCPUHourlyCostExpr+`)`)
 	if cpuUsageErr != nil {
 		log.Printf("[opencost] workloads CPU usage query failed for ns=%q (efficiency will be 0): %v", namespace, cpuUsageErr)
 	}
 	memUsageResult, memUsageErr := client.Query(ctx,
-		`sum by (pod) (label_replace(container_memory_working_set_bytes{container!="", namespace="`+safeNS+`"}, "node", "$1", "instance", "(.+?)(?::\\d+)?$") / 1073741824 * on(node) group_left() node_ram_hourly_cost)`)
+		`sum by (pod) (label_replace(container_memory_working_set_bytes{container!="", namespace="`+safeNS+`"}, "node", "$1", "instance", "(.+?)(?::\\d+)?$") / 1073741824 * on(node) group_left() `+nodeRAMHourlyCostExpr+`)`)
 	if memUsageErr != nil {
 		log.Printf("[opencost] workloads memory usage query failed for ns=%q (efficiency will be 0): %v", namespace, memUsageErr)
 	}
@@ -87,6 +87,7 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 
 	type podCost struct {
 		cpuCost, memoryCost, cpuUsage, memoryUsage float64
+		cpuUsageAvailable, memoryUsageAvailable    bool
 	}
 	podCosts := make(map[string]*podCost)
 	setPodLast := func(result *prom.QueryResult, set func(*podCost, float64)) {
@@ -109,8 +110,8 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 	setPodLast(cpuResult, func(pc *podCost, v float64) { pc.cpuCost = v })
 	setPodLast(memResult, func(pc *podCost, v float64) { pc.memoryCost = v })
 	for pod, pc := range podCosts {
-		pc.cpuUsage = podCPUUsage[pod]
-		pc.memoryUsage = podMemUsage[pod]
+		pc.cpuUsage, pc.cpuUsageAvailable = podCPUUsage[pod]
+		pc.memoryUsage, pc.memoryUsageAvailable = podMemUsage[pod]
 	}
 
 	workloadMap := make(map[WorkloadOwner]*WorkloadCost)
@@ -121,17 +122,30 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 		}
 		if !ok {
 			owner = WorkloadOwner{Name: stripPodSuffix(podName), Kind: "standalone"}
+		} else if owner.Kind == "Node" {
+			owner = WorkloadOwner{Name: podName, Kind: "staticpod"}
 		}
 
 		wl, exists := workloadMap[owner]
 		if !exists {
-			wl = &WorkloadCost{Name: owner.Name, Kind: owner.Kind}
+			wl = &WorkloadCost{
+				Name:                 owner.Name,
+				Kind:                 owner.Kind,
+				CPUUsageAvailable:    true,
+				MemoryUsageAvailable: true,
+			}
 			workloadMap[owner] = wl
 		}
 		wl.CPUCost += pc.cpuCost
 		wl.MemoryCost += pc.memoryCost
 		wl.CPUUsageCost += pc.cpuUsage
 		wl.MemoryUsageCost += pc.memoryUsage
+		if pc.cpuCost > 0 && !pc.cpuUsageAvailable {
+			wl.CPUUsageAvailable = false
+		}
+		if pc.memoryCost > 0 && !pc.memoryUsageAvailable {
+			wl.MemoryUsageAvailable = false
+		}
 		wl.Replicas++
 	}
 
@@ -140,8 +154,16 @@ func ComputeWorkloadsFromProm(ctx context.Context, client *prom.Client, namespac
 		allocCost := wl.CPUCost + wl.MemoryCost
 		usageCost := wl.CPUUsageCost + wl.MemoryUsageCost
 		wl.HourlyCost = allocCost
-		wl.Efficiency = efficiencyPct(usageCost, allocCost)
-		wl.IdleCost = idleFromUsage(usageCost, allocCost)
+		if wl.CPUUsageAvailable {
+			wl.CPUAllocationUse = efficiencyPct(wl.CPUUsageCost, wl.CPUCost)
+		}
+		if wl.MemoryUsageAvailable {
+			wl.MemoryAllocationUse = efficiencyPct(wl.MemoryUsageCost, wl.MemoryCost)
+		}
+		if wl.CPUUsageAvailable && wl.MemoryUsageAvailable {
+			wl.Efficiency = efficiencyPct(usageCost, allocCost)
+			wl.IdleCost = idleFromUsage(usageCost, allocCost)
+		}
 		wl.HourlyCost = roundTo(wl.HourlyCost, 4)
 		wl.CPUCost = roundTo(wl.CPUCost, 4)
 		wl.MemoryCost = roundTo(wl.MemoryCost, 4)

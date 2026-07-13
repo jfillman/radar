@@ -131,6 +131,10 @@ export type CoreNodeKind =
   | 'PodGroup'
   | 'ConfigMap'
   | 'Secret'
+  | 'ServiceAccount'
+  | 'SealedSecret'
+  | 'ServiceMonitor'
+  | 'PodMonitor'
   | 'HorizontalPodAutoscaler'
   | 'Job'
   | 'CronJob'
@@ -180,6 +184,10 @@ export function displayKind(kind: string): string {
   const shortNames: Record<string, string> = {
     HorizontalPodAutoscaler: 'HPA',
     PersistentVolumeClaim: 'PVC',
+    ServiceAccount: 'Service Account',
+    SealedSecret: 'Sealed Secret',
+    ServiceMonitor: 'Service Monitor',
+    PodMonitor: 'Pod Monitor',
     EC2NodeClass: 'NodeClass',
     KnativeService: 'Knative Svc',
     KnativeConfiguration: 'Knative Config',

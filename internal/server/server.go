@@ -524,9 +524,14 @@ func (s *Server) setupRoutes() {
 				}
 				return true
 			})
+			r.Post("/prometheus/rightsizing/scan", s.handleRightsizingScan)
 			prometheuspkg.RegisterRoutes(r)
 
 			// OpenCost routes
+			r.Post("/opencost/application", s.handleOpenCostApplication)
+			r.Post("/opencost/application/trend", s.handleOpenCostApplicationTrend)
+			r.Get("/opencost/workload/{kind}/{namespace}/{name}", s.handleOpenCostWorkload)
+			r.Get("/opencost/workload/{kind}/{namespace}/{name}/trend", s.handleOpenCostWorkloadTrend)
 			opencost.RegisterRoutes(r)
 
 			// FluxCD routes
@@ -538,6 +543,7 @@ func (s *Server) setupRoutes() {
 			// ArgoCD routes
 			r.Get("/argo/destinations", s.handleArgoDestinations)
 			r.Post("/argo/applications/{namespace}/{name}/sync", s.handleArgoSync)
+			r.Post("/argo/applications/{namespace}/{name}/validate-resource", s.handleArgoValidateResource)
 			r.Post("/argo/applications/{namespace}/{name}/refresh", s.handleArgoRefresh)
 			r.Post("/argo/applications/{namespace}/{name}/rollback", s.handleArgoRollback)
 			r.Post("/argo/applications/{namespace}/{name}/terminate", s.handleArgoTerminate)
@@ -1304,6 +1310,9 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Query().Get("policyEffect") == "true" {
 		opts.ShowPolicyEffect = true
+	}
+	if r.URL.Query().Get("includeReplicaSets") == "true" {
+		opts.IncludeReplicaSets = true
 	}
 
 	builder := topology.NewBuilder(k8s.NewTopologyResourceProvider(k8s.GetResourceCache())).WithDynamic(k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()))

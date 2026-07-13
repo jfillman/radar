@@ -1216,7 +1216,7 @@ func TestDynamicResourceCache_NamespaceFallbackIsPerGVR(t *testing.T) {
 		t.Fatalf("NewDynamicResourceCache failed: %v", err)
 	}
 
-	clusterScopes, err := d.probeScopes(clusterGVR, "")
+	clusterScopes, _, err := d.probeScopes(clusterGVR, "")
 	if err != nil {
 		t.Fatalf("cluster GVR probe failed: %v", err)
 	}
@@ -1224,7 +1224,7 @@ func TestDynamicResourceCache_NamespaceFallbackIsPerGVR(t *testing.T) {
 		t.Errorf("cluster GVR scopes = %q, want cluster-wide", clusterScopes)
 	}
 
-	nsScopes, err := d.probeScopes(namespacedGVR, "")
+	nsScopes, _, err := d.probeScopes(namespacedGVR, "")
 	if err != nil {
 		t.Fatalf("namespaced GVR probe failed: %v", err)
 	}
@@ -1251,7 +1251,7 @@ func TestDynamicResourceCache_ForcedNamespaceScopesEveryGVR(t *testing.T) {
 		t.Fatalf("NewDynamicResourceCache failed: %v", err)
 	}
 
-	scopes, err := d.probeScopes(gvr, "")
+	scopes, _, err := d.probeScopes(gvr, "")
 	if err != nil {
 		t.Fatalf("forced namespace probe failed: %v", err)
 	}
@@ -1282,7 +1282,7 @@ func TestDynamicResourceCache_ProbeScope_HonorsRequestedNamespace(t *testing.T) 
 	}
 
 	// Requesting the namespace the user can list scopes the informer there.
-	scopes, err := d.probeScopes(gvr, wantedNs)
+	scopes, _, err := d.probeScopes(gvr, wantedNs)
 	if err != nil {
 		t.Fatalf("probeScopes(%q) failed: %v", wantedNs, err)
 	}
@@ -1292,7 +1292,7 @@ func TestDynamicResourceCache_ProbeScope_HonorsRequestedNamespace(t *testing.T) 
 
 	// With no requested namespace, it falls back to the configured fallback,
 	// which the user cannot list — so the probe is forbidden.
-	if _, err := d.probeScopes(gvr, ""); !apierrors.IsForbidden(err) {
+	if _, _, err := d.probeScopes(gvr, ""); !apierrors.IsForbidden(err) {
 		t.Errorf("probeScopes(\"\") err = %v, want forbidden", err)
 	}
 }
@@ -1694,12 +1694,15 @@ func TestDynamicResourceCache_ProbeScopesFansOutAcrossFallbacks(t *testing.T) {
 		t.Fatalf("NewDynamicResourceCache failed: %v", err)
 	}
 
-	scopes, err := d.probeScopes(gvr, "")
+	scopes, complete, err := d.probeScopes(gvr, "")
 	if err != nil {
 		t.Fatalf("probeScopes failed: %v", err)
 	}
 	if !reflect.DeepEqual(scopes, []string{nsA, nsB}) {
 		t.Fatalf("scopes = %v, want [%s %s]", scopes, nsA, nsB)
+	}
+	if !complete {
+		t.Fatal("healthy fanout walk must report complete")
 	}
 }
 

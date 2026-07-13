@@ -33,12 +33,12 @@ func TestFallbackListProbeUsesNamespaceFallback(t *testing.T) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}, "", nil)
 	})
 
-	namespace, ok := fallbackListProbe(client, gvr, true, []string{"team-a"})
+	namespaces, ok := fallbackListProbe(client, gvr, true, []string{"team-a"})
 	if !ok {
 		t.Fatal("expected namespace fallback probe to succeed")
 	}
-	if namespace != "team-a" {
-		t.Fatalf("namespace = %q, want team-a", namespace)
+	if len(namespaces) != 1 || namespaces[0] != "team-a" {
+		t.Fatalf("namespaces = %v, want [team-a]", namespaces)
 	}
 }
 
@@ -56,12 +56,12 @@ func TestFallbackListProbeWalksCandidatesToLaterGrant(t *testing.T) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}, "", nil)
 	})
 
-	namespace, ok := fallbackListProbe(client, gvr, true, []string{"team-a", "team-b"})
+	namespaces, ok := fallbackListProbe(client, gvr, true, []string{"team-a", "team-b"})
 	if !ok {
 		t.Fatal("expected probe to find the later candidate grant")
 	}
-	if namespace != "team-b" {
-		t.Fatalf("namespace = %q, want team-b", namespace)
+	if len(namespaces) != 1 || namespaces[0] != "team-b" {
+		t.Fatalf("namespaces = %v, want [team-b]", namespaces)
 	}
 }
 

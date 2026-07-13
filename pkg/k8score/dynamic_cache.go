@@ -170,7 +170,7 @@ func (d *DynamicResourceCache) ensureWatching(gvr schema.GroupVersionResource, p
 
 	// Probe access (cluster-wide first, then fallback namespaces) BEFORE
 	// acquiring the write lock; the result tells us which scopes to watch.
-	scopes, err := d.probeScopes(gvr, preferredNS)
+	scopes, complete, err := d.probeScopes(gvr, preferredNS)
 	if err != nil {
 		return fmt.Errorf("no access to %s.%s/%s: %w", gvr.Resource, gvr.Group, gvr.Version, err)
 	}
@@ -180,10 +180,12 @@ func (d *DynamicResourceCache) ensureWatching(gvr schema.GroupVersionResource, p
 			return err
 		}
 	}
-	if preferredNS == "" {
-		// The all-namespaces scope for this GVR is now settled — informers
-		// exist for every granted scope. Mark it so the next all-namespaces
-		// read doesn't re-probe cluster-wide plus every candidate.
+	if preferredNS == "" && complete {
+		// The all-namespaces scope for this GVR is settled — informers exist
+		// for every granted scope. Mark it so the next all-namespaces read
+		// doesn't re-probe cluster-wide plus every candidate. An incomplete
+		// walk (deadline hit mid-fanout) is deliberately NOT marked, so the
+		// next read finishes the job.
 		d.mu.Lock()
 		d.fallbackResolved[gvr] = true
 		d.mu.Unlock()
@@ -332,7 +334,7 @@ func (d *DynamicResourceCache) fallbackNamespaces() []string {
 // preferredNS is the namespace the caller actually wants; when cluster-wide
 // is denied and the caller named none, every configured fallback namespace
 // is probed and each granted one becomes a scope.
-func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, preferredNS string) ([]string, error) {
+func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, preferredNS string) (scopes []string, complete bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -343,49 +345,63 @@ func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, pref
 	if d.config.NamespaceScoped && d.config.Namespace != "" && d.gvrIsNamespaced(gvr) {
 		ns, err := d.classifyScope(gvr, d.config.Namespace, d.listProbe(ctx, gvr, d.config.Namespace))
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
-		return []string{ns}, nil
+		return []string{ns}, true, nil
 	}
 
 	// Cluster-wide first — one informer then serves every namespace.
-	err := d.listProbe(ctx, gvr, "")
+	err = d.listProbe(ctx, gvr, "")
 	if err == nil {
-		return []string{""}, nil
+		return []string{""}, true, nil
 	}
 	if !isAuthProbeError(err) {
 		// Transient/NotFound on proxy-fronted clusters — fail open to a
 		// cluster-wide informer rather than disabling the kind; real
 		// problems surface when the informer lists.
 		log.Printf("[dynamic cache] Cluster-wide probe for %s.%s/%s returned non-auth error (allowing): %v", gvr.Resource, gvr.Group, gvr.Version, err)
-		return []string{""}, nil
+		return []string{""}, true, nil
 	}
 	if !d.gvrIsNamespaced(gvr) {
-		return nil, err // cluster-scoped resource, no namespace to fall back to
+		return nil, true, err // cluster-scoped resource, no namespace to fall back to
 	}
 
 	if preferredNS != "" {
 		ns, err := d.classifyScope(gvr, preferredNS, d.listProbe(ctx, gvr, preferredNS))
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
-		return []string{ns}, nil
+		return []string{ns}, true, nil
 	}
 
 	fallbacks := d.fallbackNamespaces()
 	if len(fallbacks) == 0 {
-		return nil, err
+		return nil, true, err
 	}
 	granted := make([]string, 0, len(fallbacks))
+	complete = true
 	for _, ns := range fallbacks {
-		if scoped, nsErr := d.classifyScope(gvr, ns, d.listProbe(ctx, gvr, ns)); nsErr == nil {
+		if ctx.Err() != nil {
+			complete = false
+			break
+		}
+		scoped, nsErr := d.classifyScope(gvr, ns, d.listProbe(ctx, gvr, ns))
+		if ctx.Err() != nil {
+			// The probe ran into the shared deadline — classifyScope's
+			// fail-open would turn the deadline error into a grant, starting
+			// informers in namespaces that were never verified. Treat the
+			// walk as incomplete instead so it retries on the next read.
+			complete = false
+			break
+		}
+		if nsErr == nil {
 			granted = append(granted, scoped)
 		}
 	}
 	if len(granted) == 0 {
-		return nil, err // original cluster-wide forbidden — no candidate granted either
+		return nil, complete, err // original cluster-wide forbidden — no candidate granted
 	}
-	return granted, nil
+	return granted, complete, nil
 }
 
 func (d *DynamicResourceCache) listProbe(ctx context.Context, gvr schema.GroupVersionResource, namespace string) error {
@@ -1302,18 +1318,19 @@ func (d *DynamicResourceCache) WarmupParallel(gvrs []schema.GroupVersionResource
 
 	const maxConcurrentProbes = 50
 	type probeResult struct {
-		gvr    schema.GroupVersionResource
-		scopes []string
-		ok     bool
+		gvr      schema.GroupVersionResource
+		scopes   []string
+		complete bool
+		ok       bool
 	}
 	results := make(chan probeResult, len(gvrs))
 	sem := make(chan struct{}, maxConcurrentProbes)
 	for _, gvr := range gvrs {
 		go func(g schema.GroupVersionResource) {
 			sem <- struct{}{}
-			scopes, err := d.probeScopes(g, "")
+			scopes, complete, err := d.probeScopes(g, "")
 			<-sem
-			results <- probeResult{gvr: g, scopes: scopes, ok: err == nil}
+			results <- probeResult{gvr: g, scopes: scopes, complete: complete, ok: err == nil}
 		}(gvr)
 	}
 
@@ -1339,7 +1356,7 @@ func (d *DynamicResourceCache) WarmupParallel(gvrs []schema.GroupVersionResource
 				allStarted = false
 			}
 		}
-		if allStarted {
+		if allStarted && r.complete {
 			d.mu.Lock()
 			d.fallbackResolved[r.gvr] = true
 			d.mu.Unlock()
@@ -1617,7 +1634,13 @@ func (d *DynamicResourceCache) IsClusterWideSynced(gvr schema.GroupVersionResour
 	if d == nil {
 		return false
 	}
-	return d.hasCoveringInformer(gvr, "") && d.IsSynced(gvr)
+	// Explicitly require the cluster-wide informer — hasCoveringInformer
+	// also reports true for a resolved namespace-fallback fanout, whose
+	// coverage is NOT cluster-wide (callers use this to assert absence).
+	d.mu.RLock()
+	_, clusterWide := d.informers[informerKey{gvr: gvr}]
+	d.mu.RUnlock()
+	return clusterWide && d.IsSynced(gvr)
 }
 
 // ---------------------------------------------------------------------------

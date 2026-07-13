@@ -227,6 +227,11 @@ function radarPageTitle(pathname: string, search = '', apiResources?: { name: st
     const slash = decoded.lastIndexOf('/')
     return slash >= 0 && slash < decoded.length - 1 ? decoded.slice(slash + 1) : decoded
   }
+  if (view === 'capacity') {
+    if (pathSegments[1] === 'pools') return decode(pathSegments[2] ?? '') || 'Capacity'
+    if (pathSegments[1] === 'demand') return 'Capacity Demand'
+    if (pathSegments[1] === 'activity') return 'Capacity Activity'
+  }
 
   // The landing view reads "Overview" rather than "Home" in the tab.
   if (view === 'home') return 'Overview'
@@ -388,7 +393,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   // mount) so the omnibar can open a CRD hit with an irregular plural from any
   // view — kindToPlural would otherwise English-guess the route before a
   // resources view has run initNavigationMap().
-  const { data: navApiResources, isLoading: apiResourcesLoading } = useAPIResources()
+  const { data: navApiResources } = useAPIResources()
   useEffect(() => { if (navApiResources) initNavigationMap(navApiResources) }, [navApiResources])
   const hasKarpenter = hasKarpenterNodePools(navApiResources)
 
@@ -2219,8 +2224,6 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
         {mainView === 'capacity' && (
           <CapacityView
-            available={hasKarpenter}
-            discovering={apiResourcesLoading}
             onOpenResource={(resource) => navigateToResource(resource)}
           />
         )}

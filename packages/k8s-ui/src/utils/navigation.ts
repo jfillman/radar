@@ -140,10 +140,12 @@ export function pluralToKind(plural: string): string {
  * Convert a ResourceRef (from backend relationships) to a SelectedResource (for navigation).
  * Handles kind singular→plural conversion.
  */
-export function refToSelectedResource(ref: ResourceRef): SelectedResource {
+export function refToSelectedResource(
+  ref: Pick<ResourceRef, 'kind' | 'name' | 'group'> & { namespace?: string },
+): SelectedResource {
   return {
     kind: kindToPlural(ref.kind),
-    namespace: ref.namespace,
+    namespace: ref.namespace ?? '',
     name: ref.name,
     group: ref.group,
   }

@@ -1387,9 +1387,7 @@ func handleGetTopology(ctx context.Context, req *mcp.CallToolRequest, input topo
 	// restricted user can't enumerate cluster infrastructure via the
 	// topology tool. Cluster-wide pod access does NOT imply cluster-scoped
 	// reads; per-kind SAR is the gate.
-	if deny := deniedClusterScopedTopoKinds(ctx); len(deny) > 0 {
-		topo.StripNodeKinds(deny)
-	}
+	applyClusterScopedTopologyRBAC(ctx, topo)
 
 	if strings.ToLower(input.Format) == "summary" {
 		return toJSONResult(buildTopologySummary(topo))
@@ -1415,11 +1413,30 @@ func handleGetTopology(ctx context.Context, req *mcp.CallToolRequest, input topo
 func deniedClusterScopedTopoKinds(ctx context.Context) map[topology.NodeKind]bool {
 	deny := make(map[topology.NodeKind]bool)
 	for _, ck := range topology.ClusterScopedKinds {
+		if ck.Kind == topology.KindNodeClass {
+			continue
+		}
 		if !canReadClusterScopedKind(ctx, ck.Resource, ck.Group, "list") {
 			deny[ck.Kind] = true
 		}
 	}
 	return deny
+}
+
+func applyClusterScopedTopologyRBAC(ctx context.Context, topo *topology.Topology) {
+	if topo == nil {
+		return
+	}
+	if deny := deniedClusterScopedTopoKinds(ctx); len(deny) > 0 {
+		topo.StripNodeKinds(deny)
+	}
+	allowedNodeClasses := make(map[topology.SARTuple]bool)
+	for _, tuple := range topo.NodeClassRBACTuples() {
+		if canReadInNamespace(ctx, tuple.Group, tuple.Resource, "", "list") {
+			allowedNodeClasses[tuple] = true
+		}
+	}
+	topo.StripNodeClassesExcept(allowedNodeClasses)
 }
 
 // topologySummary is an LLM-friendly text representation of the topology.

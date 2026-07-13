@@ -215,6 +215,91 @@ func (t *Topology) StripNodeKinds(deny map[NodeKind]bool) {
 	t.Edges = keptEdges
 }
 
+// StripNodeIDs removes exact nodes plus every edge that references them.
+// Exact-ID filtering is required for topology pseudo-kinds such as NodeClass,
+// where one NodeKind can contain independently authorized provider APIs.
+func (t *Topology) StripNodeIDs(deny map[string]bool) {
+	if t == nil || len(deny) == 0 {
+		return
+	}
+	kept := t.Nodes[:0]
+	for _, n := range t.Nodes {
+		if deny[n.ID] {
+			continue
+		}
+		kept = append(kept, n)
+	}
+	t.Nodes = kept
+
+	keptEdges := t.Edges[:0]
+	for _, e := range t.Edges {
+		if deny[e.Source] || deny[e.Target] {
+			continue
+		}
+		keptEdges = append(keptEdges, e)
+	}
+	t.Edges = keptEdges
+}
+
+// NodeClassRBACTuples returns the distinct exact provider resources present
+// in the graph. A malformed NodeClass node is omitted here and will still be
+// removed by StripNodeClassesExcept.
+func (t *Topology) NodeClassRBACTuples() []SARTuple {
+	if t == nil {
+		return nil
+	}
+	seen := make(map[SARTuple]bool)
+	var tuples []SARTuple
+	for i := range t.Nodes {
+		n := &t.Nodes[i]
+		if n.Kind != KindNodeClass {
+			continue
+		}
+		decision, candidates := RBACTuplesForNode(n, nil)
+		if decision != NodeRBACCheckTuples {
+			continue
+		}
+		for _, candidate := range candidates {
+			if seen[candidate] {
+				continue
+			}
+			seen[candidate] = true
+			tuples = append(tuples, candidate)
+		}
+	}
+	return tuples
+}
+
+// StripNodeClassesExcept keeps only NodeClass nodes whose exact provider
+// resource is present in allowed. Unknown or malformed identities fail closed.
+func (t *Topology) StripNodeClassesExcept(allowed map[SARTuple]bool) {
+	if t == nil {
+		return
+	}
+	deny := make(map[string]bool)
+	for i := range t.Nodes {
+		n := &t.Nodes[i]
+		if n.Kind != KindNodeClass {
+			continue
+		}
+		decision, tuples := RBACTuplesForNode(n, nil)
+		authorized := decision == NodeRBACCheckTuples
+		if authorized {
+			authorized = false
+			for _, tuple := range tuples {
+				if allowed[tuple] {
+					authorized = true
+					break
+				}
+			}
+		}
+		if !authorized {
+			deny[n.ID] = true
+		}
+	}
+	t.StripNodeIDs(deny)
+}
+
 // ViewMode determines how the topology is built
 type ViewMode string
 

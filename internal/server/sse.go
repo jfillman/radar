@@ -69,14 +69,20 @@ type ClientInfo struct {
 	// Resolved once at subscribe time (the request is available there) so the
 	// broadcast loop never runs a SAR. nil/empty for users with full access.
 	DeniedKinds map[topology.NodeKind]bool
+	// AuthorizeNodeClass evaluates the exact provider resource carried by a
+	// NodeClass topology node. It remains live for the SSE request lifetime so
+	// newly referenced custom kinds and context switches do not reuse a stale
+	// provider permission snapshot.
+	AuthorizeNodeClass func(topology.SARTuple) bool
 }
 
 type clientRegistration struct {
-	ch               chan SSEEvent
-	namespaces       []string
-	viewMode         string
-	showPolicyEffect bool
-	deniedKinds      map[topology.NodeKind]bool
+	ch                 chan SSEEvent
+	namespaces         []string
+	viewMode           string
+	showPolicyEffect   bool
+	deniedKinds        map[topology.NodeKind]bool
+	authorizeNodeClass func(topology.SARTuple) bool
 }
 
 // SSEEvent represents an event to send to clients
@@ -388,7 +394,7 @@ func (b *SSEBroadcaster) run() {
 				close(reg.ch) // Signal rejection by closing the channel
 				continue
 			}
-			b.clients[reg.ch] = ClientInfo{Namespaces: reg.namespaces, ViewMode: reg.viewMode, ShowPolicyEffect: reg.showPolicyEffect, DeniedKinds: reg.deniedKinds}
+			b.clients[reg.ch] = ClientInfo{Namespaces: reg.namespaces, ViewMode: reg.viewMode, ShowPolicyEffect: reg.showPolicyEffect, DeniedKinds: reg.deniedKinds, AuthorizeNodeClass: reg.authorizeNodeClass}
 			b.mu.Unlock()
 			log.Printf("SSE client connected (namespaces=%v, view=%s), total clients: %d", reg.namespaces, reg.viewMode, len(b.clients))
 
@@ -629,7 +635,7 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 		namespaces       []string
 		showPolicyEffect bool
 		deniedKinds      map[topology.NodeKind]bool
-		channels         []chan SSEEvent
+		clients          map[chan SSEEvent]ClientInfo
 	}
 	clientGroups := make(map[clientKey]*clientGroup)
 	for ch, info := range clients {
@@ -639,9 +645,9 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 		// rather than the unfiltered bytes of a more-privileged peer.
 		key := clientKey{namespacesKey: nsKey, deniedKindsKey: deniedKindsKey(info.DeniedKinds), viewMode: info.ViewMode, showPolicyEffect: info.ShowPolicyEffect}
 		if clientGroups[key] == nil {
-			clientGroups[key] = &clientGroup{namespaces: info.Namespaces, showPolicyEffect: info.ShowPolicyEffect, deniedKinds: info.DeniedKinds}
+			clientGroups[key] = &clientGroup{namespaces: info.Namespaces, showPolicyEffect: info.ShowPolicyEffect, deniedKinds: info.DeniedKinds, clients: make(map[chan SSEEvent]ClientInfo)}
 		}
-		clientGroups[key].channels = append(clientGroups[key].channels, ch)
+		clientGroups[key].clients[ch] = info
 	}
 
 	// Build topology for each group and send. Pre-marshal once per group so
@@ -670,20 +676,35 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 			maxEstimated = int64(topo.EstimatedNodes)
 		}
 
-		data, marshalErr := json.Marshal(topo)
-		if marshalErr != nil {
-			log.Printf("Error marshaling topology for broadcast: %v", marshalErr)
-			continue
+		// A synthesized NodeClass kind can contain several independently
+		// authorized provider APIs. Regroup against the exact tuples present in
+		// this build, then marshal once per effective provider permission set.
+		type nodeClassGroup struct {
+			allowed  map[topology.SARTuple]bool
+			channels []chan SSEEvent
 		}
-		perfstats.RecordTopologyPayload(len(data))
-
-		event := SSEEvent{
-			Event: "topology",
-			Data:  json.RawMessage(data),
+		nodeClassGroups := make(map[string]*nodeClassGroup)
+		for ch, info := range group.clients {
+			allowed := authorizedNodeClassTuples(topo, info.AuthorizeNodeClass)
+			authKey := nodeClassTuplesKey(allowed)
+			if nodeClassGroups[authKey] == nil {
+				nodeClassGroups[authKey] = &nodeClassGroup{allowed: allowed}
+			}
+			nodeClassGroups[authKey].channels = append(nodeClassGroups[authKey].channels, ch)
 		}
-
-		for _, ch := range group.channels {
-			safeSend(ch, event)
+		for _, authGroup := range nodeClassGroups {
+			filtered := cloneTopology(topo)
+			filtered.StripNodeClassesExcept(authGroup.allowed)
+			data, marshalErr := json.Marshal(filtered)
+			if marshalErr != nil {
+				log.Printf("Error marshaling topology for broadcast: %v", marshalErr)
+				continue
+			}
+			perfstats.RecordTopologyPayload(len(data))
+			event := SSEEvent{Event: "topology", Data: json.RawMessage(data)}
+			for _, ch := range authGroup.channels {
+				safeSend(ch, event)
+			}
 		}
 	}
 
@@ -706,6 +727,41 @@ func deniedKindsKey(deny map[topology.NodeKind]bool) string {
 	}
 	sort.Strings(kinds)
 	return strings.Join(kinds, ",")
+}
+
+func authorizedNodeClassTuples(topo *topology.Topology, authorize func(topology.SARTuple) bool) map[topology.SARTuple]bool {
+	allowed := make(map[topology.SARTuple]bool)
+	if authorize == nil {
+		return allowed
+	}
+	for _, tuple := range topo.NodeClassRBACTuples() {
+		if authorize(tuple) {
+			allowed[tuple] = true
+		}
+	}
+	return allowed
+}
+
+func nodeClassTuplesKey(tuples map[topology.SARTuple]bool) string {
+	if len(tuples) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(tuples))
+	for tuple := range tuples {
+		keys = append(keys, tuple.Group+"\x00"+tuple.Resource)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, "\x01")
+}
+
+func cloneTopology(topo *topology.Topology) *topology.Topology {
+	if topo == nil {
+		return nil
+	}
+	clone := *topo
+	clone.Nodes = append([]topology.Node(nil), topo.Nodes...)
+	clone.Edges = append([]topology.Edge(nil), topo.Edges...)
+	return &clone
 }
 
 // heartbeat sends periodic heartbeats to keep connections alive
@@ -803,7 +859,7 @@ func clientCanSeeChange(info ClientInfo, namespace, kind string) bool {
 }
 
 // Subscribe adds a new SSE client. Returns nil if max clients reached.
-func (b *SSEBroadcaster) Subscribe(namespaces []string, viewMode string, deniedKinds map[topology.NodeKind]bool, showPolicyEffect ...bool) chan SSEEvent {
+func (b *SSEBroadcaster) Subscribe(namespaces []string, viewMode string, deniedKinds map[topology.NodeKind]bool, authorizeNodeClass func(topology.SARTuple) bool, showPolicyEffect ...bool) chan SSEEvent {
 	// Check client count before creating the channel to fail fast
 	b.mu.RLock()
 	clientCount := len(b.clients)
@@ -825,7 +881,7 @@ func (b *SSEBroadcaster) Subscribe(namespaces []string, viewMode string, deniedK
 
 	policyEffect := len(showPolicyEffect) > 0 && showPolicyEffect[0]
 	ch := make(chan SSEEvent, 10)
-	b.register <- clientRegistration{ch: ch, namespaces: sortedNs, viewMode: viewMode, showPolicyEffect: policyEffect, deniedKinds: deniedKinds}
+	b.register <- clientRegistration{ch: ch, namespaces: sortedNs, viewMode: viewMode, showPolicyEffect: policyEffect, deniedKinds: deniedKinds, authorizeNodeClass: authorizeNodeClass}
 	return ch
 }
 
@@ -945,7 +1001,7 @@ func buildFullTopology() (*topology.Topology, error) {
 }
 
 // HandleSSE is the HTTP handler for the SSE endpoint
-func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request, deniedKinds map[topology.NodeKind]bool) {
+func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request, deniedKinds map[topology.NodeKind]bool, authorizeNodeClass func(topology.SARTuple) bool) {
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -968,7 +1024,7 @@ func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request, denie
 	}
 
 	// Subscribe to events
-	eventCh := b.Subscribe(namespaces, viewMode, deniedKinds, policyEffect)
+	eventCh := b.Subscribe(namespaces, viewMode, deniedKinds, authorizeNodeClass, policyEffect)
 	if eventCh == nil {
 		http.Error(w, "Too many SSE connections", http.StatusServiceUnavailable)
 		return
@@ -1001,6 +1057,7 @@ func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request, denie
 		opts.ShowPolicyEffect = policyEffect
 		if topo, err := builder.Build(opts); err == nil {
 			topo.StripNodeKinds(deniedKinds)
+			topo.StripNodeClassesExcept(authorizedNodeClassTuples(topo, authorizeNodeClass))
 			data, marshalErr := json.Marshal(topo)
 			if marshalErr != nil {
 				log.Printf("SSE: failed to marshal initial topology: %v", marshalErr)

@@ -1,0 +1,416 @@
+package capacity
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/skyhook-io/radar/pkg/capacityapi"
+	"github.com/skyhook-io/radar/pkg/karpenter"
+	"github.com/skyhook-io/radar/pkg/subject"
+	"github.com/skyhook-io/radar/pkg/timeline"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+)
+
+const activityEvidenceLimit = 20
+
+type ActivityRecord struct {
+	Episode capacityapi.ActivityEpisode
+	MaxSeq  int64
+
+	terminalAt         *time.Time
+	terminalReasonCode string
+}
+
+type activityClassification struct {
+	activityType capacityapi.ActivityType
+	state        capacityapi.ActivityState
+	reasonCode   string
+	relationship capacityapi.EvidenceRelationship
+	confidence   capacityapi.Confidence
+}
+
+func directActivity(activityType capacityapi.ActivityType, state capacityapi.ActivityState, reasonCode string) activityClassification {
+	return activityClassification{
+		activityType: activityType,
+		state:        state,
+		reasonCode:   reasonCode,
+		relationship: capacityapi.EvidenceDirect,
+		confidence:   capacityapi.ConfidenceHigh,
+	}
+}
+
+func inferredActivity(activityType capacityapi.ActivityType, state capacityapi.ActivityState, reasonCode string) activityClassification {
+	return activityClassification{
+		activityType: activityType,
+		state:        state,
+		reasonCode:   reasonCode,
+		relationship: capacityapi.EvidenceCorrelated,
+		confidence:   capacityapi.ConfidenceLow,
+	}
+}
+
+func BuildActivityRecords(events []timeline.TimelineEvent) []ActivityRecord {
+	orderedEvents := append([]timeline.TimelineEvent{}, events...)
+	sort.Slice(orderedEvents, func(i, j int) bool {
+		if !orderedEvents[i].Timestamp.Equal(orderedEvents[j].Timestamp) {
+			return orderedEvents[i].Timestamp.Before(orderedEvents[j].Timestamp)
+		}
+		if orderedEvents[i].Seq != orderedEvents[j].Seq {
+			return orderedEvents[i].Seq < orderedEvents[j].Seq
+		}
+		return orderedEvents[i].ID < orderedEvents[j].ID
+	})
+	uidByResource := map[string]string{}
+	ambiguousUID := map[string]bool{}
+	for _, event := range orderedEvents {
+		if event.UID != "" {
+			key := activityResourceKey(event)
+			if existing := uidByResource[key]; existing != "" && existing != event.UID {
+				ambiguousUID[key] = true
+				continue
+			}
+			uidByResource[key] = event.UID
+		}
+	}
+	for key := range ambiguousUID {
+		delete(uidByResource, key)
+	}
+
+	records := map[string]*ActivityRecord{}
+	for _, event := range orderedEvents {
+		if strings.TrimSpace(event.Name) == "" {
+			continue
+		}
+		classification, ok := classifyActivityEvent(event)
+		if !ok {
+			continue
+		}
+		activityType := classification.activityType
+		state := classification.state
+		uid := event.UID
+		if uid == "" {
+			uid = uidByResource[activityResourceKey(event)]
+		}
+		correlationKey := activityCorrelationKey(event, uid, activityType)
+		record := records[correlationKey]
+		startedAt := activityEventStart(event, activityType)
+		if record == nil {
+			episode := capacityapi.NewActivityEpisode()
+			episode.ID = stableActivityID(correlationKey)
+			episode.Type = activityType
+			episode.State = state
+			episode.StartedAt = startedAt
+			record = &ActivityRecord{Episode: episode}
+			records[correlationKey] = record
+		}
+		attachActivitySubjects(&record.Episode, event, uid)
+		if startedAt.Before(record.Episode.StartedAt) {
+			record.Episode.StartedAt = startedAt
+		}
+		if state == capacityapi.ActivityCompleted || state == capacityapi.ActivityFailed {
+			record.Episode.State = state
+			record.Episode.Type = activityType
+			terminalAt := event.Timestamp
+			record.terminalAt = &terminalAt
+			record.terminalReasonCode = classification.reasonCode
+		} else if activityStateRank(state) > activityStateRank(record.Episode.State) {
+			record.Episode.State = state
+			record.Episode.Type = activityType
+		}
+		if event.Seq > record.MaxSeq {
+			record.MaxSeq = event.Seq
+		}
+		evidence := capacityapi.NewActivityEvidence()
+		evidence.At = event.Timestamp
+		evidence.Source = activityEvidenceSource(event.Source)
+		evidence.ReasonCode = classification.reasonCode
+		evidence.RawReason = event.Reason
+		evidence.RawMessage = event.Message
+		if evidence.RawMessage == "" && event.Diff != nil {
+			evidence.RawMessage = event.Diff.Summary
+		}
+		evidence.Relationship = classification.relationship
+		evidence.Confidence = classification.confidence
+		evidence.Refs = append(evidence.Refs, activityResourceIdentity(event, uid))
+		record.Episode.Evidence = append(record.Episode.Evidence, evidence)
+	}
+
+	result := make([]ActivityRecord, 0, len(records))
+	for _, record := range records {
+		sort.Slice(record.Episode.Evidence, func(i, j int) bool {
+			left, right := record.Episode.Evidence[i], record.Episode.Evidence[j]
+			if !left.At.Equal(right.At) {
+				return left.At.Before(right.At)
+			}
+			return left.ReasonCode < right.ReasonCode
+		})
+		if record.terminalAt != nil {
+			endedAt := *record.terminalAt
+			record.Episode.EndedAt = &endedAt
+			duration := endedAt.Sub(record.Episode.StartedAt).Seconds()
+			if duration < 0 {
+				duration = 0
+			}
+			record.Episode.DurationSeconds = &duration
+		}
+		if record.terminalReasonCode != "" {
+			record.Episode.PrimaryReasonCode = record.terminalReasonCode
+		} else {
+			for index := len(record.Episode.Evidence) - 1; index >= 0; index-- {
+				if record.Episode.Evidence[index].ReasonCode != "" {
+					record.Episode.PrimaryReasonCode = record.Episode.Evidence[index].ReasonCode
+					break
+				}
+			}
+		}
+		record.Episode.Summary = activityEpisodeSummary(record.Episode.Type, record.Episode.State)
+		record.Episode.EvidenceMeta.Total = len(record.Episode.Evidence)
+		if len(record.Episode.Evidence) > activityEvidenceLimit {
+			latest := append([]capacityapi.ActivityEvidence{}, record.Episode.Evidence[len(record.Episode.Evidence)-(activityEvidenceLimit-1):]...)
+			record.Episode.Evidence = append(record.Episode.Evidence[:1], latest...)
+			record.Episode.EvidenceMeta.Truncated = true
+		}
+		record.Episode.EvidenceMeta.Returned = len(record.Episode.Evidence)
+		result = append(result, *record)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].MaxSeq != result[j].MaxSeq {
+			return result[i].MaxSeq < result[j].MaxSeq
+		}
+		return result[i].Episode.ID < result[j].Episode.ID
+	})
+	return result
+}
+
+func activityEventStart(event timeline.TimelineEvent, activityType capacityapi.ActivityType) time.Time {
+	if activityType != capacityapi.ActivityProvision && activityType != capacityapi.ActivityLaunchFailure && activityType != capacityapi.ActivityRegistrationFailure && activityType != capacityapi.ActivityInitializationFailure {
+		return event.Timestamp
+	}
+	if event.CreatedAt != nil && !event.CreatedAt.IsZero() && event.CreatedAt.Before(event.Timestamp) {
+		return *event.CreatedAt
+	}
+	return event.Timestamp
+}
+
+func activityEpisodeSummary(activityType capacityapi.ActivityType, state capacityapi.ActivityState) string {
+	switch activityType {
+	case capacityapi.ActivityProvision:
+		if state == capacityapi.ActivityCompleted {
+			return "NodeClaim provisioning completed"
+		}
+		return "NodeClaim provisioning is in progress"
+	case capacityapi.ActivityLaunchFailure:
+		return "NodeClaim launch failed"
+	case capacityapi.ActivityRegistrationFailure:
+		return "NodeClaim registration failed"
+	case capacityapi.ActivityInitializationFailure:
+		return "NodeClaim initialization failed"
+	case capacityapi.ActivityDisruption:
+		return "Karpenter disruption activity was observed"
+	case capacityapi.ActivityInterruption:
+		return "Capacity interruption was observed"
+	case capacityapi.ActivityTermination:
+		if state == capacityapi.ActivityCompleted {
+			return "Karpenter-managed capacity terminated"
+		}
+		return "Karpenter termination activity was observed"
+	case capacityapi.ActivityConfigChange:
+		return "NodePool configuration changed"
+	default:
+		return "Karpenter capacity activity was observed"
+	}
+}
+
+func classifyActivityEvent(event timeline.TimelineEvent) (activityClassification, bool) {
+	group := schema.FromAPIVersionAndKind(event.APIVersion, event.Kind).Group
+	if event.Kind == karpenter.NodePoolKind && group == karpenter.Group {
+		if event.EventType == timeline.EventTypeUpdate && event.Diff != nil {
+			for _, field := range event.Diff.Fields {
+				if field.Path == "metadata.generation" || field.Path == "spec" || strings.HasPrefix(field.Path, "spec.") {
+					return directActivity(capacityapi.ActivityConfigChange, capacityapi.ActivityCompleted, "nodepool_spec_changed"), true
+				}
+			}
+		}
+		return classifyKarpenterReason(event)
+	}
+	if event.Kind == karpenter.NodeClaimKind && group == karpenter.Group {
+		if event.EventType == timeline.EventTypeAdd {
+			return directActivity(capacityapi.ActivityProvision, capacityapi.ActivityOpen, "nodeclaim_created"), true
+		}
+		if event.EventType == timeline.EventTypeDelete {
+			return directActivity(capacityapi.ActivityTermination, capacityapi.ActivityCompleted, "nodeclaim_deleted"), true
+		}
+		if classification, ok := classifyNodeClaimConditionChange(event); ok {
+			return classification, true
+		}
+		if classification, ok := classifyKarpenterReason(event); ok {
+			return classification, true
+		}
+		if strings.EqualFold(event.Reason, "Ready") || strings.EqualFold(event.Reason, "Initialized") {
+			return directActivity(capacityapi.ActivityProvision, capacityapi.ActivityCompleted, "nodeclaim_ready"), true
+		}
+		if strings.Contains(strings.ToLower(event.Reason), "initialized") {
+			return inferredActivity(capacityapi.ActivityProvision, capacityapi.ActivityCompleted, "nodeclaim_ready"), true
+		}
+	}
+	if event.Kind == "Node" && event.Labels[karpenter.NodePoolLabelKey] != "" {
+		if event.EventType == timeline.EventTypeDelete {
+			return directActivity(capacityapi.ActivityTermination, capacityapi.ActivityCompleted, "node_deleted"), true
+		}
+		return classifyKarpenterReason(event)
+	}
+	return activityClassification{}, false
+}
+
+func classifyNodeClaimConditionChange(event timeline.TimelineEvent) (activityClassification, bool) {
+	if event.Diff == nil {
+		return activityClassification{}, false
+	}
+	for _, field := range event.Diff.Fields {
+		conditionType := strings.TrimSuffix(strings.TrimPrefix(field.Path, "status.conditions["), "]")
+		if conditionType == field.Path {
+			continue
+		}
+		signal, ok := field.NewValue.(string)
+		if !ok {
+			continue
+		}
+		status, reason, _ := strings.Cut(signal, "\x00")
+		if conditionType == "Ready" && status == "True" {
+			return directActivity(capacityapi.ActivityProvision, capacityapi.ActivityCompleted, "nodeclaim_ready"), true
+		}
+		if status != "False" || (!strings.Contains(strings.ToLower(reason), "fail") && !strings.Contains(strings.ToLower(reason), "error")) {
+			continue
+		}
+		switch conditionType {
+		case "Launched":
+			return directActivity(capacityapi.ActivityLaunchFailure, capacityapi.ActivityFailed, "launch_failed"), true
+		case "Registered":
+			return directActivity(capacityapi.ActivityRegistrationFailure, capacityapi.ActivityFailed, "registration_failed"), true
+		case "Initialized":
+			return directActivity(capacityapi.ActivityInitializationFailure, capacityapi.ActivityFailed, "initialization_failed"), true
+		}
+	}
+	return activityClassification{}, false
+}
+
+func classifyKarpenterReason(event timeline.TimelineEvent) (activityClassification, bool) {
+	reason := strings.ToLower(event.Reason + " " + event.Message)
+	switch {
+	case strings.Contains(reason, "launch") && (event.EventType == timeline.EventTypeWarning || strings.Contains(reason, "fail") || strings.Contains(reason, "error")):
+		return inferredActivity(capacityapi.ActivityLaunchFailure, capacityapi.ActivityFailed, "launch_failed"), true
+	case strings.Contains(reason, "register") && (event.EventType == timeline.EventTypeWarning || strings.Contains(reason, "fail")):
+		return inferredActivity(capacityapi.ActivityRegistrationFailure, capacityapi.ActivityFailed, "registration_failed"), true
+	case strings.Contains(reason, "initializ") && (event.EventType == timeline.EventTypeWarning || strings.Contains(reason, "fail")):
+		return inferredActivity(capacityapi.ActivityInitializationFailure, capacityapi.ActivityFailed, "initialization_failed"), true
+	case strings.Contains(reason, "interrupt") || strings.Contains(reason, "spot interruption"):
+		return inferredActivity(capacityapi.ActivityInterruption, capacityapi.ActivityObserved, "interruption"), true
+	case strings.Contains(reason, "disrupt") || strings.Contains(reason, "consolidat") || strings.Contains(reason, "drift"):
+		return inferredActivity(capacityapi.ActivityDisruption, capacityapi.ActivityObserved, "disruption"), true
+	case strings.Contains(reason, "terminat") || strings.Contains(reason, "delete"):
+		return inferredActivity(capacityapi.ActivityTermination, capacityapi.ActivityObserved, "termination_observed"), true
+	}
+	return activityClassification{}, false
+}
+
+func attachActivitySubjects(episode *capacityapi.ActivityEpisode, event timeline.TimelineEvent, uid string) {
+	identity := activityResourceIdentity(event, uid)
+	switch event.Kind {
+	case karpenter.NodePoolKind:
+		episode.Pool = &identity
+	case karpenter.NodeClaimKind:
+		episode.Claim = &identity
+		if event.Owner != nil && event.Owner.Kind == karpenter.NodePoolKind {
+			pool := capacityapi.ResourceIdentity{Ref: subject.Ref{Group: karpenter.Group, Kind: karpenter.NodePoolKind, Name: event.Owner.Name}}
+			episode.Pool = &pool
+		} else if poolName := event.Labels[karpenter.NodePoolLabelKey]; poolName != "" {
+			pool := capacityapi.ResourceIdentity{Ref: subject.Ref{Group: karpenter.Group, Kind: karpenter.NodePoolKind, Name: poolName}}
+			episode.Pool = &pool
+		}
+	case "Node":
+		episode.Node = &identity
+		if poolName := event.Labels[karpenter.NodePoolLabelKey]; poolName != "" {
+			pool := capacityapi.ResourceIdentity{Ref: subject.Ref{Group: karpenter.Group, Kind: karpenter.NodePoolKind, Name: poolName}}
+			episode.Pool = &pool
+		}
+	}
+}
+
+func activityResourceIdentity(event timeline.TimelineEvent, uid string) capacityapi.ResourceIdentity {
+	return capacityapi.ResourceIdentity{
+		Ref: subject.Ref{
+			Group: schema.FromAPIVersionAndKind(event.APIVersion, event.Kind).Group,
+			Kind:  event.Kind, Namespace: activitySubjectNamespace(event), Name: event.Name,
+		},
+		APIVersion: event.APIVersion,
+		UID:        uid,
+	}
+}
+
+func activityCorrelationKey(event timeline.TimelineEvent, uid string, activityType capacityapi.ActivityType) string {
+	identity := uid
+	if identity == "" {
+		identity = activityResourceKey(event)
+	}
+	if activityType == capacityapi.ActivityProvision || activityType == capacityapi.ActivityLaunchFailure || activityType == capacityapi.ActivityRegistrationFailure || activityType == capacityapi.ActivityInitializationFailure {
+		return string(capacityapi.ActivityProvision) + "\x00" + identity
+	}
+	attemptID := event.CorrelationID
+	if attemptID == "" {
+		attemptID = event.ID
+	}
+	if attemptID == "" && event.Seq > 0 {
+		attemptID = strconv.FormatInt(event.Seq, 10)
+	}
+	if attemptID == "" {
+		attemptID = event.Timestamp.UTC().Format(time.RFC3339Nano)
+	}
+	return string(activityType) + "\x00" + identity + "\x00" + attemptID
+}
+
+func activityResourceKey(event timeline.TimelineEvent) string {
+	return event.APIVersion + "\x00" + event.Kind + "\x00" + activitySubjectNamespace(event) + "\x00" + event.Name
+}
+
+func activitySubjectNamespace(event timeline.TimelineEvent) string {
+	group := schema.FromAPIVersionAndKind(event.APIVersion, event.Kind).Group
+	if event.Kind == "Node" || ((event.Kind == karpenter.NodePoolKind || event.Kind == karpenter.NodeClaimKind) && group == karpenter.Group) {
+		return ""
+	}
+	return event.Namespace
+}
+
+func stableActivityID(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return "capacity-" + hex.EncodeToString(sum[:12])
+}
+
+func activityEvidenceSource(source timeline.EventSource) capacityapi.EvidenceSource {
+	switch source {
+	case timeline.SourceK8sEvent:
+		return capacityapi.EvidenceKubernetesEvent
+	case timeline.SourceHistorical:
+		return capacityapi.EvidenceCondition
+	default:
+		return capacityapi.EvidenceResourceChange
+	}
+}
+
+func activityStateRank(state capacityapi.ActivityState) int {
+	switch state {
+	case capacityapi.ActivityFailed:
+		return 4
+	case capacityapi.ActivityCompleted:
+		return 3
+	case capacityapi.ActivityOpen:
+		return 2
+	case capacityapi.ActivityObserved:
+		return 1
+	default:
+		return 0
+	}
+}

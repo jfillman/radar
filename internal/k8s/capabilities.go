@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/capacityapi"
 )
 
 // ResourcePermissions indicates which resource types the user can list/watch
@@ -89,6 +90,12 @@ type Capabilities struct {
 	Username       string                   `json:"username,omitempty"`    // Authenticated username (when auth enabled)
 	Resources      *ResourcePermissions     `json:"resources,omitempty"`   // Per-resource-type permissions
 	Visibility     *VisibilitySummary       `json:"visibility,omitempty"`  // Present when resource visibility is limited enough to make diagnostics incomplete
+	Karpenter      IntegrationCapability    `json:"karpenter"`             // Per-request Karpenter discovery + NodePool read state; populated by the HTTP layer after user SAR.
+}
+
+type IntegrationCapability struct {
+	State      capacityapi.IntegrationState `json:"state"`
+	ReasonCode string                       `json:"reasonCode,omitempty"`
 }
 
 // WorkloadWritePermissions indicates which workload resources the user can patch.

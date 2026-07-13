@@ -1,0 +1,113 @@
+package capacityapi
+
+import "time"
+
+type ActivityType string
+
+const (
+	ActivityProvision             ActivityType = "provision"
+	ActivityLaunchFailure         ActivityType = "launch_failure"
+	ActivityRegistrationFailure   ActivityType = "registration_failure"
+	ActivityInitializationFailure ActivityType = "initialization_failure"
+	ActivityDisruption            ActivityType = "disruption"
+	ActivityInterruption          ActivityType = "interruption"
+	ActivityTermination           ActivityType = "termination"
+	ActivityConfigChange          ActivityType = "config_change"
+)
+
+type ActivityState string
+
+const (
+	ActivityOpen      ActivityState = "open"
+	ActivityCompleted ActivityState = "completed"
+	ActivityFailed    ActivityState = "failed"
+	ActivityObserved  ActivityState = "observed"
+	ActivityUnknown   ActivityState = "unknown"
+)
+
+type EvidenceSource string
+
+const (
+	EvidenceCondition       EvidenceSource = "condition"
+	EvidenceKubernetesEvent EvidenceSource = "k8s_event"
+	EvidenceResourceChange  EvidenceSource = "resource_change"
+	EvidencePrometheus      EvidenceSource = "prometheus"
+)
+
+type EvidenceRelationship string
+
+const (
+	EvidenceDirect     EvidenceRelationship = "direct"
+	EvidenceStructural EvidenceRelationship = "structural"
+	EvidenceCorrelated EvidenceRelationship = "correlated"
+)
+
+type ActivityEvidence struct {
+	At           time.Time            `json:"at"`
+	Source       EvidenceSource       `json:"source"`
+	ReasonCode   string               `json:"reasonCode"`
+	RawReason    string               `json:"rawReason,omitempty"`
+	RawMessage   string               `json:"rawMessage,omitempty"`
+	Relationship EvidenceRelationship `json:"relationship"`
+	Confidence   Confidence           `json:"confidence"`
+	Refs         []ResourceIdentity   `json:"refs"`
+}
+
+func NewActivityEvidence() ActivityEvidence {
+	return ActivityEvidence{
+		Relationship: EvidenceCorrelated,
+		Confidence:   ConfidenceLow,
+		Refs:         []ResourceIdentity{},
+	}
+}
+
+type ActivityEpisode struct {
+	ID                string             `json:"id"`
+	Type              ActivityType       `json:"type"`
+	State             ActivityState      `json:"state"`
+	Summary           string             `json:"summary"`
+	PrimaryReasonCode string             `json:"primaryReasonCode,omitempty"`
+	StartedAt         time.Time          `json:"startedAt"`
+	EndedAt           *time.Time         `json:"endedAt,omitempty"`
+	DurationSeconds   *float64           `json:"durationSeconds,omitempty"`
+	Pool              *ResourceIdentity  `json:"pool,omitempty"`
+	Claim             *ResourceIdentity  `json:"claim,omitempty"`
+	Node              *ResourceIdentity  `json:"node,omitempty"`
+	Workload          *ResourceIdentity  `json:"workload,omitempty"`
+	Evidence          []ActivityEvidence `json:"evidence"`
+	EvidenceMeta      BoundedResultMeta  `json:"evidenceMeta"`
+}
+
+func NewActivityEpisode() ActivityEpisode {
+	return ActivityEpisode{State: ActivityUnknown, Evidence: []ActivityEvidence{}}
+}
+
+type CursorStatus string
+
+const (
+	CursorValid        CursorStatus = "valid"
+	CursorEpochChanged CursorStatus = "epoch_changed"
+	CursorEvicted      CursorStatus = "evicted"
+)
+
+type ObservationGap struct {
+	DetectedAt     time.Time `json:"detectedAt"`
+	Reason         string    `json:"reason"`
+	PreviousCursor string    `json:"previousCursor,omitempty"`
+	NewEpoch       string    `json:"newEpoch,omitempty"`
+	NewAnchor      string    `json:"newAnchor"`
+}
+
+type Retention struct {
+	Mode          string `json:"mode"`
+	MaxEvents     *int   `json:"maxEvents,omitempty"`
+	MaxAgeSeconds *int64 `json:"maxAgeSeconds,omitempty"`
+}
+
+type ObservationWindow struct {
+	StartedAt time.Time        `json:"startedAt"`
+	EndedAt   time.Time        `json:"endedAt"`
+	Sources   []EvidenceSource `json:"sources"`
+	Retention Retention        `json:"retention"`
+	Gaps      []ObservationGap `json:"gaps"`
+}

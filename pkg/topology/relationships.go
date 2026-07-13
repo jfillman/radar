@@ -162,6 +162,9 @@ func enrichRef(ref *ResourceRef, dp DynamicProvider) {
 	if ref == nil {
 		return
 	}
+	if ref.Group != "" {
+		return
+	}
 	ref.Group = resolveAPIGroup(ref.Kind, dp)
 }
 
@@ -842,7 +845,7 @@ func parseNodeID(nodeID string, dp DynamicProvider) *ResourceRef {
 	// Node IDs are formatted as: kind/namespace/name
 	// e.g., "deployment/default/my-app" or "pod/kube-system/coredns-abc123"
 
-	parts := strings.SplitN(nodeID, "/", 3)
+	parts := strings.Split(nodeID, "/")
 	if len(parts) < 3 {
 		return nil
 	}
@@ -850,17 +853,38 @@ func parseNodeID(nodeID string, dp DynamicProvider) *ResourceRef {
 	kind := parts[0]
 	namespace := parts[1]
 	name := parts[2]
+	group := ""
+	normalizedKind := ""
+	if strings.EqualFold(kind, "nodeclass") && len(parts) >= 5 {
+		group = parts[3]
+		normalizedKind = normalizeKindWithGroup(parts[4], group, dp)
+	}
 
 	// Skip PodGroup - it's a UI grouping concept, not a real K8s resource
 	if strings.ToLower(kind) == "podgroup" {
 		return nil
 	}
+	if normalizedKind == "" {
+		normalizedKind = normalizeKind(kind, dp)
+	}
 
 	return &ResourceRef{
-		Kind:      normalizeKind(kind, dp),
+		Kind:      normalizedKind,
 		Namespace: namespace,
 		Name:      name,
+		Group:     group,
 	}
+}
+
+func normalizeKindWithGroup(kind, group string, dp DynamicProvider) string {
+	if dp != nil && group != "" {
+		if gvr, ok := dp.GetGVRWithGroup(kind, group); ok {
+			if resolved := dp.GetKindForGVR(gvr); resolved != "" {
+				return resolved
+			}
+		}
+	}
+	return normalizeKind(kind, dp)
 }
 
 // normalizeKind converts internal kind format to display format

@@ -1,0 +1,277 @@
+package capacity
+
+import (
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/skyhook-io/radar/pkg/capacityapi"
+	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/timeline"
+)
+
+func TestBuildActivityRecordsCorrelatesAndClosesProvisionEpisode(t *testing.T) {
+	start := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	events := []timeline.TimelineEvent{
+		{
+			ID: "ready-event", Seq: 12, Timestamp: start.Add(2 * time.Minute), Source: timeline.SourceK8sEvent,
+			Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Namespace: "default", Name: "claim-a", UID: "claim-a-uid", Reason: "Ready", EventType: timeline.EventTypeNormal,
+		},
+		{
+			ID: "claim-a-rv-1", Seq: 10, Timestamp: start, Source: timeline.SourceInformer,
+			Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-a-uid", EventType: timeline.EventTypeAdd,
+			Owner: &k8score.OwnerInfo{Kind: "NodePool", Name: "general"},
+		},
+	}
+
+	records := BuildActivityRecords(events)
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one correlated provision episode", records)
+	}
+	episode := records[0].Episode
+	if episode.Type != capacityapi.ActivityProvision || episode.State != capacityapi.ActivityCompleted {
+		t.Fatalf("episode type/state = %q/%q", episode.Type, episode.State)
+	}
+	if episode.Claim == nil || episode.Claim.UID != "claim-a-uid" || episode.Pool == nil || episode.Pool.Ref.Name != "general" {
+		t.Fatalf("episode subjects = claim:%+v pool:%+v", episode.Claim, episode.Pool)
+	}
+	if len(episode.Evidence) != 2 || episode.EndedAt == nil || !episode.EndedAt.Equal(start.Add(2*time.Minute)) {
+		t.Fatalf("episode evidence/end = %d/%v", len(episode.Evidence), episode.EndedAt)
+	}
+	if records[0].MaxSeq != 12 || episode.DurationSeconds == nil || *episode.DurationSeconds != 120 {
+		t.Fatalf("episode seq/duration = %d/%v", records[0].MaxSeq, episode.DurationSeconds)
+	}
+	for _, evidence := range episode.Evidence {
+		if evidence.Relationship != capacityapi.EvidenceDirect || evidence.Confidence != capacityapi.ConfidenceHigh {
+			t.Fatalf("structured provisioning evidence truth = %q/%q, want direct/high", evidence.Relationship, evidence.Confidence)
+		}
+	}
+
+	reversed := []timeline.TimelineEvent{events[1], events[0]}
+	if !reflect.DeepEqual(records, BuildActivityRecords(reversed)) {
+		t.Fatal("activity correlation changed with input order")
+	}
+}
+
+func TestBuildActivityRecordsUsesDiffSummaryAsConfigEvidence(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	records := BuildActivityRecords([]timeline.TimelineEvent{{
+		ID: "pool-update", Seq: 1, Timestamp: now, Source: timeline.SourceInformer,
+		Kind: "NodePool", APIVersion: "karpenter.sh/v1", Name: "general", UID: "pool-uid", EventType: timeline.EventTypeUpdate,
+		Diff: &k8score.DiffInfo{Summary: "spec.disruption changed", Fields: []k8score.FieldChange{{Path: "spec.disruption"}}},
+	}})
+	if len(records) != 1 || len(records[0].Episode.Evidence) != 1 {
+		t.Fatalf("records = %#v", records)
+	}
+	if got := records[0].Episode.Evidence[0].RawMessage; got != "spec.disruption changed" {
+		t.Fatalf("config evidence message = %q", got)
+	}
+}
+
+func TestBuildActivityRecordsClassifiesKarpenterNodeTimelineLabels(t *testing.T) {
+	records := BuildActivityRecords([]timeline.TimelineEvent{{
+		ID: "node-delete", Seq: 1, Timestamp: time.Now(), Source: timeline.SourceInformer,
+		Kind: "Node", APIVersion: "v1", Name: "ip-10-0-0-1", UID: "node-uid", EventType: timeline.EventTypeDelete,
+		Labels: map[string]string{"karpenter.sh/nodepool": "general"},
+	}})
+	if len(records) != 1 || records[0].Episode.Type != capacityapi.ActivityTermination {
+		t.Fatalf("node activity = %#v", records)
+	}
+	if records[0].Episode.Pool == nil || records[0].Episode.Pool.Ref.Name != "general" {
+		t.Fatalf("node pool subject = %#v", records[0].Episode.Pool)
+	}
+}
+
+func TestBuildActivityRecordsSeparatesFailuresAndConfigChanges(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	records := BuildActivityRecords([]timeline.TimelineEvent{
+		{
+			ID: "failed", Seq: 2, Timestamp: now, Source: timeline.SourceK8sEvent,
+			Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", EventType: timeline.EventTypeWarning,
+			Reason: "LaunchFailed", Message: "provider rejected launch",
+		},
+		{
+			ID: "pool-update", Seq: 3, Timestamp: now.Add(time.Minute), Source: timeline.SourceInformer,
+			Kind: "NodePool", APIVersion: "karpenter.sh/v1", Name: "general", UID: "pool-uid", EventType: timeline.EventTypeUpdate,
+			Diff: &k8score.DiffInfo{Fields: []k8score.FieldChange{{Path: "metadata.generation"}}},
+		},
+		{ID: "unrelated", Seq: 4, Timestamp: now, Source: timeline.SourceInformer, Kind: "Deployment", APIVersion: "apps/v1", Name: "web", EventType: timeline.EventTypeUpdate},
+	})
+	if len(records) != 2 {
+		t.Fatalf("records = %#v, want failure and config change only", records)
+	}
+	byType := map[capacityapi.ActivityType]capacityapi.ActivityEpisode{}
+	for _, record := range records {
+		byType[record.Episode.Type] = record.Episode
+	}
+	if byType[capacityapi.ActivityLaunchFailure].State != capacityapi.ActivityFailed {
+		t.Fatalf("launch failure = %#v", byType[capacityapi.ActivityLaunchFailure])
+	}
+	failureEvidence := byType[capacityapi.ActivityLaunchFailure].Evidence
+	if len(failureEvidence) != 1 || failureEvidence[0].Relationship != capacityapi.EvidenceCorrelated || failureEvidence[0].Confidence != capacityapi.ConfidenceLow {
+		t.Fatalf("substring-classified failure evidence = %#v, want correlated/low", failureEvidence)
+	}
+	if byType[capacityapi.ActivityConfigChange].State != capacityapi.ActivityCompleted {
+		t.Fatalf("config change = %#v", byType[capacityapi.ActivityConfigChange])
+	}
+	configEvidence := byType[capacityapi.ActivityConfigChange].Evidence
+	if len(configEvidence) != 1 || configEvidence[0].Relationship != capacityapi.EvidenceDirect || configEvidence[0].Confidence != capacityapi.ConfidenceHigh {
+		t.Fatalf("diff-classified config evidence = %#v, want direct/high", configEvidence)
+	}
+}
+
+func TestBuildActivityRecordsKeepsStructuredConditionEvidenceDirect(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	records := BuildActivityRecords([]timeline.TimelineEvent{{
+		ID: "condition-failed", Seq: 1, Timestamp: now, Source: timeline.SourceInformer,
+		Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeUpdate,
+		Diff: &k8score.DiffInfo{Fields: []k8score.FieldChange{{Path: "status.conditions[Launched]", NewValue: "False\x00LaunchFailed"}}},
+	}})
+	if len(records) != 1 || len(records[0].Episode.Evidence) != 1 {
+		t.Fatalf("structured condition records = %#v", records)
+	}
+	evidence := records[0].Episode.Evidence[0]
+	if evidence.Relationship != capacityapi.EvidenceDirect || evidence.Confidence != capacityapi.ConfidenceHigh {
+		t.Fatalf("structured condition evidence = %q/%q, want direct/high", evidence.Relationship, evidence.Confidence)
+	}
+}
+
+func TestBuildActivityRecordsClosesProvisionAttemptWithFailure(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	records := BuildActivityRecords([]timeline.TimelineEvent{
+		{ID: "created", Seq: 1, Timestamp: now, Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeAdd},
+		{ID: "failed", Seq: 2, Timestamp: now.Add(time.Minute), Source: timeline.SourceK8sEvent, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Namespace: "default", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeWarning, Reason: "LaunchFailed"},
+	})
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one provisioning attempt", records)
+	}
+	episode := records[0].Episode
+	if episode.Type != capacityapi.ActivityLaunchFailure || episode.State != capacityapi.ActivityFailed || episode.EndedAt == nil || len(episode.Evidence) != 2 {
+		t.Fatalf("failed attempt = %#v", episode)
+	}
+}
+
+func TestBuildActivityRecordsRecoversFailedProvisionWhenClaimBecomesReady(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	records := BuildActivityRecords([]timeline.TimelineEvent{
+		{ID: "created", Seq: 1, Timestamp: now, Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeAdd},
+		{ID: "failed", Seq: 2, Timestamp: now.Add(time.Minute), Source: timeline.SourceK8sEvent, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeWarning, Reason: "LaunchFailed"},
+		{ID: "ready", Seq: 3, Timestamp: now.Add(2 * time.Minute), Source: timeline.SourceK8sEvent, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeNormal, Reason: "Ready"},
+	})
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one provisioning attempt", records)
+	}
+	episode := records[0].Episode
+	if episode.Type != capacityapi.ActivityProvision || episode.State != capacityapi.ActivityCompleted {
+		t.Fatalf("recovered attempt = %q/%q, want provision/completed", episode.Type, episode.State)
+	}
+	if episode.PrimaryReasonCode != "nodeclaim_ready" || episode.EndedAt == nil || !episode.EndedAt.Equal(now.Add(2*time.Minute)) {
+		t.Fatalf("recovered attempt reason/end = %q/%v", episode.PrimaryReasonCode, episode.EndedAt)
+	}
+	if len(episode.Evidence) != 3 {
+		t.Fatalf("recovered attempt evidence = %#v, want creation, failure, and ready", episode.Evidence)
+	}
+}
+
+func TestBuildActivityRecordsKeepsTerminalMetadataWhenInformerAddArrivesLater(t *testing.T) {
+	createdAt := time.Date(2026, time.July, 13, 9, 58, 0, 0, time.UTC)
+	readyAt := createdAt.Add(90 * time.Second)
+	observedAt := createdAt.Add(3 * time.Minute)
+	records := BuildActivityRecords([]timeline.TimelineEvent{
+		{ID: "ready", Seq: 2, Timestamp: readyAt, Source: timeline.SourceK8sEvent, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", CreatedAt: &createdAt, EventType: timeline.EventTypeNormal, Reason: "Ready"},
+		{ID: "created", Seq: 1, Timestamp: observedAt, Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", CreatedAt: &createdAt, EventType: timeline.EventTypeAdd},
+	})
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one provisioning attempt", records)
+	}
+	episode := records[0].Episode
+	if episode.Type != capacityapi.ActivityProvision || episode.State != capacityapi.ActivityCompleted || episode.PrimaryReasonCode != "nodeclaim_ready" {
+		t.Fatalf("terminal type/state/reason = %q/%q/%q", episode.Type, episode.State, episode.PrimaryReasonCode)
+	}
+	if !episode.StartedAt.Equal(createdAt) || episode.EndedAt == nil || !episode.EndedAt.Equal(readyAt) || episode.DurationSeconds == nil || *episode.DurationSeconds != 90 {
+		t.Fatalf("terminal timing = start %s end %v duration %v", episode.StartedAt, episode.EndedAt, episode.DurationSeconds)
+	}
+}
+
+func TestBuildActivityRecordsSkipsKarpenterEventsWithoutResourceNames(t *testing.T) {
+	records := BuildActivityRecords([]timeline.TimelineEvent{{
+		ID: "controller-finalized", Seq: 1, Timestamp: time.Now(), Source: timeline.SourceK8sEvent,
+		Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", EventType: timeline.EventTypeNormal,
+		Reason: "Finalized", Message: "Finalized karpenter.sh/termination",
+	}})
+	if len(records) != 0 {
+		t.Fatalf("subjectless controller event produced activity: %#v", records)
+	}
+}
+
+func TestBuildActivityRecordsKeepsRepeatedDisruptionsDistinct(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	records := BuildActivityRecords([]timeline.TimelineEvent{
+		{ID: "disrupt-1", Seq: 1, Timestamp: now, Source: timeline.SourceK8sEvent, Kind: "NodePool", APIVersion: "karpenter.sh/v1", Name: "general", UID: "pool-uid", EventType: timeline.EventTypeNormal, Reason: "DisruptionBlocked"},
+		{ID: "disrupt-2", Seq: 2, Timestamp: now.Add(time.Hour), Source: timeline.SourceK8sEvent, Kind: "NodePool", APIVersion: "karpenter.sh/v1", Name: "general", UID: "pool-uid", EventType: timeline.EventTypeNormal, Reason: "DisruptionBlocked"},
+	})
+	if len(records) != 2 || records[0].Episode.ID == records[1].Episode.ID {
+		t.Fatalf("disruption attempts = %#v", records)
+	}
+	for _, record := range records {
+		if record.Episode.State != capacityapi.ActivityObserved || record.Episode.EndedAt != nil {
+			t.Fatalf("disruption observation = %#v", record.Episode)
+		}
+	}
+}
+
+func TestBuildActivityRecordsDoesNotInventEventLifecycle(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	records := BuildActivityRecords([]timeline.TimelineEvent{
+		{ID: "interrupt", Seq: 1, Timestamp: now, Source: timeline.SourceK8sEvent, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeNormal, Reason: "SpotInterruption"},
+		{ID: "terminating", Seq: 2, Timestamp: now.Add(time.Minute), Source: timeline.SourceK8sEvent, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeNormal, Reason: "Terminating"},
+	})
+	if len(records) != 2 {
+		t.Fatalf("records = %#v", records)
+	}
+	for _, record := range records {
+		if record.Episode.State != capacityapi.ActivityObserved {
+			t.Fatalf("event-only activity state = %q, want observed", record.Episode.State)
+		}
+	}
+}
+
+func TestBuildActivityRecordsKeepsConfigChangesAsDistinctEpisodes(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	events := []timeline.TimelineEvent{
+		{
+			ID: "pool-update-1", Seq: 10, Timestamp: now, Source: timeline.SourceInformer,
+			Kind: "NodePool", APIVersion: "karpenter.sh/v1", Name: "general", UID: "pool-uid", EventType: timeline.EventTypeUpdate,
+			Diff: &k8score.DiffInfo{Fields: []k8score.FieldChange{{Path: "metadata.generation"}}},
+		},
+		{
+			ID: "pool-update-2", Seq: 20, Timestamp: now.Add(time.Hour), Source: timeline.SourceInformer,
+			Kind: "NodePool", APIVersion: "karpenter.sh/v1", Name: "general", UID: "pool-uid", EventType: timeline.EventTypeUpdate,
+			Diff: &k8score.DiffInfo{Fields: []k8score.FieldChange{{Path: "spec.disruption"}}},
+		},
+	}
+
+	records := BuildActivityRecords(events)
+	if len(records) != 2 || records[0].Episode.ID == records[1].Episode.ID {
+		t.Fatalf("config changes = %#v, want two stable episodes", records)
+	}
+}
+
+func TestBuildActivityRecordsDoesNotGuessUIDAcrossResourceRecreation(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	events := []timeline.TimelineEvent{
+		{ID: "old", Seq: 1, Timestamp: now, Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "old-uid", EventType: timeline.EventTypeAdd},
+		{ID: "new", Seq: 2, Timestamp: now.Add(time.Hour), Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "new-uid", EventType: timeline.EventTypeAdd},
+		{ID: "uidless-ready", Seq: 3, Timestamp: now.Add(2 * time.Hour), Source: timeline.SourceK8sEvent, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", Reason: "Ready", EventType: timeline.EventTypeNormal},
+	}
+
+	records := BuildActivityRecords(events)
+	if len(records) != 3 {
+		t.Fatalf("records = %#v, want ambiguous UID-less evidence kept separate", records)
+	}
+	for _, record := range records {
+		if record.MaxSeq == 3 && record.Episode.Claim != nil && record.Episode.Claim.UID != "" {
+			t.Fatalf("UID-less evidence was attributed to recreated claim UID %q", record.Episode.Claim.UID)
+		}
+	}
+}

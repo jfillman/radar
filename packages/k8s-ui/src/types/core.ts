@@ -1,3 +1,5 @@
+import type { CapacityIntegrationState } from './capacity'
+
 // Topology types matching the Go backend
 
 // Per-resource-type RBAC permissions. Field names must match the JSON keys
@@ -57,6 +59,11 @@ export interface WorkloadWritePermissions {
   rollouts: boolean
 }
 
+export interface IntegrationCapability {
+  state: CapacityIntegrationState
+  reasonCode?: string
+}
+
 // Feature capabilities based on RBAC permissions
 export interface Capabilities {
   exec: boolean           // Terminal feature (pods/exec)
@@ -69,6 +76,7 @@ export interface Capabilities {
   nodeWrite: boolean      // Node write operations (cordon, uncordon, drain)
   workloadWrites?: WorkloadWritePermissions // Workload patch permissions (restart/scale controls)
   mcpEnabled: boolean     // MCP server is running
+  karpenter: IntegrationCapability // Karpenter discovery and NodePool read state
   // How / where this Radar binary is running. Optional on the wire so a
   // newer frontend (e.g. radar-hub-web bundling a fresher @skyhook-io/radar-app)
   // doesn't crash against an older backend that hasn't shipped the field yet —
@@ -1031,6 +1039,7 @@ export interface TopNodeMetrics {
   name: string
   cpu: number              // nanocores (usage)
   memory: number           // bytes (usage)
+  observedAt?: string      // exact metrics sample time; absent when no sample exists
   podCount: number         // pods scheduled on this node
   cpuAllocatable: number   // nanocores
   memoryAllocatable: number // bytes

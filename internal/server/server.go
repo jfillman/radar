@@ -373,6 +373,12 @@ func (s *Server) setupRoutes() {
 			r.Get("/dashboard/helm", s.handleDashboardHelm)
 			r.Get("/cluster-info", s.handleClusterInfo)
 			r.Get("/capabilities", s.handleCapabilities)
+			r.Get("/capacity", s.handleCapacityOverview)
+			r.Get("/capacity/pools", s.handleCapacityPools)
+			r.Get("/capacity/pools/{name}", s.handleCapacityPool)
+			r.Get("/capacity/pools/{name}/members", s.handleCapacityPoolMembers)
+			r.Get("/capacity/demand", s.handleCapacityDemand)
+			r.Get("/capacity/activity", s.handleCapacityActivity)
 			r.Get("/topology", s.handleTopology)
 			r.Get("/gitops/tree/{kind}/{namespace}/{name}", s.handleGitOpsTree)
 			r.Get("/gitops/insights/{kind}/{namespace}/{name}", s.handleGitOpsInsights)
@@ -901,6 +907,8 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	caps.Karpenter = s.karpenterCapability(r)
+
 	s.writeJSON(w, caps)
 }
 
@@ -1209,15 +1217,16 @@ func (s *Server) filterNamespacesByCanRead(r *http.Request, group, resource, ver
 // canRead's per-user canI cache so subsequent topology calls within the
 // TTL don't re-SAR.
 //
-// Skips CRDs not present in discovery (e.g. AKSNodeClass on an EKS cluster):
-// SARing a non-existent resource returns false because no RBAC rule covers
-// it, which would over-strip KindNodeClass for a user who has list-RBAC on
-// the provider that IS installed. Mirrors MCP canReadClusterScopedKind's
-// unknown-kind passthrough.
+// NodeClass is intentionally excluded here. One synthesized NodeKind contains
+// independently authorized provider APIs, including arbitrary custom kinds;
+// applyClusterScopedTopologyRBAC filters those by exact node GVR instead.
 func (s *Server) deniedClusterScopedTopoKinds(r *http.Request) map[topology.NodeKind]bool {
 	deny := make(map[topology.NodeKind]bool)
 	disc := k8s.GetResourceDiscovery()
 	for _, ck := range topology.ClusterScopedKinds {
+		if ck.Kind == topology.KindNodeClass {
+			continue
+		}
 		if ck.Group != "" && disc != nil {
 			if _, ok := disc.GetResourceWithGroup(ck.Resource, ck.Group); !ok {
 				continue
@@ -1228,6 +1237,22 @@ func (s *Server) deniedClusterScopedTopoKinds(r *http.Request) map[topology.Node
 		}
 	}
 	return deny
+}
+
+func (s *Server) applyClusterScopedTopologyRBAC(r *http.Request, topo *topology.Topology) {
+	if topo == nil {
+		return
+	}
+	if deny := s.deniedClusterScopedTopoKinds(r); len(deny) > 0 {
+		topo.StripNodeKinds(deny)
+	}
+	allowedNodeClasses := make(map[topology.SARTuple]bool)
+	for _, tuple := range topo.NodeClassRBACTuples() {
+		if s.canRead(r, tuple.Group, tuple.Resource, "", "list") {
+			allowedNodeClasses[tuple] = true
+		}
+	}
+	topo.StripNodeClassesExcept(allowedNodeClasses)
 }
 
 // parseNamespaces parses the namespace filter from query parameters.
@@ -1293,9 +1318,7 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 	// them from the SA-populated cache regardless of namespace scope, so
 	// without this strip a namespace-restricted user with cluster-wide pod
 	// access would enumerate cluster infrastructure they have no RBAC for.
-	if deny := s.deniedClusterScopedTopoKinds(r); len(deny) > 0 {
-		topo.StripNodeKinds(deny)
-	}
+	s.applyClusterScopedTopologyRBAC(r, topo)
 
 	// Marshal once so we can record the exact wire size in perfstats.
 	// (writeJSON streams, which would force a counting-writer wrapper.)
@@ -2733,6 +2756,7 @@ func (s *Server) handleTopNodes(w http.ResponseWriter, r *http.Request) {
 		if m, ok := metricsMap[node.Name]; ok {
 			entry.CPU = m.CPU
 			entry.Memory = m.Memory
+			entry.ObservedAt = m.ObservedAt
 		}
 
 		entry.PodCount = podCounts[node.Name]
@@ -4140,7 +4164,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 		deny[topology.KindNamespace] = true
 	}
-	s.broadcaster.HandleSSE(w, r, deny)
+	s.broadcaster.HandleSSE(w, r, deny, func(tuple topology.SARTuple) bool {
+		return s.canRead(r, tuple.Group, tuple.Resource, "", "list")
+	})
 }
 
 // Settings handlers

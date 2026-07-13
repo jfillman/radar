@@ -1,5 +1,16 @@
 import { useEffect, useRef } from 'react'
-import type { AppHistory, AppRow } from '@skyhook-io/k8s-ui'
+import type {
+  AppHistory,
+  AppRow,
+  CapacityActivityResponse,
+  CapacityDemandResponse,
+  CapacityDemandState,
+  CapacityMemberListResponse,
+  CapacityMemberType,
+  CapacityOverviewResponse,
+  CapacityPoolDetailResponse,
+  CapacityPoolListResponse,
+} from '@skyhook-io/k8s-ui'
 import { useQuery, useMutation, useQueryClient, skipToken } from '@tanstack/react-query'
 import { showApiError, showApiSuccess } from '../components/ui/Toast'
 import { useCanHelmWrite } from '../contexts/CapabilitiesContext'
@@ -42,6 +53,7 @@ const DASHBOARD_REFRESH_INTERVAL_MS = 30_000
 const AUDIT_REFRESH_INTERVAL_MS = 60_000
 const ISSUES_REFRESH_INTERVAL_MS = 30_000
 const COST_REFRESH_INTERVAL_MS = 60_000
+const CAPACITY_REFRESH_INTERVAL_MS = 30_000
 const CHANGES_REFRESH_INTERVAL_MS = 60_000
 const APPLICATIONS_REFRESH_INTERVAL_MS = 60_000
 
@@ -101,6 +113,19 @@ export class ApiError extends Error {
 
 export function isForbiddenError(error: unknown): boolean {
   return error instanceof ApiError && error.status === 403
+}
+
+export function isNotFoundError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404
+}
+
+export function isCapacityCursorInvalidError(error: unknown): boolean {
+  return error instanceof ApiError && error.data?.error_code === 'capacity_cursor_invalid'
+}
+
+export function shouldRetryCapacityQuery(failureCount: number, error: unknown): boolean {
+  if (error instanceof ApiError && (error.status === 400 || error.status === 403 || error.status === 404)) return false
+  return failureCount < 3
 }
 
 const METRICS_API_GROUP_TOKENS = ['metrics', 'k8s', 'io'] as const
@@ -657,6 +682,174 @@ export function useOpenCostNodes() {
     staleTime: 60000,
     refetchInterval: 120000,
     placeholderData: (prev) => prev,
+  })
+}
+
+// ============================================================================
+// Capacity
+// ============================================================================
+
+export interface CapacityQueryOptions {
+  enabled?: boolean
+}
+
+export interface CapacityPageQueryOptions extends CapacityQueryOptions {
+  limit?: number
+  cursor?: string
+}
+
+function capacityPageQuery(options?: CapacityPageQueryOptions): string {
+  const params = new URLSearchParams()
+  if (options?.limit !== undefined) params.set('limit', String(options.limit))
+  if (options?.cursor) params.set('cursor', options.cursor)
+  const query = params.toString()
+  return query ? `?${query}` : ''
+}
+
+export function useCapacityOverview(options?: CapacityQueryOptions) {
+  const enabled = options?.enabled ?? true
+  return useQuery<CapacityOverviewResponse>({
+    queryKey: ['capacity', 'overview'],
+    queryFn: ({ signal }) => fetchJSON<CapacityOverviewResponse>('/capacity', signal),
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: enabled ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    retry: shouldRetryCapacityQuery,
+  })
+}
+
+export function useCapacityPools(options?: CapacityPageQueryOptions) {
+  const enabled = options?.enabled ?? true
+  const limit = options?.limit
+  const cursor = options?.cursor
+  const queryKey = ['capacity', 'pools', limit, cursor]
+  return useQuery<CapacityPoolListResponse>({
+    queryKey,
+    queryFn: ({ signal }) => fetchJSON<CapacityPoolListResponse>(`/capacity/pools${capacityPageQuery(options)}`, signal),
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: enabled ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    retry: shouldRetryCapacityQuery,
+    placeholderData: (previous, previousQuery) => {
+      const previousKey = previousQuery?.queryKey
+      return previousKey?.[2] === limit ? previous : undefined
+    },
+  })
+}
+
+export function useCapacityPoolDetail(name: string | undefined, options?: CapacityQueryOptions) {
+  const enabled = Boolean(name) && (options?.enabled ?? true)
+  return useQuery<CapacityPoolDetailResponse>({
+    queryKey: ['capacity', 'pool', name],
+    queryFn: ({ signal }) => fetchJSON<CapacityPoolDetailResponse>(`/capacity/pools/${encodeURIComponent(name ?? '')}`, signal),
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: (query) => enabled && !isNotFoundError(query.state.error) ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    retry: (failureCount, error) => !isNotFoundError(error) && shouldRetryCapacityQuery(failureCount, error),
+  })
+}
+
+export function useCapacityPoolMembers(
+  name: string | undefined,
+  type: CapacityMemberType,
+  options?: CapacityPageQueryOptions,
+) {
+  const enabled = Boolean(name) && (options?.enabled ?? true)
+  const limit = options?.limit
+  const cursor = options?.cursor
+  const pageQuery = capacityPageQuery(options)
+  const separator = pageQuery ? '&' : '?'
+  const queryKey = ['capacity', 'pool', name, 'members', type, limit, cursor]
+  return useQuery<CapacityMemberListResponse>({
+    queryKey,
+    queryFn: ({ signal }) => fetchJSON<CapacityMemberListResponse>(
+      `/capacity/pools/${encodeURIComponent(name ?? '')}/members${pageQuery}${separator}type=${encodeURIComponent(type)}`,
+      signal,
+    ),
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: enabled ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    retry: shouldRetryCapacityQuery,
+    placeholderData: (previous, previousQuery) => {
+      const previousKey = previousQuery?.queryKey
+      return previousKey?.[2] === name && previousKey?.[4] === type && previousKey?.[5] === limit ? previous : undefined
+    },
+  })
+}
+
+export interface CapacityDemandQueryOptions extends CapacityPageQueryOptions {
+  state?: CapacityDemandState
+  pool?: string
+}
+
+export function useCapacityDemand(options?: CapacityDemandQueryOptions) {
+  const enabled = options?.enabled ?? true
+  const params = new URLSearchParams()
+  if (options?.limit !== undefined) params.set('limit', String(options.limit))
+  if (options?.cursor) params.set('cursor', options.cursor)
+  if (options?.state) params.set('state', options.state)
+  if (options?.pool) params.set('pool', options.pool)
+  const query = params.toString()
+  const queryKey = ['capacity', 'demand', options?.limit, options?.cursor, options?.state, options?.pool]
+  return useQuery<CapacityDemandResponse>({
+    queryKey,
+    queryFn: ({ signal }) => fetchJSON<CapacityDemandResponse>(`/capacity/demand${query ? `?${query}` : ''}`, signal),
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: enabled ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    retry: shouldRetryCapacityQuery,
+    placeholderData: (previous, previousQuery) => {
+      const previousKey = previousQuery?.queryKey
+      return previousKey?.[2] === options?.limit &&
+        previousKey?.[4] === options?.state &&
+        previousKey?.[5] === options?.pool ? previous : undefined
+    },
+  })
+}
+
+export interface CapacityActivityQueryOptions extends CapacityPageQueryOptions {
+  since?: string
+  pool?: string
+  claim?: string
+  node?: string
+  reason?: string
+}
+
+export function useCapacityActivity(options?: CapacityActivityQueryOptions) {
+  const enabled = options?.enabled ?? true
+  const params = new URLSearchParams()
+  if (options?.limit !== undefined) params.set('limit', String(options.limit))
+  if (options?.cursor) params.set('cursor', options.cursor)
+  if (options?.since) params.set('since', options.since)
+  if (options?.pool) params.set('pool', options.pool)
+  if (options?.claim) params.set('claim', options.claim)
+  if (options?.node) params.set('node', options.node)
+  if (options?.reason) params.set('reason', options.reason)
+  const query = params.toString()
+  const queryKey = [
+    'capacity',
+    'activity',
+    options?.limit,
+    options?.cursor,
+    options?.since,
+    options?.pool,
+    options?.claim,
+    options?.node,
+    options?.reason,
+  ]
+  return useQuery<CapacityActivityResponse>({
+    queryKey,
+    queryFn: ({ signal }) => fetchJSON<CapacityActivityResponse>(`/capacity/activity${query ? `?${query}` : ''}`, signal),
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: enabled ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    retry: shouldRetryCapacityQuery,
+    placeholderData: (previous, previousQuery) => {
+      const previousKey = previousQuery?.queryKey
+      return previousKey?.length === queryKey.length &&
+        previousKey?.[2] === options?.limit &&
+        previousKey?.slice(4).every((value, index) => value === queryKey[index + 4]) ? previous : undefined
+    },
   })
 }
 

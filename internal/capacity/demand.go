@@ -1,0 +1,1244 @@
+package capacity
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"math"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/skyhook-io/radar/pkg/capacityapi"
+	"github.com/skyhook-io/radar/pkg/karpenter"
+	"github.com/skyhook-io/radar/pkg/scheduling"
+	"github.com/skyhook-io/radar/pkg/subject"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/klog/v2"
+)
+
+const (
+	DefaultDemandPodRefLimit          = 50
+	DefaultDemandPoolEvaluationLimit  = 25
+	defaultDemandEvidenceLimit        = 10
+	defaultDemandUnknownLimit         = 10
+	defaultDemandSchedulerReasonLimit = 10
+	defaultDemandConstraintLimit      = 50
+	defaultDemandTolerationLimit      = 50
+)
+
+type DemandPoolInput struct {
+	NodePool                *unstructured.Unstructured
+	NodeClassReady          *bool
+	ProvisionedKnown        bool
+	StaticCapacityAvailable *bool
+	UnknownPredicates       []string
+}
+
+type DemandInput struct {
+	GeneratedAt         time.Time
+	Pods                []*corev1.Pod
+	Pools               []DemandPoolInput
+	PodRefLimit         int
+	PoolEvaluationLimit int
+	ResolvePodOwner     func(*corev1.Pod) *subject.Ref
+}
+
+type demandRequirement struct {
+	Key        string
+	Operator   corev1.NodeSelectorOperator
+	Values     []string
+	SourcePath string
+}
+
+type demandAffinityTerm struct {
+	Requirements []demandRequirement
+	Unknown      []string
+	Canonical    canonicalAffinityTerm
+	sortKey      string
+	Empty        bool
+}
+
+type demandSchedulingModel struct {
+	NodeSelector        []demandRequirement
+	AffinityTerms       []demandAffinityTerm
+	HasRequiredAffinity bool
+	RequiredEmpty       bool
+	Tolerations         []corev1.Toleration
+	Unknown             []string
+	Signature           capacityapi.SchedulingSignature
+}
+
+type canonicalRequirement struct {
+	Key      string   `json:"key"`
+	Operator string   `json:"operator"`
+	Values   []string `json:"values"`
+}
+
+type canonicalAffinityTerm struct {
+	Requirements []canonicalRequirement `json:"requirements"`
+	MatchFields  []canonicalRequirement `json:"matchFields"`
+}
+
+type canonicalToleration struct {
+	Key               string `json:"key"`
+	Operator          string `json:"operator"`
+	Value             string `json:"value"`
+	Effect            string `json:"effect"`
+	TolerationSeconds *int64 `json:"tolerationSeconds,omitempty"`
+}
+
+type canonicalSchedulingModel struct {
+	NodeSelector     []canonicalRequirement   `json:"nodeSelector"`
+	RequiredAffinity *[]canonicalAffinityTerm `json:"requiredAffinity,omitempty"`
+	Tolerations      []canonicalToleration    `json:"tolerations"`
+	Opaque           []string                 `json:"opaque"`
+}
+
+type canonicalDemandGroup struct {
+	Namespace           string                     `json:"namespace"`
+	Owner               subject.Ref                `json:"owner"`
+	Requests            capacityapi.ResourceVector `json:"requests"`
+	SchedulingSignature string                     `json:"schedulingSignature"`
+}
+
+type demandGroupAccumulator struct {
+	group    capacityapi.DemandGroup
+	requests corev1.ResourceList
+	model    demandSchedulingModel
+	pods     []*corev1.Pod
+}
+
+type DemandGroupModel struct {
+	Group      capacityapi.DemandGroup
+	requests   corev1.ResourceList
+	scheduling demandSchedulingModel
+}
+
+type demandEvidenceCollection struct {
+	values []capacityapi.EvaluationEvidence
+	total  int
+}
+
+type demandSchedulerReasonAggregate struct {
+	code      string
+	source    string
+	message   string
+	count     int
+	firstSeen time.Time
+}
+
+func (c *demandEvidenceCollection) add(predicate, sourcePath string, observed, expected []string, explanation string) {
+	c.total++
+	if len(c.values) >= defaultDemandEvidenceLimit {
+		return
+	}
+	c.values = append(c.values, demandEvidence(predicate, sourcePath, observed, expected, explanation))
+}
+
+func (c *demandEvidenceCollection) merge(other demandEvidenceCollection) {
+	c.total += other.total
+	remaining := defaultDemandEvidenceLimit - len(c.values)
+	if remaining <= 0 {
+		return
+	}
+	values := other.values
+	if len(values) > remaining {
+		values = values[:remaining]
+	}
+	c.values = append(c.values, values...)
+}
+
+func BuildDemandGroups(input DemandInput) []capacityapi.DemandGroup {
+	models := BuildDemandGroupModels(input)
+	return EvaluateDemandGroupModels(models, input.Pools, input.PoolEvaluationLimit)
+}
+
+func BuildDemandGroupModels(input DemandInput) []DemandGroupModel {
+	refLimit := input.PodRefLimit
+	if refLimit <= 0 {
+		refLimit = DefaultDemandPodRefLimit
+	}
+
+	orderedPods := make([]*corev1.Pod, 0, len(input.Pods))
+	for _, pod := range input.Pods {
+		if pod != nil && pod.Spec.NodeName == "" && !isTerminal(pod) && pod.DeletionTimestamp == nil && !isDaemonSetPod(pod) {
+			orderedPods = append(orderedPods, pod)
+		}
+	}
+	sort.Slice(orderedPods, func(i, j int) bool { return demandPodKey(orderedPods[i]) < demandPodKey(orderedPods[j]) })
+
+	groups := map[string]*demandGroupAccumulator{}
+	for _, pod := range orderedPods {
+		owner := defaultPodOwner(pod)
+		if input.ResolvePodOwner != nil {
+			if resolved := input.ResolvePodOwner(pod); resolved != nil && resolved.Kind != "" && resolved.Name != "" {
+				owner = *resolved
+			}
+		}
+		requests := EffectivePodRequests(pod)
+		model := demandSchedulingModelForPod(pod, requests)
+		fingerprint := stableDemandFingerprint(canonicalDemandGroup{
+			Namespace:           pod.Namespace,
+			Owner:               owner,
+			Requests:            ResourceVector(requests),
+			SchedulingSignature: model.Signature.Fingerprint,
+		})
+		group := groups[fingerprint]
+		if group == nil {
+			value := capacityapi.NewDemandGroup(input.GeneratedAt)
+			value.ID = "demand-" + fingerprint
+			value.Fingerprint = "sha256:" + fingerprint
+			value.Namespace = pod.Namespace
+			value.Owner = copySubjectRef(owner)
+			value.PerPodRequests = QuantityObservation(requests, capacityapi.CertaintyExact, capacityapi.GranularityAggregate, input.GeneratedAt, "pod.effectiveRequests")
+			value.SchedulingSignature = model.Signature
+			group = &demandGroupAccumulator{group: value, requests: requests.DeepCopy(), model: model}
+			groups[fingerprint] = group
+		}
+		group.pods = append(group.pods, pod)
+	}
+
+	result := make([]DemandGroupModel, 0, len(groups))
+	for _, aggregate := range groups {
+		sort.Slice(aggregate.pods, func(i, j int) bool { return demandPodKey(aggregate.pods[i]) < demandPodKey(aggregate.pods[j]) })
+		aggregate.group.PodCount = len(aggregate.pods)
+		aggregate.group.PodsMeta.Total = len(aggregate.pods)
+		returned := len(aggregate.pods)
+		if returned > refLimit {
+			returned = refLimit
+			aggregate.group.PodsMeta.Truncated = true
+		}
+		aggregate.group.PodsMeta.Returned = returned
+		for _, pod := range aggregate.pods[:returned] {
+			aggregate.group.Pods = append(aggregate.group.Pods, identityForPod(pod))
+		}
+		aggregate.group.FirstSeen = demandFirstSeen(aggregate.pods, input.GeneratedAt)
+		aggregate.group.LastSeen = input.GeneratedAt
+		aggregate.group.AggregateRequests = QuantityObservation(
+			multiplyResourceList(aggregate.requests, int64(len(aggregate.pods))),
+			capacityapi.CertaintyExact,
+			capacityapi.GranularityAggregate,
+			input.GeneratedAt,
+			"pod.effectiveRequests",
+		)
+		populateDemandSchedulerState(&aggregate.group, aggregate.pods, input.GeneratedAt)
+		result = append(result, DemandGroupModel{
+			Group:      aggregate.group,
+			requests:   aggregate.requests,
+			scheduling: aggregate.model,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Group.ID < result[j].Group.ID })
+	return result
+}
+
+func EvaluateDemandGroupModels(models []DemandGroupModel, pools []DemandPoolInput, evaluationLimit int) []capacityapi.DemandGroup {
+	orderedPools := sortedDemandPoolInputs(pools)
+	result := make([]capacityapi.DemandGroup, 0, len(models))
+	for _, model := range models {
+		group := model.Group
+		group.PoolEvaluations, group.PoolEvaluationsMeta, group.PoolEvaluationCounts = evaluateDemandPools(
+			model.scheduling,
+			model.requests,
+			orderedPools,
+			evaluationLimit,
+		)
+		if pools != nil {
+			group.State = demandStateWithPoolEvaluations(group.State, group.PoolEvaluationCounts, len(orderedPools))
+		}
+		result = append(result, group)
+	}
+	return result
+}
+
+func ClassifyDemandGroupModels(models []DemandGroupModel, pools []DemandPoolInput) {
+	if pools == nil {
+		return
+	}
+	orderedPools := sortedDemandPoolInputs(pools)
+	for index := range models {
+		if models[index].Group.State != capacityapi.DemandAwaitingCapacity {
+			continue
+		}
+		counts := capacityapi.PoolEvaluationCounts{}
+		for _, pool := range orderedPools {
+			switch evaluateDemandPool(models[index].scheduling, models[index].requests, pool).Result {
+			case capacityapi.PoolDeclaredCompatible:
+				counts.DeclaredCompatible++
+			case capacityapi.PoolIncompatible:
+				counts.Incompatible++
+			default:
+				counts.Unknown++
+			}
+		}
+		models[index].Group.State = demandStateWithPoolEvaluations(models[index].Group.State, counts, len(orderedPools))
+	}
+}
+
+func demandStateWithPoolEvaluations(state capacityapi.DemandState, counts capacityapi.PoolEvaluationCounts, poolCount int) capacityapi.DemandState {
+	if state != capacityapi.DemandAwaitingCapacity {
+		return state
+	}
+	if counts.DeclaredCompatible > 0 {
+		return capacityapi.DemandAwaitingCapacity
+	}
+	if counts.Unknown > 0 {
+		return capacityapi.DemandUnknown
+	}
+	if poolCount == 0 || counts.Incompatible == poolCount {
+		return capacityapi.DemandBlocked
+	}
+	return capacityapi.DemandUnknown
+}
+
+func demandSchedulingModelForPod(pod *corev1.Pod, requests corev1.ResourceList) demandSchedulingModel {
+	model := demandSchedulingModel{
+		NodeSelector:  []demandRequirement{},
+		AffinityTerms: []demandAffinityTerm{},
+		Tolerations:   append([]corev1.Toleration{}, pod.Spec.Tolerations...),
+		Unknown:       []string{},
+		Signature: capacityapi.SchedulingSignature{
+			Constraints: []capacityapi.SchedulingConstraint{},
+			Tolerations: []capacityapi.Toleration{},
+		},
+	}
+
+	selectorKeys := make([]string, 0, len(pod.Spec.NodeSelector))
+	for key := range pod.Spec.NodeSelector {
+		selectorKeys = append(selectorKeys, key)
+	}
+	sort.Strings(selectorKeys)
+	for _, key := range selectorKeys {
+		requirement := demandRequirement{
+			Key: key, Operator: corev1.NodeSelectorOpIn, Values: []string{pod.Spec.NodeSelector[key]},
+			SourcePath: "spec.nodeSelector." + key,
+		}
+		model.NodeSelector = append(model.NodeSelector, requirement)
+		appendDemandConstraint(&model.Signature, "nodeSelector", requirement)
+	}
+
+	var canonicalAffinity *[]canonicalAffinityTerm
+	if affinity := pod.Spec.Affinity; affinity != nil && affinity.NodeAffinity != nil && affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+		model.HasRequiredAffinity = true
+		rawTerms := affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+		model.RequiredEmpty = len(rawTerms) == 0
+		for termIndex, rawTerm := range rawTerms {
+			term := demandAffinityTerm{
+				Requirements: []demandRequirement{},
+				Unknown:      []string{},
+				Empty:        len(rawTerm.MatchExpressions) == 0 && len(rawTerm.MatchFields) == 0,
+			}
+			for expressionIndex, expression := range rawTerm.MatchExpressions {
+				requirement := demandRequirement{
+					Key: expression.Key, Operator: expression.Operator, Values: sortedUniqueStrings(expression.Values),
+					SourcePath: fmt.Sprintf("spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[%d].matchExpressions[%d]", termIndex, expressionIndex),
+				}
+				term.Requirements = append(term.Requirements, requirement)
+				appendDemandConstraint(&model.Signature, "requiredNodeAffinity", requirement)
+			}
+			term.Canonical.Requirements = canonicalRequirements(term.Requirements)
+			for _, field := range rawTerm.MatchFields {
+				term.Canonical.MatchFields = append(term.Canonical.MatchFields, canonicalRequirement{
+					Key: field.Key, Operator: string(field.Operator), Values: sortedUniqueStrings(field.Values),
+				})
+			}
+			if len(rawTerm.MatchFields) > 0 {
+				term.Unknown = append(term.Unknown, "requiredNodeAffinity.matchFields")
+			}
+			term.Canonical.MatchFields = sortedCanonicalRequirements(term.Canonical.MatchFields)
+			term.sortKey = stableDemandFingerprint(term.Canonical)
+			model.AffinityTerms = append(model.AffinityTerms, term)
+		}
+		sort.Slice(model.AffinityTerms, func(i, j int) bool {
+			return model.AffinityTerms[i].sortKey < model.AffinityTerms[j].sortKey
+		})
+		terms := make([]canonicalAffinityTerm, 0, len(model.AffinityTerms))
+		for _, term := range model.AffinityTerms {
+			terms = append(terms, term.Canonical)
+		}
+		canonicalAffinity = &terms
+	}
+
+	keyedTolerations := make([]struct {
+		value corev1.Toleration
+		key   string
+	}, 0, len(model.Tolerations))
+	for _, toleration := range model.Tolerations {
+		keyedTolerations = append(keyedTolerations, struct {
+			value corev1.Toleration
+			key   string
+		}{value: toleration, key: canonicalTolerationKey(toleration)})
+	}
+	sort.Slice(keyedTolerations, func(i, j int) bool { return keyedTolerations[i].key < keyedTolerations[j].key })
+	model.Tolerations = model.Tolerations[:0]
+	for _, toleration := range keyedTolerations {
+		model.Tolerations = append(model.Tolerations, toleration.value)
+	}
+	canonicalTolerations := make([]canonicalToleration, 0, len(model.Tolerations))
+	for _, toleration := range model.Tolerations {
+		canonical := canonicalTolerationFor(toleration)
+		canonicalTolerations = append(canonicalTolerations, canonical)
+		model.Signature.TolerationsMeta.Total++
+		if len(model.Signature.Tolerations) < defaultDemandTolerationLimit {
+			model.Signature.Tolerations = append(model.Signature.Tolerations, capacityapi.Toleration{
+				Key: toleration.Key, Operator: string(toleration.Operator), Value: toleration.Value,
+				Effect: string(toleration.Effect), TolerationSeconds: toleration.TolerationSeconds,
+			})
+		}
+		if toleration.Operator != "" && toleration.Operator != corev1.TolerationOpEqual && toleration.Operator != corev1.TolerationOpExists {
+			model.Unknown = append(model.Unknown, "toleration.operator")
+		}
+	}
+
+	opaque := demandOpaqueConstraints(pod, requests, &model.Unknown)
+	model.Unknown = sortedUniqueStrings(model.Unknown)
+	canonical := canonicalSchedulingModel{
+		NodeSelector: canonicalRequirements(model.NodeSelector), RequiredAffinity: canonicalAffinity,
+		Tolerations: canonicalTolerations, Opaque: opaque,
+	}
+	model.Signature.Fingerprint = "sha256:" + stableDemandFingerprint(canonical)
+	model.Signature.ConstraintsMeta.Returned = len(model.Signature.Constraints)
+	model.Signature.ConstraintsMeta.Truncated = model.Signature.ConstraintsMeta.Returned < model.Signature.ConstraintsMeta.Total
+	model.Signature.TolerationsMeta.Returned = len(model.Signature.Tolerations)
+	model.Signature.TolerationsMeta.Truncated = model.Signature.TolerationsMeta.Returned < model.Signature.TolerationsMeta.Total
+	return model
+}
+
+func sortedDemandPoolInputs(inputs []DemandPoolInput) []DemandPoolInput {
+	ordered := make([]DemandPoolInput, 0, len(inputs))
+	for _, input := range inputs {
+		if input.NodePool != nil && input.NodePool.GetName() != "" {
+			ordered = append(ordered, input)
+		}
+	}
+	sort.Slice(ordered, func(i, j int) bool { return demandPoolKey(ordered[i].NodePool) < demandPoolKey(ordered[j].NodePool) })
+	return ordered
+}
+
+func evaluateDemandPools(model demandSchedulingModel, requests corev1.ResourceList, ordered []DemandPoolInput, evaluationLimit int) ([]capacityapi.PoolEvaluation, capacityapi.BoundedResultMeta, capacityapi.PoolEvaluationCounts) {
+	if evaluationLimit == 0 {
+		evaluationLimit = DefaultDemandPoolEvaluationLimit
+	}
+	capacity := len(ordered)
+	if evaluationLimit > 0 && capacity > evaluationLimit {
+		capacity = evaluationLimit
+	}
+	result := make([]capacityapi.PoolEvaluation, 0, capacity)
+	meta := capacityapi.BoundedResultMeta{Total: len(ordered)}
+	counts := capacityapi.PoolEvaluationCounts{}
+	for _, input := range ordered {
+		evaluation := evaluateDemandPool(model, requests, input)
+		switch evaluation.Result {
+		case capacityapi.PoolDeclaredCompatible:
+			counts.DeclaredCompatible++
+		case capacityapi.PoolIncompatible:
+			counts.Incompatible++
+		default:
+			counts.Unknown++
+		}
+		if evaluationLimit < 0 || len(result) < evaluationLimit {
+			result = append(result, evaluation)
+		}
+	}
+	meta.Returned = len(result)
+	meta.Truncated = meta.Returned < meta.Total
+	return result, meta, counts
+}
+
+func evaluateDemandPool(model demandSchedulingModel, requests corev1.ResourceList, input DemandPoolInput) capacityapi.PoolEvaluation {
+	pool := input.NodePool
+	evaluation := capacityapi.NewPoolEvaluation()
+	evaluation.Pool = subject.Ref{Group: karpenter.Group, Kind: karpenter.NodePoolKind, Name: pool.GetName()}
+	unknown := append([]string{}, model.Unknown...)
+	unknown = append(unknown, input.UnknownPredicates...)
+	evidence := demandEvidenceCollection{values: []capacityapi.EvaluationEvidence{}}
+
+	spec := karpenter.NormalizeNodePoolSpec(pool)
+	switch karpenter.NodePoolReadiness(pool) {
+	case karpenter.ReadinessNotReady:
+		evidence.add(
+			"nodePoolReady", "status.conditions[type=Ready]", []string{"not_ready"}, []string{"ready"},
+			"The NodePool reports that it is not ready.",
+		)
+	case karpenter.ReadinessUnknown:
+		unknown = append(unknown, "nodePool.readiness")
+	}
+	if spec.NodeClassRef != nil {
+		switch {
+		case input.NodeClassReady == nil:
+			unknown = append(unknown, "nodeClass.readiness")
+		case !*input.NodeClassReady:
+			evidence.add(
+				"nodeClassReady", "nodeClass.status.conditions[type=Ready]", []string{"not_ready"}, []string{"ready"},
+				"The NodeClass reports that it is not ready.",
+			)
+		}
+	}
+
+	for _, taint := range sortedTaints(spec.Taints) {
+		switch taint.Effect {
+		case corev1.TaintEffectPreferNoSchedule:
+			continue
+		case corev1.TaintEffectNoSchedule, corev1.TaintEffectNoExecute:
+			if !tolerationsTolerateTaint(model.Tolerations, taint) {
+				evidence.add(
+					"permanentTaint", "spec.template.spec.taints", []string{formatTaint(taint)}, []string{"matching toleration"},
+					"The Pod does not tolerate a permanent NodePool taint.",
+				)
+			}
+		default:
+			unknown = append(unknown, "nodePool.taints")
+		}
+	}
+
+	selectorEvidence, selectorUnknown := evaluateDemandSelectors(model, spec, pool.GetName())
+	evidence.merge(selectorEvidence)
+	unknown = append(unknown, selectorUnknown...)
+
+	limitEvidence, limitUnknown := evaluateDemandLimits(pool, spec, requests, input.ProvisionedKnown)
+	evidence.merge(limitEvidence)
+	unknown = append(unknown, limitUnknown...)
+
+	if spec.Replicas != nil {
+		switch {
+		case *spec.Replicas == 0:
+			evidence.add(
+				"staticCapacity", "spec.replicas", []string{"0"}, []string{"available static capacity"},
+				"The static NodePool has zero configured replicas.",
+			)
+		case input.StaticCapacityAvailable == nil:
+			unknown = append(unknown, "staticCapacity")
+		case !*input.StaticCapacityAvailable:
+			evidence.add(
+				"staticCapacity", "spec.replicas", []string{strconv.FormatInt(*spec.Replicas, 10)}, []string{"available static capacity"},
+				"No schedulable capacity was evidenced in the static NodePool.",
+			)
+		}
+	}
+
+	evaluation.Evidence = evidence.values
+	evaluation.UnknownPredicates = sortedUniqueStrings(unknown)
+	switch {
+	case evidence.total > 0:
+		evaluation.Result = capacityapi.PoolIncompatible
+	case len(evaluation.UnknownPredicates) > 0:
+		evaluation.Result = capacityapi.PoolEvaluationUnknown
+	default:
+		evaluation.Result = capacityapi.PoolDeclaredCompatible
+	}
+	evaluation.EvidenceMeta = capacityapi.BoundedResultMeta{
+		Total: evidence.total, Returned: len(evaluation.Evidence), Truncated: len(evaluation.Evidence) < evidence.total,
+	}
+	evaluation.UnknownPredicatesMeta.Total = len(evaluation.UnknownPredicates)
+	if len(evaluation.UnknownPredicates) > defaultDemandUnknownLimit {
+		evaluation.UnknownPredicates = evaluation.UnknownPredicates[:defaultDemandUnknownLimit]
+		evaluation.UnknownPredicatesMeta.Truncated = true
+	}
+	evaluation.UnknownPredicatesMeta.Returned = len(evaluation.UnknownPredicates)
+	return evaluation
+}
+
+func evaluateDemandSelectors(model demandSchedulingModel, spec karpenter.NodePoolSpec, poolName string) (demandEvidenceCollection, []string) {
+	poolRequirements := map[string][]demandRequirement{}
+	fixedLabels := map[string]bool{}
+	poolRequirements[karpenter.NodePoolLabelKey] = append(poolRequirements[karpenter.NodePoolLabelKey], demandRequirement{
+		Key: karpenter.NodePoolLabelKey, Operator: corev1.NodeSelectorOpIn, Values: []string{poolName}, SourcePath: "metadata.name",
+	})
+	fixedLabels[karpenter.NodePoolLabelKey] = true
+	for key, value := range spec.TemplateLabels {
+		poolRequirements[key] = append(poolRequirements[key], demandRequirement{
+			Key: key, Operator: corev1.NodeSelectorOpIn, Values: []string{value}, SourcePath: "spec.template.metadata.labels." + key,
+		})
+		fixedLabels[key] = true
+	}
+	for index, requirement := range spec.Requirements {
+		poolRequirements[requirement.Key] = append(poolRequirements[requirement.Key], demandRequirement{
+			Key: requirement.Key, Operator: requirement.Operator, Values: sortedUniqueStrings(requirement.Values),
+			SourcePath: fmt.Sprintf("spec.template.spec.requirements[%d]", index),
+		})
+	}
+
+	baseUnknown := []string{}
+	for _, requirement := range spec.Requirements {
+		if requirement.MinValues != nil {
+			baseUnknown = append(baseUnknown, "nodePool.requirements."+requirement.Key+".minValues")
+		}
+	}
+	if model.RequiredEmpty {
+		evidence := demandEvidenceCollection{}
+		evidence.add(
+			"requiredNodeAffinity", "spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms",
+			[]string{"no terms"}, []string{"at least one satisfiable term"}, "Required node affinity contains no schedulable term.",
+		)
+		return evidence, baseUnknown
+	}
+
+	terms := model.AffinityTerms
+	if !model.HasRequiredAffinity {
+		terms = []demandAffinityTerm{{Requirements: []demandRequirement{}, Unknown: []string{}}}
+	}
+	compatibleTerm := false
+	unknownTerm := false
+	allEvidence := demandEvidenceCollection{}
+	allUnknown := append([]string{}, baseUnknown...)
+	for _, term := range terms {
+		podRequirements := append([]demandRequirement{}, model.NodeSelector...)
+		podRequirements = append(podRequirements, term.Requirements...)
+		termEvidence, termUnknown := evaluateDemandSelectorTerm(podRequirements, poolRequirements, fixedLabels)
+		termUnknown = append(termUnknown, term.Unknown...)
+		if term.Empty {
+			termEvidence.add(
+				"requiredNodeAffinity",
+				"spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms",
+				[]string{"empty term"},
+				[]string{"at least one requirement"},
+				"An empty required node-affinity term does not match any Node.",
+			)
+		}
+		switch {
+		case termEvidence.total > 0:
+			allEvidence.merge(termEvidence)
+		case len(termUnknown) > 0:
+			unknownTerm = true
+			allUnknown = append(allUnknown, termUnknown...)
+		default:
+			compatibleTerm = true
+		}
+	}
+	if compatibleTerm {
+		return demandEvidenceCollection{}, baseUnknown
+	}
+	if unknownTerm {
+		return demandEvidenceCollection{}, allUnknown
+	}
+	return allEvidence, baseUnknown
+}
+
+func evaluateDemandSelectorTerm(podRequirements []demandRequirement, poolRequirements map[string][]demandRequirement, fixedLabels map[string]bool) (demandEvidenceCollection, []string) {
+	byKey := map[string][]demandRequirement{}
+	for _, requirement := range podRequirements {
+		byKey[requirement.Key] = append(byKey[requirement.Key], requirement)
+	}
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	evidence := demandEvidenceCollection{}
+	unknown := []string{}
+	for _, key := range keys {
+		podForKey := byKey[key]
+		poolForKey := poolRequirements[key]
+		combined := append(append([]demandRequirement{}, podForKey...), poolForKey...)
+		feasible, supported := demandRequirementsFeasible(combined)
+		if !supported {
+			unknown = append(unknown, "nodeSelector.operator."+key)
+			continue
+		}
+		if !feasible {
+			evidence.add(
+				"selectorRequirement", firstRequirementPath(podForKey), formatRequirements(podForKey), formatRequirements(poolForKey),
+				"The Pod's required node labels contradict the NodePool's declared labels or requirements.",
+			)
+			continue
+		}
+		if requirementNeedsPresentLabel(podForKey) && !requirementNeedsPresentLabel(poolForKey) {
+			unknown = append(unknown, "providerOfferings."+key)
+			continue
+		}
+		if isProviderOfferingLabel(key) && !fixedLabels[key] {
+			unknown = append(unknown, "providerOfferings."+key)
+		}
+	}
+	return evidence, unknown
+}
+
+func demandRequirementsFeasible(requirements []demandRequirement) (bool, bool) {
+	absentAllowed := true
+	presentAllowed := true
+	var finite map[string]struct{}
+	excluded := map[string]struct{}{}
+	var greaterThan *int64
+	var lessThan *int64
+
+	for _, requirement := range requirements {
+		values := sortedUniqueStrings(requirement.Values)
+		switch requirement.Operator {
+		case corev1.NodeSelectorOpIn:
+			if len(values) == 0 {
+				return false, false
+			}
+			absentAllowed = false
+			set := stringSet(values)
+			if finite == nil {
+				finite = set
+			} else {
+				finite = intersectStringSets(finite, set)
+			}
+		case corev1.NodeSelectorOpNotIn:
+			if len(values) == 0 {
+				return false, false
+			}
+			for _, value := range values {
+				excluded[value] = struct{}{}
+			}
+		case corev1.NodeSelectorOpExists:
+			if len(values) != 0 {
+				return false, false
+			}
+			absentAllowed = false
+		case corev1.NodeSelectorOpDoesNotExist:
+			if len(values) != 0 {
+				return false, false
+			}
+			presentAllowed = false
+		case corev1.NodeSelectorOpGt, corev1.NodeSelectorOpLt:
+			if len(values) != 1 {
+				return false, false
+			}
+			value, err := strconv.ParseInt(values[0], 10, 64)
+			if err != nil {
+				return false, false
+			}
+			absentAllowed = false
+			if requirement.Operator == corev1.NodeSelectorOpGt && (greaterThan == nil || value > *greaterThan) {
+				greaterThan = &value
+			}
+			if requirement.Operator == corev1.NodeSelectorOpLt && (lessThan == nil || value < *lessThan) {
+				lessThan = &value
+			}
+		default:
+			return false, false
+		}
+	}
+	if absentAllowed {
+		return true, true
+	}
+	if !presentAllowed {
+		return false, true
+	}
+	if finite != nil {
+		for value := range finite {
+			if _, blocked := excluded[value]; blocked {
+				continue
+			}
+			if demandNumericValueAllowed(value, greaterThan, lessThan) {
+				return true, true
+			}
+		}
+		return false, true
+	}
+	if len(excluded) > 0 && (greaterThan != nil || lessThan != nil) {
+		return false, false
+	}
+	if greaterThan != nil && *greaterThan == math.MaxInt64 {
+		return false, true
+	}
+	if lessThan != nil && *lessThan == math.MinInt64 {
+		return false, true
+	}
+	if greaterThan != nil && lessThan != nil && *greaterThan+1 >= *lessThan {
+		return false, true
+	}
+	return true, true
+}
+
+func evaluateDemandLimits(pool *unstructured.Unstructured, spec karpenter.NodePoolSpec, requests corev1.ResourceList, provisionedKnown bool) (demandEvidenceCollection, []string) {
+	if len(spec.Limits) == 0 {
+		return demandEvidenceCollection{}, nil
+	}
+	if !provisionedKnown {
+		return demandEvidenceCollection{}, []string{"nodePool.limits"}
+	}
+	provisioned := karpenter.NodePoolStatusResources(pool)
+	names := make([]string, 0, len(spec.Limits))
+	for name := range spec.Limits {
+		names = append(names, string(name))
+	}
+	sort.Strings(names)
+	evidence := demandEvidenceCollection{}
+	unknown := []string{}
+	for _, resourceName := range names {
+		name := corev1.ResourceName(resourceName)
+		limit := spec.Limits[name]
+		current := provisioned[name]
+		requested := requests[name]
+		withRequest := current.DeepCopy()
+		withRequest.Add(requested)
+		if requested.Sign() > 0 && withRequest.Cmp(limit) > 0 {
+			evidence.add(
+				"configuredLimit", "spec.limits."+resourceName,
+				[]string{"provisioned=" + current.String(), "perPodRequest=" + requested.String()}, []string{"limit=" + limit.String()},
+				"The NodePool's configured limit has no room for the Pod's minimum requested resource.",
+			)
+		} else if requested.Sign() == 0 && current.Cmp(limit) >= 0 {
+			unknown = append(unknown, "nodePool.limits."+resourceName+".capacityShape")
+		}
+	}
+	return evidence, unknown
+}
+
+func demandOpaqueConstraints(pod *corev1.Pod, requests corev1.ResourceList, unknown *[]string) []string {
+	opaque := []string{}
+	if affinity := pod.Spec.Affinity; affinity != nil {
+		if affinity.PodAffinity != nil && len(affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution) > 0 {
+			*unknown = append(*unknown, "interPodAffinity")
+			opaque = append(opaque, stableOpaqueConstraint("podAffinity", affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution))
+		}
+		if affinity.PodAntiAffinity != nil && len(affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution) > 0 {
+			*unknown = append(*unknown, "interPodAntiAffinity")
+			opaque = append(opaque, stableOpaqueConstraint("podAntiAffinity", affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution))
+		}
+	}
+	for _, constraint := range pod.Spec.TopologySpreadConstraints {
+		if constraint.WhenUnsatisfiable == corev1.DoNotSchedule {
+			*unknown = append(*unknown, "topologySpreadConstraints")
+			opaque = append(opaque, stableOpaqueConstraint("topologySpread", constraint))
+		}
+	}
+	for _, volume := range pod.Spec.Volumes {
+		if volume.PersistentVolumeClaim != nil {
+			*unknown = append(*unknown, "persistentVolumeTopology")
+			opaque = append(opaque, "persistentVolumeClaim:"+volume.PersistentVolumeClaim.ClaimName)
+		}
+		if volume.Ephemeral != nil {
+			*unknown = append(*unknown, "persistentVolumeTopology")
+			opaque = append(opaque, stableOpaqueConstraint("ephemeralVolume", volume.Ephemeral))
+		}
+	}
+	for _, container := range append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+		for _, port := range container.Ports {
+			if port.HostPort > 0 {
+				*unknown = append(*unknown, "hostPort")
+				opaque = append(opaque, fmt.Sprintf("hostPort:%s:%s:%d", port.HostIP, port.Protocol, port.HostPort))
+			}
+		}
+	}
+	for name := range requests {
+		if strings.Contains(string(name), "/") {
+			*unknown = append(*unknown, "providerResource."+string(name))
+			opaque = append(opaque, "providerResource:"+string(name))
+		}
+	}
+	if pod.Spec.RuntimeClassName != nil {
+		*unknown = append(*unknown, "runtimeClass")
+		opaque = append(opaque, "runtimeClass:"+*pod.Spec.RuntimeClassName)
+	}
+	if pod.Spec.SchedulerName != "" && pod.Spec.SchedulerName != corev1.DefaultSchedulerName {
+		*unknown = append(*unknown, "schedulerName")
+		opaque = append(opaque, "schedulerName:"+pod.Spec.SchedulerName)
+	}
+	if len(pod.Spec.SchedulingGates) > 0 {
+		opaque = append(opaque, stableOpaqueConstraint("schedulingGates", pod.Spec.SchedulingGates))
+	}
+	if len(pod.Spec.ResourceClaims) > 0 {
+		*unknown = append(*unknown, "dynamicResourceAllocation")
+		opaque = append(opaque, stableOpaqueConstraint("resourceClaims", pod.Spec.ResourceClaims))
+	}
+	return sortedUniqueStrings(opaque)
+}
+
+func populateDemandSchedulerState(group *capacityapi.DemandGroup, pods []*corev1.Pod, observedAt time.Time) {
+	type reasonKey struct {
+		source        string
+		code          string
+		messageDigest [sha256.Size]byte
+		messageLength int
+	}
+	reasons := map[reasonKey]*demandSchedulerReasonAggregate{}
+	retained := make([]*demandSchedulerReasonAggregate, 0, defaultDemandSchedulerReasonLimit)
+	addReason := func(source, code, message string, firstSeen time.Time) {
+		key := reasonKey{source: source, code: code, messageDigest: sha256.Sum256([]byte(message)), messageLength: len(message)}
+		reason := reasons[key]
+		if reason == nil {
+			reason = &demandSchedulerReasonAggregate{source: source, code: code, firstSeen: firstSeen}
+			reasons[key] = reason
+			if len(retained) < defaultDemandSchedulerReasonLimit {
+				reason.message = message
+				retained = append(retained, reason)
+			} else {
+				worst := 0
+				for index := 1; index < len(retained); index++ {
+					if demandSchedulerReasonLess(retained[worst].code, retained[worst].message, retained[index].code, retained[index].message) {
+						worst = index
+					}
+				}
+				if demandSchedulerReasonLess(code, message, retained[worst].code, retained[worst].message) {
+					retained[worst].message = ""
+					reason.message = message
+					retained[worst] = reason
+				}
+			}
+		}
+		reason.count++
+		if firstSeen.Before(reason.firstSeen) {
+			reason.firstSeen = firstSeen
+		}
+	}
+
+	sawHeld := false
+	sawAwaitingCapacity := false
+	sawBlocked := false
+	sawUnknown := false
+	for _, pod := range pods {
+		if len(pod.Spec.SchedulingGates) > 0 {
+			gateNames := make([]string, 0, len(pod.Spec.SchedulingGates))
+			for _, gate := range pod.Spec.SchedulingGates {
+				gateNames = append(gateNames, gate.Name)
+			}
+			sort.Strings(gateNames)
+			sawHeld = true
+			addReason("pod.spec.schedulingGates", corev1.PodReasonSchedulingGated, strings.Join(gateNames, ", "), observedAt)
+			continue
+		}
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type != corev1.PodScheduled {
+				continue
+			}
+			firstSeen := condition.LastTransitionTime.Time
+			if firstSeen.IsZero() {
+				firstSeen = pod.CreationTimestamp.Time
+			}
+			if firstSeen.IsZero() {
+				firstSeen = observedAt
+			}
+
+			switch {
+			case condition.Status != corev1.ConditionFalse:
+				sawUnknown = true
+			case condition.Reason == corev1.PodReasonSchedulingGated:
+				sawHeld = true
+				addReason("pod.status.conditions.PodScheduled", condition.Reason, condition.Message, firstSeen)
+			case condition.Reason != corev1.PodReasonUnschedulable:
+				sawUnknown = true
+				code := condition.Reason
+				if code == "" {
+					code = "PodScheduledFalse"
+				}
+				addReason("pod.status.conditions.PodScheduled", code, condition.Message, firstSeen)
+			default:
+				_, parsed := scheduling.ParseMessage(condition.Message)
+				if len(parsed) == 0 {
+					sawUnknown = true
+					addReason("pod.status.conditions.PodScheduled", condition.Reason, condition.Message, firstSeen)
+					continue
+				}
+				switch demandStateForSchedulingReasons(parsed) {
+				case capacityapi.DemandAwaitingCapacity:
+					sawAwaitingCapacity = true
+				case capacityapi.DemandBlocked:
+					sawBlocked = true
+				default:
+					sawUnknown = true
+				}
+				for _, parsedReason := range parsed {
+					addReason("pod.status.conditions.PodScheduled", string(parsedReason.Class), parsedReason.Raw, firstSeen)
+				}
+			}
+		}
+	}
+	switch {
+	case sawBlocked:
+		group.State = capacityapi.DemandBlocked
+	case sawHeld:
+		group.State = capacityapi.DemandHeld
+	case sawUnknown:
+		group.State = capacityapi.DemandUnknown
+	case sawAwaitingCapacity:
+		group.State = capacityapi.DemandAwaitingCapacity
+	default:
+		group.State = capacityapi.DemandWaitingForScheduler
+	}
+	group.SchedulerReasons = make([]capacityapi.SchedulerReason, 0, len(retained))
+	for _, reason := range retained {
+		group.SchedulerReasons = append(group.SchedulerReasons, capacityapi.SchedulerReason{
+			Code: reason.code, Source: reason.source, Message: reason.message,
+			Count: reason.count, FirstSeen: reason.firstSeen, LastSeen: observedAt,
+		})
+	}
+	sort.Slice(group.SchedulerReasons, func(i, j int) bool {
+		left := group.SchedulerReasons[i]
+		right := group.SchedulerReasons[j]
+		if left.Code != right.Code {
+			return left.Code < right.Code
+		}
+		if left.Source != right.Source {
+			return left.Source < right.Source
+		}
+		return left.Message < right.Message
+	})
+	group.SchedulerReasonsMeta.Total = len(reasons)
+	group.SchedulerReasonsMeta.Returned = len(group.SchedulerReasons)
+	group.SchedulerReasonsMeta.Truncated = group.SchedulerReasonsMeta.Returned < group.SchedulerReasonsMeta.Total
+}
+
+func demandSchedulerReasonLess(leftCode, leftMessage, rightCode, rightMessage string) bool {
+	if leftCode != rightCode {
+		return leftCode < rightCode
+	}
+	return leftMessage < rightMessage
+}
+
+func demandStateForSchedulingReasons(reasons []scheduling.Reason) capacityapi.DemandState {
+	hasCapacityReason := false
+	hasExternalBlocker := false
+	hasUnknown := false
+	for _, reason := range reasons {
+		switch reason.Class {
+		case scheduling.InsufficientResource,
+			scheduling.UntoleratedTaint,
+			scheduling.NodeAffinitySelector,
+			scheduling.VolumeCount,
+			scheduling.NoPorts,
+			scheduling.NodeUnschedulable:
+			hasCapacityReason = true
+		case scheduling.VolumeBinding:
+			hasExternalBlocker = true
+		case scheduling.Other, "":
+			hasUnknown = true
+		default:
+			hasUnknown = true
+		}
+	}
+	switch {
+	case hasExternalBlocker:
+		return capacityapi.DemandBlocked
+	case hasUnknown:
+		return capacityapi.DemandUnknown
+	case hasCapacityReason:
+		return capacityapi.DemandAwaitingCapacity
+	default:
+		return capacityapi.DemandUnknown
+	}
+}
+
+func capacityConstraint(predicate string, requirement demandRequirement) capacityapi.SchedulingConstraint {
+	return capacityapi.SchedulingConstraint{
+		Predicate: predicate, Key: requirement.Key, Operator: string(requirement.Operator),
+		Values: append([]string{}, requirement.Values...), SourcePath: requirement.SourcePath,
+	}
+}
+
+func appendDemandConstraint(signature *capacityapi.SchedulingSignature, predicate string, requirement demandRequirement) {
+	signature.ConstraintsMeta.Total++
+	if len(signature.Constraints) < defaultDemandConstraintLimit {
+		signature.Constraints = append(signature.Constraints, capacityConstraint(predicate, requirement))
+	}
+}
+
+func canonicalRequirements(requirements []demandRequirement) []canonicalRequirement {
+	result := make([]canonicalRequirement, 0, len(requirements))
+	for _, requirement := range requirements {
+		result = append(result, canonicalRequirement{
+			Key: requirement.Key, Operator: string(requirement.Operator), Values: sortedUniqueStrings(requirement.Values),
+		})
+	}
+	return sortedCanonicalRequirements(result)
+}
+
+func sortedCanonicalRequirements(requirements []canonicalRequirement) []canonicalRequirement {
+	sort.Slice(requirements, func(i, j int) bool {
+		left := requirements[i].Key + "\x00" + requirements[i].Operator + "\x00" + strings.Join(requirements[i].Values, "\x00")
+		right := requirements[j].Key + "\x00" + requirements[j].Operator + "\x00" + strings.Join(requirements[j].Values, "\x00")
+		return left < right
+	})
+	return requirements
+}
+
+func canonicalTolerationFor(toleration corev1.Toleration) canonicalToleration {
+	return canonicalToleration{
+		Key: toleration.Key, Operator: string(toleration.Operator), Value: toleration.Value,
+		Effect: string(toleration.Effect), TolerationSeconds: toleration.TolerationSeconds,
+	}
+}
+
+func canonicalTolerationKey(toleration corev1.Toleration) string {
+	return stableDemandFingerprint(canonicalTolerationFor(toleration))
+}
+
+func stableOpaqueConstraint(name string, value any) string {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return name
+	}
+	sum := sha256.Sum256(payload)
+	return name + ":sha256:" + hex.EncodeToString(sum[:])
+}
+
+func stableDemandFingerprint(value any) string {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func DemandSnapshotFingerprint(models []DemandGroupModel, _ []DemandPoolInput) string {
+	groupIDs := make([]string, 0, len(models))
+	for _, model := range models {
+		groupIDs = append(groupIDs, model.Group.ID)
+	}
+	sort.Strings(groupIDs)
+	return stableDemandFingerprint(groupIDs)
+}
+
+func demandEvidence(predicate, sourcePath string, observed, expected []string, explanation string) capacityapi.EvaluationEvidence {
+	return capacityapi.EvaluationEvidence{
+		Predicate: predicate, SourcePath: sourcePath,
+		ObservedValues: append([]string{}, observed...), ExpectedValues: append([]string{}, expected...),
+		Confidence: capacityapi.ConfidenceHigh, Explanation: explanation,
+	}
+}
+
+func requirementNeedsPresentLabel(requirements []demandRequirement) bool {
+	for _, requirement := range requirements {
+		switch requirement.Operator {
+		case corev1.NodeSelectorOpIn, corev1.NodeSelectorOpExists, corev1.NodeSelectorOpGt, corev1.NodeSelectorOpLt:
+			return true
+		}
+	}
+	return false
+}
+
+func demandNumericValueAllowed(value string, greaterThan, lessThan *int64) bool {
+	if greaterThan == nil && lessThan == nil {
+		return true
+	}
+	numeric, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return false
+	}
+	return (greaterThan == nil || numeric > *greaterThan) && (lessThan == nil || numeric < *lessThan)
+}
+
+func isProviderOfferingLabel(key string) bool {
+	return key == karpenter.CapacityTypeLabelKey || key == instanceTypeLabel || key == zoneLabel ||
+		key == "topology.kubernetes.io/region" || key == architectureLabel || key == "kubernetes.io/os" ||
+		strings.HasPrefix(key, "karpenter.k8s.aws/") || strings.HasPrefix(key, "eks.amazonaws.com/")
+}
+
+func tolerationsTolerateTaint(tolerations []corev1.Toleration, taint corev1.Taint) bool {
+	for i := range tolerations {
+		if tolerations[i].ToleratesTaint(klog.Background(), &taint, false) {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedTaints(taints []corev1.Taint) []corev1.Taint {
+	result := append([]corev1.Taint{}, taints...)
+	sort.Slice(result, func(i, j int) bool { return formatTaint(result[i]) < formatTaint(result[j]) })
+	return result
+}
+
+func formatTaint(taint corev1.Taint) string {
+	return taint.Key + "=" + taint.Value + ":" + string(taint.Effect)
+}
+
+func formatRequirements(requirements []demandRequirement) []string {
+	result := make([]string, 0, len(requirements))
+	for _, requirement := range requirements {
+		result = append(result, requirement.Key+" "+string(requirement.Operator)+" ["+strings.Join(requirement.Values, ",")+"]")
+	}
+	sort.Strings(result)
+	return result
+}
+
+func firstRequirementPath(requirements []demandRequirement) string {
+	paths := make([]string, 0, len(requirements))
+	for _, requirement := range requirements {
+		paths = append(paths, requirement.SourcePath)
+	}
+	sort.Strings(paths)
+	if len(paths) == 0 {
+		return "spec"
+	}
+	return paths[0]
+}
+
+func stringSet(values []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		result[value] = struct{}{}
+	}
+	return result
+}
+
+func intersectStringSets(left, right map[string]struct{}) map[string]struct{} {
+	result := map[string]struct{}{}
+	for value := range left {
+		if _, ok := right[value]; ok {
+			result[value] = struct{}{}
+		}
+	}
+	return result
+}
+
+func sortedUniqueStrings(values []string) []string {
+	result := append([]string{}, values...)
+	sort.Strings(result)
+	if len(result) < 2 {
+		return result
+	}
+	write := 1
+	for read := 1; read < len(result); read++ {
+		if result[read] != result[write-1] {
+			result[write] = result[read]
+			write++
+		}
+	}
+	return result[:write]
+}
+
+func multiplyResourceList(resources corev1.ResourceList, multiplier int64) corev1.ResourceList {
+	result := corev1.ResourceList{}
+	for name, quantity := range resources {
+		value := quantity.DeepCopy()
+		value.Mul(multiplier)
+		result[name] = value
+	}
+	return result
+}
+
+func copySubjectRef(ref subject.Ref) *subject.Ref {
+	copy := ref
+	return &copy
+}
+
+func identityForPod(pod *corev1.Pod) capacityapi.ResourceIdentity {
+	return capacityapi.ResourceIdentity{
+		Ref: subject.Ref{Kind: "Pod", Namespace: pod.Namespace, Name: pod.Name}, APIVersion: "v1", UID: string(pod.UID),
+	}
+}
+
+func demandFirstSeen(pods []*corev1.Pod, fallback time.Time) time.Time {
+	first := fallback
+	for _, pod := range pods {
+		created := pod.CreationTimestamp.Time
+		if created.IsZero() {
+			continue
+		}
+		if first.IsZero() || created.Before(first) {
+			first = created
+		}
+	}
+	return first
+}
+
+func demandPodKey(pod *corev1.Pod) string {
+	return pod.Namespace + "\x00" + pod.Name + "\x00" + string(pod.UID)
+}
+
+func demandPoolKey(pool *unstructured.Unstructured) string {
+	if pool == nil {
+		return "\xff"
+	}
+	return pool.GetName() + "\x00" + string(pool.GetUID())
+}

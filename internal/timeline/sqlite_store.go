@@ -536,14 +536,21 @@ func (s *SQLiteStore) Query(ctx context.Context, opts QueryOptions) ([]TimelineE
 		query.WriteString(" AND seq > ?")
 		args = append(args, opts.SinceSeq)
 	}
+	if opts.UntilSeq > 0 {
+		query.WriteString(" AND seq < ?")
+		args = append(args, opts.UntilSeq)
+	}
 
 	// Delta reads (SinceSeq>0) page by ascending arrival order: the server
 	// advances the client cursor by the max seq in the page, so a burst larger
 	// than the limit must resume from the lowest unseen seq — timestamp DESC
 	// would return the newest matches and silently drop the mid-seq ones. The
-	// client merges by id, so ascending is fine. Non-delta reads page newest-first.
-	if opts.SinceSeq > 0 {
+	// client merges by id, so ascending is fine. Sequence snapshots and backwards
+	// pages are newest-arrival-first; ordinary timeline reads remain newest-time-first.
+	if opts.SinceSeq > 0 || opts.SequenceOrder == pkgtimeline.SequenceOrderAscending {
 		query.WriteString(" ORDER BY seq ASC")
+	} else if opts.UntilSeq > 0 || opts.SequenceOrder == pkgtimeline.SequenceOrderDescending {
+		query.WriteString(" ORDER BY seq DESC")
 	} else {
 		query.WriteString(" ORDER BY timestamp DESC")
 	}
@@ -772,6 +779,8 @@ func (s *SQLiteStore) Stats() StoreStats {
 	if newest.Valid {
 		stats.NewestEvent, _ = time.Parse(time.RFC3339Nano, newest.String)
 	}
+	row = s.db.QueryRow("SELECT COALESCE(MIN(seq), 0), COALESCE(MAX(seq), 0) FROM events")
+	_ = row.Scan(&stats.OldestSeq, &stats.NewestSeq)
 
 	// Get database file size
 	stats.StorageBytes = s.storageBytes()

@@ -14,6 +14,8 @@ Radar automatically discovers and displays **any** Custom Resource Definition (C
 - Provisioned CPU, memory, pod, storage, and extended resources versus `spec.limits`
 - Actual CPU and memory usage across the Nodes in each pool, with explicit metrics coverage
 - Ready/cordoned Nodes, NodeClaims, purchase types, zones, architectures, and instance types
+- Pending Pods grouped by scheduling signature, including held workloads and declared NodePool compatibility
+- Correlated provisioning, interruption, disruption, and termination activity from Radar's retained timeline
 - Consolidation policy and direct drill-down to NodePool, NodeClass, NodeClaim, and Node resources
 
 Radar keeps two different signals separate: **configured ceiling pressure** is `status.resources` versus `spec.limits`; **actual usage** is point-in-time metrics-server usage versus Node allocatable capacity. Karpenter makes scheduling decisions from pod requests, so Radar presents actual usage as an efficiency signal, not scheduler headroom.

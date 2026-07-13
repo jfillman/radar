@@ -189,7 +189,6 @@ function PoolRow({ pool, selected, onSelect, onOpen }: { pool: CapacityPool; sel
       tabIndex={0}
       aria-selected={selected}
       aria-label={`Inspect ${pool.name} capacity`}
-      title={`Inspect ${pool.name} capacity`}
     >
       <td className="px-4 py-3">
         <div className="flex items-center gap-2">
@@ -239,7 +238,6 @@ function PoolRow({ pool, selected, onSelect, onOpen }: { pool: CapacityPool; sel
           type="button"
           className="rounded-md p-1 text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary"
           aria-label={`Open ${pool.name} NodePool`}
-          title={`Open ${pool.name} NodePool`}
           onClick={(event) => { event.stopPropagation(); onOpen() }}
         >
           <ChevronRight className="h-4 w-4" />

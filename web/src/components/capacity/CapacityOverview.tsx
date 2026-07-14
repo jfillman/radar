@@ -221,17 +221,25 @@ export function CapacityOverview({
           </div>
         </div>
         <Collapse open={showExplain}>
-          <div className="mt-3 grid gap-3 rounded-xl border border-theme-border bg-theme-surface p-4 shadow-theme-sm sm:grid-cols-2 xl:grid-cols-3">
-            {EXPLAIN_CARDS.map((card) => (
-              <div key={card.term} className="text-xs leading-relaxed">
-                <div className="font-semibold text-theme-text-primary">
-                  {card.term}
+          <div className="mt-3 rounded-xl border border-theme-border bg-theme-surface p-4 shadow-theme-sm">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {EXPLAIN_CARDS.map((card) => (
+                <div key={card.term} className="text-xs leading-relaxed">
+                  <div className="font-semibold text-theme-text-primary">
+                    {card.term}
+                  </div>
+                  <div className="mt-0.5 text-theme-text-tertiary">
+                    {card.body}
+                  </div>
                 </div>
-                <div className="mt-0.5 text-theme-text-tertiary">
-                  {card.body}
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
+            <p className="mt-3 border-t border-theme-border-subtle pt-3 text-[11px] text-theme-text-tertiary">
+              Certainty on each value — <span className="font-mono">=</span>{" "}
+              exact · <span className="font-mono">≥</span> lower bound ·{" "}
+              <span className="font-mono">?</span> unknown. Hover any value for
+              its source and freshness.
+            </p>
           </div>
         </Collapse>
       </div>

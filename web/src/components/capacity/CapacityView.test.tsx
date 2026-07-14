@@ -8,6 +8,7 @@ import type {
   CapacityBoundedResultMeta,
   CapacityDemandGroup,
   CapacityDemandResponse,
+  CapacityDemandSummary,
   CapacityMemberListResponse,
   CapacityOverviewResponse,
   CapacityPoolDetailResponse,
@@ -353,12 +354,29 @@ const demandGroup: CapacityDemandGroup = {
   issues: [],
 };
 
-function demandResponse(): CapacityDemandResponse {
+// Rollup deliberately differs from the single-group page (which has 3 pods in
+// 1 group) so tests prove counts come from the server summary, not the page.
+const demandSummary: CapacityDemandSummary = {
+  total: { podCount: 27, groupCount: 9 },
+  byState: {
+    waiting_for_scheduler: { podCount: 3, groupCount: 1 },
+    held: { podCount: 2, groupCount: 2 },
+    awaiting_capacity: { podCount: 12, groupCount: 3 },
+    blocked: { podCount: 10, groupCount: 3 },
+    unknown: { podCount: 0, groupCount: 0 },
+  },
+};
+
+function demandResponse(
+  overrides: Partial<CapacityDemandResponse> = {},
+): CapacityDemandResponse {
   return {
     ...meta,
     state: "available",
+    summary: demandSummary,
     items: [demandGroup],
     page: { hasMore: false },
+    ...overrides,
   };
 }
 
@@ -601,10 +619,40 @@ describe("CapacityView demand", () => {
     );
     expect(html).toContain("Demand");
     expect(html).toContain("Pending pods grouped by scheduling signature");
-    expect(html).toContain("Awaiting capacity");
     expect(html).toContain("checkout");
     expect(html).toContain("Pool evaluations");
     expect(html).toContain("declared compatibility, not a scheduling guarantee");
+  });
+
+  it("takes pill and header counts from the server summary, not the page", () => {
+    const html = renderCapacity("/capacity/demand", (client) =>
+      client.setQueryData(
+        ["capacity", "demand", 25, undefined, undefined, undefined],
+        demandResponse(),
+      ),
+    );
+    // Page holds 1 group / 3 pods; summary says 27 total, 12 awaiting, 10 blocked.
+    expect(html).toContain("All states · 27");
+    expect(html).toContain("Awaiting capacity · 12");
+    expect(html).toContain("Blocked · 10");
+    // Reconcile header uses the summary total as the denominator, not the page.
+    expect(html).toContain("showing 3 of 27 pending pods in 1 of 9 groups");
+  });
+
+  it("never fabricates zeros when the server omits the summary", () => {
+    const html = renderCapacity("/capacity/demand", (client) =>
+      client.setQueryData(
+        ["capacity", "demand", 25, undefined, undefined, undefined],
+        demandResponse({ summary: undefined }),
+      ),
+    );
+    // Pills render as plain labels — no "· N" count, never a fabricated "· 0".
+    expect(html).toContain("All states");
+    expect(html).not.toContain("All states ·");
+    expect(html).not.toContain("Blocked ·");
+    // No authoritative total is claimed from page-local counts.
+    expect(html).not.toContain("showing");
+    expect(html).toContain("Pending pods grouped by scheduling signature");
   });
 });
 

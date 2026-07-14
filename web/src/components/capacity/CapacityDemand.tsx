@@ -156,12 +156,31 @@ export function CapacityDemand({
     );
   };
 
-  const visiblePods = response.items.reduce(
+  // Page-local counts (numerator of "showing X of N").
+  const pagePods = response.items.reduce(
     (total, group) => total + group.podCount,
     0,
   );
-  const groupCount = response.items.length;
-  const summary = `${visiblePods} ${visiblePods === 1 ? "pod" : "pods"} in ${groupCount} ${groupCount === 1 ? "group" : "groups"}`;
+  const pageGroups = response.items.length;
+  // Authoritative denominator from the server rollup — the full observed
+  // population, computed after RBAC/namespace scoping + Karpenter classification
+  // but BEFORE the state filter and pagination. Never the current page. Absent
+  // while Pod data isn't observed yet — then we show no total rather than a
+  // misleading zero.
+  const rollup = response.summary;
+  const denom = rollup
+    ? stateFilter
+      ? rollup.byState[stateFilter]
+      : rollup.total
+    : undefined;
+  const noun = stateFilter
+    ? `${demandStateLabel(stateFilter).toLowerCase()} pods`
+    : "pending pods";
+  const headerSummary = denom
+    ? denom.podCount === pagePods && denom.groupCount === pageGroups
+      ? `${denom.podCount} ${noun} in ${denom.groupCount} ${denom.groupCount === 1 ? "group" : "groups"}`
+      : `showing ${pagePods} of ${denom.podCount} ${noun} in ${pageGroups} of ${denom.groupCount} groups`
+    : null;
 
   return (
     <ScrollableContent>
@@ -175,7 +194,9 @@ export function CapacityDemand({
               Demand
             </h1>
             <span className="text-xs text-theme-text-tertiary">
-              Pending pods grouped by scheduling signature · {summary}
+              {headerSummary
+                ? `Pending pods grouped by scheduling signature · ${headerSummary}`
+                : "Pending pods grouped by scheduling signature"}
             </span>
           </div>
           <div className="mt-2">
@@ -207,15 +228,13 @@ export function CapacityDemand({
       )}
       {poolFilter && (
         <Notice>
-          Showing demand evaluated against NodePool{" "}
+          Evaluated against NodePool{" "}
           <span className="font-medium text-theme-text-primary">
             {poolFilter}
-          </span>
-          .{" "}
-          <LinkButton
-            className="inline"
-            onClick={clearPoolFilter}
-          >
+          </span>{" "}
+          — the state counts below describe how the observed demand evaluates
+          against this pool, not global scheduling state.{" "}
+          <LinkButton className="inline" onClick={clearPoolFilter}>
             Clear pool filter
           </LinkButton>
         </Notice>
@@ -225,21 +244,31 @@ export function CapacityDemand({
         className="flex flex-wrap gap-1.5"
         aria-label="Filter demand by state"
       >
-        {STATE_PILLS.map(([state, label]) => (
-          <button
-            key={state ?? "all"}
-            type="button"
-            aria-pressed={stateFilter === state}
-            className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-              stateFilter === state
-                ? "selection border-theme-border text-theme-text-primary"
-                : "border-theme-border text-theme-text-secondary hover:bg-theme-hover"
-            }`}
-            onClick={() => changeFilter(state)}
-          >
-            {label}
-          </button>
-        ))}
+        {STATE_PILLS.map(([state, label]) => {
+          // Counts come from the server rollup (stable across the active filter),
+          // not the current page. Omitted entirely when summary is absent — a
+          // pill never shows a fabricated "· 0".
+          const counts = rollup
+            ? state === undefined
+              ? rollup.total
+              : rollup.byState[state]
+            : undefined;
+          return (
+            <button
+              key={state ?? "all"}
+              type="button"
+              aria-pressed={stateFilter === state}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                stateFilter === state
+                  ? "selection border-theme-border text-theme-text-primary"
+                  : "border-theme-border text-theme-text-secondary hover:bg-theme-hover"
+              }`}
+              onClick={() => changeFilter(state)}
+            >
+              {counts ? `${label} · ${counts.podCount}` : label}
+            </button>
+          );
+        })}
       </div>
 
       {response.items.length > 0 ? (

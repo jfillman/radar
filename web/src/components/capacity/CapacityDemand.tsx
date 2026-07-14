@@ -4,6 +4,7 @@ import { AlertTriangle } from "lucide-react";
 import {
   Collapse,
   CollapseChevron,
+  WithTooltip,
   type CapacityDemandGroup,
   type CapacityDemandResponse,
   type CapacityDemandState,
@@ -366,12 +367,11 @@ function DemandGroupCard({
           <div className="px-4 pt-3 text-xs text-theme-text-tertiary">
             Pools:{" "}
             <span className="text-theme-text-secondary">{compatSummary}</span>{" "}
-            <span
-              title="Declared-compatible means the pool's declared requirements, taints and resources do not rule out these pods. It is not a scheduling, capacity or availability guarantee."
-              className="cursor-help text-theme-text-tertiary"
-            >
-              — declared compatibility, not a scheduling guarantee
-            </span>
+            <WithTooltip tip="Declared-compatible means the pool's declared requirements, taints and resources do not rule out these pods. It is not a scheduling, capacity or availability guarantee.">
+              <span className="cursor-help text-theme-text-tertiary">
+                — declared compatibility, not a scheduling guarantee
+              </span>
+            </WithTooltip>
           </div>
 
           <div className="grid gap-x-6 gap-y-4 px-4 py-4 lg:grid-cols-2">

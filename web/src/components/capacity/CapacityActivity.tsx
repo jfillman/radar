@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import {
   Collapse,
   CollapseChevron,
+  WithTooltip,
   formatDuration,
   type CapacityActivityEpisode,
   type CapacityActivityResponse,
@@ -497,13 +498,11 @@ function ActivityEpisodeCard({
             <span className="ml-auto font-mono text-xs text-theme-text-tertiary">
               {relativeTime(episode.startedAt)}
             </span>
-            <Badge
-              tone="structural"
-              size="sm"
-              title="Duration is shown only when start and end were both observed."
-            >
-              {duration}
-            </Badge>
+            <WithTooltip tip="Duration is shown only when start and end were both observed.">
+              <Badge tone="structural" size="sm">
+                {duration}
+              </Badge>
+            </WithTooltip>
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {subjects.map((subject) => (

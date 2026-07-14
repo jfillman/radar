@@ -17,6 +17,8 @@ import {
   formatDuration,
   PaneLoader,
   ResourceBar,
+  Tooltip,
+  WithTooltip,
   type CapacityActivityEpisode,
   type CapacityCertainty,
   type CapacityClaimStage,
@@ -247,12 +249,11 @@ export function CertaintyGlyph({
   title?: string;
 }) {
   return (
-    <span
-      title={title ?? certaintyValueLabel(certainty)}
-      className="cursor-help rounded border border-theme-border-light px-1 font-mono text-[10px] leading-tight text-theme-text-tertiary"
-    >
-      {certaintyGlyph(certainty)}
-    </span>
+    <WithTooltip tip={title ?? certaintyValueLabel(certainty)}>
+      <span className="cursor-help rounded border border-theme-border-light px-1 font-mono text-[10px] leading-tight text-theme-text-tertiary">
+        {certaintyGlyph(certainty)}
+      </span>
+    </WithTooltip>
   );
 }
 
@@ -698,13 +699,11 @@ export function CoverageText({
 /** Alert-toned "Unavailable — Pod access denied" chip. Never rendered as zero. */
 export function DeniedBadge({ label = "Unavailable" }: { label?: string }) {
   return (
-    <Badge
-      severity="warning"
-      size="sm"
-      title="Pod access is denied. This value cannot be computed — it is unavailable, not zero."
-    >
-      {`${label} — Pod access denied`}
-    </Badge>
+    <WithTooltip tip="Pod access is denied. This value cannot be computed — it is unavailable, not zero.">
+      <Badge severity="warning" size="sm">
+        {`${label} — Pod access denied`}
+      </Badge>
+    </WithTooltip>
   );
 }
 
@@ -1133,17 +1132,21 @@ export function ResourceLink({
   onOpenResource: (resource: SelectedResource) => void;
 }) {
   return (
-    <button
-      type="button"
-      className={
-        className ??
-        "font-mono text-xs font-medium text-accent-text hover:underline"
-      }
-      title={label ?? identity.ref.name}
-      onClick={() => onOpenResource(identityToSelectedResource(identity))}
+    <Tooltip
+      content={label ?? identity.ref.name}
+      wrapperClassName="min-w-0 max-w-full"
     >
-      {label ?? identity.ref.name}
-    </button>
+      <button
+        type="button"
+        className={
+          className ??
+          "font-mono text-xs font-medium text-accent-text hover:underline"
+        }
+        onClick={() => onOpenResource(identityToSelectedResource(identity))}
+      >
+        {label ?? identity.ref.name}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -1159,14 +1162,15 @@ export function LinkButton({
   className?: string;
 }) {
   return (
-    <button
-      type="button"
-      title={title}
-      onClick={onClick}
-      className={`text-left text-xs font-medium text-accent-text hover:underline ${className ?? ""}`}
-    >
-      {children}
-    </button>
+    <WithTooltip tip={title}>
+      <button
+        type="button"
+        onClick={onClick}
+        className={`text-left text-xs font-medium text-accent-text hover:underline ${className ?? ""}`}
+      >
+        {children}
+      </button>
+    </WithTooltip>
   );
 }
 
@@ -1262,21 +1266,17 @@ export function ScopeBadges({
       : "Cluster-wide";
   return (
     <span className="flex items-center gap-2">
-      <Badge
-        tone="structural"
-        size="sm"
-        title="Pool, node and claim data is cluster-scoped. Pod and workload data covers authorized namespaces."
-      >
-        {scopeLabel}
-      </Badge>
-      {coverageIsLowerBound(pods) && (
-        <Badge
-          severity="warning"
-          size="sm"
-          title="Pod and workload data is restricted to authorized namespaces. Namespaced counts and demand are lower bounds."
-        >
-          ≥ Namespaced data is a lower bound
+      <WithTooltip tip="Pool, node and claim data is cluster-scoped. Pod and workload data covers authorized namespaces.">
+        <Badge tone="structural" size="sm">
+          {scopeLabel}
         </Badge>
+      </WithTooltip>
+      {coverageIsLowerBound(pods) && (
+        <WithTooltip tip="Pod and workload data is restricted to authorized namespaces. Namespaced counts and demand are lower bounds.">
+          <Badge severity="warning" size="sm">
+            ≥ Namespaced data is a lower bound
+          </Badge>
+        </WithTooltip>
       )}
     </span>
   );

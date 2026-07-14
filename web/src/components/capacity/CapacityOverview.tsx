@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, Layers3 } from "lucide-react";
+import { Layers3 } from "lucide-react";
 import {
+  Collapse,
+  CollapseChevron,
+  WithTooltip,
   type CapacityCertainty,
   type CapacityCoverageBySource,
   type CapacityDemandState,
@@ -184,51 +187,51 @@ export function CapacityOverview({
 
   return (
     <ScrollableContent>
-      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-        <div>
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <h1 className="text-lg font-semibold text-theme-text-primary">
-              Capacity overview
-            </h1>
-            <span className="text-xs text-theme-text-tertiary">
-              Karpenter posture for this cluster · read-only diagnosis
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowExplain((value) => !value)}
-            className="mt-1 flex items-center gap-1 text-xs font-medium text-accent-text hover:underline"
-          >
-            {showExplain ? (
-              <ChevronDown className="h-3.5 w-3.5" />
-            ) : (
-              <ChevronRight className="h-3.5 w-3.5" />
-            )}
-            Scheduling capacity ≠ actual usage — how to read these numbers
-          </button>
-        </div>
-        <div className="flex items-center gap-2">
-          <ScopeBadges coverage={coverage} />
-          <CapacityFreshness
-            meta={data}
-            query={query}
-            connectionState={connectionState}
-          />
-        </div>
-      </div>
-
-      {showExplain && (
-        <div className="grid gap-3 rounded-xl border border-theme-border bg-theme-surface p-4 shadow-theme-sm sm:grid-cols-2 xl:grid-cols-3">
-          {EXPLAIN_CARDS.map((card) => (
-            <div key={card.term} className="text-xs leading-relaxed">
-              <div className="font-semibold text-theme-text-primary">
-                {card.term}
-              </div>
-              <div className="mt-0.5 text-theme-text-tertiary">{card.body}</div>
+      <div>
+        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+          <div>
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <h1 className="text-lg font-semibold text-theme-text-primary">
+                Capacity overview
+              </h1>
+              <span className="text-xs text-theme-text-tertiary">
+                Karpenter posture for this cluster · read-only diagnosis
+              </span>
             </div>
-          ))}
+            <button
+              type="button"
+              aria-expanded={showExplain}
+              onClick={() => setShowExplain((value) => !value)}
+              className="mt-1 flex items-center gap-1 text-xs font-medium text-accent-text hover:underline"
+            >
+              <CollapseChevron open={showExplain} className="h-3.5 w-3.5" />
+              Scheduling capacity ≠ actual usage — how to read these numbers
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <ScopeBadges coverage={coverage} />
+            <CapacityFreshness
+              meta={data}
+              query={query}
+              connectionState={connectionState}
+            />
+          </div>
         </div>
-      )}
+        <Collapse open={showExplain}>
+          <div className="mt-3 grid gap-3 rounded-xl border border-theme-border bg-theme-surface p-4 shadow-theme-sm sm:grid-cols-2 xl:grid-cols-3">
+            {EXPLAIN_CARDS.map((card) => (
+              <div key={card.term} className="text-xs leading-relaxed">
+                <div className="font-semibold text-theme-text-primary">
+                  {card.term}
+                </div>
+                <div className="mt-0.5 text-theme-text-tertiary">
+                  {card.body}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Collapse>
+      </div>
 
       {unavailableRefresh && <RefreshError message={unavailableRefresh} />}
 
@@ -382,23 +385,20 @@ export function CapacityOverview({
                 <th className={TH}>Mode</th>
                 <th className={TH}>NodeClass</th>
                 <th className={TH}>Nodes · claims</th>
-                <th
-                  className={`${TH} w-[190px]`}
-                  title="Provisioned capacity as a share of the configured NodePool limit"
-                >
-                  Limit pressure
+                <th className={`${TH} w-[190px]`}>
+                  <WithTooltip tip="Provisioned capacity as a share of the configured NodePool limit">
+                    <span>Limit pressure</span>
+                  </WithTooltip>
                 </th>
-                <th
-                  className={TH}
-                  title="Sum of scheduled pod requests on this pool's nodes"
-                >
-                  Scheduled requests
+                <th className={TH}>
+                  <WithTooltip tip="Sum of scheduled pod requests on this pool's nodes">
+                    <span>Scheduled requests</span>
+                  </WithTooltip>
                 </th>
-                <th
-                  className={`${TH} w-[210px]`}
-                  title="Point-in-time usage from the metrics API — an efficiency signal, not headroom"
-                >
-                  Usage (live)
+                <th className={`${TH} w-[210px]`}>
+                  <WithTooltip tip="Point-in-time usage from the metrics API — an efficiency signal, not headroom">
+                    <span>Usage (live)</span>
+                  </WithTooltip>
                 </th>
                 <th className={TH}>Signals</th>
                 <th className={TH} />

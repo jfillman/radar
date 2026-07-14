@@ -1,6 +1,7 @@
 import { type ReactNode } from "react";
 import { CircleHelp, Layers3 } from "lucide-react";
 import {
+  WithTooltip,
   type CapacityLedger,
   type CapacityMemberListResponse,
   type CapacityMemberType,
@@ -159,23 +160,20 @@ export function CapacityPoolDetail({
             {pool.mode}
           </Badge>
         )}
-        <span
-          className="font-mono text-xs text-theme-text-tertiary"
-          title="metadata.generation vs status.observedGeneration"
-        >
-          generation {pool.generation}
-          {pool.observedGeneration !== undefined
-            ? ` · observed ${pool.observedGeneration}`
-            : ""}
-        </span>
+        <WithTooltip tip="metadata.generation vs status.observedGeneration">
+          <span className="font-mono text-xs text-theme-text-tertiary">
+            generation {pool.generation}
+            {pool.observedGeneration !== undefined
+              ? ` · observed ${pool.observedGeneration}`
+              : ""}
+          </span>
+        </WithTooltip>
         {staleGeneration && (
-          <Badge
-            severity="warning"
-            size="sm"
-            title="The controller has not yet observed the latest spec. Status below may describe the previous generation."
-          >
-            Stale generation
-          </Badge>
+          <WithTooltip tip="The controller has not yet observed the latest spec. Status below may describe the previous generation.">
+            <Badge severity="warning" size="sm">
+              Stale generation
+            </Badge>
+          </WithTooltip>
         )}
         <div className="flex-1" />
         <ScopeBadges coverage={response.coverage} />
@@ -347,16 +345,18 @@ function LedgerValue({
   if (!observation || raw === undefined)
     return <span className="text-theme-text-tertiary">—</span>;
   return (
-    <span title={observationTitle(observation)}>
-      {prefix}
-      {formatQuantity(resource, raw)}
-      {observation.certainty !== "exact" && (
-        <>
-          {" "}
-          <CertaintyGlyph certainty={observation.certainty} />
-        </>
-      )}
-    </span>
+    <WithTooltip tip={observationTitle(observation)}>
+      <span>
+        {prefix}
+        {formatQuantity(resource, raw)}
+        {observation.certainty !== "exact" && (
+          <>
+            {" "}
+            <CertaintyGlyph certainty={observation.certainty} />
+          </>
+        )}
+      </span>
+    </WithTooltip>
   );
 }
 
@@ -379,12 +379,14 @@ function LedgerCell({
     if (!entry)
       return <span className="text-theme-text-tertiary">No samples</span>;
     return (
-      <span title={observationTitle(usage.quantity)}>
-        {formatQuantity(resource, entry.usage)}{" "}
-        <span className="text-theme-text-tertiary">
-          ({Math.round(entry.percent)}%)
+      <WithTooltip tip={observationTitle(usage.quantity)}>
+        <span>
+          {formatQuantity(resource, entry.usage)}{" "}
+          <span className="text-theme-text-tertiary">
+            ({Math.round(entry.percent)}%)
+          </span>
         </span>
-      </span>
+      </WithTooltip>
     );
   }
 
@@ -392,12 +394,9 @@ function LedgerCell({
     const obs = ledger.configuredLimit;
     if (!obs || obs.resources[resource] === undefined)
       return (
-        <span
-          className="text-theme-text-tertiary"
-          title="No configured ceiling on this dimension. Not unlimited — provider quota and availability remain external constraints."
-        >
-          No limit
-        </span>
+        <WithTooltip tip="No configured ceiling on this dimension. Not unlimited — provider quota and availability remain external constraints.">
+          <span className="text-theme-text-tertiary">No limit</span>
+        </WithTooltip>
       );
     return <LedgerValue observation={obs} resource={resource} />;
   }
@@ -406,12 +405,9 @@ function LedgerCell({
     const obs = ledger.inFlightCapacity;
     if (!obs || obs.resources[resource] === undefined)
       return (
-        <span
-          className="text-theme-text-tertiary"
-          title="No capacity currently in flight"
-        >
-          —
-        </span>
+        <WithTooltip tip="No capacity currently in flight">
+          <span className="text-theme-text-tertiary">—</span>
+        </WithTooltip>
       );
     return <LedgerValue observation={obs} resource={resource} prefix="+" />;
   }
@@ -420,12 +416,9 @@ function LedgerCell({
     const obs = ledger.limitHeadroom;
     if (!obs || obs.resources[resource] === undefined)
       return (
-        <span
-          className="text-theme-text-tertiary"
-          title="Headroom is undefined without a configured limit"
-        >
-          —
-        </span>
+        <WithTooltip tip="Headroom is undefined without a configured limit">
+          <span className="text-theme-text-tertiary">—</span>
+        </WithTooltip>
       );
     return <LedgerValue observation={obs} resource={resource} />;
   }
@@ -436,12 +429,9 @@ function LedgerCell({
     denied
   ) {
     return (
-      <span
-        className="text-theme-text-tertiary"
-        title="Pod access denied — cannot be computed. This is not zero."
-      >
-        Unavailable
-      </span>
+      <WithTooltip tip="Pod access denied — cannot be computed. This is not zero.">
+        <span className="text-theme-text-tertiary">Unavailable</span>
+      </WithTooltip>
     );
   }
 
@@ -475,13 +465,17 @@ function PoolSummaryTab({
               <tr>
                 <th className={TH}>Resource</th>
                 {LEDGER_COLUMNS.map((column) => (
-                  <th key={column.key} className={TH} title={column.tooltip}>
-                    {column.header}
-                    {column.glyph ? (
-                      <span className="ml-1 font-mono normal-case text-theme-text-tertiary">
-                        {column.glyph}
+                  <th key={column.key} className={TH}>
+                    <WithTooltip tip={column.tooltip}>
+                      <span>
+                        {column.header}
+                        {column.glyph ? (
+                          <span className="ml-1 font-mono normal-case text-theme-text-tertiary">
+                            {column.glyph}
+                          </span>
+                        ) : null}
                       </span>
-                    ) : null}
+                    </WithTooltip>
                   </th>
                 ))}
               </tr>
@@ -862,7 +856,7 @@ function MemberPage({
   ) => ReactNode;
 }) {
   const pagination = useCapacityPagination<CapacityMemberListResponse>(
-    `${name} ${type}`,
+    `${name}\u0000${type}`,
   );
   const query = useCapacityPoolMembers(name, type, {
     limit: 50,
@@ -1009,8 +1003,10 @@ function PoolWorkloadsTab({
           <th className={TH}>Namespace</th>
           <th className={TH}>Pods</th>
           <th className={TH}>Aggregate requests</th>
-          <th className={TH} title="Exact when every pod's node was observed; otherwise an upper bound">
-            Nodes used
+          <th className={TH}>
+            <WithTooltip tip="Exact when every pod's node was observed; otherwise an upper bound">
+              <span>Nodes used</span>
+            </WithTooltip>
           </th>
         </tr>
       }
@@ -1033,14 +1029,15 @@ function PoolWorkloadsTab({
               )}
             </td>
             <td className={`${TD} max-w-[320px]`}>
-              <button
-                type="button"
-                className="block max-w-full truncate font-mono text-xs font-medium text-accent-text hover:underline"
-                title={owner.name}
-                onClick={() => onOpenResource(refToSelectedResource(owner))}
-              >
-                {owner.name}
-              </button>
+              <WithTooltip tip={owner.name}>
+                <button
+                  type="button"
+                  className="block max-w-full truncate font-mono text-xs font-medium text-accent-text hover:underline"
+                  onClick={() => onOpenResource(refToSelectedResource(owner))}
+                >
+                  {owner.name}
+                </button>
+              </WithTooltip>
             </td>
             <td className={`${TD} font-mono text-xs`}>
               {owner.namespace ?? item.resource.ref.namespace ?? "—"}
@@ -1049,16 +1046,19 @@ function PoolWorkloadsTab({
             <td className={`${TD} whitespace-nowrap font-mono text-xs`}>
               {quantityText(workload.requests) ?? "—"}
             </td>
-            <td
-              className={`${TD} font-mono`}
-              title={
-                exact
-                  ? "Exact — every pod's node was observed"
-                  : "Upper bound — some pod locations unknown"
-              }
-            >
-              {exact ? "" : "≤ "}
-              {workload.nodesMeta.total}
+            <td className={`${TD} font-mono`}>
+              <WithTooltip
+                tip={
+                  exact
+                    ? "Exact — every pod's node was observed"
+                    : "Upper bound — some pod locations unknown"
+                }
+              >
+                <span>
+                  {exact ? "" : "≤ "}
+                  {workload.nodesMeta.total}
+                </span>
+              </WithTooltip>
             </td>
           </tr>
         );
@@ -1093,8 +1093,10 @@ function PoolMembersTab({
             <th className={TH}>Allocatable</th>
             <th className={TH}>Requests</th>
             <th className={TH}>Usage</th>
-            <th className={TH} title="Shown only when Pods were actually observed">
-              Pods
+            <th className={TH}>
+              <WithTooltip tip="Shown only when Pods were actually observed">
+                <span>Pods</span>
+              </WithTooltip>
             </th>
           </tr>
         }
@@ -1130,12 +1132,11 @@ function PoolMembersTab({
               </td>
               <td className={`${TD} whitespace-nowrap font-mono text-xs`}>
                 {podsDeniedNode ? (
-                  <span
-                    className="text-theme-text-tertiary"
-                    title="Pod access denied — not zero"
-                  >
-                    Unavailable
-                  </span>
+                  <WithTooltip tip="Pod access denied — not zero">
+                    <span className="text-theme-text-tertiary">
+                      Unavailable
+                    </span>
+                  </WithTooltip>
                 ) : (
                   (quantityText(node.scheduledRequests) ?? "—")
                 )}
@@ -1146,19 +1147,22 @@ function PoolMembersTab({
                   coverage={coverage.nodeMetrics}
                 />
               </td>
-              <td
-                className={`${TD} font-mono`}
-                title={
-                  podsDeniedNode
-                    ? "Pod access denied — the count is unknown, not zero"
-                    : "Observed via pod list"
-                }
-              >
-                {podsDeniedNode
-                  ? "Unknown"
-                  : node.podCount === undefined
-                    ? "—"
-                    : `${podsLowerBound ? "≥ " : ""}${node.podCount}`}
+              <td className={`${TD} font-mono`}>
+                <WithTooltip
+                  tip={
+                    podsDeniedNode
+                      ? "Pod access denied — the count is unknown, not zero"
+                      : "Observed via pod list"
+                  }
+                >
+                  <span>
+                    {podsDeniedNode
+                      ? "Unknown"
+                      : node.podCount === undefined
+                        ? "—"
+                        : `${podsLowerBound ? "≥ " : ""}${node.podCount}`}
+                  </span>
+                </WithTooltip>
               </td>
             </tr>
           );
@@ -1174,8 +1178,10 @@ function PoolMembersTab({
           <tr>
             <th className={TH}>Claim</th>
             <th className={TH}>Lifecycle</th>
-            <th className={TH} title="The controller-reported node name is preserved even when the Node object is not readable">
-              Node
+            <th className={TH}>
+              <WithTooltip tip="The controller-reported node name is preserved even when the Node object is not readable">
+                <span>Node</span>
+              </WithTooltip>
             </th>
             <th className={TH}>Status capacity</th>
             <th className={TH}>Conditions</th>
@@ -1203,12 +1209,11 @@ function PoolMembersTab({
                     onOpenResource={onOpenResource}
                   />
                 ) : claim.nodeName ? (
-                  <span
-                    className="font-mono text-xs text-theme-text-secondary"
-                    title={coverageMessage(coverage.nodes, "Node details")}
-                  >
-                    {claim.nodeName}
-                  </span>
+                  <WithTooltip tip={coverageMessage(coverage.nodes, "Node details")}>
+                    <span className="font-mono text-xs text-theme-text-secondary">
+                      {claim.nodeName}
+                    </span>
+                  </WithTooltip>
                 ) : (
                   <span className="text-theme-text-tertiary">—</span>
                 )}

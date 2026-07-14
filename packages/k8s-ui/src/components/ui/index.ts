@@ -1,4 +1,4 @@
-export { Tooltip } from './Tooltip'
+export { Tooltip, WithTooltip } from './Tooltip'
 export { FreshnessControl } from './FreshnessControl'
 export type { FreshnessMode, FreshnessConnection } from './FreshnessControl'
 export { PaneLoader } from './PaneLoader'

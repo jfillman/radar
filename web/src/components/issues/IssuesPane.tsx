@@ -20,14 +20,6 @@ import {
 import { AlertTriangle } from 'lucide-react'
 import { IssueDiagnoseButton } from '../diagnose/LocalDiagnoseAction'
 
-// The pod's unmet requirement names a Karpenter NodePool selector — i.e. the pod
-// explicitly targets a Karpenter pool. This is the one scheduling case that is
-// unambiguously Karpenter's to solve. Matches the scheduling detector's
-// "no node has <key>=<val>" / "no node has <key> in [...]" rendering
-// (internal/k8s/detect_scheduling.go) — the pod's own requirement, NOT the
-// "N node(s) carry karpenter.sh/nodepool" context line.
-const REQUIRES_KARPENTER_NODEPOOL = /no node has karpenter\.sh\/nodepool[ =]/
-
 // A capacity-relevant issue links to its Karpenter diagnosis. Karpenter is
 // always single-cluster (unlike Argo hub-and-spoke), so the issue and the
 // Capacity view are guaranteed to be the same cluster — the deep link is
@@ -35,11 +27,12 @@ const REQUIRES_KARPENTER_NODEPOOL = /no node has karpenter\.sh\/nodepool[ =]/
 //
 // Fail closed: return null unless the issue is *definitely* Karpenter's, so the
 // link can't mislead. Only two signals qualify — (1) the subject IS a Karpenter
-// NodePool, or (2) an unschedulable pod that explicitly requires a Karpenter
-// NodePool. A generic scheduling failure (insufficient cpu, node-pinned, zonal
-// PVC, a non-Karpenter managed node group) is NOT Karpenter's to solve and gets
-// no link, even in a Karpenter cluster. Clusters without Karpenter never reach
-// the signal checks (hasKarpenter is false → no link at all).
+// NodePool, or (2) the backend has flagged an unschedulable pod as requiring a
+// Karpenter NodePool (issue.capacity_relevant — a structural pod-spec check
+// server-side, not message parsing). A generic scheduling failure (insufficient
+// cpu, node-pinned, zonal PVC, a non-Karpenter managed node group) is NOT
+// Karpenter's to solve and gets no link, even in a Karpenter cluster. Clusters
+// without Karpenter never reach the signal checks (hasKarpenter is false).
 export function capacityHrefForIssue(
   issue: Issue,
   hasKarpenter: boolean,
@@ -50,15 +43,12 @@ export function capacityHrefForIssue(
   if (issue.kind === 'NodePool' && issue.group === 'karpenter.sh') {
     return `/capacity/pools/${encodeURIComponent(issue.name)}`
   }
-  // (2) A pod whose unmet requirement is a Karpenter NodePool → the Demand
+  // (2) A pod the backend flagged as requiring a Karpenter NodePool → the Demand
   // queue, which groups pending pods by scheduling signature and shows which
-  // pools can (or can't) take them. Unfiltered on purpose: the issue's phrasing
-  // doesn't map cleanly to a single demand state (blocked vs awaiting capacity),
-  // so we avoid a filter that could hide the very group being investigated.
-  if (
-    issue.source === 'scheduling' &&
-    REQUIRES_KARPENTER_NODEPOOL.test(`${issue.message ?? ''} ${issue.raw_message ?? ''}`)
-  ) {
+  // pools can (or can't) take them. Unfiltered on purpose: the issue doesn't map
+  // cleanly to a single demand state (blocked vs awaiting capacity), so we avoid
+  // a filter that could hide the very group being investigated.
+  if (issue.capacity_relevant) {
     const params = new URLSearchParams()
     if (namespaces.length > 0) params.set('namespaces', namespaces.join(','))
     const query = params.toString()

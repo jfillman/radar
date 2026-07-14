@@ -68,6 +68,7 @@ func fromProblem(p k8s.Detection, now time.Time, source Source) Issue {
 		RemediationTarget:    p.RemediationTarget,
 		OperationRetryCount:  p.OperationRetryCount,
 		Stuck:                p.Stuck,
+		CapacityRelevant:     p.CapacityRelevant,
 		Fingerprint:          p.Fingerprint,
 		FirstSeen:            since,
 		LastSeen:             now,

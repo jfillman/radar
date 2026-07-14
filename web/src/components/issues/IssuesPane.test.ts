@@ -29,27 +29,30 @@ describe("capacityHrefForIssue", () => {
     ).toBeNull();
   });
 
-  it("links a pod that requires a Karpenter NodePool to the Demand queue", () => {
-    const msg =
-      "Unschedulable — no node has karpenter.sh/nodepool=retired-batch — 7 node(s) carry karpenter.sh/nodepool: [core-on-demand]";
+  it("links a backend-flagged capacity-relevant pod to the Demand queue", () => {
     expect(
-      capacityHrefForIssue(issue({ source: "scheduling", message: msg }), true, []),
+      capacityHrefForIssue(
+        issue({ source: "scheduling", capacity_relevant: true }),
+        true,
+        [],
+      ),
     ).toBe("/capacity/demand");
   });
 
   it("preserves namespace scope on the Demand link", () => {
-    const msg = "no node has karpenter.sh/nodepool=retired-batch";
     expect(
-      capacityHrefForIssue(issue({ source: "scheduling", message: msg }), true, [
-        "payments",
-        "media",
-      ]),
+      capacityHrefForIssue(
+        issue({ source: "scheduling", capacity_relevant: true }),
+        true,
+        ["payments", "media"],
+      ),
     ).toBe("/capacity/demand?namespaces=payments%2Cmedia");
   });
 
-  it("does NOT link a generic scheduling failure (not Karpenter's to solve)", () => {
-    // Insufficient resources / node-pinned / zonal — no Karpenter NodePool
-    // requirement in the message → no link, even in a Karpenter cluster.
+  it("does NOT link a scheduling failure the backend did not flag", () => {
+    // Generic unschedulable (insufficient cpu, node-pinned, zonal, non-Karpenter
+    // node group): the backend leaves capacity_relevant unset → no link, even in
+    // a Karpenter cluster. No message parsing is involved.
     expect(
       capacityHrefForIssue(
         issue({
@@ -60,18 +63,9 @@ describe("capacityHrefForIssue", () => {
         [],
       ),
     ).toBeNull();
-  });
-
-  it("does NOT trigger on the 'N node(s) carry karpenter.sh/nodepool' context line", () => {
-    // The pod requires a NON-Karpenter label; the message only *mentions*
-    // karpenter.sh/nodepool as context about existing nodes. Must not link.
     expect(
       capacityHrefForIssue(
-        issue({
-          source: "scheduling",
-          message:
-            "no node has kubernetes.io/arch=arm64 — 7 node(s) carry karpenter.sh/nodepool: [core-on-demand]",
-        }),
+        issue({ source: "scheduling", capacity_relevant: false }),
         true,
         [],
       ),

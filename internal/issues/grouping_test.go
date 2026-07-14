@@ -247,6 +247,47 @@ func TestComposeWithStats_GroupedCapsOnGroups(t *testing.T) {
 	}
 }
 
+// TestCompose_PropagatesCapacityRelevant pins that a scheduling detection's
+// CapacityRelevant flag (an unschedulable pod pinned to a Karpenter NodePool)
+// survives Detection→Issue compose and the fold onto the grouped row, so the
+// frontend can link the issue to the Capacity view without parsing messages.
+func TestCompose_PropagatesCapacityRelevant(t *testing.T) {
+	p := &fakeProvider{
+		scheduling: []k8s.Detection{
+			{Kind: "Pod", Namespace: "prod", Name: "web-0", Reason: "Unschedulable", Severity: "critical",
+				OwnerGroup: "apps", OwnerKind: "Deployment", OwnerName: "web", CapacityRelevant: true},
+			{Kind: "Pod", Namespace: "prod", Name: "cache-0", Reason: "Unschedulable", Severity: "critical"},
+		},
+	}
+	flat := Compose(p, Filters{Limit: NoLimit})
+	var web, cache *Issue
+	for i := range flat {
+		switch flat[i].Name {
+		case "web-0":
+			web = &flat[i]
+		case "cache-0":
+			cache = &flat[i]
+		}
+	}
+	if web == nil || !web.CapacityRelevant {
+		t.Fatalf("flat web-0 CapacityRelevant not propagated: %+v", web)
+	}
+	if cache == nil || cache.CapacityRelevant {
+		t.Fatalf("flat cache-0 must not be capacity-relevant: %+v", cache)
+	}
+
+	grouped := GroupIssues(flat)
+	var webGroup *Issue
+	for i := range grouped {
+		if grouped[i].Kind == "Deployment" && grouped[i].Name == "web" {
+			webGroup = &grouped[i]
+		}
+	}
+	if webGroup == nil || !webGroup.CapacityRelevant {
+		t.Fatalf("grouped web Deployment must keep CapacityRelevant, got %+v", webGroup)
+	}
+}
+
 // TestRelatedIssues_SubjectAndMember pins what diagnose relies on: querying a
 // resource returns the grouped issues where it's the SUBJECT or an affected
 // MEMBER. A Pod-evidenced crashloop under a Deployment is returned for both the

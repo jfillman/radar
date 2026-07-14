@@ -194,6 +194,17 @@ func foldGroup(members []Issue) Issue {
 	g.IssueTiming = groupIssueTiming
 	g.IssueTimingBasis = groupBasis
 
+	// CapacityRelevant: a group is capacity-relevant if ANY folded member is
+	// (an unschedulable pod pinned to a Karpenter NodePool) — so a workload
+	// rollup of NodePool-pinned pods keeps the "View in Capacity" link even
+	// when the representative member happens not to carry the flag.
+	for _, m := range members {
+		if m.CapacityRelevant {
+			g.CapacityRelevant = true
+			break
+		}
+	}
+
 	// IncidentParent is deliberately NOT carried through foldGroup: members of one
 	// grouped symptom share an issue ID, so carrying a member's pointer can't honor
 	// the whole-row coverage check. It is assigned AFTER grouping instead, in

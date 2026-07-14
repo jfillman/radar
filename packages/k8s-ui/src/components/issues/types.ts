@@ -187,6 +187,12 @@ export interface Issue {
    *  self-recover. */
   operation_retry_count?: number;
   stuck?: boolean;
+  /** True for an unschedulable pod that explicitly requires a Karpenter NodePool.
+   *  Set server-side from a structural pod-spec check (nodeSelector / required
+   *  nodeAffinity on karpenter.sh/nodepool), NOT by parsing the scheduler
+   *  message. The Issues view uses it to link these — and only these — to the
+   *  Capacity / Demand view, so a generic scheduling failure never links. */
+  capacity_relevant?: boolean;
   first_seen?: string;
   last_seen?: string;
   /** Affected-resource fan-out, EXCLUDING the subject (the row header).

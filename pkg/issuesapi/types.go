@@ -354,8 +354,12 @@ type Issue struct {
 	// "(retried N times)") — distinct from RestartCount, which is pod/container
 	// restarts. Stuck means the issue is not expected to self-recover (retries
 	// exhausted, or a self-perpetuating drift loop).
-	OperationRetryCount  int                `json:"operation_retry_count,omitempty"`
-	Stuck                bool               `json:"stuck,omitempty"`
+	OperationRetryCount int  `json:"operation_retry_count,omitempty"`
+	Stuck               bool `json:"stuck,omitempty"`
+	// CapacityRelevant marks an unschedulable pod that explicitly requires a
+	// Karpenter NodePool (structural signal from the pod spec, not a message
+	// parse) — the frontend links these to the Capacity/Demand view.
+	CapacityRelevant     bool               `json:"capacity_relevant,omitempty"`
 	FirstSeen            time.Time          `json:"first_seen,omitzero"`
 	LastSeen             time.Time          `json:"last_seen,omitzero"`
 	Count                int                `json:"count,omitempty"`

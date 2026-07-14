@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skyhook-io/radar/pkg/karpenter"
 	"github.com/skyhook-io/radar/pkg/scheduling"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -324,20 +325,21 @@ func DetectSchedulingProblems(cache *ResourceCache, namespace string) []Detectio
 			ownerGroup, ownerKind, ownerName := podOwnerKindName(cache, pod)
 			schedMessage, schedAction := diagnoseUnschedulable(pod, cond.Message, nodes)
 			problems = append(problems, Detection{
-				Kind:            "Pod",
-				Namespace:       pod.Namespace,
-				Name:            pod.Name,
-				Severity:        schedulingSeverity(dur),
-				Reason:          "Unschedulable",
-				Action:          schedAction,
-				Message:         schedMessage,
-				Age:             FormatAge(ageDur),
-				AgeSeconds:      int64(ageDur.Seconds()),
-				Duration:        FormatAge(dur),
-				DurationSeconds: int64(dur.Seconds()),
-				OwnerGroup:      ownerGroup,
-				OwnerKind:       ownerKind,
-				OwnerName:       ownerName,
+				Kind:             "Pod",
+				Namespace:        pod.Namespace,
+				Name:             pod.Name,
+				Severity:         schedulingSeverity(dur),
+				Reason:           "Unschedulable",
+				Action:           schedAction,
+				Message:          schedMessage,
+				Age:              FormatAge(ageDur),
+				AgeSeconds:       int64(ageDur.Seconds()),
+				Duration:         FormatAge(dur),
+				DurationSeconds:  int64(dur.Seconds()),
+				OwnerGroup:       ownerGroup,
+				OwnerKind:        ownerKind,
+				OwnerName:        ownerName,
+				CapacityRelevant: podRequiresKarpenterNodePool(pod),
 			})
 		}
 	}
@@ -613,6 +615,35 @@ func nonEmptySchedulerSummaryParts(parts []string) []string {
 		}
 	}
 	return out
+}
+
+// podRequiresKarpenterNodePool reports whether the pod STRUCTURALLY pins itself
+// to a Karpenter NodePool — a nodeSelector on karpenter.sh/nodepool, or a
+// required nodeAffinity matchExpression on that key (any operator). Read from
+// the spec, never from the scheduler message, so the signal is a fact about
+// what the pod asked for rather than a parse of prose.
+func podRequiresKarpenterNodePool(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	if _, ok := pod.Spec.NodeSelector[karpenter.NodePoolLabelKey]; ok {
+		return true
+	}
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil {
+		return false
+	}
+	req := pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	if req == nil {
+		return false
+	}
+	for _, term := range req.NodeSelectorTerms {
+		for _, e := range term.MatchExpressions {
+			if e.Key == karpenter.NodePoolLabelKey {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // extractPodPlacement pulls the pod's node-targeting constraints (nodeSelector

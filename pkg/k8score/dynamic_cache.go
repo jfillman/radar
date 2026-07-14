@@ -56,6 +56,7 @@ type DynamicResourceCache struct {
 	fallbackResolved map[schema.GroupVersionResource]bool
 	stopCh           chan struct{} // global shutdown; parent of every per-informer context
 	stopOnce         sync.Once
+	stopped          bool // set under mu by Stop; startWatching refuses new informers after
 	mu               sync.RWMutex
 	config           DynamicCacheConfig
 	discoveryStatus  CRDDiscoveryStatus
@@ -227,6 +228,12 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	if d.stopped {
+		// A warmup or read probe can race Stop (context switch); informers
+		// created now would never be shut down with the rest of the cache.
+		return fmt.Errorf("dynamic cache stopped")
+	}
+
 	key := informerKey{gvr: gvr, ns: scopeNS}
 	if _, exists := d.informers[key]; exists {
 		return nil
@@ -335,7 +342,15 @@ func (d *DynamicResourceCache) fallbackNamespaces() []string {
 // is denied and the caller named none, every configured fallback namespace
 // is probed and each granted one becomes a scope.
 func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, preferredNS string) (scopes []string, complete bool, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// The budget covers the cluster-wide probe plus the whole candidate walk;
+	// scale it with the candidate count so a 20-namespace fanout isn't judged
+	// by a budget sized for the single-fallback case, while staying bounded
+	// for the synchronous read paths that call ensureWatching.
+	budget := 5 * time.Second
+	if n := len(d.fallbackNamespaces()); n > 1 {
+		budget = min(5*time.Second+time.Duration(n)*500*time.Millisecond, 15*time.Second)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
 	// Forced namespace mode (--namespace-scope): pin NAMESPACED resources to the
@@ -819,6 +834,11 @@ func (d *DynamicResourceCache) Count(gvr schema.GroupVersionResource, namespaces
 		if len(d.fallbackNamespaces()) == 0 {
 			return 0, fmt.Errorf("informer not found or not synced for %v", gvr)
 		}
+		// A truncated candidate walk leaves a partial namespace set whose sum
+		// would silently under-count; only a settled fanout is authoritative.
+		if !d.fallbackResolved[gvr] {
+			return 0, fmt.Errorf("informer not found or not synced for %v", gvr)
+		}
 		total := 0
 		found := false
 		for k, e := range d.informers {
@@ -883,6 +903,16 @@ func (d *DynamicResourceCache) CountWatched(namespaces []string) map[schema.Grou
 		}
 	}
 
+	// Unsynced entries were dropped above, so re-scan for GVRs whose fanout
+	// still has an unsynced sibling — summing the synced subset would report
+	// a silently smaller count instead of "not ready yet".
+	partiallySynced := make(map[schema.GroupVersionResource]bool)
+	for k, e := range d.informers {
+		if !e.informer.HasSynced() {
+			partiallySynced[k.gvr] = true
+		}
+	}
+
 	counts := make(map[schema.GroupVersionResource]int)
 	for gvr, set := range byGVR {
 		if len(namespaces) == 0 {
@@ -891,6 +921,11 @@ func (d *DynamicResourceCache) CountWatched(namespaces []string) map[schema.Grou
 				continue
 			}
 			if len(d.fallbackNamespaces()) == 0 {
+				continue
+			}
+			// All-namespaces sums over a fanout are only authoritative once
+			// the candidate walk settled and every informer synced.
+			if !d.fallbackResolved[gvr] || partiallySynced[gvr] {
 				continue
 			}
 			total := 0
@@ -1745,6 +1780,10 @@ func (d *DynamicResourceCache) Stop() {
 
 	d.stopOnce.Do(func() {
 		log.Println("Stopping dynamic resource cache")
+
+		d.mu.Lock()
+		d.stopped = true
+		d.mu.Unlock()
 
 		d.discoveryMu.Lock()
 		if d.discoveryStatus != CRDDiscoveryComplete {

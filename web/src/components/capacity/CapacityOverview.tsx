@@ -41,7 +41,6 @@ import {
   pickWorstPressure,
   PoolReadyBadge,
   poolReadinessDetail,
-  providerLabel,
   QuantityInline,
   RefreshError,
   ROW_HOVER,
@@ -192,7 +191,7 @@ export function CapacityOverview({
               Capacity overview
             </h1>
             <span className="text-xs text-theme-text-tertiary">
-              {providerLabel(data)} · read-only diagnosis
+              Karpenter posture for this cluster · read-only diagnosis
             </span>
           </div>
           <button
@@ -280,6 +279,8 @@ export function CapacityOverview({
             certainty={coverageCertainty(coverage.pods)}
             certaintyTitle={coverageMessage(coverage.pods, "Pending demand")}
             attention={(summary.pendingPodCount ?? 0) > 0}
+            linkLabel="Open Demand →"
+            onClick={() => onNavigate("/capacity/demand")}
           />
         )}
       </div>
@@ -289,6 +290,18 @@ export function CapacityOverview({
       <SectionCard
         title="Operational signals"
         subtitle="prioritized · each links to its diagnosis"
+        actions={
+          <div className="flex items-center gap-4">
+            <LinkButton onClick={() => onNavigate("/capacity/demand")}>
+              {summary.pendingPodCount !== undefined && !podsDeniedFlag
+                ? `All demand · ${summary.pendingPodCount} →`
+                : "All demand →"}
+            </LinkButton>
+            <LinkButton onClick={() => onNavigate("/capacity/activity")}>
+              Activity timeline →
+            </LinkButton>
+          </div>
+        }
         bodyClassName="divide-y divide-theme-border-subtle"
       >
         {signals.length === 0 ? (

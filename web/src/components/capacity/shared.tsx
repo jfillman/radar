@@ -987,6 +987,8 @@ export function KpiTile({
   certainty,
   certaintyTitle,
   attention = false,
+  linkLabel,
+  onClick,
 }: {
   label: string;
   value: ReactNode;
@@ -994,9 +996,29 @@ export function KpiTile({
   certainty?: CapacityCertainty;
   certaintyTitle?: string;
   attention?: boolean;
+  linkLabel?: string;
+  onClick?: () => void;
 }) {
+  const clickable = Boolean(onClick);
   return (
-    <div className="rounded-xl border border-theme-border bg-theme-surface px-4 py-3 shadow-theme-sm">
+    <div
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={
+        clickable
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onClick?.();
+              }
+            }
+          : undefined
+      }
+      className={`rounded-xl border border-theme-border bg-theme-surface px-4 py-3 shadow-theme-sm ${
+        clickable ? "cursor-pointer transition-colors hover:border-theme-border-light hover:bg-theme-hover/40" : ""
+      }`}
+    >
       <div className="flex items-center gap-1.5">
         <span className="text-[11px] font-medium uppercase tracking-wide text-theme-text-tertiary">
           {label}
@@ -1015,6 +1037,11 @@ export function KpiTile({
       </div>
       {sub && (
         <div className="mt-0.5 text-xs text-theme-text-secondary">{sub}</div>
+      )}
+      {linkLabel && (
+        <div className="mt-1.5 text-xs font-medium text-accent-text">
+          {linkLabel}
+        </div>
       )}
     </div>
   );

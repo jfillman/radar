@@ -63,10 +63,12 @@ export function CapacityDemand({
   connectionState,
   onOpenPool,
   onOpenResource,
+  onNavigate,
 }: {
   connectionState: "connected" | "disconnected" | "connecting";
   onOpenPool: (name: string) => void;
   onOpenResource: (resource: SelectedResource) => void;
+  onNavigate: (path: string) => void;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -163,12 +165,17 @@ export function CapacityDemand({
     <ScrollableContent>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-lg font-semibold text-theme-text-primary">
-            Demand
-          </h1>
-          <p className="mt-0.5 text-xs text-theme-text-tertiary">
-            Pending pods grouped by scheduling signature · {summary}
-          </p>
+          <div className="flex flex-wrap items-baseline gap-3">
+            <LinkButton onClick={() => onNavigate("/capacity")}>
+              ← Capacity
+            </LinkButton>
+            <h1 className="text-lg font-semibold text-theme-text-primary">
+              Demand
+            </h1>
+            <span className="text-xs text-theme-text-tertiary">
+              Pending pods grouped by scheduling signature · {summary}
+            </span>
+          </div>
           <div className="mt-2">
             <ScopeBadges coverage={response.coverage} />
           </div>

@@ -7,7 +7,6 @@ import {
 } from "react";
 import {
   AlertTriangle,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Gauge,
@@ -1168,28 +1167,6 @@ export function LinkButton({
     >
       {children}
     </button>
-  );
-}
-
-export function DisclosureButton({
-  open,
-  label,
-}: {
-  open: boolean;
-  label?: string;
-}) {
-  return (
-    <span
-      aria-hidden
-      className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-theme-text-tertiary"
-      aria-label={label}
-    >
-      {open ? (
-        <ChevronDown className="h-4 w-4" />
-      ) : (
-        <ChevronRight className="h-4 w-4" />
-      )}
-    </span>
   );
 }
 

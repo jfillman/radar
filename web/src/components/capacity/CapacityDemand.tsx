@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AlertTriangle } from "lucide-react";
 import {
+  Collapse,
+  CollapseChevron,
   type CapacityDemandGroup,
   type CapacityDemandResponse,
   type CapacityDemandState,
@@ -19,7 +21,6 @@ import { refToSelectedResource } from "../../utils/navigation";
 import {
   CapacityFreshness,
   DemandStateBadge,
-  DisclosureButton,
   EmptyState,
   InlineEmpty,
   LinkButton,
@@ -308,7 +309,7 @@ function DemandGroupCard({
         className={`flex w-full items-start gap-2 px-4 py-3 text-left ${ROW_HOVER}`}
         onClick={() => setExpanded((current) => !current)}
       >
-        <DisclosureButton open={expanded} label="Toggle demand group" />
+        <CollapseChevron open={expanded} className="mt-0.5 h-4 w-4" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="min-w-[90px]">
@@ -360,7 +361,7 @@ function DemandGroupCard({
         </div>
       </button>
 
-      {expanded && (
+      <Collapse open={expanded}>
         <div className="border-t border-theme-border">
           <div className="px-4 pt-3 text-xs text-theme-text-tertiary">
             Pools:{" "}
@@ -373,7 +374,7 @@ function DemandGroupCard({
             </span>
           </div>
 
-          <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+          <div className="grid gap-x-6 gap-y-4 px-4 py-4 lg:grid-cols-2">
             <div className="space-y-4">
               <div>
                 <h3 className="text-xs font-medium uppercase tracking-wide text-theme-text-tertiary">
@@ -454,7 +455,9 @@ function DemandGroupCard({
                   </p>
                 )}
               </div>
+            </div>
 
+            <div className="space-y-4">
               <div>
                 <h3 className="text-xs font-medium uppercase tracking-wide text-theme-text-tertiary">
                   Evidence
@@ -523,16 +526,17 @@ function DemandGroupCard({
                 </div>
               )}
             </div>
+          </div>
 
-            <div>
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="text-xs font-medium uppercase tracking-wide text-theme-text-tertiary">
-                  Pool evaluations
-                </h3>
-                <span className="text-[11px] text-theme-text-tertiary">
-                  — declared compatibility, with evidence
-                </span>
-              </div>
+          <div className="border-t border-theme-border-subtle px-4 py-4">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-xs font-medium uppercase tracking-wide text-theme-text-tertiary">
+                Pool evaluations
+              </h3>
+              <span className="text-[11px] text-theme-text-tertiary">
+                — declared compatibility, with evidence
+              </span>
+            </div>
               {group.poolEvaluations.length > 0 ? (
                 <div className="mt-2 space-y-2">
                   {group.poolEvaluations.map((evaluation) => (
@@ -554,10 +558,9 @@ function DemandGroupCard({
                   No NodePools were available for evaluation.
                 </p>
               )}
-            </div>
           </div>
         </div>
-      )}
+      </Collapse>
     </article>
   );
 }
@@ -580,7 +583,7 @@ function PoolEvaluationCard({
         className={`flex w-full items-center gap-2 px-3 py-2.5 text-left ${ROW_HOVER}`}
         onClick={() => setExpanded((current) => !current)}
       >
-        <DisclosureButton open={expanded} label="Toggle pool evaluation" />
+        <CollapseChevron open={expanded} className="h-4 w-4" />
         <span
           role="link"
           tabIndex={0}
@@ -605,7 +608,7 @@ function PoolEvaluationCard({
           {evaluation.evidenceMeta.truncated ? " · truncated" : ""}
         </span>
       </button>
-      {expanded && (
+      <Collapse open={expanded}>
         <div className="border-t border-theme-border">
           {evaluation.evidence.length > 0 ||
           evaluation.unknownPredicates.length > 0 ? (
@@ -661,7 +664,7 @@ function PoolEvaluationCard({
             </p>
           )}
         </div>
-      )}
+      </Collapse>
     </div>
   );
 }

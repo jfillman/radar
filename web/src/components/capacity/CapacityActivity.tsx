@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  Collapse,
+  CollapseChevron,
   formatDuration,
   type CapacityActivityEpisode,
   type CapacityActivityResponse,
@@ -15,7 +17,6 @@ import type { SelectedResource } from "../../types";
 import {
   ActivityStateBadge,
   CapacityFreshness,
-  DisclosureButton,
   InlineEmpty,
   KeyValueRows,
   LinkButton,
@@ -483,7 +484,7 @@ function ActivityEpisodeCard({
         className={`flex w-full items-start gap-2 px-4 py-3 text-left ${ROW_HOVER}`}
         onClick={() => setExpanded((current) => !current)}
       >
-        <DisclosureButton open={expanded} label="Toggle activity episode" />
+        <CollapseChevron open={expanded} className="mt-0.5 h-4 w-4" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone="structural" size="sm">
@@ -541,7 +542,7 @@ function ActivityEpisodeCard({
         </div>
       </button>
 
-      {expanded && (
+      <Collapse open={expanded}>
         <div className="border-t border-theme-border">
           {episode.evidence.length > 0 ? (
             <div className={TABLE_WRAP}>
@@ -647,7 +648,7 @@ function ActivityEpisodeCard({
             </p>
           )}
         </div>
-      )}
+      </Collapse>
     </article>
   );
 }

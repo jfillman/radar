@@ -140,7 +140,9 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 	emit(p.DetectGitOpsProblems(f.Namespaces), SourceProblem) // Argo/Flux reconciler health
 	emit(p.DetectMissingRefs(f.Namespaces), SourceMissingRef) // dangling by-name refs
 	emit(p.DetectScheduling(f.Namespaces), SourceScheduling)  // placement/admission/post-bind
-	out = append(out, detectGenericCRDIssues(p, f)...)        // generic CRD .status.conditions
+	karpenterIssues, karpenterOwnedSubjects := detectKarpenterIssues(p, f)
+	out = append(out, karpenterIssues...)
+	out = append(out, detectGenericCRDIssues(p, f, karpenterOwnedSubjects)...) // generic CRD .status.conditions
 
 	// ---- 2. Evidence-level transforms (operate on flat rows) ---------
 	// RBAC gating on the underlying resource, and dedup that compares child

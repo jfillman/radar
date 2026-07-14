@@ -57,11 +57,13 @@ const WINDOW_PILLS: [number | undefined, string][] = [
 
 export function CapacityActivity({
   connectionState,
+  namespaces,
   onOpenPool,
   onOpenResource,
   onNavigate,
 }: {
   connectionState: "connected" | "disconnected" | "connecting";
+  namespaces: string[];
   onOpenPool: (name: string) => void;
   onOpenResource: (resource: SelectedResource) => void;
   onNavigate: (path: string) => void;
@@ -107,7 +109,7 @@ export function CapacityActivity({
   const poolDraft = drafts.pool;
   const reasonDraft = drafts.reason;
   const pagination = useCapacityPagination<CapacityActivityResponse>(
-    location.search,
+    `${location.search}\u0000${namespaces.join(",")}`,
   );
   const query = useCapacityActivity({
     limit: 50,
@@ -117,6 +119,7 @@ export function CapacityActivity({
     node: nodeFilter,
     reason: reasonFilter,
     since: requestSinceFilter,
+    namespaces,
   });
   const recoveringCursor = useCapacityCursorRecovery(
     query.error,

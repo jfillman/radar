@@ -15,6 +15,7 @@ import {
 import {
   FreshnessControl,
   formatDuration,
+  memberRef,
   PaneLoader,
   ResourceBar,
   Tooltip,
@@ -36,6 +37,7 @@ import {
   type CapacityResponseMeta,
   type CapacitySourceCoverage,
   type CapacityUsageObservation,
+  type Issue,
 } from "@skyhook-io/k8s-ui";
 import { Badge } from "@skyhook-io/k8s-ui/components/ui/Badge";
 import {
@@ -56,9 +58,7 @@ import { refToSelectedResource } from "../../utils/navigation";
 export type CapacityTopTab = "overview" | "demand" | "activity";
 export type PoolSection = "summary" | "workloads" | "members" | "configuration";
 export type CapacityConnectionState =
-  | "connected"
-  | "disconnected"
-  | "connecting";
+  "connected" | "disconnected" | "connecting";
 
 export interface CapacityRoute {
   topTab: CapacityTopTab;
@@ -123,6 +123,62 @@ export function identityKey(identity: CapacityResourceIdentity): string {
   return `${identity.ref.group ?? ""}/${identity.ref.kind}/${identity.ref.namespace ?? ""}/${identity.ref.name}`;
 }
 
+export function CapacityIssueEvidence({
+  issue,
+  onOpenResource,
+  onOpenMembers,
+}: {
+  issue: Issue;
+  onOpenResource: (resource: SelectedResource) => void;
+  onOpenMembers?: () => void;
+}) {
+  const members = issue.members ?? [];
+  const total = issue.count ?? members.length;
+  if (total === 0 && members.length === 0) return null;
+  const linksToPoolMembers = members.some(
+    (member) => member.kind === "Node" || member.kind === "NodeClaim",
+  );
+
+  return (
+    <div className="mt-2 rounded-lg border border-theme-border-subtle bg-theme-base/50 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-medium text-theme-text-secondary">
+          {total} affected {total === 1 ? "resource" : "resources"}
+        </span>
+        {onOpenMembers && linksToPoolMembers && (
+          <LinkButton onClick={onOpenMembers}>
+            Inspect nodes &amp; claims →
+          </LinkButton>
+        )}
+      </div>
+      {members.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+          {members.map((member, index) => {
+            const ref = memberRef(issue, member);
+            return (
+              <button
+                key={`${ref.group}/${ref.kind}/${ref.namespace}/${ref.name}#${index}`}
+                type="button"
+                className="font-mono text-xs font-medium text-accent-text hover:underline"
+                onClick={() => onOpenResource(refToSelectedResource(ref))}
+              >
+                {ref.kind}/{ref.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {issue.members_truncated && (
+        <p className="mt-1.5 text-[11px] text-theme-text-tertiary">
+          {total > members.length
+            ? `Showing ${members.length} of ${total} affected resources.`
+            : `Additional affected resources are omitted beyond the ${members.length} shown.`}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ============================================================================
 // Coverage semantics ("unavailable ≠ zero", lower-bound, staleness)
 // ============================================================================
@@ -133,11 +189,13 @@ export function coverageHasObservations(
   return coverage?.status === "available" || coverage?.status === "partial";
 }
 
-export function coverageIsLowerBound(coverage?: CapacitySourceCoverage): boolean {
+export function coverageIsLowerBound(
+  coverage?: CapacitySourceCoverage,
+): boolean {
   return Boolean(
     coverageHasObservations(coverage) &&
-      ((coverage?.status === "partial" && !nodeMetricsAreStale(coverage)) ||
-        coverage?.scope !== "cluster"),
+    ((coverage?.status === "partial" && !nodeMetricsAreStale(coverage)) ||
+      coverage?.scope !== "cluster"),
   );
 }
 
@@ -145,7 +203,9 @@ export function coverageIsDenied(coverage?: CapacitySourceCoverage): boolean {
   return coverage?.status === "denied";
 }
 
-export function nodeMetricsAreStale(coverage?: CapacitySourceCoverage): boolean {
+export function nodeMetricsAreStale(
+  coverage?: CapacitySourceCoverage,
+): boolean {
   return coverage?.reasonCode === "node_metrics_stale";
 }
 
@@ -431,12 +491,14 @@ export function actionSeverity(
 }
 
 export function humanizeCode(code: string): string {
-  const words = code.replaceAll("_", " ");
+  const words = code
+    .replaceAll("_", " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2");
   if (!words) return "Capacity signal";
-  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`.replaceAll(
-    "Nodeclass",
-    "NodeClass",
-  );
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`
+    .replaceAll("Nodeclass", "NodeClass")
+    .replaceAll("Node Class", "NodeClass")
+    .replaceAll("Node Pool", "NodePool");
 }
 
 export function conditionSummary(
@@ -857,7 +919,8 @@ export function PressureDetail({
       {pressure.percent === undefined ? (
         <div className="font-mono text-xs text-theme-text-primary">
           {formatQuantity(pressure.resource, pressure.provisioned)} /{" "}
-          {formatQuantity(pressure.resource, pressure.limit)} · ratio unavailable
+          {formatQuantity(pressure.resource, pressure.limit)} · ratio
+          unavailable
         </div>
       ) : (
         <ResourceBar
@@ -1014,7 +1077,9 @@ export function KpiTile({
           : undefined
       }
       className={`rounded-xl border border-theme-border bg-theme-surface px-4 py-3 shadow-theme-sm ${
-        clickable ? "cursor-pointer transition-colors hover:border-theme-border-light hover:bg-theme-hover/40" : ""
+        clickable
+          ? "cursor-pointer transition-colors hover:border-theme-border-light hover:bg-theme-hover/40"
+          : ""
       }`}
     >
       <div className="flex items-center gap-1.5">
@@ -1287,7 +1352,12 @@ export function ScopeBadges({
 // ============================================================================
 
 export function integrationBlock(
-  response: { state: CapacityIntegrationState } | undefined,
+  response:
+    | {
+        state: CapacityIntegrationState;
+        coverage?: CapacityCoverageBySource;
+      }
+    | undefined,
   error: Error | null,
   isLoading: boolean,
   loadingLabel: string,
@@ -1314,7 +1384,7 @@ export function integrationBlock(
   if (response.state === "syncing")
     return (
       <PaneLoader
-        label="Capacity data is syncing…"
+        label={capacitySyncingLabel(response.coverage?.nodePools?.reasonCode)}
         className="min-h-0 flex-1"
       />
     );
@@ -1335,6 +1405,27 @@ export function integrationBlock(
       />
     );
   return null;
+}
+
+function capacitySyncingLabel(reasonCode?: string): string {
+  switch (reasonCode) {
+    case "cluster_connecting":
+      return "Connecting to the cluster before checking Karpenter…";
+    case "cluster_disconnected":
+      return "Cluster disconnected; waiting to reconnect…";
+    case "cluster_client_unavailable":
+      return "Waiting for the Kubernetes client…";
+    case "discovery_unavailable":
+      return "Waiting for Kubernetes API discovery…";
+    case "karpenter_discovery_partial":
+      return "Karpenter API discovery is incomplete; retrying…";
+    case "dynamic_cache_unavailable":
+      return "Waiting for the Karpenter resource cache…";
+    case "nodepools_syncing":
+      return "Syncing Karpenter NodePools…";
+    default:
+      return "Capacity data is syncing…";
+  }
 }
 
 // ============================================================================

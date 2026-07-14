@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AlertTriangle } from "lucide-react";
 import {
@@ -16,11 +16,13 @@ import {
   isCapacityCursorInvalidError,
   isNotFoundError,
   useCapacityDemand,
+  useCapacityPools,
 } from "../../api/client";
 import type { SelectedResource } from "../../types";
 import { refToSelectedResource } from "../../utils/navigation";
 import {
   CapacityFreshness,
+  CapacityIssueEvidence,
   DemandStateBadge,
   EmptyState,
   InlineEmpty,
@@ -44,6 +46,7 @@ import {
   demandStateLabel,
   errorMessage,
   formatTimestamp,
+  humanizeCode,
   identityKey,
   integrationBlock,
   namespaceCoverageDescription,
@@ -61,13 +64,30 @@ const STATE_PILLS: [CapacityDemandState | undefined, string][] = [
   ["unknown", "Unknown"],
 ];
 
+const POOL_PAGE_LIMIT = 100;
+const LOAD_MORE_POOLS = "__load_more_nodepools__";
+
+export function updateDemandSearchParam(
+  search: string,
+  key: "pool" | "state",
+  value: string | undefined,
+): string {
+  const params = new URLSearchParams(search);
+  if (value) params.set(key, value);
+  else params.delete(key);
+  const next = params.toString();
+  return next ? `?${next}` : "";
+}
+
 export function CapacityDemand({
   connectionState,
+  namespaces,
   onOpenPool,
   onOpenResource,
   onNavigate,
 }: {
   connectionState: "connected" | "disconnected" | "connecting";
+  namespaces: string[];
   onOpenPool: (name: string) => void;
   onOpenResource: (resource: SelectedResource) => void;
   onNavigate: (path: string) => void;
@@ -89,13 +109,14 @@ export function CapacityDemand({
       : undefined;
   const poolFilter = search.get("pool") || undefined;
   const pagination = useCapacityPagination<CapacityDemandResponse>(
-    location.search,
+    `${location.search}\u0000${namespaces.join(",")}`,
   );
   const query = useCapacityDemand({
     limit: 25,
     cursor: pagination.cursor,
     state: stateFilter,
     pool: poolFilter,
+    namespaces,
   });
   const recoveringCursor = useCapacityCursorRecovery(
     query.error,
@@ -105,23 +126,25 @@ export function CapacityDemand({
   const recoveredCursor = pagination.recovered || recoveringCursor;
   const responseData =
     query.data ?? (recoveredCursor ? pagination.retainedPage : undefined);
-  const clearPoolFilter = () => {
-    const params = new URLSearchParams(location.search);
-    params.delete("pool");
+  const updateSearchParam = (
+    key: "pool" | "state",
+    value: string | undefined,
+  ) => {
     navigate(
       {
         pathname: location.pathname,
-        search: params.toString() ? `?${params.toString()}` : "",
+        search: updateDemandSearchParam(location.search, key, value),
       },
       { replace: true },
     );
   };
+  const clearPoolFilter = () => updateSearchParam("pool", undefined);
   if (poolFilter && !responseData && isNotFoundError(query.error)) {
     return (
       <EmptyState
         icon={AlertTriangle}
         title="NodePool not found"
-        detail={`This link filters by pool “${poolFilter}”, which no longer exists. It may have been removed or belongs to another cluster context.`}
+        detail={`This link evaluates demand against NodePool “${poolFilter}”, which no longer exists. It may have been removed or belongs to another cluster context.`}
         action={
           <button
             type="button"
@@ -143,18 +166,8 @@ export function CapacityDemand({
   if (blocked) return blocked;
   const response = responseData as CapacityDemandResponse;
 
-  const changeFilter = (next: CapacityDemandState | undefined) => {
-    const params = new URLSearchParams(location.search);
-    if (next) params.set("state", next);
-    else params.delete("state");
-    navigate(
-      {
-        pathname: location.pathname,
-        search: params.toString() ? `?${params.toString()}` : "",
-      },
-      { replace: true },
-    );
-  };
+  const changeFilter = (next: CapacityDemandState | undefined) =>
+    updateSearchParam("state", next);
 
   // Page-local counts (numerator of "showing X of N").
   const pagePods = response.items.reduce(
@@ -223,7 +236,8 @@ export function CapacityDemand({
         <Notice>
           ≥ {coverageMessage(response.coverage.pods, "Pending pod demand")}.
           Groups outside {namespaceCoverageDescription(response.coverage.pods)}{" "}
-          are invisible — every count on this page is a lower bound, not a total.
+          are invisible — every count on this page is a lower bound, not a
+          total.
         </Notice>
       )}
       {poolFilter && (
@@ -235,40 +249,48 @@ export function CapacityDemand({
           — the state counts below describe how the observed demand evaluates
           against this pool, not global scheduling state.{" "}
           <LinkButton className="inline" onClick={clearPoolFilter}>
-            Clear pool filter
+            Evaluate against all NodePools
           </LinkButton>
         </Notice>
       )}
 
-      <div
-        className="flex flex-wrap gap-1.5"
-        aria-label="Filter demand by state"
-      >
-        {STATE_PILLS.map(([state, label]) => {
-          // Counts come from the server rollup (stable across the active filter),
-          // not the current page. Omitted entirely when summary is absent — a
-          // pill never shows a fabricated "· 0".
-          const counts = rollup
-            ? state === undefined
-              ? rollup.total
-              : rollup.byState[state]
-            : undefined;
-          return (
-            <button
-              key={state ?? "all"}
-              type="button"
-              aria-pressed={stateFilter === state}
-              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-                stateFilter === state
-                  ? "selection border-theme-border text-theme-text-primary"
-                  : "border-theme-border text-theme-text-secondary hover:bg-theme-hover"
-              }`}
-              onClick={() => changeFilter(state)}
-            >
-              {counts ? `${label} · ${counts.podCount}` : label}
-            </button>
-          );
-        })}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div
+          className="flex flex-wrap gap-1.5"
+          aria-label="Filter demand by state"
+        >
+          {STATE_PILLS.map(([state, label]) => {
+            // Counts come from the server rollup (stable across the active filter),
+            // not the current page. Omitted entirely when summary is absent — a
+            // pill never shows a fabricated "· 0".
+            const counts = rollup
+              ? state === undefined
+                ? rollup.total
+                : rollup.byState[state]
+              : undefined;
+            return (
+              <button
+                key={state ?? "all"}
+                type="button"
+                aria-pressed={stateFilter === state}
+                className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                  stateFilter === state
+                    ? "selection border-theme-border text-theme-text-primary"
+                    : "border-theme-border text-theme-text-secondary hover:bg-theme-hover"
+                }`}
+                onClick={() => changeFilter(state)}
+              >
+                {counts ? `${label} · ${counts.podCount}` : label}
+              </button>
+            );
+          })}
+        </div>
+        <DemandPoolSelector
+          key={`${response.clusterContext.contextName}\u0000${namespaces.join(",")}`}
+          pool={poolFilter}
+          namespaces={namespaces}
+          onChange={(pool) => updateSearchParam("pool", pool)}
+        />
       </div>
 
       {response.items.length > 0 ? (
@@ -313,6 +335,93 @@ export function CapacityDemand({
         />
       )}
     </ScrollableContent>
+  );
+}
+
+function DemandPoolSelector({
+  pool,
+  namespaces,
+  onChange,
+}: {
+  pool: string | undefined;
+  namespaces: string[];
+  onChange: (pool: string | undefined) => void;
+}) {
+  const [cursor, setCursor] = useState<string>();
+  const [loadedPools, setLoadedPools] = useState<string[]>([]);
+  const query = useCapacityPools({
+    limit: POOL_PAGE_LIMIT,
+    cursor,
+    namespaces,
+    refetchInterval: false,
+  });
+  const recoverCursor = useCallback(() => {
+    setCursor(undefined);
+    setLoadedPools([]);
+  }, []);
+  const recoveringCursor = useCapacityCursorRecovery(
+    query.error,
+    cursor,
+    recoverCursor,
+  );
+  const page = query.isPlaceholderData ? undefined : query.data;
+  const pageNames = page?.items.map((item) => item.resource.ref.name) ?? [];
+  const poolNames = Array.from(new Set([...loadedPools, ...pageNames])).sort();
+  if (pool && !poolNames.includes(pool)) poolNames.unshift(pool);
+
+  const loadingMore = Boolean(
+    cursor && query.isFetching && query.isPlaceholderData,
+  );
+  const hasMore = Boolean(page?.page.hasMore && page.page.nextCursor);
+  const statusId = "demand-pool-options-status";
+
+  return (
+    <div className="flex min-w-56 flex-col gap-1">
+      <label className="flex items-center gap-2 text-xs text-theme-text-secondary">
+        <span className="shrink-0 font-medium">Evaluate against</span>
+        <select
+          value={pool ?? ""}
+          aria-describedby={query.error ? statusId : undefined}
+          aria-busy={query.isFetching}
+          onChange={(event) => {
+            if (event.target.value === LOAD_MORE_POOLS) {
+              if (page?.page.nextCursor) {
+                setLoadedPools((current) =>
+                  Array.from(new Set([...current, ...pageNames])).sort(),
+                );
+                setCursor(page.page.nextCursor);
+              }
+              return;
+            }
+            onChange(event.target.value || undefined);
+          }}
+          className="min-w-0 flex-1 rounded-md border border-theme-border bg-theme-elevated px-2 py-1.5 text-xs text-theme-text-primary focus:outline-none focus:ring-2 focus:ring-skyhook-500"
+        >
+          <option value="">All NodePools</option>
+          {poolNames.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+          {query.isLoading && <option disabled>Loading NodePools…</option>}
+          {loadingMore && <option disabled>Loading more NodePools…</option>}
+          {!loadingMore && hasMore && (
+            <option value={LOAD_MORE_POOLS}>Load more NodePools…</option>
+          )}
+        </select>
+      </label>
+      {query.error && (
+        <span
+          id={statusId}
+          role="status"
+          className="text-right text-xs text-theme-text-tertiary"
+        >
+          {recoveringCursor
+            ? "NodePool list changed; reloading options."
+            : "NodePool options unavailable; demand remains available."}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -402,6 +511,51 @@ function DemandGroupCard({
               </span>
             </WithTooltip>
           </div>
+
+          {group.issues.length > 0 && (
+            <div className="px-4 pt-3">
+              <div className="rounded-lg border border-theme-border bg-theme-base/50 px-3 py-3">
+                <h3 className="text-xs font-medium uppercase tracking-wide text-theme-text-tertiary">
+                  Capacity diagnosis
+                </h3>
+                <div className="mt-2 space-y-2">
+                  {group.issues.map((issue) => (
+                    <div
+                      key={issue.id}
+                      className="flex items-start gap-2 text-xs"
+                    >
+                      <Badge
+                        severity={
+                          issue.severity === "critical" ? "error" : "warning"
+                        }
+                        size="sm"
+                      >
+                        {issue.severity}
+                      </Badge>
+                      <div className="min-w-0 text-theme-text-secondary">
+                        <p>
+                          <span className="font-medium text-theme-text-primary">
+                            {humanizeCode(issue.reason)}
+                          </span>
+                          {issue.message ? ` — ${issue.message}` : ""}
+                        </p>
+                        {issue.cause && (
+                          <p className="mt-1">Cause: {issue.cause}</p>
+                        )}
+                        {issue.action && (
+                          <p className="mt-1">Next: {issue.action}</p>
+                        )}
+                        <CapacityIssueEvidence
+                          issue={issue}
+                          onOpenResource={onOpenResource}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="grid gap-x-6 gap-y-4 px-4 py-4 lg:grid-cols-2">
             <div className="space-y-4">
@@ -566,27 +720,27 @@ function DemandGroupCard({
                 — declared compatibility, with evidence
               </span>
             </div>
-              {group.poolEvaluations.length > 0 ? (
-                <div className="mt-2 space-y-2">
-                  {group.poolEvaluations.map((evaluation) => (
-                    <PoolEvaluationCard
-                      key={`${evaluation.pool.group ?? ""}/${evaluation.pool.name}`}
-                      evaluation={evaluation}
-                      onOpenPool={onOpenPool}
-                    />
-                  ))}
-                  {group.poolEvaluationsMeta.truncated && (
-                    <p className="text-[11px] text-theme-text-tertiary">
-                      Showing {group.poolEvaluationsMeta.returned} of{" "}
-                      {group.poolEvaluationsMeta.total} evaluations.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <p className="mt-2 text-sm text-theme-text-secondary">
-                  No NodePools were available for evaluation.
-                </p>
-              )}
+            {group.poolEvaluations.length > 0 ? (
+              <div className="mt-2 space-y-2">
+                {group.poolEvaluations.map((evaluation) => (
+                  <PoolEvaluationCard
+                    key={`${evaluation.pool.group ?? ""}/${evaluation.pool.name}`}
+                    evaluation={evaluation}
+                    onOpenPool={onOpenPool}
+                  />
+                ))}
+                {group.poolEvaluationsMeta.truncated && (
+                  <p className="text-[11px] text-theme-text-tertiary">
+                    Showing {group.poolEvaluationsMeta.returned} of{" "}
+                    {group.poolEvaluationsMeta.total} evaluations.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="mt-2 text-sm text-theme-text-secondary">
+                No NodePools were available for evaluation.
+              </p>
+            )}
           </div>
         </div>
       </Collapse>

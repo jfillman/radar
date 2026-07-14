@@ -297,13 +297,13 @@ func TestRelatedIssues_SubjectAndMember(t *testing.T) {
 		{Kind: "Pod", Namespace: "prod", Name: "web-abc-1", Reason: "CrashLoopBackOff", Severity: "critical",
 			OwnerGroup: "apps", OwnerKind: "Deployment", OwnerName: "web"},
 	}}
-	if got := RelatedIssues(p, nil, "apps", "Deployment", "prod", "web"); len(got) != 1 {
+	if got := RelatedIssues(p, RelatedIssueOptions{}, "apps", "Deployment", "prod", "web"); len(got) != 1 {
 		t.Fatalf("RelatedIssues(owning Deployment) = %d, want 1 (subject match)", len(got))
 	}
-	if got := RelatedIssues(p, nil, "", "pod", "prod", "web-abc-1"); len(got) != 1 {
+	if got := RelatedIssues(p, RelatedIssueOptions{}, "", "pod", "prod", "web-abc-1"); len(got) != 1 {
 		t.Errorf("RelatedIssues(evidence Pod, case-insensitive) = %d, want 1 (member match)", len(got))
 	}
-	if got := RelatedIssues(p, nil, "apps", "Deployment", "prod", "other"); len(got) != 0 {
+	if got := RelatedIssues(p, RelatedIssueOptions{}, "apps", "Deployment", "prod", "other"); len(got) != 0 {
 		t.Errorf("RelatedIssues(unrelated) = %d, want 0", len(got))
 	}
 }
@@ -322,7 +322,7 @@ func TestRelatedIssues_PopulatesIncidentParent(t *testing.T) {
 		},
 		podsMountingPVC: map[string][]Ref{"prod/data": {{Kind: "Pod", Namespace: "prod", Name: "db-0"}}},
 	}
-	got := RelatedIssues(p, nil, "", "Pod", "prod", "db-0")
+	got := RelatedIssues(p, RelatedIssueOptions{}, "", "Pod", "prod", "db-0")
 	if len(got) != 1 {
 		t.Fatalf("RelatedIssues(db-0) = %d, want 1", len(got))
 	}
@@ -357,7 +357,7 @@ func TestRelatedIssues_IncidentParentCoverageGate(t *testing.T) {
 			{Kind: "Pod", Namespace: "prod", Name: "db-1"},
 		}},
 	}
-	got := RelatedIssues(p, nil, "", "Pod", "prod", "db-0")
+	got := RelatedIssues(p, RelatedIssueOptions{}, "", "Pod", "prod", "db-0")
 	if len(got) != 1 {
 		t.Fatalf("RelatedIssues(db-0) = %d, want 1", len(got))
 	}
@@ -379,10 +379,10 @@ func TestRelatedIssuesFrom_MatchesPrecomposed(t *testing.T) {
 	}}
 	flat := Compose(p, Filters{Limit: NoLimit})
 	grouped := GroupIssues(flat)
-	if got := RelatedIssuesFrom(flat, grouped, "apps", "Deployment", "prod", "web"); len(got) != 1 {
+	if got := RelatedIssuesFrom(flat, grouped, RelatedIssueOptions{}, "apps", "Deployment", "prod", "web"); len(got) != 1 {
 		t.Errorf("RelatedIssuesFrom(owning Deployment) = %d, want 1", len(got))
 	}
-	if got := RelatedIssuesFrom(flat, grouped, "apps", "Deployment", "prod", "other"); len(got) != 0 {
+	if got := RelatedIssuesFrom(flat, grouped, RelatedIssueOptions{}, "apps", "Deployment", "prod", "other"); len(got) != 0 {
 		t.Errorf("RelatedIssuesFrom(unrelated) = %d, want 0", len(got))
 	}
 }
@@ -405,7 +405,7 @@ func TestRelatedIssuesFrom_NoIncidentParentOnBarePair(t *testing.T) {
 	}
 	flat := Compose(p, Filters{Limit: NoLimit})
 	grouped := GroupIssues(flat)
-	got := RelatedIssuesFrom(flat, grouped, "", "Pod", "prod", "db-0")
+	got := RelatedIssuesFrom(flat, grouped, RelatedIssueOptions{}, "", "Pod", "prod", "db-0")
 	if len(got) != 1 {
 		t.Fatalf("RelatedIssuesFrom(db-0) = %d, want 1", len(got))
 	}
@@ -426,7 +426,7 @@ func TestRelatedIssuesFrom_NormalizesGroup(t *testing.T) {
 	}}
 	flat := Compose(p, Filters{Limit: NoLimit})
 	grouped := GroupIssues(flat)
-	if got := RelatedIssuesFrom(flat, grouped, "", "Deployment", "prod", "web"); len(got) != 1 {
+	if got := RelatedIssuesFrom(flat, grouped, RelatedIssueOptions{}, "", "Deployment", "prod", "web"); len(got) != 1 {
 		t.Errorf("raw empty query group should normalize to apps and match, got %d", len(got))
 	}
 }
@@ -437,11 +437,11 @@ func TestRelatedIssues_GroupIsExact(t *testing.T) {
 		{Kind: "Service", Group: "serving.knative.dev", Namespace: "prod", Name: "api", Reason: "0/1 selected pods ready", Severity: "critical"},
 	}}
 
-	core := RelatedIssues(p, nil, "", "Service", "prod", "api")
+	core := RelatedIssues(p, RelatedIssueOptions{}, "", "Service", "prod", "api")
 	if len(core) != 1 || core[0].Group != "" {
 		t.Fatalf("core Service lookup should match only core-group issue, got %+v", core)
 	}
-	knative := RelatedIssues(p, nil, "serving.knative.dev", "Service", "prod", "api")
+	knative := RelatedIssues(p, RelatedIssueOptions{}, "serving.knative.dev", "Service", "prod", "api")
 	if len(knative) != 1 || knative[0].Group != "serving.knative.dev" {
 		t.Fatalf("Knative Service lookup should match only serving.knative.dev issue, got %+v", knative)
 	}
@@ -460,10 +460,10 @@ func TestRelatedIssues_UncappedMembers(t *testing.T) {
 		})
 	}
 	p := &fakeProvider{problems: probs}
-	if got := RelatedIssues(p, nil, "", "Pod", "prod", "web-abc-11"); len(got) != 1 {
+	if got := RelatedIssues(p, RelatedIssueOptions{}, "", "Pod", "prod", "web-abc-11"); len(got) != 1 {
 		t.Errorf("pod beyond the inline-Members cap = %d related issues, want 1 (uncapped lookup)", len(got))
 	}
-	if got := RelatedIssues(p, nil, "apps", "Deployment", "prod", "web"); len(got) != 1 {
+	if got := RelatedIssues(p, RelatedIssueOptions{}, "apps", "Deployment", "prod", "web"); len(got) != 1 {
 		t.Errorf("owning Deployment = %d related issues, want 1", len(got))
 	}
 }

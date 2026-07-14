@@ -58,6 +58,7 @@ func (s *Server) handleCapacityDemand(w http.ResponseWriter, r *http.Request) {
 		ResolvePodOwner: result.snapshot.ResolvePodOwner,
 	})
 	capacitymodel.ClassifyDemandGroupModels(groups, pools)
+	s.capacityIssuesForRequest(r).attachDemand(groups)
 	if capacityCoverageObserved(result.meta.Coverage[capacityapi.CoveragePods]) {
 		summary := capacitymodel.SummarizeDemandGroupModels(groups)
 		response.Summary = &summary

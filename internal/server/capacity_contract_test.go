@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/skyhook-io/radar/internal/auth"
+	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/timeline"
 	"github.com/skyhook-io/radar/pkg/capacityapi"
@@ -148,6 +149,51 @@ func TestCapacityDemandPoolFilterRequiresObservedNodePool(t *testing.T) {
 	}
 	if got := body["error"]; got != "NodePool not found" {
 		t.Fatalf("error = %v, want NodePool not found", got)
+	}
+}
+
+func TestCapacityProjectsCanonicalNodePoolIssues(t *testing.T) {
+	pool := capacityContractNodePool("unhealthy")
+	pool.SetGeneration(2)
+	pool.Object["status"] = map[string]any{"conditions": []any{map[string]any{
+		"type":               "Ready",
+		"status":             "False",
+		"reason":             "ValidationFailed",
+		"message":            "requirements are invalid",
+		"observedGeneration": int64(2),
+		"lastTransitionTime": time.Now().UTC().Add(-time.Minute).Format(time.RFC3339),
+	}}}
+	initCapacityContractDynamicState(t, true, true, pool)
+
+	var overview capacityapi.OverviewResponse
+	assertOK(t, get(t, "/api/capacity"), &overview)
+	if len(overview.Pools) != 1 || overview.Pools[0].IssueCount != 1 {
+		t.Fatalf("overview pool issue projection = %+v", overview.Pools)
+	}
+	var notReadyAction *capacityapi.ActionSummary
+	for index := range overview.Summary.Actions {
+		if overview.Summary.Actions[index].Code == "pool_not_ready" {
+			notReadyAction = &overview.Summary.Actions[index]
+			break
+		}
+	}
+	if notReadyAction == nil || notReadyAction.Count != 1 {
+		t.Fatalf("overview issue-derived actions = %+v", overview.Summary.Actions)
+	}
+
+	var detail capacityapi.PoolDetailResponse
+	assertOK(t, get(t, "/api/capacity/pools/unhealthy"), &detail)
+	if detail.Pool == nil || len(detail.Pool.Issues) != 1 {
+		t.Fatalf("pool detail issues = %+v", detail.Pool)
+	}
+	issue := detail.Pool.Issues[0]
+	if issue.Reason != issues.ReasonKarpenterNodePoolNotReady || issue.Message != "requirements are invalid" || issue.Cause == "" || issue.Action == "" {
+		t.Fatalf("structured NodePool issue = %+v", issue)
+	}
+	for _, fact := range detail.Pool.Facts {
+		if fact.Code == "nodepool_not_ready" {
+			t.Fatalf("readiness was duplicated as a posture fact: %+v", fact)
+		}
 	}
 }
 

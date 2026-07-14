@@ -379,26 +379,22 @@ func TestBuildDoesNotTrustStaleNodeClassReadyCondition(t *testing.T) {
 	}
 }
 
-func TestBuildReportsMissingNodeClassKind(t *testing.T) {
+func TestBuildKeepsMissingNodeClassAsObservationWithoutDuplicatingIssueFact(t *testing.T) {
 	pool := capacityTestPoolWithNodeClass("compute", "default")
-	refKey := NodeClassLookupKey("karpenter.k8s.aws", "EC2NodeClass", "default")
 	model := Build(Snapshot{
 		GeneratedAt: capacityTestTime(),
 		NodePools:   []*unstructured.Unstructured{pool},
-		UnavailableNodeClassRefs: map[string]bool{
-			refKey: true,
-		},
-		Coverage: capacityTestCoverage(),
+		Coverage:    capacityTestCoverage(),
 	})
 
-	found := false
-	for _, fact := range capacityTestMustPool(t, model, "compute").Observation.Facts {
-		if fact.Code == "nodeclass_kind_not_installed" {
-			found = true
-		}
+	observation := capacityTestMustPool(t, model, "compute").Observation
+	if observation.NodeClass == nil || observation.NodeClass.Reference.Kind != "EC2NodeClass" || observation.NodeClass.Reference.Name != "default" {
+		t.Fatalf("NodeClass observation = %+v, want the unresolved reference", observation.NodeClass)
 	}
-	if !found {
-		t.Fatal("missing NodeClass API did not emit nodeclass_kind_not_installed")
+	for _, fact := range observation.Facts {
+		if fact.Code == "nodeclass_kind_not_installed" {
+			t.Fatalf("missing NodeClass API duplicated the canonical Issue as a posture fact: %+v", fact)
+		}
 	}
 }
 

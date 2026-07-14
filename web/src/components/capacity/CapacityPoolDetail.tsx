@@ -22,6 +22,7 @@ import {
   ActualUsageDetail,
   ActualUsageInline,
   CapacityFreshness,
+  CapacityIssueEvidence,
   CertaintyGlyph,
   ClaimStageBadge,
   conditionSummary,
@@ -35,6 +36,7 @@ import {
   errorMessage,
   formatQuantity,
   formatTaint,
+  humanizeCode,
   identityKey,
   identityToSelectedResource,
   InlineEmpty,
@@ -75,16 +77,18 @@ export function CapacityPoolDetail({
   name,
   section,
   connectionState,
+  namespaces,
   onNavigate,
   onOpenResource,
 }: {
   name: string;
   section: PoolSection;
   connectionState: CapacityConnectionState;
+  namespaces: string[];
   onNavigate: (path: string) => void;
   onOpenResource: (resource: SelectedResource) => void;
 }) {
-  const query = useCapacityPoolDetail(name);
+  const query = useCapacityPoolDetail(name, { namespaces });
   const poolPath = `/capacity/pools/${encodeURIComponent(name)}`;
 
   if (isNotFoundError(query.error)) {
@@ -95,7 +99,8 @@ export function CapacityPoolDetail({
             <p className="text-sm text-theme-text-secondary">
               NodePool “<span className="font-mono">{name}</span>” no longer
               exists. It may have been deleted since this link was created.
-              Claims it owned appear as orphans in the Overview until they drain.
+              Claims it owned appear as orphans in the Overview until they
+              drain.
             </p>
             <LinkButton
               className="mt-3"
@@ -123,7 +128,10 @@ export function CapacityPoolDetail({
       <EmptyState
         icon={Layers3}
         title="NodePool inventory unavailable"
-        detail={coverageMessage(response.coverage.nodePools, "NodePool inventory")}
+        detail={coverageMessage(
+          response.coverage.nodePools,
+          "NodePool inventory",
+        )}
       />
     );
   }
@@ -223,7 +231,9 @@ export function CapacityPoolDetail({
             type="button"
             aria-selected={section === tab.id}
             onClick={() =>
-              onNavigate(tab.id === "summary" ? poolPath : `${poolPath}/${tab.id}`)
+              onNavigate(
+                tab.id === "summary" ? poolPath : `${poolPath}/${tab.id}`,
+              )
             }
             className={`border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
               section === tab.id
@@ -244,10 +254,18 @@ export function CapacityPoolDetail({
         />
       )}
       {section === "workloads" && (
-        <PoolWorkloadsTab name={name} onOpenResource={onOpenResource} />
+        <PoolWorkloadsTab
+          name={name}
+          namespaces={namespaces}
+          onOpenResource={onOpenResource}
+        />
       )}
       {section === "members" && (
-        <PoolMembersTab name={name} onOpenResource={onOpenResource} />
+        <PoolMembersTab
+          name={name}
+          namespaces={namespaces}
+          onOpenResource={onOpenResource}
+        />
       )}
       {section === "configuration" && (
         <PoolConfigurationTab pool={pool} onOpenResource={onOpenResource} />
@@ -436,8 +454,7 @@ function LedgerCell({
   }
 
   const observation = ledger[column.key] as
-    | CapacityQuantityObservation
-    | undefined;
+    CapacityQuantityObservation | undefined;
   return <LedgerValue observation={observation} resource={resource} />;
 }
 
@@ -542,10 +559,7 @@ function PoolSummaryTab({
           <CompositionView pool={pool} />
         </SectionCard>
 
-        <SectionCard
-          title="Workload attribution"
-          bodyClassName="px-4 py-4"
-        >
+        <SectionCard title="Workload attribution" bodyClassName="px-4 py-4">
           <WorkloadAttribution
             pool={pool}
             denied={denied}
@@ -563,7 +577,15 @@ function PoolSummaryTab({
       </div>
 
       <SectionCard title="Posture" bodyClassName="px-4 py-4">
-        <PostureView pool={pool} />
+        <PostureView
+          pool={pool}
+          onOpenResource={onOpenResource}
+          onOpenMembers={() =>
+            onNavigate(
+              `/capacity/pools/${encodeURIComponent(pool.resource.ref.name)}/members`,
+            )
+          }
+        />
       </SectionCard>
     </div>
   );
@@ -682,8 +704,7 @@ function WorkloadAttribution({
   onNavigate: (path: string) => void;
   onOpenResource: (resource: SelectedResource) => void;
 }) {
-  if (denied)
-    return <DeniedBadge />;
+  if (denied) return <DeniedBadge />;
   const workloads = pool.workloads;
   if (!coverageHasObservations(pool.coverage.workloads) || !workloads)
     return (
@@ -704,7 +725,9 @@ function WorkloadAttribution({
             key={identityKey({ ref: workload.owner })}
             type="button"
             className="flex w-full items-baseline justify-between gap-2 border-b border-theme-border-subtle py-1.5 text-left last:border-b-0 hover:text-accent-text"
-            onClick={() => onOpenResource(refToSelectedResource(workload.owner))}
+            onClick={() =>
+              onOpenResource(refToSelectedResource(workload.owner))
+            }
           >
             <span className="min-w-0 flex-1 truncate font-mono text-xs text-theme-text-primary">
               {workload.owner.kind}/{workload.owner.name}
@@ -722,7 +745,13 @@ function WorkloadAttribution({
         ))
       )}
       {workloads.workloadCount > workloads.topScheduled.length && (
-        <LinkButton onClick={() => onNavigate(`/capacity/pools/${encodeURIComponent(poolName)}/workloads`)}>
+        <LinkButton
+          onClick={() =>
+            onNavigate(
+              `/capacity/pools/${encodeURIComponent(poolName)}/workloads`,
+            )
+          }
+        >
           All {workloads.workloadCount} workloads →
         </LinkButton>
       )}
@@ -742,7 +771,9 @@ function WorkloadAttribution({
             <LinkButton
               className="mt-0.5"
               onClick={() =>
-                onNavigate(`/capacity/demand?pool=${encodeURIComponent(poolName)}`)
+                onNavigate(
+                  `/capacity/demand?pool=${encodeURIComponent(poolName)}`,
+                )
               }
             >
               Evaluate in Demand →
@@ -758,9 +789,19 @@ function WorkloadAttribution({
   );
 }
 
-function PostureView({ pool }: { pool: CapacityPoolObservation }) {
+function PostureView({
+  pool,
+  onOpenResource,
+  onOpenMembers,
+}: {
+  pool: CapacityPoolObservation;
+  onOpenResource: (resource: SelectedResource) => void;
+  onOpenMembers: () => void;
+}) {
   const hasSignals =
-    pool.facts.length > 0 || pool.issues.length > 0 || pool.conditions.length > 0;
+    pool.facts.length > 0 ||
+    pool.issues.length > 0 ||
+    pool.conditions.length > 0;
   if (!hasSignals)
     return (
       <p className="text-sm text-theme-text-secondary">
@@ -772,22 +813,68 @@ function PostureView({ pool }: { pool: CapacityPoolObservation }) {
     <div className="space-y-4">
       {(pool.facts.length > 0 || pool.issues.length > 0) && (
         <div className="space-y-1.5">
-          {pool.issues.map((issue) => (
-            <div key={issue.id} className="flex items-start gap-2 text-sm">
-              <Badge
-                severity={issue.severity === "critical" ? "error" : "warning"}
-                size="sm"
-              >
-                {issue.severity}
-              </Badge>
-              <span className="text-theme-text-secondary">
-                <span className="font-medium text-theme-text-primary">
-                  {issue.reason}
-                </span>
-                {issue.message ? ` — ${issue.message}` : ""}
-              </span>
-            </div>
-          ))}
+          {pool.issues.map((issue) => {
+            const subject = {
+              group: issue.group,
+              kind: issue.kind,
+              namespace: issue.namespace,
+              name: issue.name,
+            };
+            const subjectIsPool =
+              subject.group === pool.resource.ref.group &&
+              subject.kind === pool.resource.ref.kind &&
+              (subject.namespace ?? "") ===
+                (pool.resource.ref.namespace ?? "") &&
+              subject.name === pool.resource.ref.name;
+            return (
+              <div key={issue.id} className="flex items-start gap-2 text-sm">
+                <Badge
+                  severity={issue.severity === "critical" ? "error" : "warning"}
+                  size="sm"
+                >
+                  {issue.severity}
+                </Badge>
+                <div className="text-theme-text-secondary">
+                  <span className="font-medium text-theme-text-primary">
+                    {humanizeCode(issue.reason)}
+                  </span>
+                  {issue.message ? ` — ${issue.message}` : ""}
+                  {!subjectIsPool && (
+                    <div className="mt-1">
+                      <LinkButton
+                        onClick={() =>
+                          onOpenResource(refToSelectedResource(subject))
+                        }
+                      >
+                        Inspect {subject.kind}/{subject.name} →
+                      </LinkButton>
+                    </div>
+                  )}
+                  {issue.cause && (
+                    <p className="mt-1 text-xs">
+                      <span className="font-medium text-theme-text-primary">
+                        Cause:
+                      </span>{" "}
+                      {issue.cause}
+                    </p>
+                  )}
+                  {issue.action && (
+                    <p className="mt-1 text-xs">
+                      <span className="font-medium text-theme-text-primary">
+                        Next:
+                      </span>{" "}
+                      {issue.action}
+                    </p>
+                  )}
+                  <CapacityIssueEvidence
+                    issue={issue}
+                    onOpenResource={onOpenResource}
+                    onOpenMembers={onOpenMembers}
+                  />
+                </div>
+              </div>
+            );
+          })}
           {pool.facts.map((fact) => (
             <div
               key={`${fact.code}-${fact.summary}`}
@@ -837,6 +924,7 @@ function PostureView({ pool }: { pool: CapacityPoolObservation }) {
 
 function MemberPage({
   name,
+  namespaces,
   type,
   title,
   empty,
@@ -845,6 +933,7 @@ function MemberPage({
   renderRow,
 }: {
   name: string;
+  namespaces: string[];
   type: CapacityMemberType;
   title: string;
   empty: string;
@@ -856,11 +945,12 @@ function MemberPage({
   ) => ReactNode;
 }) {
   const pagination = useCapacityPagination<CapacityMemberListResponse>(
-    `${name}\u0000${type}`,
+    `${name}\u0000${type}\u0000${namespaces.join(",")}`,
   );
   const query = useCapacityPoolMembers(name, type, {
     limit: 50,
     cursor: pagination.cursor,
+    namespaces,
   });
   const recoveringCursor = useCapacityCursorRecovery(
     query.error,
@@ -873,14 +963,14 @@ function MemberPage({
   const sourceCoverage = response?.coverage[memberCoverageSource(type)];
 
   const lowerBound =
-    response && coverageIsLowerBound(sourceCoverage) && response.items.length > 0;
+    response &&
+    coverageIsLowerBound(sourceCoverage) &&
+    response.items.length > 0;
 
   return (
     <SectionCard
       title={title}
-      subtitle={
-        response ? `Page ${pagination.history.length + 1}` : undefined
-      }
+      subtitle={response ? `Page ${pagination.history.length + 1}` : undefined}
     >
       {recoveredCursor && (
         <div className="border-b border-theme-border-subtle px-4 py-2">
@@ -911,7 +1001,10 @@ function MemberPage({
         />
       )}
       {response && response.state === "syncing" && (
-        <InlineEmpty title="Inventory is syncing" detail="Counts below will fill in as the watch catches up." />
+        <InlineEmpty
+          title="Inventory is syncing"
+          detail="Counts below will fill in as the watch catches up."
+        />
       )}
       {response && response.state === "denied" && (
         <InlineEmpty
@@ -984,14 +1077,17 @@ function MemberPage({
 
 function PoolWorkloadsTab({
   name,
+  namespaces,
   onOpenResource,
 }: {
   name: string;
+  namespaces: string[];
   onOpenResource: (resource: SelectedResource) => void;
 }) {
   return (
     <MemberPage
       name={name}
+      namespaces={namespaces}
       type="workload"
       title="Workloads on this pool"
       empty="No workloads were observed on this NodePool."
@@ -1069,15 +1165,18 @@ function PoolWorkloadsTab({
 
 function PoolMembersTab({
   name,
+  namespaces,
   onOpenResource,
 }: {
   name: string;
+  namespaces: string[];
   onOpenResource: (resource: SelectedResource) => void;
 }) {
   return (
     <div className="space-y-4">
       <MemberPage
         name={name}
+        namespaces={namespaces}
         type="node"
         title="Nodes"
         empty="No nodes — this pool may be scaled to zero. For a dynamic pool this is a valid state."
@@ -1170,6 +1269,7 @@ function PoolMembersTab({
       />
       <MemberPage
         name={name}
+        namespaces={namespaces}
         type="claim"
         title="NodeClaims"
         empty="No claims. For a dynamic pool at zero this is a valid state."
@@ -1209,7 +1309,9 @@ function PoolMembersTab({
                     onOpenResource={onOpenResource}
                   />
                 ) : claim.nodeName ? (
-                  <WithTooltip tip={coverageMessage(coverage.nodes, "Node details")}>
+                  <WithTooltip
+                    tip={coverageMessage(coverage.nodes, "Node details")}
+                  >
                     <span className="font-mono text-xs text-theme-text-secondary">
                       {claim.nodeName}
                     </span>
@@ -1343,7 +1445,10 @@ function PoolConfigurationTab({
             </div>
             <div className="space-y-1">
               {disruption.budgets.map((budget, index) => (
-                <div key={index} className="font-mono text-xs text-theme-text-secondary">
+                <div
+                  key={index}
+                  className="font-mono text-xs text-theme-text-secondary"
+                >
                   {budget.nodes}
                   {budget.reasons.length > 0
                     ? ` · ${budget.reasons.join(", ")}`

@@ -26,7 +26,7 @@ import (
 // comparison mirrors applyFilters: lowercase for case-insensitive
 // match against the user's filter (which itself is canonicalized to
 // the singular form upstream).
-func detectGenericCRDIssues(p Provider, f Filters) []Issue {
+func detectGenericCRDIssues(p Provider, f Filters, ownedSubjects map[string]bool) []Issue {
 	gvrs := p.WatchedDynamic()
 	if len(gvrs) == 0 {
 		return nil
@@ -95,6 +95,9 @@ func detectGenericCRDIssues(p Provider, f Filters) []Issue {
 			items = its
 		}
 		for _, u := range items {
+			if ownedSubjects[resourceKey(gvr.Group, kind, u.GetNamespace(), u.GetName())] {
+				continue
+			}
 			if curated := detectCuratedConditionIssues(gvr, kind, u); len(curated) > 0 {
 				out = append(out, curated...)
 				continue

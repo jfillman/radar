@@ -12,6 +12,7 @@ import type {
   CapacityMemberListResponse,
   CapacityOverviewResponse,
   CapacityPoolDetailResponse,
+  CapacityPoolListResponse,
   CapacityPoolMember,
   CapacityPoolObservation,
   CapacityQuantityObservation,
@@ -19,6 +20,7 @@ import type {
   CapacitySourceCoverage,
 } from "@skyhook-io/k8s-ui";
 import { CapacityView } from "./CapacityView";
+import { updateDemandSearchParam } from "./CapacityDemand";
 
 vi.mock("../../context/ConnectionContext", () => ({
   useConnection: () => ({ connection: { state: "connected" } }),
@@ -380,6 +382,24 @@ function demandResponse(
   };
 }
 
+function poolListResponse(
+  names: string[],
+  page: CapacityPoolListResponse["page"] = { hasMore: false },
+): CapacityPoolListResponse {
+  return {
+    ...meta,
+    state: "available",
+    items: names.map((name) => ({
+      ...poolSummary,
+      resource: {
+        ...poolSummary.resource,
+        ref: { ...poolSummary.resource.ref, name },
+      },
+    })),
+    page,
+  };
+}
+
 const activityEpisode: CapacityActivityEpisode = {
   id: "ep-1",
   type: "provision",
@@ -429,6 +449,7 @@ function activityResponse(): CapacityActivityResponse {
 function renderCapacity(
   path: string,
   seed: (client: QueryClient) => void,
+  namespaces: string[] = [],
 ): string {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, retryOnMount: false } },
@@ -437,7 +458,7 @@ function renderCapacity(
   return renderToString(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>
-        <CapacityView onOpenResource={() => {}} />
+        <CapacityView namespaces={namespaces} onOpenResource={() => {}} />
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -446,7 +467,7 @@ function renderCapacity(
 describe("CapacityView overview", () => {
   it("renders KPI tiles, the NodePool inventory, and the Karpenter chip", () => {
     const html = renderCapacity("/capacity", (client) =>
-      client.setQueryData(["capacity", "overview"], overview()),
+      client.setQueryData(["capacity", "overview", ""], overview()),
     );
     expect(html).toContain("Capacity overview");
     expect(html).toContain("Karpenter");
@@ -460,7 +481,7 @@ describe("CapacityView overview", () => {
 
   it("frames the aggregate demand as scheduling demand, not usage", () => {
     const html = renderCapacity("/capacity", (client) =>
-      client.setQueryData(["capacity", "overview"], overview()),
+      client.setQueryData(["capacity", "overview", ""], overview()),
     );
     expect(html).toContain(
       "Active pending requests (scheduling demand, not usage):",
@@ -470,7 +491,7 @@ describe("CapacityView overview", () => {
 
   it("derives operational signals from server actions", () => {
     const html = renderCapacity("/capacity", (client) =>
-      client.setQueryData(["capacity", "overview"], overview()),
+      client.setQueryData(["capacity", "overview", ""], overview()),
     );
     expect(html).toContain("Configured limit pressure");
     expect(html).toContain("Warn");
@@ -485,7 +506,7 @@ describe("CapacityView overview", () => {
       },
     });
     const html = renderCapacity("/capacity", (client) =>
-      client.setQueryData(["capacity", "overview"], denied),
+      client.setQueryData(["capacity", "overview", ""], denied),
     );
     expect(html).toContain("Pod access denied — not zero");
     expect(html).toContain("Unavailable — Pod access denied");
@@ -502,7 +523,7 @@ describe("CapacityView overview", () => {
       },
     });
     const html = renderCapacity("/capacity", (client) =>
-      client.setQueryData(["capacity", "overview"], scoped),
+      client.setQueryData(["capacity", "overview", ""], scoped),
     );
     expect(html).toContain("Explicit namespaces (2)");
     expect(html).toContain("Namespaced data is a lower bound");
@@ -511,7 +532,7 @@ describe("CapacityView overview", () => {
   it("shows the integration state returned by the server", () => {
     const notDetected = renderCapacity("/capacity", (client) =>
       client.setQueryData(
-        ["capacity", "overview"],
+        ["capacity", "overview", ""],
         overview({ state: "not_detected" }),
       ),
     );
@@ -519,11 +540,32 @@ describe("CapacityView overview", () => {
 
     const deniedState = renderCapacity("/capacity", (client) =>
       client.setQueryData(
-        ["capacity", "overview"],
+        ["capacity", "overview", ""],
         overview({ state: "denied" }),
       ),
     );
     expect(deniedState).toContain("Capacity access denied");
+  });
+
+  it("explains why Karpenter data is still syncing", () => {
+    const syncing = renderCapacity("/capacity", (client) =>
+      client.setQueryData(
+        ["capacity", "overview", ""],
+        overview({
+          state: "syncing",
+          coverage: {
+            ...meta.coverage,
+            nodePools: {
+              ...sourceCoverage("syncing"),
+              reasonCode: "karpenter_discovery_partial",
+            },
+          },
+        }),
+      ),
+    );
+    expect(syncing).toContain(
+      "Karpenter API discovery is incomplete; retrying…",
+    );
   });
 });
 
@@ -531,7 +573,7 @@ describe("CapacityView pool detail", () => {
   it("renders the capacity ledger with headers and a certainty legend", () => {
     const html = renderCapacity("/capacity/pools/default", (client) =>
       client.setQueryData(
-        ["capacity", "pool", "default"],
+        ["capacity", "pool", "default", ""],
         poolDetailResponse(cleanPoolDetail),
       ),
     );
@@ -547,7 +589,7 @@ describe("CapacityView pool detail", () => {
   it("keeps pod-derived ledger and attribution unavailable under denied pod access", () => {
     const html = renderCapacity("/capacity/pools/default", (client) =>
       client.setQueryData(
-        ["capacity", "pool", "default"],
+        ["capacity", "pool", "default", ""],
         poolDetailResponse(poolDetail),
       ),
     );
@@ -559,25 +601,91 @@ describe("CapacityView pool detail", () => {
   it("explains a missing pool observation without implying zero", () => {
     const html = renderCapacity("/capacity/pools/default", (client) =>
       client.setQueryData(
-        ["capacity", "pool", "default"],
+        ["capacity", "pool", "default", ""],
         poolDetailResponse(undefined),
       ),
     );
     expect(html).toContain("NodePool unavailable");
   });
 
+  it("renders structured issue diagnosis in pool posture", () => {
+    const html = renderCapacity("/capacity/pools/default/posture", (client) =>
+      client.setQueryData(
+        ["capacity", "pool", "default", ""],
+        poolDetailResponse({
+          ...cleanPoolDetail,
+          issues: [
+            {
+              id: "nodepool-not-ready",
+              severity: "warning",
+              source: "condition",
+              category: "node_provisioning_failure",
+              category_group: "capacity",
+              grouping_scope: "unknown",
+              group: "karpenter.sh",
+              kind: "NodePool",
+              name: "default",
+              reason: "NodePoolNotReady",
+              message: "Validation failed",
+              cause: "The NodePool Ready condition is false.",
+              action:
+                "Inspect the Ready condition and correct the referenced configuration.",
+              count: 3,
+              members: [
+                { kind: "NodeClaim", name: "default-failed-a" },
+                { kind: "NodeClaim", name: "default-failed-b" },
+              ],
+              members_truncated: true,
+            },
+            {
+              id: "nodeclass-not-ready",
+              severity: "warning",
+              source: "condition",
+              category: "node_provisioning_failure",
+              category_group: "capacity",
+              grouping_scope: "unknown",
+              group: "karpenter.k8s.aws",
+              kind: "EC2NodeClass",
+              name: "loadtest",
+              reason: "NodeClassNotReady",
+              message: "Subnets could not be resolved",
+              cause: "The EC2NodeClass Ready condition is false.",
+              action: "Inspect the EC2NodeClass selector terms.",
+              count: 0,
+              members: [],
+            },
+          ],
+        }),
+      ),
+    );
+    expect(html).toContain("NodePool Not Ready");
+    expect(html).toContain("Cause:");
+    expect(html).toContain("The NodePool Ready condition is false.");
+    expect(html).toContain("Next:");
+    expect(html).toContain("Inspect the Ready condition");
+    expect(html).toMatch(/3(?:<!-- -->)? affected/);
+    expect(html).toMatch(
+      /NodeClaim(?:<!-- -->)?\/(?:<!-- -->)?default-failed-a/,
+    );
+    expect(html).toContain("Showing 2 of 3 affected resources.");
+    expect(html).toContain("Inspect nodes &amp; claims →");
+    expect(html).toMatch(
+      /Inspect (?:<!-- -->)?EC2NodeClass(?:<!-- -->)?\/(?:<!-- -->)?loadtest/,
+    );
+  });
+
   it("loads node and claim members from the URL-backed members tab", () => {
     const html = renderCapacity("/capacity/pools/default/members", (client) => {
       client.setQueryData(
-        ["capacity", "pool", "default"],
+        ["capacity", "pool", "default", ""],
         poolDetailResponse(cleanPoolDetail),
       );
       client.setQueryData(
-        ["capacity", "pool", "default", "members", "node", 50, undefined],
+        ["capacity", "pool", "default", "members", "node", 50, undefined, ""],
         memberResponse("node", [nodeMember]),
       );
       client.setQueryData(
-        ["capacity", "pool", "default", "members", "claim", 50, undefined],
+        ["capacity", "pool", "default", "members", "claim", 50, undefined, ""],
         memberResponse("claim", [claimMember]),
       );
     });
@@ -590,18 +698,18 @@ describe("CapacityView pool detail", () => {
   it("keeps member pod counts unknown under partial RBAC", () => {
     const html = renderCapacity("/capacity/pools/default/members", (client) => {
       client.setQueryData(
-        ["capacity", "pool", "default"],
+        ["capacity", "pool", "default", ""],
         poolDetailResponse(cleanPoolDetail),
       );
       client.setQueryData(
-        ["capacity", "pool", "default", "members", "node", 50, undefined],
+        ["capacity", "pool", "default", "members", "node", 50, undefined, ""],
         memberResponse("node", [nodeMember], {
           ...meta.coverage,
           pods: sourceCoverage("denied", "Pod inventory hidden by permissions"),
         }),
       );
       client.setQueryData(
-        ["capacity", "pool", "default", "members", "claim", 50, undefined],
+        ["capacity", "pool", "default", "members", "claim", 50, undefined, ""],
         memberResponse("claim", [claimMember]),
       );
     });
@@ -613,7 +721,7 @@ describe("CapacityView demand", () => {
   it("groups pending pods by scheduling signature with pool evaluations", () => {
     const html = renderCapacity("/capacity/demand", (client) =>
       client.setQueryData(
-        ["capacity", "demand", 25, undefined, undefined, undefined],
+        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
         demandResponse(),
       ),
     );
@@ -621,13 +729,69 @@ describe("CapacityView demand", () => {
     expect(html).toContain("Pending pods grouped by scheduling signature");
     expect(html).toContain("checkout");
     expect(html).toContain("Pool evaluations");
-    expect(html).toContain("declared compatibility, not a scheduling guarantee");
+    expect(html).toContain(
+      "declared compatibility, not a scheduling guarantee",
+    );
+  });
+
+  it("shows structured capacity-linked issues on the demand group", () => {
+    const html = renderCapacity("/capacity/demand", (client) =>
+      client.setQueryData(
+        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
+        demandResponse({
+          items: [
+            {
+              ...demandGroup,
+              issues: [
+                {
+                  id: "capacity-unschedulable",
+                  severity: "warning",
+                  source: "scheduling",
+                  category: "unschedulable",
+                  category_group: "scheduling",
+                  grouping_scope: "workload",
+                  group: "apps",
+                  kind: "Deployment",
+                  namespace: "payments",
+                  name: "checkout",
+                  reason: "NodePoolConstraintMismatch",
+                  cause:
+                    "The pending pods require a NodePool label no compatible pool declares.",
+                  action:
+                    "Review the workload selector or add a compatible NodePool.",
+                  capacity_relevant: true,
+                  count: 2,
+                  members: [
+                    {
+                      kind: "Pod",
+                      namespace: "payments",
+                      name: "checkout-abc",
+                    },
+                    {
+                      kind: "Pod",
+                      namespace: "payments",
+                      name: "checkout-def",
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    expect(html).toContain("Capacity diagnosis");
+    expect(html).toContain("NodePool Constraint Mismatch");
+    expect(html).toContain("Cause:");
+    expect(html).toContain("Review the workload selector");
+    expect(html).toMatch(/2(?:<!-- -->)? affected/);
+    expect(html).toMatch(/Pod(?:<!-- -->)?\/(?:<!-- -->)?checkout-def/);
   });
 
   it("takes pill and header counts from the server summary, not the page", () => {
     const html = renderCapacity("/capacity/demand", (client) =>
       client.setQueryData(
-        ["capacity", "demand", 25, undefined, undefined, undefined],
+        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
         demandResponse(),
       ),
     );
@@ -642,7 +806,7 @@ describe("CapacityView demand", () => {
   it("never fabricates zeros when the server omits the summary", () => {
     const html = renderCapacity("/capacity/demand", (client) =>
       client.setQueryData(
-        ["capacity", "demand", 25, undefined, undefined, undefined],
+        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
         demandResponse({ summary: undefined }),
       ),
     );
@@ -653,6 +817,101 @@ describe("CapacityView demand", () => {
     // No authoritative total is claimed from page-local counts.
     expect(html).not.toContain("showing");
     expect(html).toContain("Pending pods grouped by scheduling signature");
+  });
+
+  it("offers a URL-backed NodePool evaluation perspective", () => {
+    const html = renderCapacity(
+      "/capacity/demand?state=blocked&namespaces=payments%2Cmedia&pool=spot",
+      (client) => {
+        client.setQueryData(
+          [
+            "capacity",
+            "demand",
+            25,
+            undefined,
+            "blocked",
+            "spot",
+            "payments,media",
+          ],
+          demandResponse(),
+        );
+        client.setQueryData(
+          ["capacity", "pools", 100, undefined, "payments,media"],
+          poolListResponse(["default", "spot"]),
+        );
+      },
+      ["payments", "media"],
+    );
+    expect(html).toContain("Evaluate against");
+    expect(html).toContain("All NodePools");
+    expect(html).toContain('<option value="spot" selected="">spot</option>');
+    expect(html).toContain("Evaluated against NodePool");
+  });
+
+  it("keeps paginated NodePool discovery available beyond the first 100 pools", () => {
+    const names = Array.from(
+      { length: 100 },
+      (_, index) => `pool-${String(index).padStart(3, "0")}`,
+    );
+    const html = renderCapacity("/capacity/demand", (client) => {
+      client.setQueryData(
+        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
+        demandResponse(),
+      );
+      client.setQueryData(
+        ["capacity", "pools", 100, undefined, ""],
+        poolListResponse(names, { hasMore: true, nextCursor: "pool-099" }),
+      );
+    });
+    expect(html).toContain("pool-000");
+    expect(html).toContain("pool-099");
+    expect(html).toContain("Load more NodePools…");
+  });
+
+  it("does not block Demand when NodePool option discovery fails", () => {
+    const html = renderCapacity("/capacity/demand", (client) => {
+      client.setQueryData(
+        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
+        demandResponse(),
+      );
+      const poolQuery = client.getQueryCache().build(client, {
+        queryKey: ["capacity", "pools", 100, undefined, ""],
+        queryFn: async () => poolListResponse([]),
+      });
+      poolQuery.setState({
+        ...poolQuery.state,
+        error: new Error("pool list unavailable"),
+        errorUpdateCount: 1,
+        errorUpdatedAt: Date.now(),
+        fetchStatus: "idle",
+        status: "error",
+      });
+    });
+    expect(html).toContain("checkout");
+    expect(html).toContain("All NodePools");
+    expect(html).toContain(
+      "NodePool options unavailable; demand remains available.",
+    );
+  });
+
+  it("preserves scope and state while changing or clearing pool perspective", () => {
+    const selected = updateDemandSearchParam(
+      "?state=blocked&namespaces=payments%2Cmedia",
+      "pool",
+      "spot",
+    );
+    expect(new URLSearchParams(selected).get("state")).toBe("blocked");
+    expect(new URLSearchParams(selected).get("namespaces")).toBe(
+      "payments,media",
+    );
+    expect(new URLSearchParams(selected).get("pool")).toBe("spot");
+
+    const cleared = updateDemandSearchParam(selected, "pool", undefined);
+    expect(new URLSearchParams(cleared).get("state")).toBe("blocked");
+    expect(new URLSearchParams(cleared).get("namespaces")).toBe(
+      "payments,media",
+    );
+    expect(new URLSearchParams(cleared).has("pool")).toBe(false);
   });
 });
 
@@ -670,6 +929,7 @@ describe("CapacityView activity", () => {
           undefined,
           undefined,
           undefined,
+          "",
         ],
         activityResponse(),
       ),

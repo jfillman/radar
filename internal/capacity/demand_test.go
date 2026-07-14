@@ -86,6 +86,25 @@ func TestBuildDemandGroupsFiltersGroupsBoundsAndStabilizes(t *testing.T) {
 	}
 }
 
+func TestDemandGroupModelKeepsAllPodRefsBeyondWireLimit(t *testing.T) {
+	first := demandTestPod("web-a", "500m")
+	second := demandTestPod("web-b", "500m")
+	models := BuildDemandGroupModels(DemandInput{
+		GeneratedAt: capacityTestTime(),
+		Pods:        []*corev1.Pod{first, second},
+		PodRefLimit: 1,
+		ResolvePodOwner: func(*corev1.Pod) *subject.Ref {
+			return &subject.Ref{Group: "apps", Kind: "Deployment", Namespace: "shop", Name: "web"}
+		},
+	})
+	if len(models) != 1 {
+		t.Fatalf("BuildDemandGroupModels() returned %d groups, want 1", len(models))
+	}
+	if got := models[0].PodRefs(); len(got) != 2 || got[0].Name != "web-a" || got[1].Name != "web-b" {
+		t.Fatalf("PodRefs() = %#v, want both grouped pods", got)
+	}
+}
+
 func TestBuildDemandGroupsCanonicalizesAffinityAndTolerationOrder(t *testing.T) {
 	first := demandTestPod("worker-a", "250m")
 	first.Spec.NodeSelector = map[string]string{"workload-tier": "batch", "team": "compute"}

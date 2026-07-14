@@ -422,3 +422,13 @@ func TestIsReplicaSetOf(t *testing.T) {
 		}
 	}
 }
+
+func TestIssueNamespacesForResourcePreservesClusterScope(t *testing.T) {
+	if got := issueNamespacesForResource(""); got != nil {
+		t.Fatalf("cluster-scoped namespaces = %#v, want nil", got)
+	}
+	got := issueNamespacesForResource("team-a")
+	if len(got) != 1 || got[0] != "team-a" {
+		t.Fatalf("namespaced namespaces = %#v, want [team-a]", got)
+	}
+}

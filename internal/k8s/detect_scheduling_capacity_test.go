@@ -51,6 +51,20 @@ func TestPodRequiresKarpenterNodePool(t *testing.T) {
 		}}
 	}
 
+	opAffinity := func(op corev1.NodeSelectorOperator, values ...string) *corev1.Affinity {
+		return &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+					MatchExpressions: []corev1.NodeSelectorRequirement{{
+						Key:      karpenter.NodePoolLabelKey,
+						Operator: op,
+						Values:   values,
+					}},
+				}},
+			},
+		}}
+	}
+
 	cases := []struct {
 		name string
 		spec corev1.PodSpec
@@ -79,6 +93,21 @@ func TestPodRequiresKarpenterNodePool(t *testing.T) {
 		{
 			name: "no placement constraints",
 			spec: corev1.PodSpec{},
+			want: false,
+		},
+		{
+			name: "Exists on nodepool key qualifies",
+			spec: corev1.PodSpec{Affinity: opAffinity(corev1.NodeSelectorOpExists)},
+			want: true,
+		},
+		{
+			name: "DoesNotExist on nodepool key must not qualify (wants OFF a pool)",
+			spec: corev1.PodSpec{Affinity: opAffinity(corev1.NodeSelectorOpDoesNotExist)},
+			want: false,
+		},
+		{
+			name: "NotIn on nodepool key must not qualify (wants OFF listed pools)",
+			spec: corev1.PodSpec{Affinity: opAffinity(corev1.NodeSelectorOpNotIn, "pool-a")},
 			want: false,
 		},
 	}

@@ -225,6 +225,17 @@ export function CapacityActivity({
               ↑ Jump to newest
             </button>
           )}
+          <LinkButton
+            onClick={() =>
+              onNavigate(
+                poolFilter
+                  ? `/capacity/demand?pool=${encodeURIComponent(poolFilter)}`
+                  : "/capacity/demand",
+              )
+            }
+          >
+            Pending demand →
+          </LinkButton>
           <CapacityFreshness
             meta={response}
             query={query}

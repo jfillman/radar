@@ -383,19 +383,31 @@ function LedgerCell({
   ledger,
   resource,
   denied,
+  coverage,
 }: {
   column: (typeof LEDGER_COLUMNS)[number];
   ledger: CapacityLedger;
   resource: string;
   denied: boolean;
+  coverage: CapacityPoolObservation["coverage"];
 }) {
   if (column.key === "usage") {
     const usage = ledger.actualUsage;
     const entry = usage?.utilization.find((u) => u.resource === resource);
-    if (!usage)
+    if (!usage || !entry) {
+      // Distinguish "metrics ran, this pool had no sample" (a real zero-ish
+      // state, e.g. scaled to zero) from "metrics were never observed" — the
+      // latter must not read as a benign No samples.
+      if (coverageIsDenied(coverage.nodeMetrics))
+        return (
+          <WithTooltip tip="Metrics access denied — usage cannot be computed. This is not zero.">
+            <span className="text-theme-text-tertiary">Unavailable</span>
+          </WithTooltip>
+        );
+      if (!coverageHasObservations(coverage.nodeMetrics))
+        return <span className="text-theme-text-tertiary">Not observed</span>;
       return <span className="text-theme-text-tertiary">No samples</span>;
-    if (!entry)
-      return <span className="text-theme-text-tertiary">No samples</span>;
+    }
     return (
       <WithTooltip tip={observationTitle(usage.quantity)}>
         <span>
@@ -421,12 +433,21 @@ function LedgerCell({
 
   if (column.key === "inFlightCapacity") {
     const obs = ledger.inFlightCapacity;
-    if (!obs || obs.resources[resource] === undefined)
+    if (!obs || obs.resources[resource] === undefined) {
+      // No in-flight figure. If NodeClaims weren't observed we can't claim
+      // "none in flight" — that would read a missing source as a healthy zero.
+      if (!coverageHasObservations(coverage.nodeClaims))
+        return (
+          <WithTooltip tip="NodeClaims were not observed — in-flight capacity is unknown, not zero.">
+            <span className="text-theme-text-tertiary">Unknown</span>
+          </WithTooltip>
+        );
       return (
         <WithTooltip tip="No capacity currently in flight">
           <span className="text-theme-text-tertiary">—</span>
         </WithTooltip>
       );
+    }
     return <LedgerValue observation={obs} resource={resource} prefix="+" />;
   }
 
@@ -523,6 +544,7 @@ function PoolSummaryTab({
                           ledger={pool.ledger}
                           resource={resource}
                           denied={denied}
+                          coverage={pool.coverage}
                         />
                       </td>
                     ))}

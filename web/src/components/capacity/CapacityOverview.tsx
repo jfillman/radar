@@ -291,7 +291,11 @@ export function CapacityOverview({
         )}
       </div>
 
-      <PendingDemandChips summary={summary} podsDenied={podsDeniedFlag} />
+      <PendingDemandChips
+        summary={summary}
+        podsDenied={podsDeniedFlag}
+        podsObserved={coverageHasObservations(coverage.pods)}
+      />
 
       <SectionCard
         title="Operational signals"
@@ -557,9 +561,11 @@ function InventoryRow({
 function PendingDemandChips({
   summary,
   podsDenied,
+  podsObserved,
 }: {
   summary: CapacityOverviewSummary;
   podsDenied: boolean;
+  podsObserved: boolean;
 }) {
   const entries = summary.aggregateDemand
     ? sortedResourceEntries(summary.aggregateDemand.resources)
@@ -571,10 +577,11 @@ function PendingDemandChips({
       </span>
       {podsDenied ? (
         <DeniedBadge />
+      ) : !podsObserved ? (
+        // Pods not yet observed (syncing/unavailable) — absence is not zero.
+        <span className="text-xs text-theme-text-tertiary">Not observed</span>
       ) : entries.length === 0 ? (
-        <span className="text-xs text-theme-text-tertiary">
-          None reported
-        </span>
+        <span className="text-xs text-theme-text-tertiary">None pending</span>
       ) : (
         <>
           {entries.map(([resource, value]) => (

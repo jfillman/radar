@@ -638,7 +638,14 @@ func podRequiresKarpenterNodePool(pod *corev1.Pod) bool {
 	}
 	for _, term := range req.NodeSelectorTerms {
 		for _, e := range term.MatchExpressions {
-			if e.Key == karpenter.NodePoolLabelKey {
+			if e.Key != karpenter.NodePoolLabelKey {
+				continue
+			}
+			// Only a positive requirement means the pod wants a Karpenter
+			// NodePool. NotIn / DoesNotExist ask to stay OFF one, so they must
+			// not qualify the issue as capacity-relevant.
+			if e.Operator == corev1.NodeSelectorOpIn ||
+				e.Operator == corev1.NodeSelectorOpExists {
 				return true
 			}
 		}

@@ -66,12 +66,6 @@ export interface CapacityRoute {
   poolSection: PoolSection;
 }
 
-export const TOP_TABS: { id: CapacityTopTab; label: string }[] = [
-  { id: "overview", label: "Overview" },
-  { id: "demand", label: "Demand" },
-  { id: "activity", label: "Activity" },
-];
-
 export const POOL_SECTIONS: { id: PoolSection; label: string }[] = [
   { id: "summary", label: "Summary" },
   { id: "workloads", label: "Workloads" },
@@ -741,23 +735,6 @@ export function UsageCoverageBadge({
   return <CoverageBadge coverage={coverage} />;
 }
 
-export function CoverageText({
-  coverage,
-  subject,
-}: {
-  coverage?: CapacitySourceCoverage;
-  subject: string;
-}) {
-  return (
-    <div className="flex items-start gap-2">
-      <CoverageBadge coverage={coverage} />
-      <p className="text-sm text-theme-text-secondary">
-        {coverageMessage(coverage, subject)}
-      </p>
-    </div>
-  );
-}
-
 /** Alert-toned "Unavailable — Pod access denied" chip. Never rendered as zero. */
 export function DeniedBadge({ label = "Unavailable" }: { label?: string }) {
   return (
@@ -1022,22 +999,6 @@ export function SectionCard({
       </div>
       <div className={bodyClassName}>{children}</div>
     </section>
-  );
-}
-
-export function Card({
-  children,
-  className,
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <div
-      className={`rounded-xl border border-theme-border bg-theme-surface p-4 shadow-theme-sm ${className ?? ""}`}
-    >
-      {children}
-    </div>
   );
 }
 

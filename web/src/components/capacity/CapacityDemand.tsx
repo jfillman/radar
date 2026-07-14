@@ -216,11 +216,24 @@ export function CapacityDemand({
             <ScopeBadges coverage={response.coverage} />
           </div>
         </div>
-        <CapacityFreshness
-          meta={response}
-          query={query}
-          connectionState={connectionState}
-        />
+        <div className="flex items-center gap-3">
+          <LinkButton
+            onClick={() =>
+              onNavigate(
+                poolFilter
+                  ? `/capacity/activity?pool=${encodeURIComponent(poolFilter)}`
+                  : "/capacity/activity",
+              )
+            }
+          >
+            Activity timeline →
+          </LinkButton>
+          <CapacityFreshness
+            meta={response}
+            query={query}
+            connectionState={connectionState}
+          />
+        </div>
       </div>
 
       {recoveredCursor && (

@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useIssues } from '../../api/client'
+import { useAPIResources, hasKarpenterNodePools } from '../../api/apiResources'
 import { useConnection } from '../../context/ConnectionContext'
 import type { SelectedResource } from '../../types'
 import {
@@ -10,12 +12,41 @@ import {
   FreshnessControl,
   ISSUE_SEVERITIES,
   ISSUE_SEVERITY_LABEL,
+  type Issue,
   type IssueResourceRef,
   type IssueSeverity,
   type SummaryTone,
 } from '@skyhook-io/k8s-ui'
 import { AlertTriangle } from 'lucide-react'
 import { IssueDiagnoseButton } from '../diagnose/LocalDiagnoseAction'
+
+// A capacity-relevant issue links to its Karpenter diagnosis. Karpenter is
+// always single-cluster (unlike Argo hub-and-spoke), so the issue and the
+// Capacity view are guaranteed to be the same cluster — the deep link is
+// unambiguous. Only shown when Karpenter NodePools are detected.
+export function capacityHrefForIssue(
+  issue: Issue,
+  hasKarpenter: boolean,
+  namespaces: string[],
+): string | null {
+  if (!hasKarpenter) return null
+  // A NodePool-subject issue (not ready, limit pressure, …) → its pool detail.
+  if (issue.kind === 'NodePool' && issue.group === 'karpenter.sh') {
+    return `/capacity/pools/${encodeURIComponent(issue.name)}`
+  }
+  // Pending / unschedulable pods are Karpenter's demand — send them to the
+  // Demand queue, which groups them by scheduling signature and shows which
+  // pools can (or can't) take them. Unfiltered on purpose: the issue's phrasing
+  // doesn't map cleanly to a single demand state (blocked vs awaiting capacity),
+  // so we avoid a filter that could hide the very group being investigated.
+  if (issue.source === 'scheduling') {
+    const params = new URLSearchParams()
+    if (namespaces.length > 0) params.set('namespaces', namespaces.join(','))
+    const query = params.toString()
+    return query ? `/capacity/demand?${query}` : '/capacity/demand'
+  }
+  return null
+}
 
 const SEVERITY_TONE: Record<IssueSeverity, SummaryTone> = { critical: 'error', warning: 'warning' }
 
@@ -35,6 +66,9 @@ interface IssuesPaneProps {
 export function IssuesPane({ namespaces, onNavigateToResource }: IssuesPaneProps) {
   const { data, isLoading, error, dataUpdatedAt, refetch } = useIssues(namespaces)
   const { connection } = useConnection()
+  const navigate = useNavigate()
+  const apiResources = useAPIResources()
+  const hasKarpenter = hasKarpenterNodePools(apiResources.data)
   const [severityFilter, setSeverityFilter] = useState<Set<IssueSeverity>>(new Set())
 
   const allIssues = useMemo(() => data?.issues ?? [], [data])
@@ -141,9 +175,23 @@ export function IssuesPane({ namespaces, onNavigateToResource }: IssuesPaneProps
           issues={shown}
           anyData={!!data}
           onResourceClick={onResourceClick}
-          renderActions={({ issue }) => (
-            <IssueDiagnoseButton kind={issue.kind} namespace={issue.namespace ?? ''} name={issue.name} />
-          )}
+          renderActions={({ issue }) => {
+            const capacityHref = capacityHrefForIssue(issue, hasKarpenter, namespaces)
+            return (
+              <div className="flex items-center gap-2">
+                {capacityHref && (
+                  <button
+                    type="button"
+                    onClick={() => navigate(capacityHref)}
+                    className="rounded-md border border-theme-border px-2 py-1 text-xs font-medium text-accent-text transition-colors hover:bg-theme-hover"
+                  >
+                    View in Capacity →
+                  </button>
+                )}
+                <IssueDiagnoseButton kind={issue.kind} namespace={issue.namespace ?? ''} name={issue.name} />
+              </div>
+            )
+          }}
         />
       )}
     </div>

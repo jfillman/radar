@@ -279,6 +279,19 @@ func ClassifyDemandGroupModels(models []DemandGroupModel, pools []DemandPoolInpu
 	}
 }
 
+func SummarizeDemandGroupModels(models []DemandGroupModel) capacityapi.DemandSummary {
+	summary := capacityapi.NewDemandSummary()
+	for _, model := range models {
+		counts := summary.ByState[model.Group.State]
+		counts.GroupCount++
+		counts.PodCount += model.Group.PodCount
+		summary.ByState[model.Group.State] = counts
+		summary.Total.GroupCount++
+		summary.Total.PodCount += model.Group.PodCount
+	}
+	return summary
+}
+
 func demandStateWithPoolEvaluations(state capacityapi.DemandState, counts capacityapi.PoolEvaluationCounts, poolCount int) capacityapi.DemandState {
 	if state != capacityapi.DemandAwaitingCapacity {
 		return state

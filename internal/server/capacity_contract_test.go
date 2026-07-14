@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -147,6 +148,96 @@ func TestCapacityDemandPoolFilterRequiresObservedNodePool(t *testing.T) {
 	}
 	if got := body["error"]; got != "NodePool not found" {
 		t.Fatalf("error = %v, want NodePool not found", got)
+	}
+}
+
+func TestCapacityDemandSummaryIgnoresStateFilter(t *testing.T) {
+	initCapacityContractDynamicState(t, true, true, capacityContractNodePool("general"))
+
+	var all capacityapi.DemandResponse
+	assertOK(t, get(t, "/api/capacity/demand"), &all)
+	if all.Summary == nil {
+		t.Fatal("observed Pod coverage omitted demand summary")
+	}
+	if len(all.Summary.ByState) != 5 {
+		t.Fatalf("summary states = %d, want 5: %#v", len(all.Summary.ByState), all.Summary.ByState)
+	}
+	var podCount, groupCount int
+	for _, counts := range all.Summary.ByState {
+		podCount += counts.PodCount
+		groupCount += counts.GroupCount
+	}
+	if all.Summary.Total != (capacityapi.DemandCounts{PodCount: podCount, GroupCount: groupCount}) {
+		t.Fatalf("summary total = %#v, bucket sum = pods %d groups %d", all.Summary.Total, podCount, groupCount)
+	}
+
+	var blocked capacityapi.DemandResponse
+	assertOK(t, get(t, "/api/capacity/demand?state=blocked"), &blocked)
+	if blocked.Summary == nil || !reflect.DeepEqual(*blocked.Summary, *all.Summary) {
+		t.Fatalf("state filter changed summary: all=%#v blocked=%#v", all.Summary, blocked.Summary)
+	}
+	for _, group := range blocked.Items {
+		if group.State != capacityapi.DemandBlocked {
+			t.Fatalf("state-filtered item = %q, want %q", group.State, capacityapi.DemandBlocked)
+		}
+	}
+}
+
+func TestCapacityDemandSummaryOmittedWithoutPodObservations(t *testing.T) {
+	initCapacityContractDynamicState(t, true, true, capacityContractNodePool("general"))
+	env := newAuthTestServer(t)
+	permissions := &auth.UserPermissions{AllowedNamespaces: []string{}}
+	permissions.SetCanI("list", karpenter.Group, "nodepools", "", true)
+	permissions.SetCanI("list", karpenter.Group, "nodeclaims", "", false)
+	permissions.SetCanI("list", "", "nodes", "", false)
+	permissions.SetCanI("list", "", "pods", "", false)
+	permissions.SetCanI("list", "metrics.k8s.io", "nodes", "", false)
+	env.srv.permCache.Set("alice", permissions)
+
+	resp := env.authGet(t, "/api/capacity/demand", "alice", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, body)
+	}
+	wire, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	var body capacityapi.DemandResponse
+	if err := json.Unmarshal(wire, &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.State != capacityapi.IntegrationAvailable {
+		t.Fatalf("state = %q, want %q", body.State, capacityapi.IntegrationAvailable)
+	}
+	if body.Summary != nil {
+		t.Fatalf("summary = %#v, want omitted without Pod observations", body.Summary)
+	}
+	podCoverage := body.Coverage[capacityapi.CoveragePods]
+	if podCoverage.Status != capacityapi.CoverageDenied || !capacityContainsString(podCoverage.ImpactFields, "demand.summary") {
+		t.Fatalf("Pod coverage = %#v, want denied with demand.summary impact", podCoverage)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(wire, &raw); err != nil {
+		t.Fatalf("decode raw response: %v", err)
+	}
+	if _, found := raw["summary"]; found {
+		t.Fatalf("summary key must be absent without Pod observations: %s", wire)
+	}
+}
+
+func TestCapacityDemandSummaryPresentForExplicitNamespaceScope(t *testing.T) {
+	initCapacityContractDynamicState(t, true, true, capacityContractNodePool("general"))
+
+	var body capacityapi.DemandResponse
+	assertOK(t, get(t, "/api/capacity/demand?namespaces=default"), &body)
+	if body.Summary == nil {
+		t.Fatal("explicit observed namespace scope omitted demand summary")
+	}
+	podCoverage := body.Coverage[capacityapi.CoveragePods]
+	if podCoverage.Status != capacityapi.CoverageAvailable || podCoverage.Scope != capacityapi.CoverageScopeExplicitNamespaces {
+		t.Fatalf("Pod coverage = %#v, want available explicit namespace scope", podCoverage)
 	}
 }
 

@@ -515,13 +515,13 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 	namespaces := s.capacityNamespacesForSource(r, baseNamespaces, "", "pods")
 	explicit := parseNamespaces(r.URL.Query()) != nil || k8s.ForceNamespaceScope
 	if noNamespaceAccess(namespaces) {
-		meta.Coverage[capacityapi.CoveragePods] = deniedCoverage("pods_list_denied", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions"})
+		meta.Coverage[capacityapi.CoveragePods] = deniedCoverage("pods_list_denied", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
 		meta.Coverage[capacityapi.CoverageWorkloads] = meta.Coverage[capacityapi.CoveragePods]
 		return nil
 	}
 	cache := k8s.GetResourceCache()
 	if cache == nil || cache.Pods() == nil {
-		meta.Coverage[capacityapi.CoveragePods] = unavailableCoverage("pod_cache_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions"})
+		meta.Coverage[capacityapi.CoveragePods] = unavailableCoverage("pod_cache_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
 		meta.Coverage[capacityapi.CoverageWorkloads] = meta.Coverage[capacityapi.CoveragePods]
 		return nil
 	}
@@ -529,7 +529,7 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 	cacheNamespaces := capacityNamespacesWithinCache(cache, "pods", sourceNamespaces)
 	namespaces = cacheNamespaces.namespaces
 	if cacheNamespaces.unavailable {
-		coverage := unavailableCoverage("pod_cache_scope_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions"})
+		coverage := unavailableCoverage("pod_cache_scope_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
 		if explicit || cacheNamespaces.limited && sourceNamespaces == nil {
 			coverage.Scope = capacityapi.CoverageScopeExplicitNamespaces
 		} else if sourceNamespaces != nil {
@@ -564,7 +564,7 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 	coverage.ObservedAt = &now
 	count := len(pods)
 	coverage.ItemCount = &count
-	coverage.ImpactFields = []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions"}
+	coverage.ImpactFields = []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"}
 	meta.Coverage[capacityapi.CoveragePods] = coverage
 	meta.Coverage[capacityapi.CoverageWorkloads] = coverage
 	return pods

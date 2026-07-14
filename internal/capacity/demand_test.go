@@ -139,6 +139,35 @@ func TestBuildDemandGroupsAddsOneConstraintForOneSelector(t *testing.T) {
 	}
 }
 
+func TestSummarizeDemandGroupModelsCountsPodsAndGroupsByState(t *testing.T) {
+	models := []DemandGroupModel{
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandWaitingForScheduler, PodCount: 2}},
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandWaitingForScheduler, PodCount: 3}},
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandHeld, PodCount: 1}},
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandAwaitingCapacity, PodCount: 5}},
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandBlocked, PodCount: 4}},
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandUnknown, PodCount: 6}},
+	}
+
+	got := SummarizeDemandGroupModels(models)
+	want := capacityapi.DemandSummary{
+		Total: capacityapi.DemandCounts{PodCount: 21, GroupCount: 6},
+		ByState: map[capacityapi.DemandState]capacityapi.DemandCounts{
+			capacityapi.DemandWaitingForScheduler: {PodCount: 5, GroupCount: 2},
+			capacityapi.DemandHeld:                {PodCount: 1, GroupCount: 1},
+			capacityapi.DemandAwaitingCapacity:    {PodCount: 5, GroupCount: 1},
+			capacityapi.DemandBlocked:             {PodCount: 4, GroupCount: 1},
+			capacityapi.DemandUnknown:             {PodCount: 6, GroupCount: 1},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("summary = %#v, want %#v", got, want)
+	}
+	if empty := SummarizeDemandGroupModels(nil); !reflect.DeepEqual(empty, capacityapi.NewDemandSummary()) {
+		t.Fatalf("empty summary = %#v, want explicit zero buckets", empty)
+	}
+}
+
 func TestDemandSnapshotFingerprintTracksOnlyKeysetMembership(t *testing.T) {
 	pod := demandTestPod("worker", "500m")
 	ready := true

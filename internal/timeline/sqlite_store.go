@@ -532,17 +532,18 @@ func (s *SQLiteStore) Query(ctx context.Context, opts QueryOptions) ([]TimelineE
 		args = append(args, opts.ClusterContext)
 	}
 
-	if opts.SinceSeq > 0 {
+	seqPaging := opts.SeqPaging || opts.SinceSeq > 0
+	if seqPaging {
 		query.WriteString(" AND seq > ?")
 		args = append(args, opts.SinceSeq)
 	}
 
-	// Delta reads (SinceSeq>0) page by ascending arrival order: the server
+	// Delta reads (seq paging) page by ascending arrival order: the server
 	// advances the client cursor by the max seq in the page, so a burst larger
 	// than the limit must resume from the lowest unseen seq — timestamp DESC
 	// would return the newest matches and silently drop the mid-seq ones. The
 	// client merges by id, so ascending is fine. Non-delta reads page newest-first.
-	if opts.SinceSeq > 0 {
+	if seqPaging {
 		query.WriteString(" ORDER BY seq ASC")
 	} else {
 		query.WriteString(" ORDER BY timestamp DESC")

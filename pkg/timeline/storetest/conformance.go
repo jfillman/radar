@@ -288,4 +288,44 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) timeline.EventStor
 			t.Fatalf("enriched bump did not fill Owner: %+v", row.Owner)
 		}
 	})
+
+	t.Run("seq paging from zero backfills every row in arrival order", func(t *testing.T) {
+		store := newStore(t)
+		for i := range 7 {
+			mustAppend(t, store, informer(fmt.Sprintf("bf-%d", i), time.Duration(i)*time.Second))
+		}
+		// A full backfill pages with SeqPaging from cursor 0 — every row,
+		// oldest arrival first, resumable by max seq. Plain SinceSeq=0 keeps
+		// its historical newest-first meaning (asserted implicitly by every
+		// queryAll above); this flag is the ONLY way to page from the floor.
+		cursor := int64(0)
+		var order []string
+		for range 10 { // bounded; must terminate long before this
+			page, err := store.Query(ctx, timeline.QueryOptions{
+				Limit: 3, SinceSeq: cursor, SeqPaging: true,
+				IncludeManaged: true, IncludeK8sEvents: true,
+			})
+			if err != nil {
+				t.Fatalf("Query(seqPaging, cursor=%d): %v", cursor, err)
+			}
+			if len(page) == 0 {
+				break
+			}
+			for _, e := range page {
+				if e.Seq <= cursor {
+					t.Fatalf("page returned seq %d not after cursor %d", e.Seq, cursor)
+				}
+				order = append(order, e.ID)
+				cursor = e.Seq
+			}
+		}
+		if len(order) != 7 {
+			t.Fatalf("backfill returned %d rows, want 7: %v", len(order), order)
+		}
+		for i, id := range order {
+			if id != fmt.Sprintf("bf-%d", i) {
+				t.Fatalf("backfill out of arrival order at %d: %v", i, order)
+			}
+		}
+	})
 }

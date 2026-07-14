@@ -2951,6 +2951,12 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		opts.SinceSeq = n
+		// An explicit since_seq — including 0 — selects seq paging (ascending
+		// arrival order). since_seq=0 is the full-backfill page one: "every
+		// row, oldest arrival first", resumable via the returned max seq.
+		// Callers that want the newest-first full fetch omit the parameter
+		// (the shipped web client only sends since_seq when its cursor > 0).
+		opts.SeqPaging = true
 	}
 	if kind != "" {
 		opts.Kinds = []string{kind}

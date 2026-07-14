@@ -724,7 +724,15 @@ func (d *DynamicResourceCache) readEntries(gvr schema.GroupVersionResource, ns s
 	// connects with a namespace-restricted identity (fallbacks configured),
 	// cluster-wide list was denied so the only informers for this GVR are
 	// per-namespace — union them, otherwise an all-namespaces read returns
-	// nothing even though the per-namespace informers are synced. A cluster-wide
+	// nothing even though the per-namespace informers are synced.
+	//
+	// Deliberately NOT gated on fallbackResolved: list surfaces are
+	// best-effort and self-healing (every read re-runs ensureWatching until
+	// the candidate walk settles), matching the typed probe's keep-partial
+	// philosophy. Cardinality/absence assertions are the strict surfaces —
+	// Count(gvr, nil), CountWatched, and IsClusterWideSynced all refuse an
+	// unsettled fanout, because a partial number masquerades as a smaller
+	// truth while a partial list is just an incomplete view. A cluster-wide
 	// cache (no fallbacks configured) stays empty here, preserving the
 	// deterministic cluster-wide-only contract that keeps incidental
 	// per-namespace informers from leaking across users.
@@ -1652,7 +1660,10 @@ func (d *DynamicResourceCache) WaitForSync(gvr schema.GroupVersionResource, time
 	return cache.WaitForCacheSync(ctx.Done(), syncFuncs...)
 }
 
-// IsSynced checks if a resource's cache(s) are synced (non-blocking).
+// IsSynced checks if a resource's cache(s) are synced (non-blocking). It
+// reports on the informers that EXIST — an unsettled fallback fanout can be
+// synced-but-partial. Callers asserting completeness or absence must use
+// IsClusterWideSynced (or Count, which refuses unsettled fanouts) instead.
 func (d *DynamicResourceCache) IsSynced(gvr schema.GroupVersionResource) bool {
 	return entriesSynced(d.entriesForGVR(gvr))
 }

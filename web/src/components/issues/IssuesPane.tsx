@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useIssues } from '../../api/client'
-import { useAPIResources, hasKarpenterNodePools } from '../../api/apiResources'
+import { useAPIResources, karpenterNavVisible } from '../../api/apiResources'
+import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
 import { useConnection } from '../../context/ConnectionContext'
 import type { SelectedResource } from '../../types'
 import {
@@ -77,7 +78,7 @@ export function IssuesPane({ namespaces, onNavigateToResource }: IssuesPaneProps
   const { connection } = useConnection()
   const navigate = useNavigate()
   const apiResources = useAPIResources()
-  const hasKarpenter = hasKarpenterNodePools(apiResources.data)
+  const hasKarpenter = karpenterNavVisible(useCapabilitiesContext().karpenter, apiResources.data)
   const [severityFilter, setSeverityFilter] = useState<Set<IssueSeverity>>(new Set())
 
   const allIssues = useMemo(() => data?.issues ?? [], [data])

@@ -14,6 +14,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -649,6 +650,7 @@ func karpenterDemandPoolInputs(cache *ResourceCache) []capacitymodel.DemandPoolI
 	}
 	largestByPool := capacitymodel.LargestObservedCapacityByPool(nodes, claims)
 
+	classListsByGVR := map[schema.GroupVersionResource][]*unstructured.Unstructured{}
 	classReadiness := func(pool *unstructured.Unstructured) *bool {
 		ref, ok := karpenter.NodeClassRefForNodePool(pool)
 		if !ok {
@@ -658,9 +660,10 @@ func karpenterDemandPoolInputs(cache *ResourceCache) []capacitymodel.DemandPoolI
 		if !ok || !dynamicCache.IsSynced(classGVR) {
 			return nil
 		}
-		classes, err := dynamicCache.List(classGVR, "")
-		if err != nil {
-			return nil
+		classes, listed := classListsByGVR[classGVR]
+		if !listed {
+			classes, _ = dynamicCache.List(classGVR, "")
+			classListsByGVR[classGVR] = classes
 		}
 		for _, class := range classes {
 			if class != nil && class.GetName() == ref.Name {

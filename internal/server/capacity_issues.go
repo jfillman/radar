@@ -227,18 +227,18 @@ func (p capacityIssueProjection) attachDemand(groups []capacitymodel.DemandGroup
 		flat := make([]issues.Issue, 0)
 		for ref := range podRefs {
 			for _, issue := range p.flatByRef[ref] {
-				copy := issue
-				copy.Owner = issues.Ref{}
+				dup := issue
+				dup.Owner = issues.Ref{}
 				if group.Owner != nil {
-					copy.Owner = issues.Ref(*group.Owner)
+					dup.Owner = issues.Ref(*group.Owner)
 				}
-				copy.DiagnosticContext = nil
-				copy.IncidentParent = nil
-				copy.ChangeContext = nil
-				copy.CorrelatedChanges = nil
-				copy.NoRecentChanges = nil
-				issues.RebindIdentity(&copy)
-				flat = append(flat, copy)
+				dup.DiagnosticContext = nil
+				dup.IncidentParent = nil
+				dup.ChangeContext = nil
+				dup.CorrelatedChanges = nil
+				dup.NoRecentChanges = nil
+				issues.RebindIdentity(&dup)
+				flat = append(flat, dup)
 			}
 		}
 		for _, issue := range issues.GroupIssues(flat) {

@@ -312,8 +312,9 @@ func karpenterMissingNodeClassIssue(pool *unstructured.Unstructured, ref karpent
 			}},
 		}
 	}
-	classifyIssue(&issue)
-	enrichIdentity(&issue)
+	// newConditionIssue already classified + enriched with this fingerprint;
+	// the fields set above (Cause/Action/DiagnosticContext) don't affect
+	// identity, so no re-classify/re-enrich is needed here.
 	return issue
 }
 

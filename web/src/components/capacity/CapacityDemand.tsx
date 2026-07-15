@@ -408,7 +408,7 @@ function DemandPoolSelector({
             }
             onChange(event.target.value || undefined);
           }}
-          className="min-w-0 flex-1 rounded-md border border-theme-border bg-theme-elevated px-2 py-1.5 text-xs text-theme-text-primary focus:outline-none focus:ring-2 focus:ring-skyhook-500"
+          className="min-w-0 flex-1 rounded-md border border-theme-border bg-theme-elevated px-2 py-1.5 text-xs text-theme-text-primary outline-none focus:border-skyhook-500"
         >
           <option value="">All NodePools</option>
           {poolNames.map((name) => (

@@ -161,6 +161,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         state: 'connecting',
         error: undefined,
         progressMessage: 'Connecting to cluster...',
+        // A retry is a fresh attempt — per-kind progress from the previous
+        // attempt would mislabel readiness until the next poll.
+        syncStatus: undefined,
       }))
     },
     onSuccess: (result) => {

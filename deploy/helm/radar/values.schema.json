@@ -50,7 +50,7 @@
         "podExec": { "type": "boolean", "description": "Allow pod exec (terminal feature)." },
         "podLogs": { "type": "boolean" },
         "portForward": { "type": "boolean" },
-        "selfUpgrade": { "type": "boolean", "description": "Allow Radar Cloud to trigger in-app upgrades." },
+        "selfUpgrade": { "type": "boolean", "description": "Allow Radar Cloud organization owners to trigger in-app upgrades." },
         "traffic": { "type": "boolean", "description": "Read access to hubble-relay-client-certs for Hubble TLS." },
         "metrics": { "type": "boolean", "description": "Read metrics.k8s.io for CPU/memory widgets." },
         "crdGroups": {
@@ -263,6 +263,17 @@
           "type": "object",
           "additionalProperties": { "type": "string" }
         }
+      }
+    },
+    "argocd": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token": { "type": "string", "description": "Inline Argo CD API token (prefer existingSecret in production)." },
+        "existingSecret": { "type": "string", "description": "Name of a Secret holding the Argo CD token." },
+        "existingSecretKey": { "type": "string", "description": "Key within existingSecret holding the token." },
+        "url": { "type": "string", "description": "Explicit argocd-server URL; blank auto-discovers in-cluster." },
+        "insecureTls": { "type": "boolean", "description": "Skip TLS verification for a self-signed argocd-server." }
       }
     },
     "persistence": {

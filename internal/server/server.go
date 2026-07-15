@@ -37,6 +37,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/skyhook-io/radar/internal/ai"
+	"github.com/skyhook-io/radar/internal/argocd"
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/cloud"
 	"github.com/skyhook-io/radar/internal/config"
@@ -50,6 +51,7 @@ import (
 	"github.com/skyhook-io/radar/internal/traffic"
 	"github.com/skyhook-io/radar/internal/updater"
 	"github.com/skyhook-io/radar/internal/version"
+	"github.com/skyhook-io/radar/pkg/argoapi"
 	"github.com/skyhook-io/radar/pkg/hpadiag"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/perfstats"
@@ -98,6 +100,12 @@ type Server struct {
 	// prune computed from a stale snapshot can land after a user's fresh
 	// pick and silently revert it.
 	nsPickMu sync.Mutex
+
+	// seededPicks marks (user, context) keys whose picker was already seeded
+	// from --namespaces, so the configured list applies once per session and
+	// a user's clear back to "All namespaces" is not overridden on later
+	// reads. Cleared alongside nsPreferences on context switch.
+	seededPicks sync.Map
 
 	// Short-TTL cache for topology builds. The Topology graph is a
 	// deterministic projection of the informer cache; rebuilding it walks
@@ -200,6 +208,10 @@ func New(cfg Config) *Server {
 	// for mcpPermCache.
 	k8s.OnContextSwitch(func(_ string) {
 		s.finalizePostContextSwitch()
+		// Alongside the subsystem resets in PerformContextSwitch (prometheus,
+		// traffic, helm): the Argo CD connection references the previous
+		// cluster's endpoint/port-forward.
+		argocd.Reset()
 	})
 	// Cancel + stale AI investigations BEFORE the client repoints at the new
 	// cluster, so an in-flight agent (especially an apply) can't write to it.
@@ -552,6 +564,8 @@ func (s *Server) setupRoutes() {
 			r.Post("/argo/applications/{namespace}/{name}/terminate", s.handleArgoTerminate)
 			r.Post("/argo/applications/{namespace}/{name}/suspend", s.handleArgoSuspend)
 			r.Post("/argo/applications/{namespace}/{name}/resume", s.handleArgoResume)
+			r.Get("/argo/applications/{namespace}/{name}/resource-diff", s.handleArgoResourceDiff)
+			r.Get("/argo/applications/{namespace}/{name}/revision-metadata", s.handleArgoRevisionMetadata)
 
 			// AI resource preview (minified output for MCP/debugging).
 			// Mounted as a sub-group so agent-log middleware applies only
@@ -602,7 +616,8 @@ func (s *Server) setupRoutes() {
 			r.Post("/github/dismiss", s.handleGitHubDismiss)
 
 			// Self-upgrade: Hub calls this over the yamux tunnel to patch this
-			// Deployment's image. Uses the SA client (not user impersonation).
+			// Deployment's image. Cloud-owner-gated; uses the SA client (not user
+			// impersonation).
 			// Requires MY_POD_NAMESPACE + MY_DEPLOYMENT_NAME env vars (set by
 			// the Helm chart when rbac.selfUpgrade=true).
 			r.Post("/agent/self-upgrade", s.handleSelfUpgrade)
@@ -615,6 +630,8 @@ func (s *Server) setupRoutes() {
 			r.Get("/config", s.handleGetConfig)
 			r.Put("/config", s.handlePutConfig)
 			r.Put("/integrations/prometheus", s.handleApplyPrometheusURL)
+			r.Put("/integrations/argocd", s.handleApplyArgoCDConfig)
+			r.Get("/integrations/argocd/status", s.handleArgoCDStatus)
 
 			// Desktop routes
 			r.Post("/desktop/open-url", s.handleDesktopOpenURL)
@@ -728,7 +745,26 @@ func (s *Server) StartWithReady(ready chan<- struct{}) error {
 		close(ready)
 	}
 
-	return http.Serve(ln, s.router)
+	return http.Serve(ln, localTCPHandler(s.router))
+}
+
+// localTCPHandler is the handler exposed on Radar's ordinary pod/host listener.
+// In Cloud mode the full application is served only over the authenticated
+// yamux session; this listener exists solely for kubelet health probes. Without
+// this split, any pod that could reach the ClusterIP Service could spoof the
+// Hub's forwarded identity headers and use Radar as a Kubernetes impersonation
+// deputy.
+func localTCPHandler(next http.Handler) http.Handler {
+	if !cloud.Mode() {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/health" {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ActualPort returns the port the server is listening on.
@@ -759,7 +795,9 @@ func (s *Server) SetSaveFileFunc(fn func(defaultFilename string, data []byte) (s
 	s.saveFileFunc = fn
 }
 
-// Handler returns the server's HTTP handler for use with httptest.
+// Handler returns the full application handler for the authenticated Cloud
+// tunnel and httptest. In Cloud mode, Start exposes only the health-only wrapper
+// on the ordinary TCP listener.
 func (s *Server) Handler() http.Handler {
 	return s.router
 }
@@ -2002,6 +2040,13 @@ func (s *Server) preflightResourceGet(r *http.Request, kind, namespace, name, gr
 		if (kind == "secrets" || kind == "secret") && !s.canRead(r, "", "secrets", namespace, "get") {
 			return http.StatusForbidden, fmt.Sprintf("no access to secrets in namespace %q", namespace), false
 		}
+	default:
+		// Empty namespace and not a recognized cluster-scoped kind: an empty
+		// namespace means the target is cluster-scoped, but ClassifyKindScope
+		// couldn't identify it (an undiscovered CRD), so no SAR ran. Fail closed —
+		// serving such a resource ungated would let the caller read a cluster-
+		// scoped manifest they may lack `get` on (esp. via the Argo diff token).
+		return http.StatusForbidden, fmt.Sprintf("cannot verify access to %q (unrecognized cluster-scoped resource)", kind), false
 	}
 	return 0, "", true
 }
@@ -2978,6 +3023,12 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		opts.SinceSeq = n
+		// An explicit since_seq — including 0 — selects seq paging (ascending
+		// arrival order). since_seq=0 is the full-backfill page one: "every
+		// row, oldest arrival first", resumable via the returned max seq.
+		// Callers that want the newest-first full fetch omit the parameter
+		// (the shipped web client only sends since_seq when its cursor > 0).
+		opts.SeqPaging = true
 	}
 	if kind != "" {
 		opts.Kinds = []string{kind}
@@ -4267,6 +4318,19 @@ type configResponse struct {
 	// PrometheusHeaderKeys lists the configured Prometheus header names so the UI
 	// can show what's set without ever receiving the (secret) values.
 	PrometheusHeaderKeys []string `json:"prometheusHeaderKeys,omitempty"`
+	// ArgoCDTokenSet tells the UI a token is configured without exposing it.
+	ArgoCDTokenSet bool `json:"argoCdTokenSet,omitempty"`
+	// ArgoCDEnvManaged marks the integration as provisioned from the environment
+	// (RADAR_ARGOCD_TOKEN / _TOKEN_FILE) — the UI renders it read-only, since the
+	// PUT handler refuses changes to a declaratively-configured integration.
+	ArgoCDEnvManaged bool `json:"argoCdEnvManaged,omitempty"`
+	// ArgoCDEnvError is set when environment provisioning was attempted but failed
+	// (bad token file, invalid URL, …) — the read-only card shows the reason so a
+	// misconfigured declarative credential isn't invisible behind one startup log.
+	ArgoCDEnvError string `json:"argoCdEnvError,omitempty"`
+	// ArgoCDCLISession is the detected Argo CD CLI login (server + user, no
+	// token), so the UI can offer "use your CLI session" only when it will work.
+	ArgoCDCLISession *argoapi.CLISession `json:"argoCdCliSession,omitempty"`
 }
 
 // handleGetConfig returns the on-disk config file alongside the effective startup config.
@@ -4280,14 +4344,45 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(headerKeys)
 	file.PrometheusHeaders = nil
+	tokenSet := file.ArgoCDToken != ""
+	file.ArgoCDToken = ""
+	// When the integration is environment-managed, the on-disk URL/TLS are ignored;
+	// surface the effective env values (and the token-set signal) so the read-only
+	// Settings card shows the real endpoint rather than stale disk config. When env
+	// provisioning was attempted but failed, surface the reason instead — there is
+	// no token, so the card shows an error state rather than a phantom "configured".
+	envManaged := false
+	envError := ""
+	if envURL, envInsecure, ok := argocd.EnvManagedConfig(); ok {
+		envManaged = true
+		// Env-managed ignores the on-disk config entirely — present the effective env
+		// values (all empty in the errored state, so neither a stale disk URL nor a
+		// stale disk token-set signal leaks). Only a successfully-seeded env token
+		// counts as set.
+		file.ArgoCDURL = envURL
+		file.ArgoCDInsecureTLS = envInsecure
+		tokenSet = false
+		if envError = argocd.EnvManagedError(); envError == "" {
+			tokenSet = true
+		}
+	}
 	resp := configResponse{
 		File:                 file,
 		IsDesktop:            version.IsDesktop(),
 		PrometheusHeaderKeys: headerKeys,
+		ArgoCDTokenSet:       tokenSet,
+		ArgoCDEnvManaged:     envManaged,
+		ArgoCDEnvError:       envError,
+	}
+	// Best-effort: surface a detected Argo CD CLI login so the UI can offer it.
+	// A malformed CLI config just means "no session offered", never a failure.
+	if sess, err := argocd.CLISession(); err == nil {
+		resp.ArgoCDCLISession = sess
 	}
 	if s.effectiveConfig != nil {
 		effective := *s.effectiveConfig
 		effective.PrometheusHeaders = nil
+		effective.ArgoCDToken = ""
 		resp.Effective = effective
 	}
 	s.writeJSON(w, resp)
@@ -4295,8 +4390,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 // handlePutConfig replaces the entire config file. Changes take effect on next restart.
 // Unlike handlePutSettings (which merges fields), this is a full replacement.
-// PrometheusHeaders are preserved from the on-disk file: the GET response redacts them,
-// so a UI round-trip would otherwise silently wipe the user's auth headers.
+// PrometheusHeaders and the Argo CD token are preserved from the on-disk file: the GET
+// response redacts them, so a UI round-trip would otherwise silently wipe the user's
+// credentials.
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCloudRole(w, r, auth.RoleOwner, "modify Radar configuration") {
 		return
@@ -4307,9 +4403,31 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := config.Update(func(c *config.Config) {
-		preserved := c.PrometheusHeaders
+		// Integration connection fields are owned exclusively by the live
+		// /api/integrations/* endpoints, not this startup-config PUT. Preserve
+		// ALL of them so a full-config save (which is a full replacement) can
+		// never disturb a live integration — even if it races an in-flight
+		// Apply/Connect or echoes back the redacted token as empty.
+		preserved := struct {
+			promHeaders      map[string]string
+			promHeadersEnv   map[string]string
+			promURL          string
+			argoURL          string
+			argoToken        string
+			argoInsecure     bool
+			argoTokenContext string
+		}{
+			c.PrometheusHeaders, c.PrometheusHeadersFromEnv, c.PrometheusURL,
+			c.ArgoCDURL, c.ArgoCDToken, c.ArgoCDInsecureTLS, c.ArgoCDTokenContext,
+		}
 		*c = updated
-		c.PrometheusHeaders = preserved
+		c.PrometheusHeaders = preserved.promHeaders
+		c.PrometheusHeadersFromEnv = preserved.promHeadersEnv
+		c.PrometheusURL = preserved.promURL
+		c.ArgoCDURL = preserved.argoURL
+		c.ArgoCDToken = preserved.argoToken
+		c.ArgoCDInsecureTLS = preserved.argoInsecure
+		c.ArgoCDTokenContext = preserved.argoTokenContext
 	})
 	if err != nil {
 		log.Printf("[config] Failed to save config: %v", err)
@@ -4317,6 +4435,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result.PrometheusHeaders = nil
+	result.ArgoCDToken = ""
 	s.writeJSON(w, result)
 }
 

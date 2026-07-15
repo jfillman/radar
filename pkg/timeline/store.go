@@ -93,6 +93,17 @@ type QueryOptions struct {
 	// the cursor past it. SinceSeq and UntilSeq still apply their filters.
 	SequenceOrder SequenceOrder
 
+	// SeqPaging forces the delta-read shape (seq > SinceSeq, ascending seq)
+	// even when SinceSeq is 0 — i.e. "every row the query's OTHER filters
+	// admit, in arrival order" (content filters like FilterPreset and
+	// IncludeManaged still apply; a full backfill pairs this with the
+	// everything-visible options). A plain
+	// SinceSeq of 0 keeps its historical meaning (no cursor, newest-first),
+	// which existing full-fetch callers rely on; this flag is how a consumer
+	// that needs a FULL backfill in resumable pages asks for page one. Same
+	// combination caveats as SinceSeq.
+	SeqPaging bool
+
 	// Filter preset (overrides individual filters if set)
 	FilterPreset string
 

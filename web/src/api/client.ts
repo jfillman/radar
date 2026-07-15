@@ -11,7 +11,6 @@ import type {
   CapacityOverviewResponse,
   CapacityPoolDetailResponse,
   CapacityPoolListResponse,
-  GitOpsInsightRef,
 } from '@skyhook-io/k8s-ui'
 import { useQuery, useMutation, useQueryClient, skipToken } from '@tanstack/react-query'
 import { showApiError, showApiSuccess } from '../components/ui/Toast'
@@ -44,6 +43,9 @@ import type {
   ArtifactHubChartDetail,
   GitOpsResourceTree,
   GitOpsInsight,
+  GitOpsInsightRef,
+  GitOpsResourceDiff,
+  ArgoRevisionMetadata,
 } from '../types'
 import type { GitOpsOperationResponse } from '../types/gitops'
 import { getApiBase, getAuthHeaders, getCredentialsMode, getBasename, routePath } from './config'
@@ -1608,6 +1610,51 @@ export function useGitOpsInsights(
   })
 }
 
+// Full Git-rendered desired-vs-live diff for one Argo CD managed resource.
+// ns/name identify the Application; the ref identifies the managed resource.
+// Fetched on demand — the caller mounts this only when the user opens "Full
+// diff", so it's enabled whenever the ref is resolvable. Errors surface via
+// fetchJSON's ApiError (server {"error"} string as .message).
+export function useArgoResourceDiff(appNamespace: string, appName: string, ref: GitOpsInsightRef) {
+  const ns = appNamespace || '_'
+  const params = new URLSearchParams()
+  if (ref.group) params.set('group', ref.group)
+  params.set('kind', ref.kind)
+  if (ref.namespace) params.set('resourceNamespace', ref.namespace)
+  params.set('resourceName', ref.name)
+
+  return useQuery<GitOpsResourceDiff>({
+    queryKey: ['argo-resource-diff', appNamespace, appName, ref.group, ref.kind, ref.namespace, ref.name],
+    queryFn: () => fetchJSON(`/argo/applications/${ns}/${appName}/resource-diff?${params.toString()}`),
+    enabled: Boolean(appName && ref.kind && ref.name),
+    staleTime: 15_000,
+  })
+}
+
+// Git commit metadata for one deployed revision of an Argo CD Application.
+// Enabled only when a revision is known and the caller passes `enabled` (gated
+// on capabilities.revisionMetadataAvailable). Cached long — a resolved SHA's
+// metadata is effectively immutable.
+export function useArgoRevisionMetadata(
+  appNamespace: string,
+  appName: string,
+  revision: string | undefined,
+  opts?: { sourceIndex?: number; project?: string; enabled?: boolean },
+) {
+  const ns = appNamespace || '_'
+  const params = new URLSearchParams()
+  if (revision) params.set('revision', revision)
+  if (opts?.sourceIndex != null) params.set('sourceIndex', String(opts.sourceIndex))
+  if (opts?.project) params.set('project', opts.project)
+
+  return useQuery<ArgoRevisionMetadata>({
+    queryKey: ['argo-revision-metadata', appNamespace, appName, revision, opts?.sourceIndex, opts?.project],
+    queryFn: () => fetchJSON(`/argo/applications/${ns}/${appName}/revision-metadata?${params.toString()}`),
+    enabled: Boolean(appName && revision) && (opts?.enabled ?? true),
+    staleTime: 5 * 60_000,
+  })
+}
+
 // Generic resource fetching - returns resource with relationships
 // Uses '_' as placeholder for cluster-scoped resources (empty namespace)
 export function useResource<T>(
@@ -2413,6 +2460,24 @@ export function usePrometheusStatus() {
   return useQuery<PrometheusStatus>({
     queryKey: ['prometheus-status'],
     queryFn: () => fetchJSON('/prometheus/status'),
+    staleTime: 30000,
+    refetchInterval: 60000,
+  })
+}
+
+export interface ArgoStatus {
+  // configured = a URL or token is set; connected = a probe has landed and the
+  // client is live. The two differ right after a restart (configured, reconnecting).
+  configured: boolean
+  connected: boolean
+  address?: string
+}
+
+export function useArgoStatus(enabled = true) {
+  return useQuery<ArgoStatus>({
+    queryKey: ['argocd-status'],
+    queryFn: () => fetchJSON('/integrations/argocd/status'),
+    enabled,
     staleTime: 30000,
     refetchInterval: 60000,
   })

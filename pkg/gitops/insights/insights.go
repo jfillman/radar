@@ -61,6 +61,27 @@ type Summary struct {
 	// deletion completes. When the resource is stuck Terminating, this is
 	// the operator's first lead on which controller to investigate.
 	Finalizers []string `json:"finalizers,omitempty"`
+	// IgnoredDifferences, when non-nil, discloses the Argo Application's
+	// spec.ignoreDifferences coverage — the field exclusions that suppress
+	// drift from comparison (both Argo's own comparison and Radar's). Nil for
+	// Flux roots and for Applications that declare no exclusions.
+	IgnoredDifferences *IgnoredDifferencesSummary `json:"ignoredDifferences,omitempty"`
+}
+
+// IgnoredDifferencesSummary is the comparison-coverage disclosure for an Argo
+// Application's spec.ignoreDifferences. RuleCount is the number of exclusion
+// entries; Kinds lists the sorted unique "Group/Kind" targets (just "Kind" for
+// core resources, "group/*" for a group-wide rule that omits kind).
+//
+// UnsupportedRuleCount is the load-bearing field: Radar evaluates only
+// jsonPointer rules in its drift filter — jqPathExpressions and
+// managedFieldsManagers rules are not applied — so an Application whose
+// exclusions use those features can surface drift entries in Radar that
+// Argo's own UI suppresses. The UI uses this count to warn about that gap.
+type IgnoredDifferencesSummary struct {
+	RuleCount            int      `json:"ruleCount"`
+	UnsupportedRuleCount int      `json:"unsupportedRuleCount"`
+	Kinds                []string `json:"kinds"`
 }
 
 type Ref struct {
@@ -228,16 +249,36 @@ type HistoryItem struct {
 }
 
 type Capabilities struct {
-	Sync              bool     `json:"sync"`
-	Refresh           bool     `json:"refresh"`
-	Terminate         bool     `json:"terminate"`
-	Suspend           bool     `json:"suspend"`
-	Resume            bool     `json:"resume"`
-	SyncWithSource    bool     `json:"syncWithSource"`
-	SelectiveSync     bool     `json:"selectiveSync"`
-	Rollback          bool     `json:"rollback"`
-	UnsupportedReason string   `json:"unsupportedReason,omitempty"`
-	Warnings          []string `json:"warnings,omitempty"`
+	Sync           bool `json:"sync"`
+	Refresh        bool `json:"refresh"`
+	Terminate      bool `json:"terminate"`
+	Suspend        bool `json:"suspend"`
+	Resume         bool `json:"resume"`
+	SyncWithSource bool `json:"syncWithSource"`
+	SelectiveSync  bool `json:"selectiveSync"`
+	Rollback       bool `json:"rollback"`
+	// ArgoDiffAvailable reports that the Argo CD resource-diff endpoint
+	// (/api/argo/applications/{ns}/{name}/resource-diff) can serve a
+	// desired-vs-live manifest diff for this Application's managed resources.
+	// True only for Argo roots and only when the Argo CD integration is
+	// connected; the frontend gates its inline/full-screen diff affordance on
+	// it. Set by the insights HTTP handler, not by Build (which has no view of
+	// integration connectivity).
+	ArgoDiffAvailable bool `json:"argoDiffAvailable,omitempty"`
+	// ArgoConfigured reports that the Argo CD integration has settings saved
+	// (URL/token) even if a live connection isn't established — distinct from
+	// ArgoDiffAvailable, which requires a working connection. The frontend uses
+	// the pair to distinguish "not set up yet" (offer Connect) from "set up but
+	// the connection is down / token rejected" (offer Reconnect), instead of
+	// showing per-resource diff buttons that would fail.
+	ArgoConfigured bool `json:"argoConfigured,omitempty"`
+	// RevisionMetadataAvailable reports that the Argo CD revision-metadata
+	// endpoint can resolve Git commit details (author, message, signature) for
+	// this Application's deployed revisions. Same gating as ArgoDiffAvailable:
+	// Argo roots with the integration connected. Set by the HTTP handler.
+	RevisionMetadataAvailable bool     `json:"revisionMetadataAvailable,omitempty"`
+	UnsupportedReason         string   `json:"unsupportedReason,omitempty"`
+	Warnings                  []string `json:"warnings,omitempty"`
 }
 
 // Resolver supplies the cluster-state lookups insights needs beyond what's
@@ -316,7 +357,49 @@ func Build(root *unstructured.Unstructured, resourceTree *gitopstree.ResourceTre
 		Partial:      true,
 	}
 	out.Summary.PartialReason = "Radar shows the controller's drift assessment plus a per-resource field diff and recent events (when available). For the canonical line-by-line diff against Git, use the Argo CD UI or `argocd app diff`."
+	enrichChangeHealthFromTree(out.Changes, resourceTree)
 	return out
+}
+
+// enrichChangeHealthFromTree fills a Change's health from the live resource tree
+// when the Application's status.resources didn't carry one. Argo commonly leaves
+// status.resources[].health empty (many kinds it doesn't assess), while the tree
+// derives health from the actual cluster objects — so without this the
+// per-resource table reads "Unknown" and the health summary reads "all healthy"
+// even when the tree (and the app's own Degraded health) show degraded
+// resources. Backfilling keeps the table, the health summary, and the
+// DegradedResources issue (all three) telling the same story.
+func enrichChangeHealthFromTree(changes []Change, tree *gitopstree.ResourceTree) {
+	if tree == nil || len(changes) == 0 {
+		return
+	}
+	byRef := make(map[string]string, len(tree.Nodes))
+	for _, n := range tree.Nodes {
+		if n.Health != "" {
+			byRef[healthRefKey(n.Ref.Group, n.Ref.Kind, n.Ref.Namespace, n.Ref.Name)] = n.Health
+		}
+	}
+	for i := range changes {
+		if changes[i].Health != "" {
+			continue
+		}
+		if h, ok := byRef[healthRefKey(changes[i].Ref.Group, changes[i].Ref.Kind, changes[i].Ref.Namespace, changes[i].Ref.Name)]; ok {
+			changes[i].Health = h
+		}
+	}
+}
+
+func healthRefKey(group, kind, namespace, name string) string {
+	return group + "|" + kind + "|" + namespace + "|" + name
+}
+
+// pluralizeResourcesAre renders "resource is" for one and "resources are" for
+// any other count, so the degraded-resources message reads grammatically.
+func pluralizeResourcesAre(n int) string {
+	if n == 1 {
+		return "resource is"
+	}
+	return "resources are"
 }
 
 func detectTool(root *unstructured.Unstructured) string {
@@ -362,6 +445,7 @@ func buildSummary(root *unstructured.Unstructured, tool string) Summary {
 		}
 		s.Source = joinNonEmpty(gitops.StringValue(source["repoURL"]), gitops.StringValue(source["path"]), gitops.StringValue(source["chart"]))
 		s.AutoSyncMode = describeArgoAutoSync(root)
+		s.IgnoredDifferences = summarizeArgoIgnoreDifferences(root)
 		return s
 	}
 	status := fluxStatus(root)
@@ -558,7 +642,7 @@ func buildIssues(root *unstructured.Unstructured, resourceTree *gitopstree.Resou
 		}
 	}
 	if resourceTree != nil && resourceTree.Summary.Degraded > 0 && len(out) == 0 {
-		out = append(out, Issue{Severity: SeverityWarning, Scope: ScopeTree, Reason: "DegradedResources", Message: fmt.Sprintf("%d managed resources are degraded", resourceTree.Summary.Degraded), Action: "Use the graph or Resources tab to inspect affected resources."})
+		out = append(out, Issue{Severity: SeverityWarning, Scope: ScopeTree, Reason: "DegradedResources", Message: fmt.Sprintf("%d managed %s degraded", resourceTree.Summary.Degraded, pluralizeResourcesAre(resourceTree.Summary.Degraded)), Action: "Use the graph or Resources tab to inspect affected resources."})
 	}
 	// Dedup by (scope, reason, message) — Flux carries the same failure
 	// reason in multiple status.conditions slots (Released=False *and*
@@ -606,13 +690,16 @@ func dedupeIssues(in []Issue) []Issue {
 	out := make([]Issue, 0, len(in))
 	for _, i := range in {
 		// Refs differentiate per-resource issues; include the first ref's
-		// kind+name in the dedup key so a class of resource-level issues
-		// isn't silently collapsed into one. Empty refs (operation/
-		// condition/lifecycle scopes) collapse correctly because their
-		// ref-suffix is "" identically.
+		// namespace+kind+name in the dedup key so a class of resource-level
+		// issues isn't silently collapsed into one. Namespace is load-bearing:
+		// two genuinely distinct Degraded resources that share a kind+name across
+		// namespaces (an ApplicationSet fanning out an identically-named workload)
+		// must both survive — dropping the second would hide a real problem.
+		// Empty refs (operation/condition/lifecycle scopes) collapse correctly
+		// because their ref-suffix is "" identically.
 		var refKey string
 		if len(i.Refs) > 0 {
-			refKey = i.Refs[0].Kind + "/" + i.Refs[0].Name
+			refKey = i.Refs[0].Namespace + "/" + i.Refs[0].Kind + "/" + i.Refs[0].Name
 		}
 		k := string(i.Scope) + "|" + i.Reason + "|" + i.Message + "|" + refKey
 		if _, ok := seen[k]; ok {
@@ -734,6 +821,59 @@ func (r argoIgnoreRule) matches(ref Ref) bool {
 		return false
 	}
 	return true
+}
+
+// summarizeArgoIgnoreDifferences builds the comparison-coverage disclosure for
+// an Argo Application by walking spec.ignoreDifferences directly. This is a
+// deliberately separate pass from parseArgoIgnoreDifferences (which feeds the
+// drift filter and retains only jsonPointer rules): the summary needs the raw
+// entry count, the jq-rule count, and the target kinds — data the parser
+// discards. Returns nil when the Application declares no exclusions so the UI
+// renders nothing.
+func summarizeArgoIgnoreDifferences(root *unstructured.Unstructured) *IgnoredDifferencesSummary {
+	raw, _, _ := unstructured.NestedSlice(root.Object, "spec", "ignoreDifferences")
+	if len(raw) == 0 {
+		return nil
+	}
+	out := &IgnoredDifferencesSummary{}
+	seen := map[string]struct{}{}
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		out.RuleCount++
+		jq, _, _ := unstructured.NestedStringSlice(m, "jqPathExpressions")
+		mfm, _, _ := unstructured.NestedStringSlice(m, "managedFieldsManagers")
+		if len(jq) > 0 || len(mfm) > 0 {
+			out.UnsupportedRuleCount++
+		}
+		label := ignoreDifferenceKindLabel(gitops.StringValue(m["group"]), gitops.StringValue(m["kind"]))
+		if _, dup := seen[label]; !dup {
+			seen[label] = struct{}{}
+			out.Kinds = append(out.Kinds, label)
+		}
+	}
+	if out.RuleCount == 0 {
+		return nil
+	}
+	sort.Strings(out.Kinds)
+	return out
+}
+
+// ignoreDifferenceKindLabel formats an ignoreDifferences rule's (group, kind)
+// into a display token: "group/kind", or just "kind" for core resources
+// (empty group). A rule that omits kind is a group-wide wildcard in Argo's
+// matching semantics, rendered as "group/*" (or "*" when group is empty too).
+// Literal "*" values the operator wrote are passed through unchanged.
+func ignoreDifferenceKindLabel(group, kind string) string {
+	if kind == "" {
+		kind = "*"
+	}
+	if group == "" {
+		return kind
+	}
+	return group + "/" + kind
 }
 
 func argoResourceChanges(root *unstructured.Unstructured, resolver Resolver) []Change {

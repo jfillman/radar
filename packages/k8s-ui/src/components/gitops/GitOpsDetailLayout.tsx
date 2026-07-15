@@ -159,6 +159,9 @@ export interface GitOpsDetailLayoutProps {
   // hub-web and OSS can wire their own data sources without the layout
   // knowing.
   renderTabBody: (ctx: { tab: GitOpsDetailTab; fullscreen: boolean }) => ReactNode
+  // Optional host slot: inline Git commit metadata next to the status strip's
+  // latest revision (author, signature). Wired by the host to a data loader.
+  renderRevisionMeta?: (revision: string) => ReactNode
   // Optional: top-right tab-bar accessory (Clear filters + Fullscreen
   // buttons in OSS, can be anything else in hub-web).
   renderTabBarAccessory?: (ctx: { tab: GitOpsDetailTab; fullscreen: boolean }) => ReactNode
@@ -229,6 +232,7 @@ export function GitOpsDetailLayout(props: GitOpsDetailLayoutProps) {
     fullscreen,
     onToggleFullscreen,
     renderTabBody,
+    renderRevisionMeta,
     renderTabBarAccessory,
     renderTabBarCounts,
     resourceLoading,
@@ -453,7 +457,7 @@ export function GitOpsDetailLayout(props: GitOpsDetailLayoutProps) {
       )}
       {!fullscreen && (
         <>
-          <GitOpsStatusStrip insight={insight ?? undefined} loading={insightLoading} />
+          <GitOpsStatusStrip insight={insight ?? undefined} loading={insightLoading} renderRevisionMeta={renderRevisionMeta} />
           <GitOpsIssuesBand
             issues={insight?.issues}
             terminating={terminating}

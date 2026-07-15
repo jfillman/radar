@@ -168,7 +168,7 @@ func (m *MemoryStore) Query(ctx context.Context, opts QueryOptions) ([]TimelineE
 	// seq. Ring position tracks arrival order (each writeAtHead takes the next
 	// seq), so oldest-first iteration yields ascending seq. Non-delta reads page
 	// newest-first in arrival order unless ascending sequence order is explicit.
-	deltaAscending := opts.SinceSeq > 0 || opts.SequenceOrder == SequenceOrderAscending
+	deltaAscending := opts.SeqPaging || opts.SinceSeq > 0 || opts.SequenceOrder == SequenceOrderAscending
 
 	for i := 0; i < m.count && len(results) < limit; i++ {
 		var idx int
@@ -395,7 +395,7 @@ func (m *MemoryStore) matchesFilters(event *TimelineEvent, opts QueryOptions, cf
 		return false
 	}
 
-	if opts.SinceSeq > 0 && event.Seq <= opts.SinceSeq {
+	if (opts.SeqPaging || opts.SinceSeq > 0) && event.Seq <= opts.SinceSeq {
 		return false
 	}
 

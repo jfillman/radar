@@ -134,6 +134,17 @@ func SetTestContextName(name string) string {
 	return prev
 }
 
+// SetTestContextNamespace is a test-only helper that overrides the package-level
+// kubeconfig context namespace. Returns the previous value so callers can
+// restore it on cleanup.
+func SetTestContextNamespace(ns string) string {
+	clientMu.Lock()
+	prev := contextNamespace
+	contextNamespace = ns
+	clientMu.Unlock()
+	return prev
+}
+
 // SetTestContextUsesExec overrides whether the current context uses exec auth
 // and returns the previous value so callers can restore it on cleanup.
 func SetTestContextUsesExec(enabled bool) bool {

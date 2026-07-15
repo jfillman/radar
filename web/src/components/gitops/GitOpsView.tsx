@@ -69,6 +69,8 @@ import { useConnection } from '../../context/ConnectionContext'
 import { apiUrl, getAuthHeaders, getCredentialsMode } from '../../api/config'
 import { useRegisterShortcut } from '../../hooks/useKeyboardShortcuts'
 import { CodeViewer } from '../ui/CodeViewer'
+import { ArgoResourceDiffLoader } from './ArgoResourceDiffLoader'
+import { RevisionMetaChip } from './RevisionMetaChip'
 import type { GitOpsHistoryItem } from '@skyhook-io/k8s-ui'
 
 const GITOPS_KINDS: APIResource[] = [
@@ -104,12 +106,15 @@ interface GitOpsViewProps {
   namespaces: string[]
   onOpenResource: (resource: SelectedResource) => void
   onClearNamespaces?: () => void
+  // Opens the global Settings dialog — backs the "Connect Argo CD" hint on the
+  // Changes tab of an Argo Application detail page.
+  onOpenSettings?: () => void
 }
 
-export function GitOpsView({ namespaces, onOpenResource, onClearNamespaces }: GitOpsViewProps) {
+export function GitOpsView({ namespaces, onOpenResource, onClearNamespaces, onOpenSettings }: GitOpsViewProps) {
   const location = useLocation()
   if (location.pathname.startsWith('/gitops/detail/')) {
-    return <GitOpsDetailView namespaces={namespaces} onOpenResource={onOpenResource} />
+    return <GitOpsDetailView namespaces={namespaces} onOpenResource={onOpenResource} onOpenSettings={onOpenSettings} />
   }
   return <GitOpsTableView namespaces={namespaces} onClearNamespaces={onClearNamespaces} />
 }
@@ -336,7 +341,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
   )
 }
 
-function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
+function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOpsViewProps) {
   const location = useLocation()
   const navigate = useNavigate()
   const { showError, showSuccess } = useToast()
@@ -454,6 +459,13 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
   function openResourceFromTree(ref: GitOpsTreeRef | GitOpsInsightRef) {
     if (isGitOpsDetailRef(ref) && isValidKubernetesName(ref.name)) {
       const detailKind = kindToPlural(ref.kind)
+      // The tree's root node is this page's own subject — clicking it must not
+      // open a nested copy of the same detail page (which stacks an identical
+      // "GitOps / X / X" breadcrumb, and again, ad infinitum). A self-reference
+      // is a no-op; the header already represents this resource.
+      if (detailKind === kind && (ref.namespace || '') === (namespace || '') && ref.name === name) {
+        return
+      }
       const params = new URLSearchParams()
       if (ref.group) params.set('apiGroup', ref.group)
       // Lineage breadcrumb support: when the user opens a child GitOps CR
@@ -596,6 +608,13 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
       detail={detail}
       insight={insightsQ.data ?? null}
       insightLoading={insightsQ.isLoading}
+      renderRevisionMeta={
+        isArgoApp && insightsQ.data?.capabilities?.revisionMetadataAvailable
+          ? (revision) => (
+              <RevisionMetaChip appNamespace={namespace} appName={name} revision={revision} />
+            )
+          : undefined
+      }
       onSelectIssue={(issue) => {
         const ref = issue.refs?.[0]
         if (!ref) return
@@ -724,6 +743,10 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
               ) : undefined}
               focusKey={changesFocusKey}
               tree={tree}
+              renderResourceDiff={isArgoApp ? (ref) => (
+                <ArgoResourceDiffLoader appNamespace={namespace} appName={name} resourceRef={ref} />
+              ) : undefined}
+              onOpenSettings={onOpenSettings}
             />
           )
         }

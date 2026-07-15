@@ -33,6 +33,10 @@ import {
 interface GitOpsStatusStripProps {
   insight?: GitOpsInsight | null
   loading?: boolean
+  // Optional host slot: given the latest revision, render inline Git commit
+  // metadata (author, signature) next to the revision SHA. The host wires this
+  // to a data loader; when absent, only the SHA is shown.
+  renderRevisionMeta?: (revision: string) => ReactNode
 }
 
 // Status strip carries the operation chip (when a sync is in flight or
@@ -52,7 +56,7 @@ interface GitOpsStatusStripProps {
 //
 // Health and Sync badges live next to the title in the page header —
 // pair them there with identity, not here.
-export function GitOpsStatusStrip({ insight, loading }: GitOpsStatusStripProps) {
+export function GitOpsStatusStrip({ insight, loading, renderRevisionMeta }: GitOpsStatusStripProps) {
   const summary = insight?.summary
   if (loading) {
     return <div className="h-8 animate-pulse border-b border-theme-border bg-theme-base" />
@@ -136,6 +140,7 @@ export function GitOpsStatusStrip({ insight, loading }: GitOpsStatusStripProps) 
                 </Tooltip>
               )}
               {reconcileAge && <span className="text-theme-text-tertiary">· {reconcileAge}</span>}
+              {revision && renderRevisionMeta?.(revision)}
             </span>
           )}
           {!shortRev && reconcileAge && <MetaFact label="Last reconcile" value={reconcileAge} />}
@@ -224,11 +229,13 @@ function buildHealthSummary(changes: GitOpsChange[]): { text: string; tone: stri
   let outOfSync = 0
   let other = 0
   for (const c of changes) {
-    const cat = c.category
-    if (cat === 'Synced' || c.health === 'Healthy') healthy++
-    else if (cat === 'Degraded') degraded++
-    else if (cat === 'Missing') missing++
-    else if (cat === 'OutOfSync') outOfSync++
+    // Count HEALTH, not sync — a Synced resource can still be Degraded, so check
+    // degraded/missing FIRST and never let a Synced sync-state mask it. A Synced
+    // resource with no assessed health (ConfigMaps etc.) still reads as fine.
+    if (c.health === 'Degraded' || c.category === 'Degraded') degraded++
+    else if (c.health === 'Missing' || c.category === 'Missing') missing++
+    else if (c.health === 'Healthy' || c.category === 'Synced') healthy++
+    else if (c.category === 'OutOfSync') outOfSync++
     else other++
   }
   const total = changes.length
@@ -717,6 +724,15 @@ interface GitOpsChangesViewProps {
   // Argo's default list-view behavior. Default mode still shows declared
   // resources only — the diagnostic data (drift, events) lives there.
   tree?: GitOpsResourceTree | null
+  // Host-wired loader for the full Git-rendered desired-vs-live diff of a
+  // single managed resource (Argo CD only). Data fetching lives in web/; this
+  // returns the loaded <ArgoResourceDiff/>. When present AND
+  // insight.capabilities.argoDiffAvailable, resolvable rows expose a "Full
+  // diff" toggle. Library consumers that don't wire it get no such affordance.
+  renderResourceDiff?: (ref: GitOpsInsightRef) => ReactNode
+  // Opens the global Settings dialog. Backs the "Connect Argo CD" hint shown
+  // when the root is an Argo Application without the diff integration.
+  onOpenSettings?: () => void
 }
 
 // Status facets for the Resources list. OutOfSync is a sync-status concern
@@ -727,7 +743,7 @@ const STATUS_FACETS: { key: ResourceStatusFacet; label: string; tone: FilterPill
   { key: 'missing', label: 'Missing', tone: 'danger' },
 ]
 
-export function GitOpsChangesView({ insight, error, onOpenResource, onSyncResource, syncResourceDisabledReason, focusKey, tree }: GitOpsChangesViewProps) {
+export function GitOpsChangesView({ insight, error, onOpenResource, onSyncResource, syncResourceDisabledReason, focusKey, tree, renderResourceDiff, onOpenSettings }: GitOpsChangesViewProps) {
   // "All resources" toggle: when on, render generated descendants alongside
   // the controller's declared inventory. Argo's UI defaults to "all" — we
   // default to "declared" because the diagnostic data (drift, events) lives
@@ -829,6 +845,23 @@ export function GitOpsChangesView({ insight, error, onOpenResource, onSyncResour
   // doesn't exist), but we CAN point at where they're declared in Git —
   // which is the most useful thing to do when there's no drawer to open.
   const sourceTreeURL = gitTreeURL(insight.summary.source, insight.summary.lastRevision || insight.summary.targetRevision || '')
+  // Comparison-coverage disclosure (Argo only). spec.ignoreDifferences hides
+  // fields from drift comparison; surfacing the count keeps the drift view
+  // honest about what it's NOT checking. Neutral note, not an alarm.
+  const ignoredDiffs = insight.summary.ignoredDifferences
+  const isArgoRoot = insight.summary.tool === 'argocd' && insight.summary.kind === 'Application'
+  // Full-diff affordance is offered only when the backend reports the Argo CD
+  // integration is connected for this app AND the host wired the loader.
+  const argoDiffAvailable = isArgoRoot && !!insight.capabilities?.argoDiffAvailable && !!renderResourceDiff
+  // When Argo can't build the desired state (ComparisonError — unreachable repo,
+  // missing revision, broken spec), it can't compare live-vs-Git for ANY
+  // resource, so every row's sync arrives Unknown. Those per-row Unknowns are
+  // all shadows of the one app-level failure already surfaced in the issues
+  // band above; rendering them as N alarming pills makes one problem look like
+  // many. When the app-level sync is Unknown, quiet the derivative per-row sync
+  // to a muted placeholder and explain the cause once. Health stays — it's a
+  // live signal that's still knowable and still worth reading.
+  const syncUnavailable = isArgoRoot && (insight.summary.sync ?? '').toLowerCase() === 'unknown'
   const toggleFacet = (facet: ResourceStatusFacet) => {
     setStatusFilters((prev) => {
       const next = new Set(prev)
@@ -893,6 +926,17 @@ export function GitOpsChangesView({ insight, error, onOpenResource, onSyncResour
             </div>
           )}
         </div>
+        {syncUnavailable && totalCount > 0 && (
+          <div className="flex items-start gap-2 border-b border-theme-border bg-theme-base/40 px-4 py-2 text-xs text-theme-text-secondary">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-theme-text-tertiary" />
+            <span>
+              Argo CD hasn't compared this app against Git yet, so per-resource
+              <span className="font-medium text-theme-text-primary"> sync</span> status is unavailable
+              (a first refresh may still be in flight; if an error is shown above, resolve it to restore comparison).
+              <span className="font-medium text-theme-text-primary"> Health</span> below is still live.
+            </span>
+          </div>
+        )}
         {/* Filter/sort toolbar. The status facets are the primary way to
             answer "which resources are the problem?" now that the issues band
             no longer restates every OutOfSync resource above. */}
@@ -937,8 +981,11 @@ export function GitOpsChangesView({ insight, error, onOpenResource, onSyncResour
         {/* Honest disclaimer about diff scope. Neither Argo nor Flux exposes
             per-resource desired-vs-live diffs on the CRD — they're computed
             on demand by their respective servers/CLIs, which Radar doesn't
-            call. */}
-        {totalCount > 0 && (
+            call. Suppressed for an Argo app that shows the connect/reconnect bar
+            below (which points at Settings), so the two don't stack with subtly
+            different advice — the CLI fallback stays for Flux and for consumers
+            that don't wire Settings. */}
+        {totalCount > 0 && !argoDiffAvailable && !(isArgoRoot && !!onOpenSettings) && (
           <div className="border-b border-theme-border bg-theme-base/40 px-4 py-2 text-[11px] text-theme-text-tertiary">
             Radar reads each resource's drift status from the controller. For a line-by-line diff, {insight.summary.tool === 'fluxcd' ? (
               insight.summary.kind === 'HelmRelease' ? (
@@ -949,6 +996,56 @@ export function GitOpsChangesView({ insight, error, onOpenResource, onSyncResour
             ) : (
               <>use the Argo CD UI or run <code className="inline-code text-[10px]">argocd app diff {insight.summary.name}</code>.</>
             )}
+          </div>
+        )}
+        {totalCount > 0 && isArgoRoot && !insight.capabilities?.argoDiffAvailable && onOpenSettings && (
+          <div className="border-b border-theme-border bg-theme-base/40 px-4 py-2 text-[11px] text-theme-text-tertiary">
+            {insight.capabilities?.argoConfigured ? (
+              <>
+                Argo CD's full Git-rendered diff isn't available for this app (connection down or token not authorized).{' '}
+                <button type="button" onClick={onOpenSettings} className="font-medium text-accent-text hover:underline">
+                  Check Argo CD in Settings
+                </button>.
+              </>
+            ) : (
+              <>
+                <button type="button" onClick={onOpenSettings} className="font-medium text-accent-text hover:underline">
+                  Connect Argo CD
+                </button>{' '}
+                for the full Git-rendered diff.
+              </>
+            )}
+          </div>
+        )}
+        {ignoredDiffs && ignoredDiffs.ruleCount > 0 && (
+          <div className="flex items-center gap-1.5 border-b border-theme-border bg-theme-base/40 px-4 py-2 text-[11px] text-theme-text-tertiary">
+            <span>
+              Some fields are intentionally excluded from drift comparison, so a resource can read as in sync
+              even if those fields differ.
+            </span>
+            <Tooltip
+              content={
+                <div className="max-w-[46ch] space-y-1 text-left">
+                  <div>
+                    {ignoredDiffs.ruleCount} exclusion {ignoredDiffs.ruleCount === 1 ? 'rule' : 'rules'} configured
+                    {ignoredDiffs.kinds.length > 0 && <> on {ignoredDiffs.kinds.join(', ')}</>} (Argo CD{' '}
+                    <code className="inline-code">spec.ignoreDifferences</code>).
+                  </div>
+                  {ignoredDiffs.unsupportedRuleCount > 0 && (
+                    <div>
+                      {ignoredDiffs.unsupportedRuleCount} of them use jq expressions or managed-fields managers,
+                      which Radar doesn&apos;t evaluate — so a few fields Argo hides may still appear here.
+                    </div>
+                  )}
+                </div>
+              }
+              delay={200}
+            >
+              <span className="inline-flex cursor-help items-center text-theme-text-tertiary hover:text-theme-text-secondary">
+                <Info className="h-3 w-3" />
+                <span className="ml-1 underline decoration-dotted underline-offset-2">details</span>
+              </span>
+            </Tooltip>
           </div>
         )}
         {totalCount === 0 ? (
@@ -990,6 +1087,13 @@ export function GitOpsChangesView({ insight, error, onOpenResource, onSyncResour
                   (change.drift && change.drift.entries.length > 0) ||
                   (change.recentEvents && change.recentEvents.length > 0)
                 )
+                // Change rows come from the Application's status.resources, so
+                // they are in the Argo managed set by construction — the diff
+                // endpoint can serve every one (a Missing resource just has an
+                // empty live side). NOT gated on change.hasDesired/partial:
+                // those describe Radar's LOCAL last-applied view, and the Argo
+                // API diff exists precisely for the rows where it's absent.
+                const canFullDiff = argoDiffAvailable && !!change.ref.kind && !!change.ref.name
                 // Render a wave separator above this row when the wave value
                 // changed from the previous one. waveSet=false rows under a
                 // waved plan get a "Default wave" header — matches how Argo's
@@ -1008,9 +1112,12 @@ export function GitOpsChangesView({ insight, error, onOpenResource, onSyncResour
                       change={change}
                       hook={hook}
                       explanation={explanation}
+                      syncUnavailable={syncUnavailable}
                       focused={focused}
                       autoExpand={focused}
                       hasInlineDetail={hasInlineDetail}
+                      canFullDiff={canFullDiff}
+                      renderResourceDiff={renderResourceDiff}
                       onOpenResource={onOpenResource}
                       onSyncResource={onSyncResource}
                       syncResourceDisabledReason={syncResourceDisabledReason}
@@ -1183,9 +1290,12 @@ function ChangeRow({
   change,
   hook,
   explanation,
+  syncUnavailable,
   focused,
   autoExpand,
   hasInlineDetail,
+  canFullDiff,
+  renderResourceDiff,
   onOpenResource,
   onSyncResource,
   syncResourceDisabledReason,
@@ -1199,9 +1309,16 @@ function ChangeRow({
   // resources that already ran their hook.
   hook: string | undefined
   explanation: string
+  // True when the parent app can't compare against Git at all (ComparisonError):
+  // this row's Unknown sync is derivative, so render it muted instead of loud.
+  syncUnavailable: boolean
   focused: boolean
   autoExpand: boolean
   hasInlineDetail: boolean
+  // When true, the expanded panel offers a "Full diff" toggle that mounts the
+  // host-wired Argo CD diff loader for this resource.
+  canFullDiff: boolean
+  renderResourceDiff?: (ref: GitOpsInsightRef) => ReactNode
   onOpenResource?: (ref: GitOpsChange['ref']) => void
   onSyncResource?: (ref: GitOpsChange['ref']) => void
   syncResourceDisabledReason?: string
@@ -1213,12 +1330,15 @@ function ChangeRow({
   sourceTreeURL?: string | null
   registerRef: (el: HTMLDivElement | null) => void
 }) {
-  const [expanded, setExpanded] = useState(autoExpand && hasInlineDetail)
+  // A row expands when it has inline diagnostics (drift/events) or can load a
+  // full Argo CD diff — both live in the same disclosure panel.
+  const expandable = hasInlineDetail || canFullDiff
+  const [expanded, setExpanded] = useState(autoExpand && expandable)
   // Auto-expand when an issue alert deep-links to this row — the user just
   // clicked the issue, so they want to see the detail immediately.
   useEffect(() => {
-    if (autoExpand && hasInlineDetail) setExpanded(true)
-  }, [autoExpand, hasInlineDetail])
+    if (autoExpand && expandable) setExpanded(true)
+  }, [autoExpand, expandable])
   const driftEntries = change.drift?.entries ?? []
   const events = change.recentEvents ?? []
   // Missing resources have no live state to drill into — opening the drawer
@@ -1228,16 +1348,16 @@ function ChangeRow({
   // declared source instead of a non-existent live object.
   const isAbsent = change.health === 'Missing' && !change.hasLive
   const handleRowClick = () => {
-    if (hasInlineDetail) {
+    if (expandable) {
       setExpanded((v) => !v)
     } else if (!isAbsent && onOpenResource) {
       onOpenResource(change.ref)
     }
   }
-  // Row stays click-affordant when there's inline detail to expand OR a
+  // Row stays click-affordant when there's a disclosure panel to expand OR a
   // live resource to drill into. Missing rows without inline detail are
   // intentionally non-interactive — there's nowhere useful to go.
-  const rowInteractive = hasInlineDetail || (!isAbsent && !!onOpenResource)
+  const rowInteractive = expandable || (!isAbsent && !!onOpenResource)
   const hookLabel = change.hookPhase || hook
   const canSyncResource = !!onSyncResource && isArgoResourceSyncEligible(change, declared, hookLabel)
   const syncResourceButton = canSyncResource ? (
@@ -1274,7 +1394,7 @@ function ChangeRow({
           )}
         >
           <div className="flex items-baseline gap-2">
-            {hasInlineDetail ? (
+            {expandable ? (
               <CollapseChevron open={expanded} className="h-3.5 w-3.5 self-center" />
             ) : (
               <span aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
@@ -1324,7 +1444,15 @@ function ChangeRow({
             <div className="ml-[18px] mt-1 text-xs text-theme-text-tertiary">{explanation}</div>
           )}
         </button>
-        <div className="self-start"><SyncStatusBadge sync={normalizeSyncStatus(change.sync ?? change.category)} /></div>
+        <div className="self-start">
+          {syncUnavailable && normalizeSyncStatus(change.sync ?? change.category) === 'Unknown' ? (
+            <Tooltip content="Sync unavailable — Argo CD hasn't compared this app against Git yet." delay={200} wrapperClassName="inline-flex">
+              <span className="cursor-help select-none px-1 text-theme-text-tertiary" aria-label="Sync status unavailable">—</span>
+            </Tooltip>
+          ) : (
+            <SyncStatusBadge sync={normalizeSyncStatus(change.sync ?? change.category)} />
+          )}
+        </div>
         <div className="self-start"><HealthStatusBadge health={normalizeHealthStatus(change.health)} /></div>
         <div className="self-start space-y-1.5">
           {syncResourceButton && syncResourceDisabledReason ? (
@@ -1370,11 +1498,20 @@ function ChangeRow({
           )}
         </div>
       </div>
-      {hasInlineDetail && (
+      {expandable && (
         <Collapse open={expanded} mountLazily>
           <div className="border-t border-theme-border bg-theme-base/40 px-4 py-3">
             {driftEntries.length > 0 && <DriftPanel drift={change.drift!} />}
             {events.length > 0 && <RecentEventsPanel events={events} />}
+            {/* Expanding a row IS the request to see its diff — render it inline
+                rather than behind a second "Full diff" click. The capability is
+                already gated on a live Argo connection, so this only mounts (and
+                fetches) when the diff can actually be served. */}
+            {canFullDiff && (
+              <div className={clsx((driftEntries.length > 0 || events.length > 0) && 'mt-3')}>
+                {renderResourceDiff?.(change.ref)}
+              </div>
+            )}
           </div>
         </Collapse>
       )}
@@ -1387,6 +1524,7 @@ function ChangeRow({
 // inline as "old → new". Path is monospace; values are JSON-encoded and
 // pre-wrapped so structured values (objects, arrays) render readably.
 function DriftPanel({ drift }: { drift: NonNullable<GitOpsChange['drift']> }) {
+  const sourceLabel = driftSourceLabel(drift.source)
   return (
     <div>
       <div className="mb-2 flex items-baseline justify-between gap-2">
@@ -1394,6 +1532,7 @@ function DriftPanel({ drift }: { drift: NonNullable<GitOpsChange['drift']> }) {
         <span className="text-[10px] text-theme-text-tertiary">
           desired (Git) → live ·
           {drift.truncated ? ' showing first 50 entries' : ` ${drift.entries.length} field${drift.entries.length === 1 ? '' : 's'}`}
+          {sourceLabel && ` · ${sourceLabel}`}
         </span>
       </div>
       <div className="space-y-1 font-mono text-[11px]">
@@ -1403,6 +1542,15 @@ function DriftPanel({ drift }: { drift: NonNullable<GitOpsChange['drift']> }) {
       </div>
     </div>
   )
+}
+
+// Provenance label for a Drift's field entries. Only Argo-sourced drift gets an
+// explicit label; the built-in last-applied path renders without one (the
+// "desired (Git) → live" copy already implies it). Unknown sources (a library
+// consumer lagging the backend) fall through to no label rather than surfacing
+// a raw enum string.
+function driftSourceLabel(source: NonNullable<GitOpsChange['drift']>['source']): string {
+  return source === 'argocd-api' ? 'via Argo CD API' : ''
 }
 
 function DriftEntryRow({ entry }: { entry: NonNullable<GitOpsChange['drift']>['entries'][number] }) {

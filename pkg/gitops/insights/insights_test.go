@@ -1,6 +1,7 @@
 package insights
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1215,6 +1216,89 @@ func TestBuildSummary_TerminatingFields(t *testing.T) {
 	}
 }
 
+// TestBuildSummary_IgnoredDifferences pins the Argo comparison-coverage
+// disclosure: RuleCount counts every spec.ignoreDifferences entry,
+// UnsupportedRuleCount counts those using jqPathExpressions OR
+// managedFieldsManagers (Radar's drift filter applies neither — the drift
+// panel may surface fields Argo's UI suppresses), and Kinds is the sorted
+// unique Group/Kind targets with a group-wildcard rule (kind omitted)
+// rendered as "group/*".
+func TestBuildSummary_IgnoredDifferences(t *testing.T) {
+	root := argoApp(map[string]any{})
+	root.Object["spec"] = map[string]any{
+		"ignoreDifferences": []any{
+			// jsonPointers rule, namespaced group + kind → "apps/Deployment".
+			map[string]any{
+				"group":        "apps",
+				"kind":         "Deployment",
+				"jsonPointers": []any{"/spec/replicas"},
+			},
+			// jqPathExpressions rule, core resource (empty group) → "ConfigMap".
+			map[string]any{
+				"kind":              "ConfigMap",
+				"jqPathExpressions": []any{".data.checksum"},
+			},
+			// managedFieldsManagers rule — the other exclusion shape Radar's
+			// drift filter doesn't apply.
+			map[string]any{
+				"group":                 "apps",
+				"kind":                  "Deployment",
+				"managedFieldsManagers": []any{"kube-controller-manager"},
+			},
+			// Group-wildcard rule: group set, kind omitted → "networking.k8s.io/*".
+			map[string]any{
+				"group":        "networking.k8s.io",
+				"jsonPointers": []any{"/spec/rules"},
+			},
+		},
+	}
+
+	s := buildSummary(root, "argocd")
+	if s.IgnoredDifferences == nil {
+		t.Fatal("expected IgnoredDifferences to be populated")
+	}
+	if s.IgnoredDifferences.RuleCount != 4 {
+		t.Errorf("RuleCount = %d, want 4", s.IgnoredDifferences.RuleCount)
+	}
+	if s.IgnoredDifferences.UnsupportedRuleCount != 2 {
+		t.Errorf("UnsupportedRuleCount = %d, want 2", s.IgnoredDifferences.UnsupportedRuleCount)
+	}
+	want := []string{"ConfigMap", "apps/Deployment", "networking.k8s.io/*"}
+	if !reflect.DeepEqual(s.IgnoredDifferences.Kinds, want) {
+		t.Errorf("Kinds = %v, want %v", s.IgnoredDifferences.Kinds, want)
+	}
+}
+
+// TestBuildSummary_IgnoredDifferences_NilWhenAbsent confirms the field stays
+// nil (and json-omitted) when the Application declares no exclusions.
+func TestBuildSummary_IgnoredDifferences_NilWhenAbsent(t *testing.T) {
+	s := buildSummary(argoApp(map[string]any{}), "argocd")
+	if s.IgnoredDifferences != nil {
+		t.Errorf("expected nil IgnoredDifferences when spec.ignoreDifferences absent, got %+v", s.IgnoredDifferences)
+	}
+}
+
+// TestBuildSummary_IgnoredDifferences_NilForFlux pins that the disclosure is
+// Argo-only: it describes Argo's comparison pipeline, so a Flux root leaves the
+// field nil even if it somehow carried spec.ignoreDifferences.
+func TestBuildSummary_IgnoredDifferences_NilForFlux(t *testing.T) {
+	root := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+		"kind":       "Kustomization",
+		"metadata":   map[string]any{"namespace": "flux-system", "name": "apps"},
+		"spec": map[string]any{
+			"ignoreDifferences": []any{
+				map[string]any{"kind": "ConfigMap", "jsonPointers": []any{"/data"}},
+			},
+		},
+		"status": map[string]any{},
+	}}
+	s := buildSummary(root, "fluxcd")
+	if s.IgnoredDifferences != nil {
+		t.Errorf("expected nil IgnoredDifferences for Flux root, got %+v", s.IgnoredDifferences)
+	}
+}
+
 // TestCategorizeArgoChange pins the closed mapping from Argo's per-resource
 // sync + health vocabularies onto the typed Category constants. A mapping
 // gap would silently drop a row into changeRank's default bucket and
@@ -1304,5 +1388,43 @@ func TestChangeRank(t *testing.T) {
 	// values don't silently mix with valid ones in the sorted output.
 	if got := changeRank(Category("Bogus")); got <= 4 {
 		t.Errorf("changeRank(Bogus) = %d, want > 4 (default branch must rank below all named constants)", got)
+	}
+}
+
+func TestDedupeIssues_SameNameDifferentNamespaceKept(t *testing.T) {
+	// Two genuinely distinct Degraded resources sharing a kind+name across
+	// namespaces (an ApplicationSet fanning out an identically-named workload)
+	// must BOTH survive dedup — the namespace is part of the key.
+	in := []Issue{
+		{Scope: "resource", Severity: "critical", Reason: "Degraded", Message: "Deployment api is Degraded", Refs: []Ref{{Kind: "Deployment", Namespace: "team-a", Name: "api"}}},
+		{Scope: "resource", Severity: "critical", Reason: "Degraded", Message: "Deployment api is Degraded", Refs: []Ref{{Kind: "Deployment", Namespace: "team-b", Name: "api"}}},
+	}
+	got := dedupeIssues(in)
+	if len(got) != 2 {
+		t.Fatalf("expected both namespaces' issues kept, got %d: %+v", len(got), got)
+	}
+}
+
+func TestEnrichChangeHealthFromTree_BackfillsEmptyHealth(t *testing.T) {
+	tree := &gitopstree.ResourceTree{Nodes: []gitopstree.Node{
+		{Ref: gitopstree.ResourceRef{Group: "apps", Kind: "Deployment", Namespace: "staging", Name: "radar-hub"}, Health: "Degraded"},
+		{Ref: gitopstree.ResourceRef{Kind: "Service", Namespace: "staging", Name: "radar-hub"}, Health: "Healthy"},
+		{Ref: gitopstree.ResourceRef{Kind: "ConfigMap", Namespace: "staging", Name: "vars"}, Health: ""},
+	}}
+	changes := []Change{
+		{Ref: Ref{Group: "apps", Kind: "Deployment", Namespace: "staging", Name: "radar-hub"}, Health: ""},        // backfilled → Degraded
+		{Ref: Ref{Kind: "Service", Namespace: "staging", Name: "radar-hub"}, Health: "Progressing"},              // already set → unchanged
+		{Ref: Ref{Kind: "ConfigMap", Namespace: "staging", Name: "vars"}, Health: ""},                            // tree node empty → stays empty
+		{Ref: Ref{Kind: "SealedSecret", Namespace: "staging", Name: "x"}, Health: ""},                            // not in tree → stays empty
+	}
+	enrichChangeHealthFromTree(changes, tree)
+	if changes[0].Health != "Degraded" {
+		t.Errorf("Deployment health = %q, want Degraded (backfilled from tree)", changes[0].Health)
+	}
+	if changes[1].Health != "Progressing" {
+		t.Errorf("Service health = %q, want Progressing (already set, unchanged)", changes[1].Health)
+	}
+	if changes[2].Health != "" || changes[3].Health != "" {
+		t.Errorf("resources with no tree health must stay empty: %q %q", changes[2].Health, changes[3].Health)
 	}
 }

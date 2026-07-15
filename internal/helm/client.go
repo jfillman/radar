@@ -56,6 +56,11 @@ type Client struct {
 	mu         sync.RWMutex
 	settings   *cli.EnvSettings
 	kubeconfig string
+	// restConfig, when set, is the explicit rest.Config all actions target —
+	// used by callers that resolve the cluster themselves before Radar's k8s
+	// singleton is up (the CLI install driver), so Helm can't diverge onto a
+	// different kubeconfig current-context than the caller's own client.
+	restConfig *rest.Config
 }
 
 var (
@@ -122,6 +127,22 @@ func Initialize(kubeconfig string) error {
 	return initErr
 }
 
+// InitializeWithRESTConfig sets up the global Helm client to operate against an
+// explicit rest.Config. Used by the CLI install driver, which resolves the
+// target cluster itself (before Radar's k8s singleton is initialized) — this
+// guarantees Helm targets the SAME cluster the caller's kube client does, rather
+// than falling through to a possibly-divergent kubeconfig current-context.
+func InitializeWithRESTConfig(restCfg *rest.Config) error {
+	clientOnce.Do(func() {
+		ensureHelmWritablePaths()
+		globalClient = &Client{
+			settings:   cli.New(),
+			restConfig: restCfg,
+		}
+	})
+	return nil
+}
+
 // GetClient returns the global Helm client
 func GetClient() *Client {
 	return globalClient
@@ -186,9 +207,19 @@ func (c *Client) buildActionConfig(namespace, username string, groups []string) 
 // (rest.Config, current context); pure logic lives in
 // buildRESTClientGetter so it can be tested without those globals.
 func (c *Client) restClientGetter(namespace, username string, groups []string) (genericclioptions.RESTClientGetter, error) {
+	// An explicit restConfig (CLI install driver) wins and forces the
+	// restConfig getter path (kubeconfig empty), so Helm targets exactly the
+	// cluster the caller resolved.
+	restConfig := c.restConfig
+	kubeconfig := c.kubeconfig
+	if restConfig != nil {
+		kubeconfig = ""
+	} else {
+		restConfig = k8s.GetConfig()
+	}
 	return buildRESTClientGetter(restClientGetterParams{
-		kubeconfig:     c.kubeconfig,
-		restConfig:     k8s.GetConfig(),
+		kubeconfig:     kubeconfig,
+		restConfig:     restConfig,
 		currentContext: k8s.GetContextName(),
 		namespace:      namespace,
 		username:       username,
@@ -3318,16 +3349,7 @@ func (c *Client) installWith(actionConfig *action.Configuration, req *InstallReq
 		return nil, fmt.Errorf("install failed: %w", err)
 	}
 
-	return &HelmRelease{
-		Name:         rel.Name,
-		Namespace:    rel.Namespace,
-		Chart:        rel.Chart.Metadata.Name,
-		ChartVersion: rel.Chart.Metadata.Version,
-		AppVersion:   rel.Chart.Metadata.AppVersion,
-		Status:       rel.Info.Status.String(),
-		Revision:     rel.Version,
-		Updated:      rel.Info.LastDeployed.Time,
-	}, nil
+	return installedHelmRelease(rel), nil
 }
 
 // InstallWithProgress installs a new Helm release and streams progress updates
@@ -3540,16 +3562,19 @@ func (c *Client) installWithProgressUsing(actionConfig *action.Configuration, re
 
 	sendProgress("complete", fmt.Sprintf("Successfully installed %s", req.ReleaseName), "")
 
+	return installedHelmRelease(rel), nil
+}
+
+// installedHelmRelease converts the immediate result of an install action.
+// Unlike toHelmRelease (the list/detail path), it deliberately does not query
+// Radar's informer cache for post-install resource health.
+func installedHelmRelease(rel *release.Release) *HelmRelease {
 	return &HelmRelease{
-		Name:         rel.Name,
-		Namespace:    rel.Namespace,
-		Chart:        rel.Chart.Metadata.Name,
-		ChartVersion: rel.Chart.Metadata.Version,
-		AppVersion:   rel.Chart.Metadata.AppVersion,
-		Status:       rel.Info.Status.String(),
-		Revision:     rel.Version,
-		Updated:      rel.Info.LastDeployed.Time,
-	}, nil
+		Name: rel.Name, Namespace: rel.Namespace,
+		Chart: rel.Chart.Metadata.Name, ChartVersion: rel.Chart.Metadata.Version,
+		AppVersion: rel.Chart.Metadata.AppVersion, Status: rel.Info.Status.String(),
+		Revision: rel.Version, Updated: rel.Info.LastDeployed.Time,
+	}
 }
 
 // Helper function to convert chart version to ChartInfo

@@ -107,12 +107,17 @@ type Detection struct {
 	// for self-perpetuating states like a stuck-drift loop.
 	OperationRetryCount int
 	Stuck               bool
-	// CapacityRelevant is set only for unschedulable pods that either
-	// structurally pin a Karpenter NodePool or whose demand group evaluates
-	// declared-compatible against at least one NodePool (fail-closed: any
-	// uncertainty in that evaluation disqualifies). It drives the frontend's
-	// "View in Capacity" link. False for every other detection.
+	// CapacityRelevant is set only for unschedulable pods that structurally
+	// pin a Karpenter NodePool (a fact of the pod's own spec — safe to show
+	// anyone who can see the pod). It drives the frontend's "View in
+	// Capacity" link. False for every other detection.
 	CapacityRelevant bool
+	// CapacityRelevantCorrelated marks unschedulable pods whose demand group
+	// evaluates declared-compatible against at least one NodePool. Derived
+	// from cluster-scoped NodePool/NodeClass state, so the issues pipeline
+	// only folds it into the wire flag for callers allowed to list NodePools
+	// — otherwise it would be a probing oracle over hidden pool specs.
+	CapacityRelevantCorrelated bool
 }
 
 // podOwnerKindName resolves a Pod's topmost stable controller for issue

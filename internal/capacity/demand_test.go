@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -936,26 +937,26 @@ func TestDemandUndeclaredCustomLabelIsIncompatibleNotUnknown(t *testing.T) {
 func TestDemandInstanceShapeExceedingObservedCapacityIsUnknown(t *testing.T) {
 	ready := true
 	pool := demandTestPool("general", &ready, demandPoolSpec(nil, nil, nil, nil, nil), nil)
-	largest := resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "48"})
+	shapes := []corev1.ResourceList{resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "48", corev1.ResourceMemory: "96Gi"})}
 
 	oversized := demandTestPod("oversized", "96")
-	group := BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{oversized}, Pools: []DemandPoolInput{{NodePool: pool, LargestObservedCapacity: largest}}})[0]
+	group := BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{oversized}, Pools: []DemandPoolInput{{NodePool: pool, ObservedMemberShapes: shapes}}})[0]
 	evaluation := group.PoolEvaluations[0]
 	if evaluation.Result != capacityapi.PoolEvaluationUnknown {
 		t.Fatalf("96-CPU pod vs 48-CPU largest member = %q, want unknown (never a bare compatible)", evaluation.Result)
 	}
 	found := false
 	for _, predicate := range evaluation.UnknownPredicates {
-		if predicate == "instanceShape.cpu" {
+		if strings.HasPrefix(predicate, "instanceShape.") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("unknown predicates = %v, want instanceShape.cpu", evaluation.UnknownPredicates)
+		t.Fatalf("unknown predicates = %v, want an instanceShape predicate", evaluation.UnknownPredicates)
 	}
 
 	fits := demandTestPod("fits", "8")
-	group = BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{fits}, Pools: []DemandPoolInput{{NodePool: pool, LargestObservedCapacity: largest}}})[0]
+	group = BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{fits}, Pools: []DemandPoolInput{{NodePool: pool, ObservedMemberShapes: shapes}}})[0]
 	if group.PoolEvaluations[0].Result != capacityapi.PoolDeclaredCompatible {
 		t.Fatalf("fitting pod = %q, want declared compatible", group.PoolEvaluations[0].Result)
 	}
@@ -993,5 +994,22 @@ func TestAnyPoolDeclaredCompatibleIsFailClosed(t *testing.T) {
 	withClass := demandTestPool("with-class", &ready, demandPoolSpecWithNodeClass(), nil)
 	if AnyPoolDeclaredCompatible(models[0], []DemandPoolInput{{NodePool: withClass}}) {
 		t.Fatal("unknown NodeClass readiness must not qualify")
+	}
+}
+
+func TestDemandInstanceShapeComparesWholeVectorsNotPerResourceMaxima(t *testing.T) {
+	ready := true
+	pool := demandTestPool("general", &ready, demandPoolSpec(nil, nil, nil, nil, nil), nil)
+	// Biggest CPU and biggest memory live on DIFFERENT instance shapes — a
+	// composite per-resource max would fabricate an instance that fits.
+	shapes := []corev1.ResourceList{
+		resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "48", corev1.ResourceMemory: "32Gi"}),
+		resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "8", corev1.ResourceMemory: "128Gi"}),
+	}
+	pod := demandTestPod("wide", "32")
+	pod.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = resource.MustParse("64Gi")
+	group := BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{pod}, Pools: []DemandPoolInput{{NodePool: pool, ObservedMemberShapes: shapes}}})[0]
+	if group.PoolEvaluations[0].Result != capacityapi.PoolEvaluationUnknown {
+		t.Fatalf("32cpu+64Gi pod vs {48cpu/32Gi, 8cpu/128Gi} shapes = %q, want unknown", group.PoolEvaluations[0].Result)
 	}
 }

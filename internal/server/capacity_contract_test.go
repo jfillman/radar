@@ -1010,3 +1010,49 @@ func mustEncodeCapacityActivityCursor(t *testing.T, epoch, fingerprint string, s
 	}
 	return cursor
 }
+
+func TestCapacityActivitySQLitePruningReportsCursorEviction(t *testing.T) {
+	initCapacityContractDynamicState(t, true, true, capacityContractNodePool("general"))
+	timeline.ResetStore()
+	if err := timeline.InitStore(timeline.StoreConfig{Type: timeline.StoreTypeSQLite, Path: filepath.Join(t.TempDir(), "timeline.db")}); err != nil {
+		t.Fatalf("InitStore: %v", err)
+	}
+	t.Cleanup(func() {
+		timeline.ResetStore()
+		if err := timeline.InitStore(timeline.DefaultStoreConfig()); err != nil {
+			t.Fatalf("re-init global store: %v", err)
+		}
+	})
+
+	// Two old events (beyond retention) + one fresh. Prune deletes the old
+	// pair; an older cursor pointing into the pruned range must be a gap.
+	base := timeline.ObservationStart().Add(-10 * time.Minute)
+	events := []pkgtimeline.TimelineEvent{
+		capacityActivityConfigEvent("pruned-1", k8s.ActiveClusterContext(), base.Add(-3*time.Hour)),
+		capacityActivityConfigEvent("pruned-2", k8s.ActiveClusterContext(), base.Add(-2*time.Hour)),
+		capacityActivityConfigEvent("fresh", k8s.ActiveClusterContext(), base),
+	}
+	if err := timeline.GetStore().AppendBatch(context.Background(), events); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	pruner, ok := timeline.GetStore().(interface {
+		Cleanup(ctx context.Context, maxAge time.Duration) (int64, error)
+	})
+	if !ok {
+		t.Fatal("SQLite store does not expose Cleanup")
+	}
+	if pruned, err := pruner.Cleanup(context.Background(), time.Hour); err != nil || pruned != 2 {
+		t.Fatalf("cleanup pruned %d, err %v; want 2 old events removed", pruned, err)
+	}
+	if !timeline.GetStore().Stats().EventsEvicted {
+		t.Fatal("SQLite pruning did not surface EventsEvicted")
+	}
+
+	epoch := strconv.FormatInt(timeline.ObservationStart().UnixNano(), 10)
+	evictedCursor := mustEncodeCapacityActivityCursor(t, epoch, capacityFilterFingerprint(url.Values{}), 2)
+	var evicted capacityapi.ActivityResponse
+	assertOK(t, get(t, "/api/capacity/activity?cursor="+url.QueryEscape(evictedCursor)), &evicted)
+	if evicted.CursorStatus != capacityapi.CursorEvicted || evicted.CursorGap == nil {
+		t.Fatalf("pruned-history cursor = %q/%#v, want eviction gap", evicted.CursorStatus, evicted.CursorGap)
+	}
+}

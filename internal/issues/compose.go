@@ -10,6 +10,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/issuesapi"
+	"github.com/skyhook-io/radar/pkg/karpenter"
 )
 
 // Provider abstracts the data sources Compose needs. Implementations
@@ -127,10 +128,26 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 	// (deprecated-RBAC residue, singleton-StatefulSet headless-DNS trivia) —
 	// classified honestly at the Problem layer for other surfaces, but NOT part
 	// of the live "what's broken now" issue stream. Issues stays critical|warning.
+	// Correlated capacity relevance is derived from cluster-scoped NodePool
+	// state; folding it into the wire flag for a caller who cannot list
+	// NodePools would let them probe hidden pool specs by varying pod specs.
+	// Checked lazily so composes without any correlated detection don't pay
+	// (or record) a NodePool access check.
+	correlationChecked, correlationAllowed := false, false
+	canFoldCorrelation := func() bool {
+		if !correlationChecked {
+			correlationAllowed = canReadKarpenterKind(f, karpenter.Group, karpenter.NodePoolKind)
+			correlationChecked = true
+		}
+		return correlationAllowed
+	}
 	emit := func(ps []k8s.Detection, source Source) {
 		for _, pr := range ps {
 			if pr.Severity == "info" {
 				continue
+			}
+			if pr.CapacityRelevantCorrelated && canFoldCorrelation() {
+				pr.CapacityRelevant = true
 			}
 			out = append(out, fromProblem(pr, now, source))
 		}

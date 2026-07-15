@@ -211,6 +211,17 @@ var nodeClaimFailureReasons = map[string]bool{
 	"NodeClassNotReady":         true,
 	"MultipleNodesFound":        true,
 	"UnregisteredTaintMissing":  true,
+	// Cloud providers write their error mapping verbatim into
+	// Launched=Unknown — the AWS provider's vocabulary carries no
+	// fail/error substring for most of them.
+	"Unauthorized":                    true,
+	"LaunchTemplateNotFound":          true,
+	"SecurityGroupSubnetVPCMismatch":  true,
+	"InstanceProfileNameInvalid":      true,
+	"RequestLimitExceeded":            true,
+	"VCPULimitExceeded":               true,
+	"InsufficientInstanceCapacity":    true,
+	"InsufficientFreeAddressesInSubnet": true,
 }
 
 // IsFailedLifecycleCondition reports whether a NodeClaim lifecycle condition

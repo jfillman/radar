@@ -119,7 +119,7 @@ func parseCapacityDemandFilters(query url.Values) (url.Values, capacityapi.Deman
 }
 
 func capacityDemandPoolInputs(result capacityLoadResult, poolFilter string) []capacitymodel.DemandPoolInput {
-	largestByPool := capacitymodel.LargestObservedCapacityByPool(result.snapshot.Nodes, result.snapshot.NodeClaims)
+	shapesByPool := capacitymodel.ObservedMemberShapesByPool(result.snapshot.Nodes, result.snapshot.NodeClaims)
 	pools := make([]capacitymodel.DemandPoolInput, 0, len(result.snapshot.NodePools))
 	for _, pool := range result.snapshot.NodePools {
 		if pool == nil || (poolFilter != "" && pool.GetName() != poolFilter) {
@@ -128,7 +128,7 @@ func capacityDemandPoolInputs(result capacityLoadResult, poolFilter string) []ca
 		input := capacitymodel.DemandPoolInput{
 			NodePool:                pool,
 			ProvisionedKnown:        karpenter.NodePoolStatusResources(pool) != nil,
-			LargestObservedCapacity: largestByPool[pool.GetName()],
+			ObservedMemberShapes:    shapesByPool[pool.GetName()],
 		}
 		if observed, found := result.model.Pool(pool.GetName()); found && observed.Observation.NodeClass != nil {
 			input.NodeClassReady = observed.Observation.NodeClass.Ready

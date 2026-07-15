@@ -140,8 +140,9 @@ func (s *Server) handleCapacityActivity(w http.ResponseWriter, r *http.Request) 
 	}
 	// An older-direction cursor that points at (or below) the oldest retained
 	// record after any eviction has lost its history — an empty page here
-	// would silently read as "end of history" instead of a gap.
-	if request.cursor != nil && stats.EventsEvicted && storeBounds.oldestSeq > 0 && request.cursor.Seq <= storeBounds.oldestSeq && request.cursor.Seq > 1 {
+	// would silently read as "end of history" instead of a gap. oldestSeq==0
+	// (every visible record evicted) is the same gap, not a clean end.
+	if request.cursor != nil && stats.EventsEvicted && request.cursor.Seq > 1 && (storeBounds.oldestSeq == 0 || request.cursor.Seq <= storeBounds.oldestSeq) {
 		gap := capacityActivityGap(now, "timeline_cursor_evicted", request.cursor, epoch)
 		response.CursorStatus = capacityapi.CursorEvicted
 		response.CursorGap = &gap

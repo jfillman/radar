@@ -485,3 +485,41 @@ func TestGroupIssuesPreservesDiagnosticContext(t *testing.T) {
 		t.Fatalf("confidence lost in regroup")
 	}
 }
+
+func TestComposeCapacityRelevanceCorrelationRequiresNodePoolAccess(t *testing.T) {
+	detection := k8s.Detection{
+		Kind: "Pod", Namespace: "shop", Name: "web-1", Severity: "warning",
+		Reason: "Unschedulable", Message: "0/3 nodes are available",
+		CapacityRelevantCorrelated: true,
+	}
+	structural := k8s.Detection{
+		Kind: "Pod", Namespace: "shop", Name: "pinned-1", Severity: "warning",
+		Reason: "Unschedulable", Message: "0/3 nodes are available",
+		CapacityRelevant: true,
+	}
+	provider := &fakeProvider{scheduling: []k8s.Detection{detection, structural}}
+
+	denyNodePools := func(kind, group string) bool {
+		return !(kind == "NodePool" && group == "karpenter.sh")
+	}
+	byName := func(issues []Issue) map[string]Issue {
+		out := map[string]Issue{}
+		for _, issue := range issues {
+			out[issue.Name] = issue
+		}
+		return out
+	}
+
+	denied := byName(Compose(provider, Filters{Limit: NoLimit, CanReadClusterScoped: denyNodePools}))
+	if denied["web-1"].CapacityRelevant {
+		t.Fatal("correlated capacity relevance leaked to a caller denied list-nodepools")
+	}
+	if !denied["pinned-1"].CapacityRelevant {
+		t.Fatal("structural capacity relevance (pod's own spec) must survive denial")
+	}
+
+	allowed := byName(Compose(provider, Filters{Limit: NoLimit}))
+	if !allowed["web-1"].CapacityRelevant || !allowed["pinned-1"].CapacityRelevant {
+		t.Fatalf("authorized caller lost capacity relevance: %+v", allowed)
+	}
+}

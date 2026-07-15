@@ -304,7 +304,17 @@ func DetectSchedulingProblems(cache *ResourceCache, namespace string) []Detectio
 	var problems []Detection
 	now := time.Now()
 	nodes := schedulingNodeFacts(cache)
-	karpenterPools := karpenterDemandPoolInputs(cache)
+	// Lazy: most sweeps have zero unschedulable pods, and loading the
+	// NodePool/NodeClass/Node inventory is only worth it once one appears.
+	var loadedPools []capacitymodel.DemandPoolInput
+	poolsLoaded := false
+	karpenterPools := func() []capacitymodel.DemandPoolInput {
+		if !poolsLoaded {
+			loadedPools = karpenterDemandPoolInputs(cache)
+			poolsLoaded = true
+		}
+		return loadedPools
+	}
 
 	for _, pods := range listPodsByNamespace(cache, namespace) {
 		for _, pod := range pods {
@@ -343,7 +353,8 @@ func DetectSchedulingProblems(cache *ResourceCache, namespace string) []Detectio
 				OwnerGroup:       ownerGroup,
 				OwnerKind:        ownerKind,
 				OwnerName:        ownerName,
-				CapacityRelevant: podRequiresKarpenterNodePool(pod) || podHasDeclaredCompatibleKarpenterPool(pod, karpenterPools),
+				CapacityRelevant:           podRequiresKarpenterNodePool(pod),
+				CapacityRelevantCorrelated: podHasDeclaredCompatibleKarpenterPool(pod, karpenterPools()),
 			})
 		}
 	}
@@ -648,7 +659,7 @@ func karpenterDemandPoolInputs(cache *ResourceCache) []capacitymodel.DemandPoolI
 	if nodeLister := cache.Nodes(); nodeLister != nil {
 		nodes, _ = nodeLister.List(labels.Everything())
 	}
-	largestByPool := capacitymodel.LargestObservedCapacityByPool(nodes, claims)
+	shapesByPool := capacitymodel.ObservedMemberShapesByPool(nodes, claims)
 
 	classListsByGVR := map[schema.GroupVersionResource][]*unstructured.Unstructured{}
 	classReadiness := func(pool *unstructured.Unstructured) *bool {
@@ -690,7 +701,7 @@ func karpenterDemandPoolInputs(cache *ResourceCache) []capacitymodel.DemandPoolI
 			NodePool:                pool,
 			ProvisionedKnown:        karpenter.NodePoolStatusResources(pool) != nil,
 			NodeClassReady:          classReadiness(pool),
-			LargestObservedCapacity: largestByPool[pool.GetName()],
+			ObservedMemberShapes:    shapesByPool[pool.GetName()],
 		})
 	}
 	return inputs

@@ -81,13 +81,11 @@ export function updateDemandSearchParam(
 
 export function CapacityDemand({
   connectionState,
-  namespaces,
   onOpenPool,
   onOpenResource,
   onNavigate,
 }: {
   connectionState: "connected" | "disconnected" | "connecting";
-  namespaces: string[];
   onOpenPool: (name: string) => void;
   onOpenResource: (resource: SelectedResource) => void;
   onNavigate: (path: string) => void;
@@ -109,14 +107,13 @@ export function CapacityDemand({
       : undefined;
   const poolFilter = search.get("pool") || undefined;
   const pagination = useCapacityPagination<CapacityDemandResponse>(
-    `${location.search}\u0000${namespaces.join(",")}`,
+    `${location.search}`,
   );
   const query = useCapacityDemand({
     limit: 25,
     cursor: pagination.cursor,
     state: stateFilter,
     pool: poolFilter,
-    namespaces,
   });
   const recoveringCursor = useCapacityCursorRecovery(
     query.error,
@@ -299,9 +296,8 @@ export function CapacityDemand({
           })}
         </div>
         <DemandPoolSelector
-          key={`${response.clusterContext.contextName}\u0000${namespaces.join(",")}`}
+          key={`${response.clusterContext.contextName}`}
           pool={poolFilter}
-          namespaces={namespaces}
           onChange={(pool) => updateSearchParam("pool", pool)}
         />
       </div>
@@ -353,11 +349,9 @@ export function CapacityDemand({
 
 function DemandPoolSelector({
   pool,
-  namespaces,
   onChange,
 }: {
   pool: string | undefined;
-  namespaces: string[];
   onChange: (pool: string | undefined) => void;
 }) {
   const [cursor, setCursor] = useState<string>();
@@ -365,7 +359,6 @@ function DemandPoolSelector({
   const query = useCapacityPools({
     limit: POOL_PAGE_LIMIT,
     cursor,
-    namespaces,
     refetchInterval: false,
   });
   const recoverCursor = useCallback(() => {

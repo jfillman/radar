@@ -114,14 +114,12 @@ interface OverviewSignal {
 export function CapacityOverview({
   query,
   connectionState,
-  namespaces,
   onOpenPool,
   onOpenResource,
   onNavigate,
 }: {
   query: ReturnType<typeof useCapacityOverview>;
   connectionState: CapacityConnectionState;
-  namespaces: string[];
   onOpenPool: (name: string) => void;
   onOpenResource: (resource: SelectedResource) => void;
   onNavigate: (path: string) => void;
@@ -133,13 +131,12 @@ export function CapacityOverview({
   const showAllPools =
     new URLSearchParams(location.search).get("poolView") === "all";
   const poolPagination = useCapacityPagination<CapacityPoolListResponse>(
-    `overview-pools:${location.search}\u0000${namespaces.join(",")}`,
+    `overview-pools:${location.search}`,
   );
   const poolQuery = useCapacityPools({
     enabled: showAllPools,
     limit: 100,
     cursor: poolPagination.cursor,
-    namespaces,
   });
   const recoveringPoolCursor = useCapacityCursorRecovery(
     poolQuery.error,

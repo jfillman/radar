@@ -9,7 +9,6 @@ import { CapacityPoolDetail } from "./CapacityPoolDetail";
 import { capacityPoolPath, parseCapacityRoute } from "./shared";
 
 interface CapacityViewProps {
-  namespaces: string[];
   onOpenResource: (resource: SelectedResource) => void;
 }
 
@@ -19,25 +18,26 @@ interface CapacityViewProps {
  * pools that reference them (each carries a breadcrumb back). No persistent tab
  * chrome — the destination you're on is the page.
  */
-export function CapacityView({
-  namespaces,
-  onOpenResource,
-}: CapacityViewProps) {
+/**
+ * Capacity is deliberately cluster-wide: supply (pools/nodes/claims) is
+ * cluster-scoped and unfilterable, so scoping only the pod-derived numbers
+ * would show "my namespace's demand" against "everyone's supply" — the wrong
+ * mental model for capacity questions. RBAC (involuntary, honestly labeled in
+ * coverage) is the only scoper; the header's namespace view filter does not
+ * apply here and is not forwarded.
+ */
+export function CapacityView({ onOpenResource }: CapacityViewProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const route = parseCapacityRoute(location.pathname);
   const { connection } = useConnection();
   const overview = useCapacityOverview({
     enabled: !route.poolName && route.topTab === "overview",
-    namespaces,
   });
 
   const navigateCapacity = (target: string) => {
     const [pathname, rawSearch = ""] = target.split("?", 2);
     const params = new URLSearchParams(rawSearch);
-    const namespaces = new URLSearchParams(location.search).get("namespaces");
-    if (namespaces && !params.has("namespaces"))
-      params.set("namespaces", namespaces);
     navigate({
       pathname,
       search: params.toString() ? `?${params.toString()}` : "",
@@ -54,7 +54,6 @@ export function CapacityView({
           name={route.poolName}
           section={route.poolSection}
           connectionState={connection.state}
-          namespaces={namespaces}
           onNavigate={navigateCapacity}
           onOpenResource={onOpenResource}
         />
@@ -62,7 +61,6 @@ export function CapacityView({
         <CapacityOverview
           query={overview}
           connectionState={connection.state}
-          namespaces={namespaces}
           onOpenPool={openPool}
           onOpenResource={onOpenResource}
           onNavigate={navigateCapacity}
@@ -70,7 +68,6 @@ export function CapacityView({
       ) : route.topTab === "demand" ? (
         <CapacityDemand
           connectionState={connection.state}
-          namespaces={namespaces}
           onOpenPool={openPool}
           onOpenResource={onOpenResource}
           onNavigate={navigateCapacity}
@@ -78,7 +75,6 @@ export function CapacityView({
       ) : (
         <CapacityActivity
           connectionState={connection.state}
-          namespaces={namespaces}
           onOpenPool={openPool}
           onOpenResource={onOpenResource}
           onNavigate={navigateCapacity}

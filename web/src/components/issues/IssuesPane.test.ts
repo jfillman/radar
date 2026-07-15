@@ -19,13 +19,11 @@ function issue(partial: Partial<Issue>): Issue {
 
 describe("capacityHrefForIssue", () => {
   it("returns null when Karpenter is not detected", () => {
-    expect(capacityHrefForIssue(issue({ source: "scheduling" }), false, [])).toBeNull();
+    expect(capacityHrefForIssue(issue({ source: "scheduling" }), false)).toBeNull();
     expect(
       capacityHrefForIssue(
         issue({ kind: "NodePool", group: "karpenter.sh", name: "core" }),
-        false,
-        [],
-      ),
+        false),
     ).toBeNull();
   });
 
@@ -33,9 +31,7 @@ describe("capacityHrefForIssue", () => {
     expect(
       capacityHrefForIssue(
         issue({ source: "scheduling", capacity_relevant: true }),
-        true,
-        [],
-      ),
+        true),
     ).toBe("/capacity/demand");
   });
 
@@ -43,10 +39,8 @@ describe("capacityHrefForIssue", () => {
     expect(
       capacityHrefForIssue(
         issue({ source: "scheduling", capacity_relevant: true }),
-        true,
-        ["payments", "media"],
-      ),
-    ).toBe("/capacity/demand?namespaces=payments%2Cmedia");
+        true),
+    ).toBe("/capacity/demand");
   });
 
   it("does NOT link a scheduling failure the backend did not flag", () => {
@@ -59,16 +53,12 @@ describe("capacityHrefForIssue", () => {
           source: "scheduling",
           message: "Unschedulable — Insufficient cpu (0/9 nodes available)",
         }),
-        true,
-        [],
-      ),
+        true),
     ).toBeNull();
     expect(
       capacityHrefForIssue(
         issue({ source: "scheduling", capacity_relevant: false }),
-        true,
-        [],
-      ),
+        true),
     ).toBeNull();
   });
 
@@ -81,23 +71,19 @@ describe("capacityHrefForIssue", () => {
           name: "core-on-demand",
           source: "condition",
         }),
-        true,
-        [],
-      ),
+        true),
     ).toBe("/capacity/pools/core-on-demand");
   });
 
   it("does not link non-Karpenter issues even when Karpenter is present", () => {
     expect(
-      capacityHrefForIssue(issue({ source: "problem", kind: "Service" }), true, []),
+      capacityHrefForIssue(issue({ source: "problem", kind: "Service" }), true),
     ).toBeNull();
     // A NodePool from a different API group must not be treated as Karpenter's.
     expect(
       capacityHrefForIssue(
         issue({ kind: "NodePool", group: "example.com", name: "x" }),
-        true,
-        [],
-      ),
+        true),
     ).toBeNull();
   });
 });

@@ -37,7 +37,6 @@ import { IssueDiagnoseButton } from '../diagnose/LocalDiagnoseAction'
 export function capacityHrefForIssue(
   issue: Issue,
   hasKarpenter: boolean,
-  namespaces: string[],
 ): string | null {
   if (!hasKarpenter) return null
   // (1) A NodePool-subject issue (not ready, limit pressure, …) → its pool detail.
@@ -49,11 +48,9 @@ export function capacityHrefForIssue(
   // pools can (or can't) take them. Unfiltered on purpose: the issue doesn't map
   // cleanly to a single demand state (blocked vs awaiting capacity), so we avoid
   // a filter that could hide the very group being investigated.
+  // Capacity is deliberately cluster-wide — no view-filter forwarding.
   if (issue.capacity_relevant) {
-    const params = new URLSearchParams()
-    if (namespaces.length > 0) params.set('namespaces', namespaces.join(','))
-    const query = params.toString()
-    return query ? `/capacity/demand?${query}` : '/capacity/demand'
+    return '/capacity/demand'
   }
   return null
 }
@@ -186,7 +183,7 @@ export function IssuesPane({ namespaces, onNavigateToResource }: IssuesPaneProps
           anyData={!!data}
           onResourceClick={onResourceClick}
           renderActions={({ issue }) => {
-            const capacityHref = capacityHrefForIssue(issue, hasKarpenter, namespaces)
+            const capacityHref = capacityHrefForIssue(issue, hasKarpenter)
             return (
               <div className="flex items-center gap-2">
                 {capacityHref && (

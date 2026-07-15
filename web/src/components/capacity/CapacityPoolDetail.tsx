@@ -77,18 +77,16 @@ export function CapacityPoolDetail({
   name,
   section,
   connectionState,
-  namespaces,
   onNavigate,
   onOpenResource,
 }: {
   name: string;
   section: PoolSection;
   connectionState: CapacityConnectionState;
-  namespaces: string[];
   onNavigate: (path: string) => void;
   onOpenResource: (resource: SelectedResource) => void;
 }) {
-  const query = useCapacityPoolDetail(name, { namespaces });
+  const query = useCapacityPoolDetail(name);
   const poolPath = `/capacity/pools/${encodeURIComponent(name)}`;
 
   if (isNotFoundError(query.error)) {
@@ -256,14 +254,12 @@ export function CapacityPoolDetail({
       {section === "workloads" && (
         <PoolWorkloadsTab
           name={name}
-          namespaces={namespaces}
           onOpenResource={onOpenResource}
         />
       )}
       {section === "members" && (
         <PoolMembersTab
           name={name}
-          namespaces={namespaces}
           onOpenResource={onOpenResource}
         />
       )}
@@ -984,7 +980,6 @@ function PostureView({
 
 function MemberPage({
   name,
-  namespaces,
   type,
   title,
   empty,
@@ -993,7 +988,6 @@ function MemberPage({
   renderRow,
 }: {
   name: string;
-  namespaces: string[];
   type: CapacityMemberType;
   title: string;
   empty: string;
@@ -1005,12 +999,11 @@ function MemberPage({
   ) => ReactNode;
 }) {
   const pagination = useCapacityPagination<CapacityMemberListResponse>(
-    `${name}\u0000${type}\u0000${namespaces.join(",")}`,
+    `${name}\u0000${type}`,
   );
   const query = useCapacityPoolMembers(name, type, {
     limit: 50,
     cursor: pagination.cursor,
-    namespaces,
   });
   const recoveringCursor = useCapacityCursorRecovery(
     query.error,
@@ -1137,17 +1130,14 @@ function MemberPage({
 
 function PoolWorkloadsTab({
   name,
-  namespaces,
   onOpenResource,
 }: {
   name: string;
-  namespaces: string[];
   onOpenResource: (resource: SelectedResource) => void;
 }) {
   return (
     <MemberPage
       name={name}
-      namespaces={namespaces}
       type="workload"
       title="Workloads on this pool"
       empty="No workloads were observed on this NodePool."
@@ -1215,18 +1205,15 @@ function PoolWorkloadsTab({
 
 function PoolMembersTab({
   name,
-  namespaces,
   onOpenResource,
 }: {
   name: string;
-  namespaces: string[];
   onOpenResource: (resource: SelectedResource) => void;
 }) {
   return (
     <div className="space-y-4">
       <MemberPage
         name={name}
-        namespaces={namespaces}
         type="node"
         title="Nodes"
         empty="No nodes — this pool may be scaled to zero. For a dynamic pool this is a valid state."
@@ -1319,7 +1306,6 @@ function PoolMembersTab({
       />
       <MemberPage
         name={name}
-        namespaces={namespaces}
         type="claim"
         title="NodeClaims"
         empty="No claims. For a dynamic pool at zero this is a valid state."

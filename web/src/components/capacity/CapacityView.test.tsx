@@ -449,7 +449,6 @@ function activityResponse(): CapacityActivityResponse {
 function renderCapacity(
   path: string,
   seed: (client: QueryClient) => void,
-  namespaces: string[] = [],
 ): string {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, retryOnMount: false } },
@@ -458,7 +457,7 @@ function renderCapacity(
   return renderToString(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>
-        <CapacityView namespaces={namespaces} onOpenResource={() => {}} />
+        <CapacityView onOpenResource={() => {}} />
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -467,7 +466,7 @@ function renderCapacity(
 describe("CapacityView overview", () => {
   it("renders KPI tiles, the NodePool inventory, and the Karpenter chip", () => {
     const html = renderCapacity("/capacity", (client) =>
-      client.setQueryData(["capacity", "overview", ""], overview()),
+      client.setQueryData(["capacity", "overview"], overview()),
     );
     expect(html).toContain("Capacity overview");
     expect(html).toContain("Karpenter");
@@ -481,7 +480,7 @@ describe("CapacityView overview", () => {
 
   it("frames the aggregate demand as scheduling demand, not usage", () => {
     const html = renderCapacity("/capacity", (client) =>
-      client.setQueryData(["capacity", "overview", ""], overview()),
+      client.setQueryData(["capacity", "overview"], overview()),
     );
     expect(html).toContain(
       "Active pending requests (scheduling demand, not usage):",
@@ -491,7 +490,7 @@ describe("CapacityView overview", () => {
 
   it("derives operational signals from server actions", () => {
     const html = renderCapacity("/capacity", (client) =>
-      client.setQueryData(["capacity", "overview", ""], overview()),
+      client.setQueryData(["capacity", "overview"], overview()),
     );
     expect(html).toContain("Configured limit pressure");
     expect(html).toContain("Warn");
@@ -506,7 +505,7 @@ describe("CapacityView overview", () => {
       },
     });
     const html = renderCapacity("/capacity", (client) =>
-      client.setQueryData(["capacity", "overview", ""], denied),
+      client.setQueryData(["capacity", "overview"], denied),
     );
     expect(html).toContain("Pod access denied — not zero");
     expect(html).toContain("Unavailable — Pod access denied");
@@ -523,7 +522,7 @@ describe("CapacityView overview", () => {
       },
     });
     const html = renderCapacity("/capacity", (client) =>
-      client.setQueryData(["capacity", "overview", ""], scoped),
+      client.setQueryData(["capacity", "overview"], scoped),
     );
     expect(html).toContain("Explicit namespaces (2)");
     expect(html).toContain("Namespaced data is a lower bound");
@@ -532,7 +531,7 @@ describe("CapacityView overview", () => {
   it("shows the integration state returned by the server", () => {
     const notDetected = renderCapacity("/capacity", (client) =>
       client.setQueryData(
-        ["capacity", "overview", ""],
+        ["capacity", "overview"],
         overview({ state: "not_detected" }),
       ),
     );
@@ -540,7 +539,7 @@ describe("CapacityView overview", () => {
 
     const deniedState = renderCapacity("/capacity", (client) =>
       client.setQueryData(
-        ["capacity", "overview", ""],
+        ["capacity", "overview"],
         overview({ state: "denied" }),
       ),
     );
@@ -550,7 +549,7 @@ describe("CapacityView overview", () => {
   it("explains why Karpenter data is still syncing", () => {
     const syncing = renderCapacity("/capacity", (client) =>
       client.setQueryData(
-        ["capacity", "overview", ""],
+        ["capacity", "overview"],
         overview({
           state: "syncing",
           coverage: {
@@ -573,7 +572,7 @@ describe("CapacityView pool detail", () => {
   it("renders the capacity ledger with headers and a certainty legend", () => {
     const html = renderCapacity("/capacity/pools/default", (client) =>
       client.setQueryData(
-        ["capacity", "pool", "default", ""],
+        ["capacity", "pool", "default"],
         poolDetailResponse(cleanPoolDetail),
       ),
     );
@@ -589,7 +588,7 @@ describe("CapacityView pool detail", () => {
   it("keeps pod-derived ledger and attribution unavailable under denied pod access", () => {
     const html = renderCapacity("/capacity/pools/default", (client) =>
       client.setQueryData(
-        ["capacity", "pool", "default", ""],
+        ["capacity", "pool", "default"],
         poolDetailResponse(poolDetail),
       ),
     );
@@ -601,7 +600,7 @@ describe("CapacityView pool detail", () => {
   it("explains a missing pool observation without implying zero", () => {
     const html = renderCapacity("/capacity/pools/default", (client) =>
       client.setQueryData(
-        ["capacity", "pool", "default", ""],
+        ["capacity", "pool", "default"],
         poolDetailResponse(undefined),
       ),
     );
@@ -611,7 +610,7 @@ describe("CapacityView pool detail", () => {
   it("renders structured issue diagnosis in pool posture", () => {
     const html = renderCapacity("/capacity/pools/default/posture", (client) =>
       client.setQueryData(
-        ["capacity", "pool", "default", ""],
+        ["capacity", "pool", "default"],
         poolDetailResponse({
           ...cleanPoolDetail,
           issues: [
@@ -677,15 +676,15 @@ describe("CapacityView pool detail", () => {
   it("loads node and claim members from the URL-backed members tab", () => {
     const html = renderCapacity("/capacity/pools/default/members", (client) => {
       client.setQueryData(
-        ["capacity", "pool", "default", ""],
+        ["capacity", "pool", "default"],
         poolDetailResponse(cleanPoolDetail),
       );
       client.setQueryData(
-        ["capacity", "pool", "default", "members", "node", 50, undefined, ""],
+        ["capacity", "pool", "default", "members", "node", 50, undefined],
         memberResponse("node", [nodeMember]),
       );
       client.setQueryData(
-        ["capacity", "pool", "default", "members", "claim", 50, undefined, ""],
+        ["capacity", "pool", "default", "members", "claim", 50, undefined],
         memberResponse("claim", [claimMember]),
       );
     });
@@ -698,18 +697,18 @@ describe("CapacityView pool detail", () => {
   it("keeps member pod counts unknown under partial RBAC", () => {
     const html = renderCapacity("/capacity/pools/default/members", (client) => {
       client.setQueryData(
-        ["capacity", "pool", "default", ""],
+        ["capacity", "pool", "default"],
         poolDetailResponse(cleanPoolDetail),
       );
       client.setQueryData(
-        ["capacity", "pool", "default", "members", "node", 50, undefined, ""],
+        ["capacity", "pool", "default", "members", "node", 50, undefined],
         memberResponse("node", [nodeMember], {
           ...meta.coverage,
           pods: sourceCoverage("denied", "Pod inventory hidden by permissions"),
         }),
       );
       client.setQueryData(
-        ["capacity", "pool", "default", "members", "claim", 50, undefined, ""],
+        ["capacity", "pool", "default", "members", "claim", 50, undefined],
         memberResponse("claim", [claimMember]),
       );
     });
@@ -721,7 +720,7 @@ describe("CapacityView demand", () => {
   it("groups pending pods by scheduling signature with pool evaluations", () => {
     const html = renderCapacity("/capacity/demand", (client) =>
       client.setQueryData(
-        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
+        ["capacity", "demand", 25, undefined, undefined, undefined],
         demandResponse(),
       ),
     );
@@ -737,7 +736,7 @@ describe("CapacityView demand", () => {
   it("shows structured capacity-linked issues on the demand group", () => {
     const html = renderCapacity("/capacity/demand", (client) =>
       client.setQueryData(
-        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
+        ["capacity", "demand", 25, undefined, undefined, undefined],
         demandResponse({
           items: [
             {
@@ -791,7 +790,7 @@ describe("CapacityView demand", () => {
   it("takes pill and header counts from the server summary, not the page", () => {
     const html = renderCapacity("/capacity/demand", (client) =>
       client.setQueryData(
-        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
+        ["capacity", "demand", 25, undefined, undefined, undefined],
         demandResponse(),
       ),
     );
@@ -806,7 +805,7 @@ describe("CapacityView demand", () => {
   it("never fabricates zeros when the server omits the summary", () => {
     const html = renderCapacity("/capacity/demand", (client) =>
       client.setQueryData(
-        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
+        ["capacity", "demand", 25, undefined, undefined, undefined],
         demandResponse({ summary: undefined }),
       ),
     );
@@ -821,26 +820,17 @@ describe("CapacityView demand", () => {
 
   it("offers a URL-backed NodePool evaluation perspective", () => {
     const html = renderCapacity(
-      "/capacity/demand?state=blocked&namespaces=payments%2Cmedia&pool=spot",
+      "/capacity/demand?state=blocked&pool=spot",
       (client) => {
         client.setQueryData(
-          [
-            "capacity",
-            "demand",
-            25,
-            undefined,
-            "blocked",
-            "spot",
-            "payments,media",
-          ],
+          ["capacity", "demand", 25, undefined, "blocked", "spot"],
           demandResponse(),
         );
         client.setQueryData(
-          ["capacity", "pools", 100, undefined, "payments,media"],
+          ["capacity", "pools", 100, undefined],
           poolListResponse(["default", "spot"]),
         );
       },
-      ["payments", "media"],
     );
     expect(html).toContain("Evaluate against");
     expect(html).toContain("All NodePools");
@@ -855,11 +845,11 @@ describe("CapacityView demand", () => {
     );
     const html = renderCapacity("/capacity/demand", (client) => {
       client.setQueryData(
-        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
+        ["capacity", "demand", 25, undefined, undefined, undefined],
         demandResponse(),
       );
       client.setQueryData(
-        ["capacity", "pools", 100, undefined, ""],
+        ["capacity", "pools", 100, undefined],
         poolListResponse(names, { hasMore: true, nextCursor: "pool-099" }),
       );
     });
@@ -871,11 +861,11 @@ describe("CapacityView demand", () => {
   it("does not block Demand when NodePool option discovery fails", () => {
     const html = renderCapacity("/capacity/demand", (client) => {
       client.setQueryData(
-        ["capacity", "demand", 25, undefined, undefined, undefined, ""],
+        ["capacity", "demand", 25, undefined, undefined, undefined],
         demandResponse(),
       );
       const poolQuery = client.getQueryCache().build(client, {
-        queryKey: ["capacity", "pools", 100, undefined, ""],
+        queryKey: ["capacity", "pools", 100, undefined],
         queryFn: async () => poolListResponse([]),
       });
       poolQuery.setState({
@@ -894,23 +884,13 @@ describe("CapacityView demand", () => {
     );
   });
 
-  it("preserves scope and state while changing or clearing pool perspective", () => {
-    const selected = updateDemandSearchParam(
-      "?state=blocked&namespaces=payments%2Cmedia",
-      "pool",
-      "spot",
-    );
+  it("preserves state while changing or clearing pool perspective", () => {
+    const selected = updateDemandSearchParam("?state=blocked", "pool", "spot");
     expect(new URLSearchParams(selected).get("state")).toBe("blocked");
-    expect(new URLSearchParams(selected).get("namespaces")).toBe(
-      "payments,media",
-    );
     expect(new URLSearchParams(selected).get("pool")).toBe("spot");
 
     const cleared = updateDemandSearchParam(selected, "pool", undefined);
     expect(new URLSearchParams(cleared).get("state")).toBe("blocked");
-    expect(new URLSearchParams(cleared).get("namespaces")).toBe(
-      "payments,media",
-    );
     expect(new URLSearchParams(cleared).has("pool")).toBe(false);
   });
 });
@@ -929,7 +909,6 @@ describe("CapacityView activity", () => {
           undefined,
           undefined,
           undefined,
-          "",
         ],
         activityResponse(),
       ),

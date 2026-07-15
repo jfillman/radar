@@ -11,7 +11,7 @@ import { useDiagnoseLayout } from './components/diagnose/DiagnoseContext'
 import { DiagnoseSurface } from './components/diagnose/DiagnoseSurface'
 import { TopologyGraph, TopologySearch, TopologyFilterSidebar, TopologyControls, FreshnessControl, gitOpsRouteForKind, gitOpsRouteForResource, ScopePill, PaneLoader } from '@skyhook-io/k8s-ui'
 import { initNavigationMap } from '@skyhook-io/k8s-ui/utils/navigation'
-import { useAPIResources, CORE_RESOURCES, hasKarpenterNodePools } from './api/apiResources'
+import { useAPIResources, CORE_RESOURCES, karpenterNavVisible } from './api/apiResources'
 import { TimelineView } from './components/timeline/TimelineView'
 import { ResourcesView } from './components/resources/ResourcesView'
 import { serializeColumnFilters } from './components/resources/resource-utils'
@@ -398,7 +398,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   // resources view has run initNavigationMap().
   const { data: navApiResources } = useAPIResources()
   useEffect(() => { if (navApiResources) initNavigationMap(navApiResources) }, [navApiResources])
-  const hasKarpenter = hasKarpenterNodePools(navApiResources)
+  const hasKarpenter = karpenterNavVisible(capabilities.karpenter, navApiResources)
 
   // View-aware namespace scope: disabled on cluster-scoped surfaces so the
   // chip isn't a dead control next to the cluster switcher.

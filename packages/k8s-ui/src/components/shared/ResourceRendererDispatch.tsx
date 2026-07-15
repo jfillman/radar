@@ -256,6 +256,10 @@ export interface RendererOverrides {
   NodeRenderer?: React.ComponentType<{
     data: any; relationships?: Relationships
   }>
+  KarpenterNodePoolRenderer?: React.ComponentType<{
+    data: any
+    onNavigate?: (ref: ResourceRef) => void
+  }>
   ServiceRenderer?: React.ComponentType<{
     data: any; onCopy: CopyHandler; copied: string | null
     onNavigate?: (ref: ResourceRef) => void
@@ -487,6 +491,7 @@ export function ResourceRendererDispatch({
   const isKnownKind = KNOWN_KINDS.has(kind) || isCrossplaneMR || isCrossplaneClaim || isCrossplaneXR
 
   const PodComp = rendererOverrides?.PodRenderer ?? PodRenderer
+  const KarpenterNodePoolComp = rendererOverrides?.KarpenterNodePoolRenderer ?? KarpenterNodePoolRenderer
   const WorkloadComp = rendererOverrides?.WorkloadRenderer ?? WorkloadRenderer
   const NodeComp = rendererOverrides?.NodeRenderer ?? NodeRenderer
   const ServiceComp = rendererOverrides?.ServiceRenderer ?? ServiceRenderer
@@ -570,7 +575,7 @@ export function ResourceRendererDispatch({
         {kind === 'helmreleases' && <FluxHelmReleaseRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'alerts' && <AlertRenderer data={data} />}
         {kind === 'applications' && <ArgoApplicationRenderer data={data} />}
-        {kind === 'nodepools' && <KarpenterNodePoolRenderer data={data} onNavigate={onNavigate} />}
+        {kind === 'nodepools' && <KarpenterNodePoolComp data={data} onNavigate={onNavigate} />}
         {kind === 'nodeclaims' && <KarpenterNodeClaimRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'ec2nodeclasses' && <KarpenterEC2NodeClassRenderer data={data} />}
         {kind === 'scaledobjects' && <KedaScaledObjectRenderer data={data} onNavigate={onNavigate} />}

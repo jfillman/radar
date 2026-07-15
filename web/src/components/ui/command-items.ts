@@ -1,7 +1,8 @@
 import { useMemo } from 'react'
 import { Home, Network, List, Clock, Package, Activity, Sun, Stethoscope, DollarSign, Gauge, ShieldCheck, GitBranch, AlertTriangle, Boxes, Server } from 'lucide-react'
 import { useNamespaces, useContexts } from '../../api/client'
-import { CORE_RESOURCES, hasKarpenterNodePools, useAPIResources } from '../../api/apiResources'
+import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
+import { CORE_RESOURCES, karpenterNavVisible, useAPIResources } from '../../api/apiResources'
 import { getResourceIcon } from '../../utils/resource-icons'
 import { parseContextName } from '../../utils/context-name'
 
@@ -104,11 +105,12 @@ export function useCommandItems(cb: CommandItemCallbacks): CommandItem[] {
   const { data: namespacesData } = useNamespaces()
   const { data: contexts } = useContexts()
   const { data: apiResources } = useAPIResources()
+  const capabilities = useCapabilitiesContext()
 
   return useMemo<CommandItem[]>(() => {
     const result: CommandItem[] = []
 
-    const hasKarpenter = hasKarpenterNodePools(apiResources)
+    const hasKarpenter = karpenterNavVisible(capabilities.karpenter, apiResources)
     for (const v of VIEW_ENTRIES) {
       if (v.view === 'capacity' && !hasKarpenter) continue
       result.push({ id: `view-${v.view}`, label: `Go to ${v.label}`, category: 'Views', icon: v.icon, shortcut: v.shortcut, action: () => cb.onNavigateView(v.view) })
@@ -177,5 +179,5 @@ export function useCommandItems(cb: CommandItemCallbacks): CommandItem[] {
 
     return result
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiResources, contexts, namespacesData, cb.onNavigateView, cb.onNavigateKind, cb.onSwitchContext, cb.onSetNamespaces, cb.onToggleTheme, cb.onShowDiagnostics])
+  }, [apiResources, capabilities.karpenter, contexts, namespacesData, cb.onNavigateView, cb.onNavigateKind, cb.onSwitchContext, cb.onSetNamespaces, cb.onToggleTheme, cb.onShowDiagnostics])
 }

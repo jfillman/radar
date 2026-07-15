@@ -1,8 +1,9 @@
 import { PodRenderer as BasePodRenderer } from '@skyhook-io/k8s-ui/components/resources/renderers/PodRenderer'
 import type { CopyHandler } from '@skyhook-io/k8s-ui/components/ui/drawer-components'
 import type { ResolvedEnvFrom } from '@skyhook-io/k8s-ui'
+import { useNavigate } from 'react-router-dom'
 import { useOpenTerminal, useOpenLogs } from '../../dock'
-import { useNamespacedCapabilities, useIsLocalDeployment } from '../../../contexts/CapabilitiesContext'
+import { useCapabilitiesContext, useNamespacedCapabilities, useIsLocalDeployment } from '../../../contexts/CapabilitiesContext'
 import { getVisibleLiveMetrics, isLiveMetricsUnavailable, shouldFetchLiveMetrics, usePodMetrics, usePodMetricsHistory, usePrometheusResourceMetrics, usePrometheusStatus } from '../../../api/client'
 import { useRBACSubject } from '../../../api/rbac'
 import { PortForwardInlineButton } from '../../portforward/PortForwardButton'
@@ -24,6 +25,12 @@ export function PodRenderer({ data, onCopy, copied, onNavigate, onOpenLogs, reso
 
   const openTerminal = useOpenTerminal()
   const openLogsPanel = useOpenLogs()
+  const navigate = useNavigate()
+
+  // Pending pod on a Karpenter cluster -> bridge into the Capacity Demand
+  // view (the purpose-built surface for "why is this pod pending").
+  const karpenterAvailable = useCapabilitiesContext().karpenter?.state === 'available'
+  const isPending = data.status?.phase === 'Pending'
 
   // Capabilities (namespace-scoped: re-checks RBAC if globally denied)
   const { canExec, canViewLogs, canPortForward } = useNamespacedCapabilities(namespace)
@@ -69,6 +76,11 @@ export function PodRenderer({ data, onCopy, copied, onNavigate, onOpenLogs, reso
       copied={copied}
       onNavigate={onNavigate}
       onOpenLogs={onOpenLogs}
+      onEvaluateCapacity={
+        karpenterAvailable && isPending
+          ? () => navigate('/capacity/demand')
+          : undefined
+      }
       resolvedEnvFrom={resolvedEnvFrom}
       rbacData={rbacData ?? null}
       rbacLoading={rbacLoading}

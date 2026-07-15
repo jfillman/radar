@@ -62,6 +62,7 @@ export interface WorkloadWritePermissions {
 export interface IntegrationCapability {
   state: CapacityIntegrationState
   reasonCode?: string
+  cacheUnavailable?: boolean
 }
 
 // Feature capabilities based on RBAC permissions
@@ -76,7 +77,10 @@ export interface Capabilities {
   nodeWrite: boolean      // Node write operations (cordon, uncordon, drain)
   workloadWrites?: WorkloadWritePermissions // Workload patch permissions (restart/scale controls)
   mcpEnabled: boolean     // MCP server is running
-  karpenter: IntegrationCapability // Karpenter discovery and NodePool read state
+  // Karpenter discovery and NodePool read state. Optional on the wire for the
+  // same newer-frontend/older-backend reason as `deployment` below — consumers
+  // must treat absence as "unknown" and fall back to discovery signals.
+  karpenter?: IntegrationCapability
   // How / where this Radar binary is running. Optional on the wire so a
   // newer frontend (e.g. radar-hub-web bundling a fresher @skyhook-io/radar-app)
   // doesn't crash against an older backend that hasn't shipped the field yet —

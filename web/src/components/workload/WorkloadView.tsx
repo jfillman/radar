@@ -92,6 +92,7 @@ import {
 import { useToast } from '../ui/Toast'
 import { Tooltip } from '../ui/Tooltip'
 import { PodRenderer } from '../resources/renderers/PodRenderer'
+import { KarpenterNodePoolRenderer } from '../resources/renderers/KarpenterNodePoolRenderer'
 import { NodeRenderer } from '../resources/renderers/NodeRenderer'
 import { ServiceRenderer } from '../resources/renderers/ServiceRenderer'
 import { WorkloadRenderer } from '../resources/renderers/WorkloadRenderer'
@@ -123,6 +124,7 @@ const BATCH_EXECUTION_KINDS = new Set([
 // Stable reference — web renderer wrappers inject platform hooks internally
 const rendererOverrides: RendererOverrides = {
   PodRenderer,
+  KarpenterNodePoolRenderer,
   NodeRenderer,
   ServiceRenderer,
   WorkloadRenderer,

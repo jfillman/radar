@@ -32,3 +32,18 @@ export function hasKarpenterNodePools(resources: APIResource[] | undefined): boo
     resource.name === 'nodepools' && resource.group === 'karpenter.sh' && resource.verbs?.includes('list')
   ) ?? false
 }
+
+// Nav/palette gating for the Capacity view. The per-request capability is
+// authoritative when it has resolved discovery + RBAC: available shows,
+// denied/not_detected hides (an RBAC-denied user gets a 403 page otherwise).
+// While the capability is still syncing pre-discovery (cluster connecting),
+// fall back to the discovery signal to avoid hiding/flashing the nav item.
+export function karpenterNavVisible(
+  capability: { state: string } | undefined,
+  apiResources: APIResource[] | undefined,
+): boolean {
+  if (capability?.state === 'available') return true
+  if (capability?.state === 'denied' || capability?.state === 'not_detected') return false
+  return hasKarpenterNodePools(apiResources)
+}
+

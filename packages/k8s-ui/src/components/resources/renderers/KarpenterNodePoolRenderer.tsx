@@ -14,9 +14,11 @@ import {
 interface KarpenterNodePoolRendererProps {
   data: any
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
+  /** Host-wired: opens this pool in the Capacity view (only hosts that ship it pass this). */
+  onOpenCapacity?: () => void
 }
 
-export function KarpenterNodePoolRenderer({ data, onNavigate }: KarpenterNodePoolRendererProps) {
+export function KarpenterNodePoolRenderer({ data, onNavigate, onOpenCapacity }: KarpenterNodePoolRendererProps) {
   const status = data.status || {}
   const spec = data.spec || {}
   const conditions = status.conditions || []
@@ -37,6 +39,18 @@ export function KarpenterNodePoolRenderer({ data, onNavigate }: KarpenterNodePoo
 
   return (
     <>
+      {onOpenCapacity && (
+        <div className="mb-3">
+          <button
+            type="button"
+            onClick={onOpenCapacity}
+            className="text-xs font-medium text-accent-text hover:underline"
+          >
+            Open in Capacity — ledger, workloads, demand →
+          </button>
+        </div>
+      )}
+
       {/* Problem alert */}
       {isNotReady && (
         <AlertBanner

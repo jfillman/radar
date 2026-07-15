@@ -718,6 +718,20 @@ func ConfiguredNamespacesForCurrentContext() []string {
 	return append([]string(nil), fallbackNamespaces...)
 }
 
+// ConfiguredNamespaceForCurrentContext returns the singular --namespace flag
+// value when the current context is still the one it was configured against.
+// Unlike the plural list, the singular flag mainly steers RBAC probing — as a
+// picker seed it only outranks the kubeconfig context namespace, covering
+// flows where the launch URL doesn't carry it (--no-browser, embedders).
+func ConfiguredNamespaceForCurrentContext() string {
+	clientMu.RLock()
+	defer clientMu.RUnlock()
+	if fallbackNamespacesExplicit || fallbackNamespaceContext != contextName {
+		return ""
+	}
+	return fallbackNamespace
+}
+
 func dedupeNamespacesLocked(namespaces []string) []string {
 	if len(namespaces) == 0 {
 		return nil

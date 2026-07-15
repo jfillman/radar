@@ -2,6 +2,7 @@ package settings
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -35,8 +36,10 @@ type Settings struct {
 	Audit       *AuditConfig `json:"audit,omitempty"`
 	// ActiveNamespaces maps kubeconfig context name → the user's namespace
 	// picks (the in-app multi-select switcher's last selection per cluster).
-	// Empty slice (or missing key) means no pick is active and reads default
-	// to the user's full RBAC ceiling (typically "All namespaces").
+	// Tri-state: a missing key means the user never chose — the view defaults
+	// to the kubeconfig context's namespace (falling back to "All namespaces");
+	// an empty slice is an explicit "All namespaces" choice that suppresses
+	// that default; a non-empty slice is an explicit pick.
 	ActiveNamespaces map[string][]string `json:"activeNamespaces,omitempty"`
 	// HelmOCISources are registered OCI chart-source prefixes (e.g.
 	// "oci://ghcr.io/myorg/charts") — the OCI analog of `helm repo add`, which
@@ -64,23 +67,34 @@ func Path() string {
 
 // Load reads settings from disk. Returns zero-value Settings if the file is missing or invalid.
 func Load() Settings {
+	s, _ := LoadChecked()
+	return s
+}
+
+// LoadChecked reads settings from disk, distinguishing "no settings file"
+// (zero value, nil error) from a failed read or parse (zero value, error).
+// Callers that take a state-changing action on absence — like defaulting the
+// namespace view when no pick was ever saved — must use this: treating a
+// failed read as absence would act on data that may actually exist.
+func LoadChecked() (Settings, error) {
 	path := Path()
 	if path == "" {
-		return Settings{}
+		return Settings{}, errors.New("settings path unavailable")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Printf("[settings] Failed to read %s: %v", path, err)
+		if os.IsNotExist(err) {
+			return Settings{}, nil
 		}
-		return Settings{}
+		log.Printf("[settings] Failed to read %s: %v", path, err)
+		return Settings{}, err
 	}
 	var s Settings
 	if err := json.Unmarshal(data, &s); err != nil {
 		log.Printf("[settings] Failed to parse %s: %v", path, err)
-		return Settings{}
+		return Settings{}, err
 	}
-	return s
+	return s, nil
 }
 
 // Save writes settings to disk using atomic rename.

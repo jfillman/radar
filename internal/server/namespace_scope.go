@@ -173,11 +173,19 @@ func (s *Server) invalidatePostContextSwitchCaches() {
 // loadSavedNamespacePreference seeds the per-user map on first reach.
 // Sources, in priority order:
 //   - a settings.json pick (no-auth local single-user only) — a remembered
-//     narrower choice survives restarts;
+//     narrower choice survives restarts, and a persisted empty entry is the
+//     user's explicit "All namespaces" choice, which suppresses every seed
+//     below;
 //   - the --namespaces startup list (any user, auth included) — each user's
 //     session starts on the configured view. Seeded at most once per
 //     (user, context) key, so clearing back to "All namespaces" sticks for
-//     the rest of the session instead of being re-applied on the next read.
+//     the rest of the session instead of being re-applied on the next read;
+//   - the singular --namespace flag, then the kubeconfig context's namespace
+//     (kubectl parity; no-auth only — the kubeconfig identity belongs to the
+//     server operator, not to authenticated users). In-memory only: until
+//     the user makes an explicit choice, each restart re-reads flag +
+//     kubeconfig, so a kubens-style change is followed rather than frozen at
+//     first launch.
 func (s *Server) loadSavedNamespacePreference(r *http.Request) {
 	ctxName := k8s.GetContextName()
 	if ctxName == "" {
@@ -193,9 +201,15 @@ func (s *Server) loadSavedNamespacePreference(r *http.Request) {
 	}
 
 	if username == "" {
-		saved := settings.Load()
-		if saved.ActiveNamespaces != nil {
-			if picks := saved.ActiveNamespaces[ctxName]; len(picks) > 0 {
+		saved, err := settings.LoadChecked()
+		if err != nil {
+			// A failed read is indistinguishable from "never picked" in the
+			// zero value — seeding on it could shadow a real saved pick until
+			// restart. Skip every source so the next read can self-heal.
+			return
+		}
+		if picks, ok := saved.ActiveNamespaces[ctxName]; ok {
+			if len(picks) > 0 {
 				// A settings snapshot read outside the lock can be stale
 				// against a concurrent POST set+clear; the atomic seed
 				// protocol (marker + absent-preference recheck under the
@@ -204,23 +218,47 @@ func (s *Server) loadSavedNamespacePreference(r *http.Request) {
 				// seed eligibility, so a later prune eviction falls back to
 				// All namespaces instead of resurfacing --namespaces.
 				s.seedPick(ctxName, key, picks)
-				return
 			}
+			// An empty entry is the user's persisted explicit "All
+			// namespaces" choice — no seeding from flags or kubeconfig.
+			return
 		}
 	}
 	if configured := k8s.ConfiguredNamespacesForCurrentContext(); len(configured) > 0 {
 		s.seedPick(ctxName, key, configured)
+		return
+	}
+	// Auth users don't inherit the operator's kubeconfig namespace, and under
+	// --namespace-scope the cache scope already resolves through the saved
+	// pick → kubeconfig namespace chain (see GetNamespaceScopeTarget) — a
+	// view-filter seed would just shadow that lifecycle.
+	if username != "" || k8s.ForceNamespaceScope {
+		return
+	}
+	var seed []string
+	if ns := k8s.ConfiguredNamespaceForCurrentContext(); ns != "" {
+		seed = []string{ns}
+	} else if ns := k8s.GetContextNamespace(); ns != "" {
+		seed = []string{ns}
+	}
+	// Pruned against known namespaces so a stale kubeconfig value can't
+	// narrow the view to nothing and then churn through the prune-reseed
+	// cycle on every read.
+	seed = pruneToExistingNamespaces(seed, s.allNamespaceNames())
+	if len(seed) > 0 {
+		s.seedPick(ctxName, key, seed)
 	}
 }
 
-// seedPick installs picks (from settings.json or the --namespaces startup
-// list) as key's initial pick. The whole decision runs under nsPickMu so it
-// cannot interleave with an explicit POST (which burns the seed marker,
-// including on clears) or a context switch (which clears both maps under the
-// same lock): context, marker, and preference are all rechecked inside the
-// critical section. A bare preference CAS is NOT enough here — an absent key
-// means both "never picked" (seed) and "explicitly cleared" (don't); the
-// marker is what tells them apart.
+// seedPick installs picks (from settings.json, the --namespaces startup
+// list, or the kubeconfig-namespace default) as key's initial pick. The
+// whole decision runs under nsPickMu so it cannot interleave with an
+// explicit POST (which burns the seed marker, including on clears) or a
+// context switch (which clears both maps under the same lock): context,
+// marker, and preference are all rechecked inside the critical section. A
+// bare preference CAS is NOT enough here — an absent key means both "never
+// picked" (seed) and "explicitly cleared" (don't); the marker is what tells
+// them apart.
 func (s *Server) seedPick(ctxName, key string, picks []string) {
 	s.nsPickMu.Lock()
 	defer s.nsPickMu.Unlock()
@@ -301,7 +339,7 @@ func (s *Server) commitPickMutation(r *http.Request, ctxName string, expected, s
 		s.nsPreferences.Store(key, append([]string(nil), survivors...))
 	}
 	if persist && auth.UserFromContext(r.Context()) == nil && !k8s.ForceNamespaceScope {
-		if err := persistNamespacePick(ctxName, survivors); err != nil {
+		if err := persistNamespacePick(ctxName, survivors, false); err != nil {
 			log.Printf("[namespace] failed to persist namespace pick for context %q: %v", ctxName, err)
 		}
 	}
@@ -591,7 +629,7 @@ func (s *Server) handleSetActiveNamespace(w http.ResponseWriter, r *http.Request
 	// non-fatal — log and continue.
 	if auth.UserFromContext(r.Context()) == nil {
 		if ctxName := k8s.GetContextName(); ctxName != "" {
-			if err := persistNamespacePick(ctxName, cleaned); err != nil {
+			if err := persistNamespacePick(ctxName, cleaned, true); err != nil {
 				log.Printf("[namespace] failed to persist namespace pick for context %q: %v", ctxName, err)
 				if k8s.ForceNamespaceScope {
 					s.writeError(w, http.StatusServiceUnavailable, "failed to save namespace pick: "+err.Error())
@@ -624,7 +662,7 @@ func (s *Server) handleSetActiveNamespace(w http.ResponseWriter, r *http.Request
 					if live := k8s.GetNamespaceScopeTarget(); live != "" {
 						livePick = []string{live}
 					}
-					if perr := persistNamespacePick(ctxName, livePick); perr != nil {
+					if perr := persistNamespacePick(ctxName, livePick, false); perr != nil {
 						log.Printf("[namespace] failed to restore saved pick after rescope failure for context %q: %v", ctxName, perr)
 					}
 				}
@@ -648,16 +686,26 @@ func (s *Server) handleSetActiveNamespace(w http.ResponseWriter, r *http.Request
 }
 
 // persistNamespacePick saves the single-user namespace pick for ctxName so it
-// survives restarts and is restored on reconnect. An empty pick clears it.
-func persistNamespacePick(ctxName string, cleaned []string) error {
+// survives restarts and is restored on reconnect.
+//
+// An empty pick is ambiguous: "the user chose All namespaces" must survive
+// restarts (it suppresses the kubeconfig-namespace default in
+// loadSavedNamespacePreference), while a system-side prune to empty should
+// return the context to that default. explicitAll picks between the two —
+// true persists an empty entry as the user's choice, false deletes the entry.
+func persistNamespacePick(ctxName string, cleaned []string, explicitAll bool) error {
 	_, err := settings.Update(func(st *settings.Settings) {
 		if st.ActiveNamespaces == nil {
 			st.ActiveNamespaces = map[string][]string{}
 		}
-		if len(cleaned) == 0 {
-			delete(st.ActiveNamespaces, ctxName)
-		} else {
+		switch {
+		case len(cleaned) > 0:
 			st.ActiveNamespaces[ctxName] = append([]string(nil), cleaned...)
+		case explicitAll:
+			// Non-nil so it round-trips as [] rather than null.
+			st.ActiveNamespaces[ctxName] = []string{}
+		default:
+			delete(st.ActiveNamespaces, ctxName)
 		}
 	})
 	return err

@@ -92,8 +92,13 @@ const SEVERITY_RANK: Record<string, number> = {
   neutral: 3,
 };
 
-function coverageCertainty(coverage?: CapacitySourceCoverage): CapacityCertainty {
+export function coverageCertainty(
+  coverage?: CapacitySourceCoverage,
+): CapacityCertainty {
   if (coverageIsDenied(coverage)) return "unknown";
+  // Only an actually-observed source can be exact or a lower bound. Syncing,
+  // unavailable, error, or absent coverage is unknown — never a false "=".
+  if (!coverageHasObservations(coverage)) return "unknown";
   if (coverageIsLowerBound(coverage)) return "lower_bound";
   return "exact";
 }
@@ -237,8 +242,8 @@ export function CapacityOverview({
             <p className="mt-3 border-t border-theme-border-subtle pt-3 text-[11px] text-theme-text-tertiary">
               Certainty on each value — <span className="font-mono">=</span>{" "}
               exact · <span className="font-mono">≥</span> lower bound ·{" "}
-              <span className="font-mono">?</span> unknown. Hover any value for
-              its source and freshness.
+              <span className="font-mono">?</span> unknown. Hover a glyph for its
+              coverage detail.
             </p>
           </div>
         </Collapse>

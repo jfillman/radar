@@ -146,7 +146,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         setConnection(prev => prev.state === 'connecting' ? { ...prev, syncStatus: data.syncStatus } : prev)
       }
     }
-  }, [data])
+  }, [data, queryClient])
 
   // Retry mutation
   const retryMutation = useMutation({

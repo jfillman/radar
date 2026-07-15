@@ -279,6 +279,61 @@ func newKarpenterConditionIssue(gvr schema.GroupVersionResource, kind string, ob
 	return issue
 }
 
+// RedactIssueRelatedRefs strips referenced-by-NodePool facts — the names AND
+// the count — from an issue whose caller cannot read every referenced
+// NodePool. CanReadIssueRelatedRefs below is the mirror gate: it drops issues
+// whose PRIMARY diagnosis depends on an unreadable NodeClass; here the issue
+// itself (e.g. NodeClass not ready) is legitimately visible to a
+// NodeClass-readable caller — only the identities of the referencing NodePools
+// are not. A nil canRead means the compose is user-agnostic (e.g. the shared
+// capacity-issues memo, whose per-user gates apply at read time) — no
+// redaction there; every per-user surface wires an authorizer.
+func RedactIssueRelatedRefs(issue Issue, canRead func(Ref) bool) Issue {
+	if canRead == nil || issue.DiagnosticContext == nil {
+		return issue
+	}
+	facts := issue.DiagnosticContext.Facts
+	kept := make([]issuesapi.DiagnosticFact, 0, len(facts))
+	changed := false
+	for _, fact := range facts {
+		if fact.Type == karpenterFactReferencedByNodePools && !diagnosticRefsReadable(fact.Refs, canRead) {
+			changed = true
+			continue
+		}
+		kept = append(kept, fact)
+	}
+	if !changed {
+		return issue
+	}
+	if len(kept) == 0 {
+		issue.DiagnosticContext = nil
+		return issue
+	}
+	redacted := *issue.DiagnosticContext
+	redacted.Facts = kept
+	issue.DiagnosticContext = &redacted
+	return issue
+}
+
+func redactUnreadableRelatedRefs(list []Issue, canRead func(Ref) bool) []Issue {
+	if canRead == nil {
+		return list
+	}
+	for i := range list {
+		list[i] = RedactIssueRelatedRefs(list[i], canRead)
+	}
+	return list
+}
+
+func diagnosticRefsReadable(refs []issuesapi.Ref, canRead func(Ref) bool) bool {
+	for _, ref := range refs {
+		if !canRead(Ref(ref)) {
+			return false
+		}
+	}
+	return true
+}
+
 func CanReadIssueRelatedRefs(issue Issue, canRead func(Ref) bool) bool {
 	if issue.DiagnosticContext == nil {
 		return true

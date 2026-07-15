@@ -305,7 +305,10 @@ func (s *Server) loadCapacityModel(w http.ResponseWriter, r *http.Request) (capa
 			if !needsResolution || !allowed {
 				return nil
 			}
-			owner := k8s.TopOwnerForPod(k8s.GetResourceCache(), pod)
+			// Resolve against the SAME cache the permission decision above used —
+			// re-fetching the global here could hand the closure a different
+			// cluster's cache after a mid-request context switch.
+			owner := k8s.TopOwnerForPod(resourceCache, pod)
 			if owner == nil {
 				return nil
 			}

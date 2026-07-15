@@ -129,6 +129,9 @@ func capacityVisibleIssues(
 		if !issues.CanReadIssueRelatedRefs(issue, canReadRelated) {
 			continue
 		}
+		// The memo composes user-agnostically; per-user redaction of
+		// referenced-by-NodePool context happens here, at read time.
+		issue = issues.RedactIssueRelatedRefs(issue, canReadRelated)
 		if issue.Namespace == "" {
 			if canReadClusterScoped == nil || canReadClusterScoped(issue.Kind, issue.Group) {
 				out = append(out, issue)

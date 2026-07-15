@@ -133,7 +133,12 @@ func TestComposeKarpenterSharedNodeClassLinksEveryReferringPool(t *testing.T) {
 		t.Errorf("NodePool refs = %+v, want deterministic batch,compute order", ctx.Facts[0].Refs)
 	}
 	for _, poolName := range []string{"batch", "compute"} {
+		// A caller viewing a NodePool can read NodePools (the endpoint gate
+		// upstream guarantees it) — the related-access question is the class.
 		related := RelatedIssues(p, RelatedIssueOptions{CanReadRelated: func(ref Ref) bool {
+			if ref.Group == karpenter.Group && ref.Kind == karpenter.NodePoolKind {
+				return true
+			}
 			return ref.Group == "capacity.acme.io" && ref.Kind == "FleetNodeClass" && ref.Name == "shared"
 		}}, karpenter.Group, karpenter.NodePoolKind, "", poolName)
 		if len(related) != 1 || related[0].ID != out[0].ID {
@@ -493,5 +498,51 @@ func assertKarpenterIssueID(t *testing.T, issue Issue, issueSubject Ref) {
 	)
 	if issue.ID != want {
 		t.Errorf("issue %q ID = %q, want StableID %q", issue.Reason, issue.ID, want)
+	}
+}
+
+func TestComposeRedactsReferencedByNodePoolsForDeniedCallers(t *testing.T) {
+	poolGVR := schema.GroupVersionResource{Group: karpenter.Group, Version: "v1", Resource: "nodepools"}
+	classGVR := schema.GroupVersionResource{Group: "capacity.acme.io", Version: "v1", Resource: "fleetnodeclasses"}
+	pool := karpenterIssueTestPool("compute", "capacity.acme.io", "FleetNodeClass", "general", "True", "Ready", "")
+	class := karpenterIssueTestObject("capacity.acme.io/v1", "FleetNodeClass", "general", "False", "AuthFailed", "cloud credentials are invalid")
+	p := newFakeKarpenterIssueProvider(map[schema.GroupVersionResource]struct {
+		kind  string
+		items []*unstructured.Unstructured
+	}{
+		poolGVR:  {kind: karpenter.NodePoolKind, items: []*unstructured.Unstructured{pool}},
+		classGVR: {kind: "FleetNodeClass", items: []*unstructured.Unstructured{class}},
+	})
+
+	findClassIssue := func(issues []Issue) *Issue {
+		for i := range issues {
+			if issues[i].Kind == "FleetNodeClass" {
+				return &issues[i]
+			}
+		}
+		return nil
+	}
+
+	// Reader of both kinds keeps the referencing-NodePool context.
+	allowed := findClassIssue(Compose(p, Filters{Limit: NoLimit, CanReadRelated: func(Ref) bool { return true }}))
+	if allowed == nil || allowed.DiagnosticContext == nil || len(allowed.DiagnosticContext.Facts) == 0 {
+		t.Fatalf("authorized caller lost the referenced-by context: %+v", allowed)
+	}
+
+	// NodeClass-readable / NodePool-denied caller keeps the issue but must not
+	// receive NodePool names or their count.
+	denyNodePools := func(ref Ref) bool {
+		return !(ref.Kind == karpenter.NodePoolKind && ref.Group == karpenter.Group)
+	}
+	denied := findClassIssue(Compose(p, Filters{Limit: NoLimit, CanReadRelated: denyNodePools}))
+	if denied == nil {
+		t.Fatal("NodeClass issue itself must survive NodePool denial")
+	}
+	if denied.DiagnosticContext != nil {
+		for _, fact := range denied.DiagnosticContext.Facts {
+			if fact.Type == karpenterFactReferencedByNodePools {
+				t.Fatalf("referenced-by NodePool fact leaked to a denied caller: %+v", fact)
+			}
+		}
 	}
 }

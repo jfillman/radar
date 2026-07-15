@@ -86,6 +86,25 @@ func TestBuildDemandGroupsFiltersGroupsBoundsAndStabilizes(t *testing.T) {
 	}
 }
 
+func TestDemandGroupModelKeepsAllPodRefsBeyondWireLimit(t *testing.T) {
+	first := demandTestPod("web-a", "500m")
+	second := demandTestPod("web-b", "500m")
+	models := BuildDemandGroupModels(DemandInput{
+		GeneratedAt: capacityTestTime(),
+		Pods:        []*corev1.Pod{first, second},
+		PodRefLimit: 1,
+		ResolvePodOwner: func(*corev1.Pod) *subject.Ref {
+			return &subject.Ref{Group: "apps", Kind: "Deployment", Namespace: "shop", Name: "web"}
+		},
+	})
+	if len(models) != 1 {
+		t.Fatalf("BuildDemandGroupModels() returned %d groups, want 1", len(models))
+	}
+	if got := models[0].PodRefs(); len(got) != 2 || got[0].Name != "web-a" || got[1].Name != "web-b" {
+		t.Fatalf("PodRefs() = %#v, want both grouped pods", got)
+	}
+}
+
 func TestBuildDemandGroupsCanonicalizesAffinityAndTolerationOrder(t *testing.T) {
 	first := demandTestPod("worker-a", "250m")
 	first.Spec.NodeSelector = map[string]string{"workload-tier": "batch", "team": "compute"}
@@ -136,6 +155,35 @@ func TestBuildDemandGroupsAddsOneConstraintForOneSelector(t *testing.T) {
 	evaluation := group.PoolEvaluations[0]
 	if evaluation.EvidenceMeta != (capacityapi.BoundedResultMeta{Total: 1, Returned: 1}) || len(evaluation.Evidence) != 1 {
 		t.Fatalf("selector evidence = %+v, %#v", evaluation.EvidenceMeta, evaluation.Evidence)
+	}
+}
+
+func TestSummarizeDemandGroupModelsCountsPodsAndGroupsByState(t *testing.T) {
+	models := []DemandGroupModel{
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandWaitingForScheduler, PodCount: 2}},
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandWaitingForScheduler, PodCount: 3}},
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandHeld, PodCount: 1}},
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandAwaitingCapacity, PodCount: 5}},
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandBlocked, PodCount: 4}},
+		{Group: capacityapi.DemandGroup{State: capacityapi.DemandUnknown, PodCount: 6}},
+	}
+
+	got := SummarizeDemandGroupModels(models)
+	want := capacityapi.DemandSummary{
+		Total: capacityapi.DemandCounts{PodCount: 21, GroupCount: 6},
+		ByState: map[capacityapi.DemandState]capacityapi.DemandCounts{
+			capacityapi.DemandWaitingForScheduler: {PodCount: 5, GroupCount: 2},
+			capacityapi.DemandHeld:                {PodCount: 1, GroupCount: 1},
+			capacityapi.DemandAwaitingCapacity:    {PodCount: 5, GroupCount: 1},
+			capacityapi.DemandBlocked:             {PodCount: 4, GroupCount: 1},
+			capacityapi.DemandUnknown:             {PodCount: 6, GroupCount: 1},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("summary = %#v, want %#v", got, want)
+	}
+	if empty := SummarizeDemandGroupModels(nil); !reflect.DeepEqual(empty, capacityapi.NewDemandSummary()) {
+		t.Fatalf("empty summary = %#v, want explicit zero buckets", empty)
 	}
 }
 

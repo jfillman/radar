@@ -52,6 +52,13 @@ func NewCacheProvider() *CacheProvider {
 	}
 }
 
+func (p *CacheProvider) CacheIdentity() (*k8s.ResourceCache, *k8s.DynamicResourceCache, *k8s.ResourceDiscovery) {
+	if p == nil {
+		return nil, nil, nil
+	}
+	return p.cache, p.dynamic, p.discovery
+}
+
 func (p *CacheProvider) DetectProblems(namespaces []string) []k8s.Detection {
 	if len(namespaces) == 0 {
 		return k8s.DetectProblems(p.cache, "")
@@ -665,4 +672,41 @@ func (p *CacheProvider) NamespacedForGVR(gvr schema.GroupVersionResource) (bool,
 		return false, false
 	}
 	return ar.Namespaced, true
+}
+
+func (p *CacheProvider) karpenterResourceDiscovery(group, kind string) karpenterResourceCoverage {
+	if p.discovery == nil {
+		return karpenterCoverageUnknown
+	}
+	apiResource, ok := p.discovery.GetResourceWithGroup(kind, group)
+	if !ok {
+		if p.discovery.GroupHadPartialDiscovery(group) {
+			return karpenterCoverageUnknown
+		}
+		return karpenterCoverageNotInstalled
+	}
+	if apiResource.Namespaced {
+		return karpenterCoverageUnknown
+	}
+	return karpenterCoverageAuthoritative
+}
+
+func (p *CacheProvider) karpenterResources(group, kind string) karpenterResourceInventory {
+	coverage := p.karpenterResourceDiscovery(group, kind)
+	if coverage != karpenterCoverageAuthoritative || p.dynamic == nil {
+		return karpenterResourceInventory{Coverage: coverage}
+	}
+	apiResource, ok := p.discovery.GetResourceWithGroup(kind, group)
+	if !ok {
+		return karpenterResourceInventory{Coverage: karpenterCoverageUnknown}
+	}
+	gvr := schema.GroupVersionResource{Group: apiResource.Group, Version: apiResource.Version, Resource: apiResource.Name}
+	if err := p.dynamic.EnsureWatching(gvr); err != nil || !p.dynamic.IsSynced(gvr) {
+		return karpenterResourceInventory{GVR: gvr, Coverage: karpenterCoverageUnknown}
+	}
+	items, err := p.dynamic.List(gvr, "")
+	if err != nil {
+		return karpenterResourceInventory{GVR: gvr, Coverage: karpenterCoverageUnknown}
+	}
+	return karpenterResourceInventory{GVR: gvr, Items: items, Coverage: karpenterCoverageAuthoritative}
 }

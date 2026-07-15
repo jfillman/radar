@@ -17,6 +17,26 @@ const (
 	DemandUnknown             DemandState = "unknown"
 )
 
+type DemandCounts struct {
+	PodCount   int `json:"podCount"`
+	GroupCount int `json:"groupCount"`
+}
+
+type DemandSummary struct {
+	Total   DemandCounts                 `json:"total"`
+	ByState map[DemandState]DemandCounts `json:"byState"`
+}
+
+func NewDemandSummary() DemandSummary {
+	return DemandSummary{ByState: map[DemandState]DemandCounts{
+		DemandWaitingForScheduler: {},
+		DemandHeld:                {},
+		DemandAwaitingCapacity:    {},
+		DemandBlocked:             {},
+		DemandUnknown:             {},
+	}}
+}
+
 type SchedulingConstraint struct {
 	Predicate  string   `json:"predicate"`
 	Key        string   `json:"key,omitempty"`

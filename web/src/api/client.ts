@@ -959,6 +959,8 @@ export function useOpenCostNodes() {
 
 export interface CapacityQueryOptions {
   enabled?: boolean
+  namespaces?: string[]
+  refetchInterval?: number | false
 }
 
 export interface CapacityPageQueryOptions extends CapacityQueryOptions {
@@ -970,18 +972,25 @@ function capacityPageQuery(options?: CapacityPageQueryOptions): string {
   const params = new URLSearchParams()
   if (options?.limit !== undefined) params.set('limit', String(options.limit))
   if (options?.cursor) params.set('cursor', options.cursor)
+  const namespaces = options?.namespaces?.join(',') ?? ''
+  if (namespaces) params.set('namespaces', namespaces)
   const query = params.toString()
   return query ? `?${query}` : ''
 }
 
+function capacityRefetchInterval(options: CapacityQueryOptions | undefined, enabled: boolean): number | false {
+  return enabled ? (options?.refetchInterval ?? CAPACITY_REFRESH_INTERVAL_MS) : false
+}
+
 export function useCapacityOverview(options?: CapacityQueryOptions) {
   const enabled = options?.enabled ?? true
+  const namespaces = options?.namespaces?.join(',') ?? ''
   return useQuery<CapacityOverviewResponse>({
-    queryKey: ['capacity', 'overview'],
-    queryFn: ({ signal }) => fetchJSON<CapacityOverviewResponse>('/capacity', signal),
+    queryKey: ['capacity', 'overview', namespaces],
+    queryFn: ({ signal }) => fetchJSON<CapacityOverviewResponse>(`/capacity${capacityPageQuery(options)}`, signal),
     enabled,
     staleTime: 15_000,
-    refetchInterval: enabled ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    refetchInterval: capacityRefetchInterval(options, enabled),
     retry: shouldRetryCapacityQuery,
   })
 }
@@ -990,29 +999,34 @@ export function useCapacityPools(options?: CapacityPageQueryOptions) {
   const enabled = options?.enabled ?? true
   const limit = options?.limit
   const cursor = options?.cursor
-  const queryKey = ['capacity', 'pools', limit, cursor]
+  const namespaces = options?.namespaces?.join(',') ?? ''
+  const queryKey = ['capacity', 'pools', limit, cursor, namespaces]
   return useQuery<CapacityPoolListResponse>({
     queryKey,
     queryFn: ({ signal }) => fetchJSON<CapacityPoolListResponse>(`/capacity/pools${capacityPageQuery(options)}`, signal),
     enabled,
     staleTime: 15_000,
-    refetchInterval: enabled ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    refetchInterval: capacityRefetchInterval(options, enabled),
     retry: shouldRetryCapacityQuery,
     placeholderData: (previous, previousQuery) => {
       const previousKey = previousQuery?.queryKey
-      return previousKey?.[2] === limit ? previous : undefined
+      return previousKey?.[2] === limit && previousKey?.[4] === namespaces ? previous : undefined
     },
   })
 }
 
 export function useCapacityPoolDetail(name: string | undefined, options?: CapacityQueryOptions) {
   const enabled = Boolean(name) && (options?.enabled ?? true)
+  const namespaces = options?.namespaces?.join(',') ?? ''
   return useQuery<CapacityPoolDetailResponse>({
-    queryKey: ['capacity', 'pool', name],
-    queryFn: ({ signal }) => fetchJSON<CapacityPoolDetailResponse>(`/capacity/pools/${encodeURIComponent(name ?? '')}`, signal),
+    queryKey: ['capacity', 'pool', name, namespaces],
+    queryFn: ({ signal }) => fetchJSON<CapacityPoolDetailResponse>(
+      `/capacity/pools/${encodeURIComponent(name ?? '')}${capacityPageQuery(options)}`,
+      signal,
+    ),
     enabled,
     staleTime: 15_000,
-    refetchInterval: (query) => enabled && !isNotFoundError(query.state.error) ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    refetchInterval: (query) => isNotFoundError(query.state.error) ? false : capacityRefetchInterval(options, enabled),
     retry: (failureCount, error) => !isNotFoundError(error) && shouldRetryCapacityQuery(failureCount, error),
   })
 }
@@ -1025,9 +1039,10 @@ export function useCapacityPoolMembers(
   const enabled = Boolean(name) && (options?.enabled ?? true)
   const limit = options?.limit
   const cursor = options?.cursor
+  const namespaces = options?.namespaces?.join(',') ?? ''
   const pageQuery = capacityPageQuery(options)
   const separator = pageQuery ? '&' : '?'
-  const queryKey = ['capacity', 'pool', name, 'members', type, limit, cursor]
+  const queryKey = ['capacity', 'pool', name, 'members', type, limit, cursor, namespaces]
   return useQuery<CapacityMemberListResponse>({
     queryKey,
     queryFn: ({ signal }) => fetchJSON<CapacityMemberListResponse>(
@@ -1036,11 +1051,14 @@ export function useCapacityPoolMembers(
     ),
     enabled,
     staleTime: 15_000,
-    refetchInterval: enabled ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    refetchInterval: capacityRefetchInterval(options, enabled),
     retry: shouldRetryCapacityQuery,
     placeholderData: (previous, previousQuery) => {
       const previousKey = previousQuery?.queryKey
-      return previousKey?.[2] === name && previousKey?.[4] === type && previousKey?.[5] === limit ? previous : undefined
+      return previousKey?.[2] === name &&
+        previousKey?.[4] === type &&
+        previousKey?.[5] === limit &&
+        previousKey?.[7] === namespaces ? previous : undefined
     },
   })
 }
@@ -1057,20 +1075,23 @@ export function useCapacityDemand(options?: CapacityDemandQueryOptions) {
   if (options?.cursor) params.set('cursor', options.cursor)
   if (options?.state) params.set('state', options.state)
   if (options?.pool) params.set('pool', options.pool)
+  const namespaces = options?.namespaces?.join(',') ?? ''
+  if (namespaces) params.set('namespaces', namespaces)
   const query = params.toString()
-  const queryKey = ['capacity', 'demand', options?.limit, options?.cursor, options?.state, options?.pool]
+  const queryKey = ['capacity', 'demand', options?.limit, options?.cursor, options?.state, options?.pool, namespaces]
   return useQuery<CapacityDemandResponse>({
     queryKey,
     queryFn: ({ signal }) => fetchJSON<CapacityDemandResponse>(`/capacity/demand${query ? `?${query}` : ''}`, signal),
     enabled,
     staleTime: 15_000,
-    refetchInterval: enabled ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    refetchInterval: capacityRefetchInterval(options, enabled),
     retry: shouldRetryCapacityQuery,
     placeholderData: (previous, previousQuery) => {
       const previousKey = previousQuery?.queryKey
       return previousKey?.[2] === options?.limit &&
         previousKey?.[4] === options?.state &&
-        previousKey?.[5] === options?.pool ? previous : undefined
+        previousKey?.[5] === options?.pool &&
+        previousKey?.[6] === namespaces ? previous : undefined
     },
   })
 }
@@ -1093,6 +1114,8 @@ export function useCapacityActivity(options?: CapacityActivityQueryOptions) {
   if (options?.claim) params.set('claim', options.claim)
   if (options?.node) params.set('node', options.node)
   if (options?.reason) params.set('reason', options.reason)
+  const namespaces = options?.namespaces?.join(',') ?? ''
+  if (namespaces) params.set('namespaces', namespaces)
   const query = params.toString()
   const queryKey = [
     'capacity',
@@ -1104,13 +1127,14 @@ export function useCapacityActivity(options?: CapacityActivityQueryOptions) {
     options?.claim,
     options?.node,
     options?.reason,
+    namespaces,
   ]
   return useQuery<CapacityActivityResponse>({
     queryKey,
     queryFn: ({ signal }) => fetchJSON<CapacityActivityResponse>(`/capacity/activity${query ? `?${query}` : ''}`, signal),
     enabled,
     staleTime: 15_000,
-    refetchInterval: enabled ? CAPACITY_REFRESH_INTERVAL_MS : false,
+    refetchInterval: capacityRefetchInterval(options, enabled),
     retry: shouldRetryCapacityQuery,
     placeholderData: (previous, previousQuery) => {
       const previousKey = previousQuery?.queryKey

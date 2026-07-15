@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/skyhook-io/radar/internal/auth"
-	capacitymodel "github.com/skyhook-io/radar/internal/capacity"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/capacityapi"
 	"github.com/skyhook-io/radar/pkg/k8score"
@@ -110,18 +109,16 @@ func TestLoadCapacityNodeClassesDistinguishesPartialDiscoveryFromAbsentAPI(t *te
 	pool.Object["spec"] = map[string]any{"template": map[string]any{"spec": map[string]any{
 		"nodeClassRef": map[string]any{"group": nodeClassGroup, "kind": "EC2NodeClass", "name": "default"},
 	}}}
-	key := capacitymodel.NodeClassLookupKey(nodeClassGroup, "EC2NodeClass", "default")
 	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
 
 	for _, test := range []struct {
-		name            string
-		partial         bool
-		wantUnavailable bool
-		wantStatus      capacityapi.CoverageStatus
-		wantReason      string
+		name       string
+		partial    bool
+		wantStatus capacityapi.CoverageStatus
+		wantReason string
 	}{
 		{name: "partial group discovery", partial: true, wantStatus: capacityapi.CoveragePartial, wantReason: "nodeclasses_discovery_partial"},
-		{name: "clean discovery without API", wantUnavailable: true, wantStatus: capacityapi.CoverageUnavailable, wantReason: "nodeclass_kinds_not_discovered"},
+		{name: "clean discovery without API", wantStatus: capacityapi.CoverageUnavailable, wantReason: "nodeclass_kinds_not_discovered"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fakeDiscovery := fakeclientset.NewSimpleClientset().Discovery().(*fakediscovery.FakeDiscovery)
@@ -142,10 +139,7 @@ func TestLoadCapacityNodeClassesDistinguishesPartialDiscoveryFromAbsentAPI(t *te
 			}
 			discoveryView := &k8s.ResourceDiscovery{ResourceDiscovery: coreDiscovery}
 			meta := newCapacityResponseMeta(now)
-			_, unavailable := (&Server{}).loadCapacityNodeClasses(nil, discoveryView, nil, []*unstructured.Unstructured{pool}, &meta, now)
-			if unavailable[key] != test.wantUnavailable {
-				t.Fatalf("unavailable NodeClass ref = %v, want %v", unavailable[key], test.wantUnavailable)
-			}
+			(&Server{}).loadCapacityNodeClasses(nil, discoveryView, nil, []*unstructured.Unstructured{pool}, &meta, now)
 			coverage := meta.Coverage[capacityapi.CoverageNodeClasses]
 			if coverage.Status != test.wantStatus || coverage.ReasonCode != test.wantReason {
 				t.Fatalf("NodeClass coverage = %#v, want %q/%q", coverage, test.wantStatus, test.wantReason)

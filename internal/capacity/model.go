@@ -33,16 +33,15 @@ type NodeUsageSample struct {
 }
 
 type Snapshot struct {
-	GeneratedAt              time.Time
-	NodePools                []*unstructured.Unstructured
-	NodeClaims               []*unstructured.Unstructured
-	NodeClasses              map[string]*unstructured.Unstructured
-	UnavailableNodeClassRefs map[string]bool
-	Nodes                    []*corev1.Node
-	Pods                     []*corev1.Pod
-	NodeUsage                map[string]NodeUsageSample
-	Coverage                 capacityapi.CoverageBySource
-	ResolvePodOwner          func(*corev1.Pod) *subject.Ref
+	GeneratedAt     time.Time
+	NodePools       []*unstructured.Unstructured
+	NodeClaims      []*unstructured.Unstructured
+	NodeClasses     map[string]*unstructured.Unstructured
+	Nodes           []*corev1.Node
+	Pods            []*corev1.Pod
+	NodeUsage       map[string]NodeUsageSample
+	Coverage        capacityapi.CoverageBySource
+	ResolvePodOwner func(*corev1.Pod) *subject.Ref
 }
 
 type PoolModel struct {
@@ -277,14 +276,6 @@ func basePoolObservation(pool *unstructured.Unstructured, snapshot Snapshot) cap
 		observation.Ready = boolPointer(true)
 	case karpenter.ReadinessNotReady:
 		observation.Ready = boolPointer(false)
-		detail := "The NodePool Ready condition is false."
-		if ready := karpenter.NodePoolReadyCondition(pool); ready != nil && ready.Message != "" {
-			detail = ready.Message
-		}
-		observation.Facts = append(observation.Facts, capacityapi.PostureFact{
-			Code: "nodepool_not_ready", Summary: "NodePool is not ready", Detail: detail,
-			SourcePaths: []string{"status.conditions[type=Ready]"},
-		})
 	}
 
 	normalized := karpenter.NormalizeNodePoolSpec(pool)
@@ -339,28 +330,7 @@ func basePoolObservation(pool *unstructured.Unstructured, snapshot Snapshot) cap
 				nodeClass.Ready = boolPointer(true)
 			case karpenter.ReadinessNotReady:
 				nodeClass.Ready = boolPointer(false)
-				detail := "The NodeClass Ready condition is false."
-				for _, condition := range karpenter.Conditions(resource) {
-					if condition.Type == "Ready" && condition.Message != "" {
-						detail = condition.Message
-						break
-					}
-				}
-				observation.Facts = append(observation.Facts, capacityapi.PostureFact{
-					Code: "nodeclass_not_ready", Summary: ref.Kind + " is not ready", Detail: detail,
-					SourcePaths: []string{"nodeClass.status.conditions[type=Ready]"},
-				})
 			}
-		} else if snapshot.UnavailableNodeClassRefs[NodeClassLookupKey(ref.Group, ref.Kind, ref.Name)] {
-			observation.Facts = append(observation.Facts, capacityapi.PostureFact{
-				Code: "nodeclass_kind_not_installed", Summary: ref.Kind + " API is not installed",
-				Detail: ref.Group, SourcePaths: []string{"spec.template.spec.nodeClassRef"},
-			})
-		} else if coverage := snapshot.Coverage[capacityapi.CoverageNodeClasses]; coverage.Status == capacityapi.CoverageAvailable {
-			observation.Facts = append(observation.Facts, capacityapi.PostureFact{
-				Code: "nodeclass_not_found", Summary: ref.Kind + " reference was not found",
-				Detail: ref.Name, SourcePaths: []string{"spec.template.spec.nodeClassRef"},
-			})
 		}
 		observation.NodeClass = &nodeClass
 	}

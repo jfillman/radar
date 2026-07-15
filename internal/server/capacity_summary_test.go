@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	capacitymodel "github.com/skyhook-io/radar/internal/capacity"
+	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/pkg/capacityapi"
+	"github.com/skyhook-io/radar/pkg/issuesapi"
 	"github.com/skyhook-io/radar/pkg/karpenter"
 	"github.com/skyhook-io/radar/pkg/subject"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -32,16 +34,48 @@ func TestCapacityProviderDistinguishesSelfManagedAndEKSAuto(t *testing.T) {
 	}
 }
 
-func TestCapacityActionsDoNotCallUnknownReadinessNotReady(t *testing.T) {
-	ready := false
+func TestCapacityActionsDeriveNotReadyFromCanonicalIssues(t *testing.T) {
 	model := capacitymodel.Model{Pools: []capacitymodel.PoolModel{
 		{Observation: capacityapi.PoolObservation{Resource: capacityapi.ResourceIdentity{Ref: subject.Ref{Group: karpenter.Group, Kind: karpenter.NodePoolKind, Name: "unknown"}}}},
-		{Observation: capacityapi.PoolObservation{Resource: capacityapi.ResourceIdentity{Ref: subject.Ref{Group: karpenter.Group, Kind: karpenter.NodePoolKind, Name: "not-ready"}}, Ready: &ready}},
+		{Observation: capacityapi.PoolObservation{
+			Resource: capacityapi.ResourceIdentity{Ref: subject.Ref{Group: karpenter.Group, Kind: karpenter.NodePoolKind, Name: "not-ready"}},
+			Issues:   []issuesapi.Issue{{Reason: issues.ReasonKarpenterNodePoolNotReady, Severity: issuesapi.SeverityWarning}},
+		}},
 	}}
 
-	actions := capacityActions(model)
+	actions := capacityActions(model, true)
 	if len(actions) != 1 || actions[0].Code != "pool_not_ready" || actions[0].Count != 1 || len(actions[0].Pools) != 1 || actions[0].Pools[0].Ref.Name != "not-ready" {
 		t.Fatalf("actions = %#v", actions)
+	}
+}
+
+func TestCapacityActionsUseReadinessFallbackOnlyWhenIssueSnapshotUnavailable(t *testing.T) {
+	ready := false
+	model := capacitymodel.Model{Pools: []capacitymodel.PoolModel{{Observation: capacityapi.PoolObservation{
+		Resource:  capacityapi.ResourceIdentity{Ref: subject.Ref{Group: karpenter.Group, Kind: karpenter.NodePoolKind, Name: "not-ready"}},
+		Ready:     &ready,
+		NodeClass: &capacityapi.NodeClassObservation{Ready: &ready},
+	}}}}
+	if actions := capacityActions(model, true); len(actions) != 0 {
+		t.Fatalf("available canonical issues should suppress readiness fallbacks: %#v", actions)
+	}
+	actions := capacityActions(model, false)
+	if len(actions) != 2 || actions[0].Code != "nodeclass_not_ready" || actions[1].Code != "pool_not_ready" {
+		t.Fatalf("unavailable canonical issues should preserve readiness actions: %#v", actions)
+	}
+}
+
+func TestCapacityActionsCountPoolsRatherThanIssueGroups(t *testing.T) {
+	model := capacitymodel.Model{Pools: []capacitymodel.PoolModel{{Observation: capacityapi.PoolObservation{
+		Resource: capacityapi.ResourceIdentity{Ref: subject.Ref{Group: karpenter.Group, Kind: karpenter.NodePoolKind, Name: "compute"}},
+		Issues: []issuesapi.Issue{
+			{Reason: issues.ReasonKarpenterNodeClaimProvisioningFailed, Severity: issuesapi.SeverityWarning},
+			{Reason: issues.ReasonKarpenterNodeClaimProvisioningFailed, Severity: issuesapi.SeverityWarning},
+		},
+	}}}}
+	actions := capacityActions(model, true)
+	if len(actions) != 1 || actions[0].Count != 1 || len(actions[0].Pools) != 1 {
+		t.Fatalf("actions should count one affected pool: %#v", actions)
 	}
 }
 

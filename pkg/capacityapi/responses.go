@@ -87,9 +87,10 @@ func NewMemberListResponse(generatedAt time.Time) MemberListResponse {
 
 type DemandResponse struct {
 	ResponseMeta
-	State IntegrationState `json:"state"`
-	Items []DemandGroup    `json:"items"`
-	Page  PageInfo         `json:"page"`
+	State   IntegrationState `json:"state"`
+	Summary *DemandSummary   `json:"summary,omitempty"`
+	Items   []DemandGroup    `json:"items"`
+	Page    PageInfo         `json:"page"`
 }
 
 func NewDemandResponse(generatedAt time.Time) DemandResponse {

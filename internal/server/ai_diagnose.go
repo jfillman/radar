@@ -36,12 +36,12 @@ func (s *Server) detectManagedBy(ctx context.Context, kind, namespace, name stri
 	return managedByFromMeta(obj)
 }
 
-func (s *Server) detectDiagnoseHealth(ctx context.Context, kind, namespace, name string) *ai.ResourceHealthSignal {
+func (s *Server) detectDiagnoseHealth(r *http.Request, kind, namespace, name string) *ai.ResourceHealthSignal {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
 		return nil
 	}
-	obj, err := cache.GetDynamic(ctx, kind, namespace, name)
+	obj, err := cache.GetDynamic(r.Context(), kind, namespace, name)
 	if err != nil || obj == nil {
 		return nil
 	}
@@ -50,7 +50,7 @@ func (s *Server) detectDiagnoseHealth(ctx context.Context, kind, namespace, name
 	if canonicalKind == "" {
 		canonicalKind = kind
 	}
-	issueSum, issueRows := computeIssueSummaryAndRows(cache, gvk.Group, canonicalKind, namespace, name)
+	issueSum, issueRows := computeIssueSummaryAndRows(cache, s.issueRelatedResourceAccess(r), gvk.Group, canonicalKind, namespace, name)
 	auditSum, auditRows := computeAuditSummaryAndRows(cache, gvk.Group, canonicalKind, namespace, name)
 
 	var issueCount int
@@ -272,7 +272,7 @@ func (s *Server) handleDiagnoseStart(w http.ResponseWriter, r *http.Request) {
 	// the Apply confirmation can warn that a direct change will be reverted — rather
 	// than relying on the agent to self-report it. Best effort: "" (unknown) on miss.
 	managedBy := s.detectManagedBy(r.Context(), kind, namespace, name)
-	health := s.detectDiagnoseHealth(r.Context(), kind, namespace, name)
+	health := s.detectDiagnoseHealth(r, kind, namespace, name)
 	run, err := s.aiRuns.Start(kind, namespace, name, agent, isolated, model, effort, managedBy, health)
 	if err != nil {
 		if errors.Is(err, ai.ErrAtCapacity) {

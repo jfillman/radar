@@ -107,6 +107,10 @@ type Detection struct {
 	// for self-perpetuating states like a stuck-drift loop.
 	OperationRetryCount int
 	Stuck               bool
+	// CapacityRelevant is set only for unschedulable pods that explicitly
+	// require a Karpenter NodePool; it drives the frontend's "View in Capacity"
+	// link. False for every other detection.
+	CapacityRelevant bool
 }
 
 // podOwnerKindName resolves a Pod's topmost stable controller for issue

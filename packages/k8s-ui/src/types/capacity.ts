@@ -458,6 +458,16 @@ export type CapacityDemandState =
   | "blocked"
   | "unknown";
 
+export interface CapacityDemandCounts {
+  podCount: number;
+  groupCount: number;
+}
+
+export interface CapacityDemandSummary {
+  total: CapacityDemandCounts;
+  byState: Record<CapacityDemandState, CapacityDemandCounts>;
+}
+
 export interface CapacitySchedulingConstraint {
   predicate: string;
   key?: string;
@@ -534,6 +544,7 @@ export interface CapacityDemandGroup {
 
 export interface CapacityDemandResponse extends CapacityResponseMeta {
   state: CapacityIntegrationState;
+  summary?: CapacityDemandSummary;
   items: CapacityDemandGroup[];
   page: CapacityPageInfo;
 }

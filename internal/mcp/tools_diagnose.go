@@ -231,7 +231,10 @@ func handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, input diagnoseI
 		// Surface the issues Radar already classified for this object (subject
 		// or affected member), scoped to its namespace — so the agent sees
 		// "crashloop + missing ConfigMap" up front, not just raw logs.
-		RelatedIssues: issues.RelatedIssues(issues.NewCacheProvider(), []string{input.Namespace}, canonicalGroup, canonicalKind, input.Namespace, input.Name),
+		RelatedIssues: issues.RelatedIssues(issues.NewCacheProvider(), issues.RelatedIssueOptions{
+			Namespaces:     issueNamespacesForResource(input.Namespace),
+			CanReadRelated: issueRelatedResourceAccess(ctx),
+		}, canonicalGroup, canonicalKind, input.Namespace, input.Name),
 	}
 
 	// Cap the log fan-out so a DaemonSet with 50 nodes doesn't trigger
@@ -392,8 +395,11 @@ func handleGitOpsDiagnose(ctx context.Context, input diagnoseInput, canonicalKin
 	resp := diagnoseResponse{
 		Resource:        minified,
 		GitOpsDiagnosis: gd,
-		RelatedIssues:   issues.RelatedIssues(issues.NewCacheProvider(), []string{input.Namespace}, group, canonicalKind, input.Namespace, input.Name),
-		Warnings:        k8score.EnrichRuntimeObjectWarnings(u),
+		RelatedIssues: issues.RelatedIssues(issues.NewCacheProvider(), issues.RelatedIssueOptions{
+			Namespaces:     issueNamespacesForResource(input.Namespace),
+			CanReadRelated: issueRelatedResourceAccess(ctx),
+		}, group, canonicalKind, input.Namespace, input.Name),
+		Warnings: k8score.EnrichRuntimeObjectWarnings(u),
 	}
 	return toJSONResult(resp)
 }

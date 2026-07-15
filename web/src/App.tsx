@@ -2227,6 +2227,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
         {mainView === 'capacity' && (
           <CapacityView
+            namespaces={namespaces}
             onOpenResource={(resource) => navigateToResource(resource)}
           />
         )}

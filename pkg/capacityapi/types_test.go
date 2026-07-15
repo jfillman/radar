@@ -63,6 +63,12 @@ func TestResponseConstructorsInitializeWireCollections(t *testing.T) {
 	assertCapacityJSONArray(t, activity, "items")
 	assertCapacityJSONArray(t, activity, "observation", "sources")
 	assertCapacityJSONArray(t, activity, "observation", "gaps")
+
+	demandResponse := marshalCapacityObject(t, NewDemandResponse(asOf))
+	assertCapacityJSONArray(t, demandResponse, "items")
+	if _, ok := demandResponse["summary"]; ok {
+		t.Fatal("demand summary must be omitted until Pod coverage is observed")
+	}
 }
 
 func TestNestedConstructorsInitializeWireCollections(t *testing.T) {
@@ -94,6 +100,20 @@ func TestNestedConstructorsInitializeWireCollections(t *testing.T) {
 	assertCapacityJSONArray(t, marshalCapacityObject(t, NewActivityEpisode()), "evidence")
 	assertCapacityJSONArray(t, marshalCapacityObject(t, NewActionSummary()), "pools")
 	assertCapacityJSONArray(t, marshalCapacityObject(t, NewActionSummary()), "demandGroupIds")
+	demandSummary := marshalCapacityObject(t, NewDemandSummary())
+	assertCapacityJSONObject(t, demandSummary, "total")
+	for _, state := range []DemandState{
+		DemandWaitingForScheduler,
+		DemandHeld,
+		DemandAwaitingCapacity,
+		DemandBlocked,
+		DemandUnknown,
+	} {
+		counts := capacityValueAt(t, demandSummary, "byState", string(state)).(map[string]any)
+		if counts["podCount"] != float64(0) || counts["groupCount"] != float64(0) {
+			t.Fatalf("initial %s counts = %#v, want explicit zeros", state, counts)
+		}
+	}
 	composition := marshalCapacityObject(t, NewPoolComposition())
 	for _, field := range []string{"capacityTypesMeta", "instanceTypesMeta", "zonesMeta", "architecturesMeta", "imagesMeta"} {
 		assertCapacityJSONObject(t, composition, field)

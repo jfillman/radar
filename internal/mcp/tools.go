@@ -1092,7 +1092,7 @@ func buildMCPResourceContext(ctx context.Context, obj runtime.Object, kind, name
 	}
 	canonicalGroup := gvk.Group
 
-	issueSum := computeMCPIssueSummary(cache, canonicalGroup, canonicalKind, namespace, name)
+	issueSum := computeMCPIssueSummary(ctx, cache, canonicalGroup, canonicalKind, namespace, name)
 	auditSum := computeMCPAuditSummary(cache, canonicalGroup, canonicalKind, namespace, name)
 
 	opts := resourcecontext.Options{
@@ -2637,6 +2637,7 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 		CanReadClusterScoped: func(kind, group string) bool {
 			return canReadClusterScopedKind(ctx, kind, group, "list")
 		},
+		CanReadRelated: issueRelatedResourceAccess(ctx),
 	}
 	if input.Filter != "" {
 		f, err := filter.CachedIssueFilter(input.Filter)

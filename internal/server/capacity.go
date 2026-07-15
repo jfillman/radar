@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	capacitymodel "github.com/skyhook-io/radar/internal/capacity"
+	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/capacityapi"
 	"github.com/skyhook-io/radar/pkg/karpenter"
@@ -49,6 +50,8 @@ func (s *Server) handleCapacityOverview(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, response)
 		return
 	}
+	issueProjection := s.capacityIssuesForRequest(r)
+	issueProjection.attachPools(result.model)
 
 	response.Summary.PoolCount = len(result.model.Pools)
 	if capacityCoverageObserved(result.meta.Coverage[capacityapi.CoveragePods]) {
@@ -82,7 +85,7 @@ func (s *Server) handleCapacityOverview(w http.ResponseWriter, r *http.Request) 
 		unpooled := result.model.UnpooledNodeCount
 		response.Summary.UnpooledNodeCount = &unpooled
 	}
-	response.Summary.Actions = append(response.Summary.Actions, capacityActions(*result.model)...)
+	response.Summary.Actions = append(response.Summary.Actions, capacityActions(*result.model, issueProjection.available)...)
 	summaries := result.model.Summaries()
 	if len(summaries) > capacityOverviewPoolLimit {
 		response.PoolsTruncated = true
@@ -116,6 +119,7 @@ func (s *Server) handleCapacityPools(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, response)
 		return
 	}
+	s.capacityIssuesForRequest(r).attachPools(result.model)
 
 	items := result.model.Summaries()
 	page, err := paginateCapacityKeyset(items, pageRequest, func(item capacityapi.PoolSummary) string {
@@ -150,6 +154,7 @@ func (s *Server) handleCapacityPool(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, response)
 		return
 	}
+	s.capacityIssuesForRequest(r).attachPools(result.model)
 	if result.snapshot != nil {
 		capacitymodel.AttachPendingEligibilityForPool(result.model, *result.snapshot, name)
 	}
@@ -266,7 +271,7 @@ func (s *Server) loadCapacityModel(w http.ResponseWriter, r *http.Request) (capa
 	result.meta.Coverage[capacityapi.CoverageNodePools] = availableClusterCoverage(now, len(nodePools), []string{"summary", "pools"})
 
 	nodeClaims := s.loadCapacityNodeClaims(r, discovery, dynamicCache, &result.meta, now)
-	nodeClasses, unavailableNodeClassRefs := s.loadCapacityNodeClasses(r, discovery, dynamicCache, nodePools, &result.meta, now)
+	nodeClasses := s.loadCapacityNodeClasses(r, discovery, dynamicCache, nodePools, &result.meta, now)
 	nodes := s.loadCapacityNodes(r, &result.meta, now)
 	pods := s.loadCapacityPods(r, &result.meta, now)
 	nodeUsage := s.loadCapacityNodeUsage(r, &result.meta)
@@ -287,15 +292,14 @@ func (s *Server) loadCapacityModel(w http.ResponseWriter, r *http.Request) (capa
 	}
 
 	snapshot := capacitymodel.Snapshot{
-		GeneratedAt:              now,
-		NodePools:                nodePools,
-		NodeClaims:               nodeClaims,
-		NodeClasses:              nodeClasses,
-		UnavailableNodeClassRefs: unavailableNodeClassRefs,
-		Nodes:                    nodes,
-		Pods:                     pods,
-		NodeUsage:                nodeUsage,
-		Coverage:                 result.meta.Coverage,
+		GeneratedAt: now,
+		NodePools:   nodePools,
+		NodeClaims:  nodeClaims,
+		NodeClasses: nodeClasses,
+		Nodes:       nodes,
+		Pods:        pods,
+		NodeUsage:   nodeUsage,
+		Coverage:    result.meta.Coverage,
 		ResolvePodOwner: func(pod *corev1.Pod) *subject.Ref {
 			allowed, needsResolution := ownerResolutionAllowed[pod]
 			if !needsResolution || !allowed {
@@ -391,7 +395,7 @@ func (s *Server) loadCapacityNodeClaims(r *http.Request, discovery *k8s.Resource
 	return claims
 }
 
-func (s *Server) loadCapacityNodeClasses(r *http.Request, discovery *k8s.ResourceDiscovery, cache *k8s.DynamicResourceCache, pools []*unstructured.Unstructured, meta *capacityapi.ResponseMeta, now time.Time) (map[string]*unstructured.Unstructured, map[string]bool) {
+func (s *Server) loadCapacityNodeClasses(r *http.Request, discovery *k8s.ResourceDiscovery, cache *k8s.DynamicResourceCache, pools []*unstructured.Unstructured, meta *capacityapi.ResponseMeta, now time.Time) map[string]*unstructured.Unstructured {
 	type reference struct{ group, kind, name string }
 	referencesByKey := map[string]reference{}
 	for _, pool := range pools {
@@ -402,7 +406,7 @@ func (s *Server) loadCapacityNodeClasses(r *http.Request, discovery *k8s.Resourc
 	}
 	if len(referencesByKey) == 0 {
 		meta.Coverage[capacityapi.CoverageNodeClasses] = availableClusterCoverage(now, 0, []string{"nodeClass"})
-		return map[string]*unstructured.Unstructured{}, map[string]bool{}
+		return map[string]*unstructured.Unstructured{}
 	}
 
 	keys := make([]string, 0, len(referencesByKey))
@@ -411,7 +415,6 @@ func (s *Server) loadCapacityNodeClasses(r *http.Request, discovery *k8s.Resourc
 	}
 	sort.Strings(keys)
 	result := map[string]*unstructured.Unstructured{}
-	unavailableRefs := map[string]bool{}
 	denied, unavailable, syncing, failed := 0, 0, 0, 0
 	notDiscovered := 0
 	partialDiscovery := 0
@@ -426,7 +429,6 @@ func (s *Server) loadCapacityNodeClasses(r *http.Request, discovery *k8s.Resourc
 				continue
 			}
 			notDiscovered++
-			unavailableRefs[key] = true
 			continue
 		}
 		gvr := schema.GroupVersionResource{Group: apiResource.Group, Version: apiResource.Version, Resource: apiResource.Name}
@@ -487,7 +489,7 @@ func (s *Server) loadCapacityNodeClasses(r *http.Request, discovery *k8s.Resourc
 		}
 	}
 	meta.Coverage[capacityapi.CoverageNodeClasses] = coverage
-	return result, unavailableRefs
+	return result
 }
 
 func (s *Server) loadCapacityNodes(r *http.Request, meta *capacityapi.ResponseMeta, now time.Time) []*corev1.Node {
@@ -515,13 +517,13 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 	namespaces := s.capacityNamespacesForSource(r, baseNamespaces, "", "pods")
 	explicit := parseNamespaces(r.URL.Query()) != nil || k8s.ForceNamespaceScope
 	if noNamespaceAccess(namespaces) {
-		meta.Coverage[capacityapi.CoveragePods] = deniedCoverage("pods_list_denied", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions"})
+		meta.Coverage[capacityapi.CoveragePods] = deniedCoverage("pods_list_denied", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
 		meta.Coverage[capacityapi.CoverageWorkloads] = meta.Coverage[capacityapi.CoveragePods]
 		return nil
 	}
 	cache := k8s.GetResourceCache()
 	if cache == nil || cache.Pods() == nil {
-		meta.Coverage[capacityapi.CoveragePods] = unavailableCoverage("pod_cache_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions"})
+		meta.Coverage[capacityapi.CoveragePods] = unavailableCoverage("pod_cache_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
 		meta.Coverage[capacityapi.CoverageWorkloads] = meta.Coverage[capacityapi.CoveragePods]
 		return nil
 	}
@@ -529,7 +531,7 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 	cacheNamespaces := capacityNamespacesWithinCache(cache, "pods", sourceNamespaces)
 	namespaces = cacheNamespaces.namespaces
 	if cacheNamespaces.unavailable {
-		coverage := unavailableCoverage("pod_cache_scope_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions"})
+		coverage := unavailableCoverage("pod_cache_scope_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
 		if explicit || cacheNamespaces.limited && sourceNamespaces == nil {
 			coverage.Scope = capacityapi.CoverageScopeExplicitNamespaces
 		} else if sourceNamespaces != nil {
@@ -564,7 +566,7 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 	coverage.ObservedAt = &now
 	count := len(pods)
 	coverage.ItemCount = &count
-	coverage.ImpactFields = []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions"}
+	coverage.ImpactFields = []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"}
 	meta.Coverage[capacityapi.CoveragePods] = coverage
 	meta.Coverage[capacityapi.CoverageWorkloads] = coverage
 	return pods
@@ -663,20 +665,23 @@ func capacityProvider(provider capacityapi.Provider, pools, claims []*unstructur
 	return provider
 }
 
-func capacityActions(model capacitymodel.Model) []capacityapi.ActionSummary {
+func capacityActions(model capacitymodel.Model, canonicalIssuesAvailable bool) []capacityapi.ActionSummary {
 	actions := map[string]*capacityapi.ActionSummary{}
 	for _, pool := range model.Pools {
 		identity := pool.Observation.Resource
-		if pool.Observation.Ready != nil && !*pool.Observation.Ready {
-			addCapacityAction(actions, "pool_not_ready", "warning", identity)
+		issueActionCodes := map[string]bool{}
+		if !canonicalIssuesAvailable {
+			if pool.Observation.Ready != nil && !*pool.Observation.Ready {
+				addCapacityAction(actions, "pool_not_ready", "warning", identity)
+			}
+			if nodeClass := pool.Observation.NodeClass; nodeClass != nil && nodeClass.Ready != nil && !*nodeClass.Ready {
+				addCapacityAction(actions, "nodeclass_not_ready", "warning", identity)
+			}
 		}
-		if pool.Observation.NodeClass != nil && pool.Observation.NodeClass.Ready != nil && !*pool.Observation.NodeClass.Ready {
-			addCapacityAction(actions, "nodeclass_not_ready", "warning", identity)
-		}
-		for _, fact := range pool.Observation.Facts {
-			if fact.Code == "nodeclass_not_found" {
-				addCapacityAction(actions, "nodeclass_not_found", "warning", identity)
-				break
+		for _, issue := range pool.Observation.Issues {
+			if code := capacityActionCodeForIssue(issue.Reason); code != "" && !issueActionCodes[code] {
+				addCapacityAction(actions, code, string(issue.Severity), identity)
+				issueActionCodes[code] = true
 			}
 		}
 		for _, pressure := range pool.Observation.Ledger.LimitPressure {
@@ -699,6 +704,23 @@ func capacityActions(model capacitymodel.Model) []capacityapi.ActionSummary {
 		result = append(result, *actions[key])
 	}
 	return result
+}
+
+func capacityActionCodeForIssue(reason string) string {
+	switch reason {
+	case issues.ReasonKarpenterNodePoolNotReady:
+		return "pool_not_ready"
+	case issues.ReasonKarpenterNodeClassNotReady:
+		return "nodeclass_not_ready"
+	case issues.ReasonKarpenterNodeClassNotFound:
+		return "nodeclass_not_found"
+	case issues.ReasonKarpenterNodeClassKindNotInstalled:
+		return "nodeclass_kind_not_installed"
+	case issues.ReasonKarpenterNodeClaimProvisioningFailed:
+		return "nodeclaim_provisioning_failed"
+	default:
+		return ""
+	}
 }
 
 func addCapacityAction(actions map[string]*capacityapi.ActionSummary, code, severity string, pool capacityapi.ResourceIdentity) {

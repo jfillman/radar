@@ -116,6 +116,11 @@ type DemandGroupModel struct {
 	Group      capacityapi.DemandGroup
 	requests   corev1.ResourceList
 	scheduling demandSchedulingModel
+	podRefs    []subject.Ref
+}
+
+func (m DemandGroupModel) PodRefs() []subject.Ref {
+	return append([]subject.Ref(nil), m.podRefs...)
 }
 
 type demandEvidenceCollection struct {
@@ -230,10 +235,22 @@ func BuildDemandGroupModels(input DemandInput) []DemandGroupModel {
 			Group:      aggregate.group,
 			requests:   aggregate.requests,
 			scheduling: aggregate.model,
+			podRefs:    demandPodRefs(aggregate.pods),
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Group.ID < result[j].Group.ID })
 	return result
+}
+
+func demandPodRefs(pods []*corev1.Pod) []subject.Ref {
+	refs := make([]subject.Ref, 0, len(pods))
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		refs = append(refs, subject.Ref{Kind: "Pod", Namespace: pod.Namespace, Name: pod.Name})
+	}
+	return refs
 }
 
 func EvaluateDemandGroupModels(models []DemandGroupModel, pools []DemandPoolInput, evaluationLimit int) []capacityapi.DemandGroup {
@@ -277,6 +294,19 @@ func ClassifyDemandGroupModels(models []DemandGroupModel, pools []DemandPoolInpu
 		}
 		models[index].Group.State = demandStateWithPoolEvaluations(models[index].Group.State, counts, len(orderedPools))
 	}
+}
+
+func SummarizeDemandGroupModels(models []DemandGroupModel) capacityapi.DemandSummary {
+	summary := capacityapi.NewDemandSummary()
+	for _, model := range models {
+		counts := summary.ByState[model.Group.State]
+		counts.GroupCount++
+		counts.PodCount += model.Group.PodCount
+		summary.ByState[model.Group.State] = counts
+		summary.Total.GroupCount++
+		summary.Total.PodCount += model.Group.PodCount
+	}
+	return summary
 }
 
 func demandStateWithPoolEvaluations(state capacityapi.DemandState, counts capacityapi.PoolEvaluationCounts, poolCount int) capacityapi.DemandState {

@@ -72,6 +72,14 @@ func Classify(in classifyInput) issuesapi.Category {
 		return issuesapi.CategoryMissingConfigRef
 
 	case SourceCondition:
+		switch in.Reason {
+		case ReasonKarpenterNodePoolNotReady,
+			ReasonKarpenterNodeClassNotReady,
+			ReasonKarpenterNodeClassNotFound,
+			ReasonKarpenterNodeClassKindNotInstalled,
+			ReasonKarpenterNodeClaimProvisioningFailed:
+			return issuesapi.CategoryNodeProvisioningFail
+		}
 		// Generic CRD .status.conditions[]=False fallback. Discriminate the
 		// well-known controller families by API group.
 		g := strings.ToLower(in.APIGroup)

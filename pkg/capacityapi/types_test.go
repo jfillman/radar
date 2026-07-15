@@ -163,13 +163,6 @@ func TestSourceCoverageDistinguishesAvailableZeroFromMissing(t *testing.T) {
 	}
 }
 
-func TestCostObservationEmitsNonAuthoritativeFalse(t *testing.T) {
-	got := marshalCapacityObject(t, CostObservation{Source: "karpenter", AsOf: time.Unix(0, 0).UTC()})
-	if authoritative, ok := got["authoritative"]; !ok || authoritative != false {
-		t.Fatalf("authoritative = %#v, present = %v; want explicit false", authoritative, ok)
-	}
-}
-
 func TestKarpenterNumericFieldsUseInt64(t *testing.T) {
 	large := int64(math.MaxInt32) + 42
 	configuration := NewPoolConfiguration()

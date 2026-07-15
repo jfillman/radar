@@ -35,8 +35,6 @@ const (
 
 type ProviderFeatures struct {
 	StaticCapacity *bool `json:"staticCapacity,omitempty"`
-	NodeOverlay    *bool `json:"nodeOverlay,omitempty"`
-	CapacityBuffer *bool `json:"capacityBuffer,omitempty"`
 	Metrics        *bool `json:"metrics,omitempty"`
 }
 
@@ -74,13 +72,7 @@ const (
 	CoveragePods                   CoverageSource = "pods"
 	CoverageWorkloads              CoverageSource = "workloads"
 	CoverageKarpenterObjectEvents  CoverageSource = "karpenterObjectEvents"
-	CoverageWorkloadEvents         CoverageSource = "workloadEvents"
-	CoveragePodDisruptionBudgets   CoverageSource = "podDisruptionBudgets"
-	CoveragePersistentVolumeClaims CoverageSource = "persistentVolumeClaims"
-	CoveragePersistentVolumes      CoverageSource = "persistentVolumes"
-	CoverageStorageClasses         CoverageSource = "storageClasses"
 	CoverageNodeMetrics            CoverageSource = "nodeMetrics"
-	CoveragePrometheus             CoverageSource = "prometheus"
 	CoverageTimeline               CoverageSource = "timeline"
 )
 
@@ -92,13 +84,7 @@ var CoverageSources = []CoverageSource{
 	CoveragePods,
 	CoverageWorkloads,
 	CoverageKarpenterObjectEvents,
-	CoverageWorkloadEvents,
-	CoveragePodDisruptionBudgets,
-	CoveragePersistentVolumeClaims,
-	CoveragePersistentVolumes,
-	CoverageStorageClasses,
 	CoverageNodeMetrics,
-	CoveragePrometheus,
 	CoverageTimeline,
 }
 

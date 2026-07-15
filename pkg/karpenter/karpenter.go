@@ -19,7 +19,6 @@ const (
 	NodePoolKind         = "NodePool"
 	NodeClaimKind        = "NodeClaim"
 	NodePoolLabelKey     = "karpenter.sh/nodepool"
-	NodeClaimLabelKey    = "karpenter.sh/nodeclaim"
 	CapacityTypeLabelKey = "karpenter.sh/capacity-type"
 	APIVersionV1         = "karpenter.sh/v1"
 	APIVersionV1Beta1    = "karpenter.sh/v1beta1"

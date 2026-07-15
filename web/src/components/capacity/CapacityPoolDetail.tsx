@@ -1395,7 +1395,6 @@ function PoolConfigurationTab({
 }) {
   const config = pool.configuration;
   const disruption = pool.disruption;
-  const runtime = disruption.runtime;
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <SectionCard title="Effective configuration" bodyClassName="px-4 py-4">
@@ -1510,52 +1509,6 @@ function PoolConfigurationTab({
             </div>
           </div>
         )}
-        <div className="mt-3 border-t border-theme-border-subtle pt-3">
-          <div className="mb-1.5 text-xs font-medium text-theme-text-tertiary">
-            Runtime
-          </div>
-          {runtime ? (
-            <>
-              <div className="flex flex-wrap gap-1">
-                {runtime.allowed.length > 0 ? (
-                  runtime.allowed.map((allowance) => (
-                    <Badge
-                      key={allowance.reason}
-                      severity={allowance.count > 0 ? "success" : "neutral"}
-                      size="sm"
-                    >
-                      {allowance.reason}: {allowance.count}
-                    </Badge>
-                  ))
-                ) : (
-                  <span className="text-xs text-theme-text-tertiary">
-                    No allowed disruptions reported.
-                  </span>
-                )}
-              </div>
-              {runtime.blockers.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {runtime.blockers.map((blocker, index) => (
-                    <div
-                      key={index}
-                      className="flex items-start gap-2 text-xs text-theme-text-secondary"
-                    >
-                      <Badge severity="warning" size="sm">
-                        {blocker.code}
-                      </Badge>
-                      <span>{blocker.message}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
-          ) : (
-            <span className="text-xs text-theme-text-tertiary">
-              Runtime disruption state was not reported (often the case while a
-              pool is unready).
-            </span>
-          )}
-        </div>
       </SectionCard>
 
       <SectionCard title="Labels & taints" bodyClassName="space-y-3 px-4 py-4">

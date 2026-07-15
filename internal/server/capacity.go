@@ -622,17 +622,11 @@ func newCapacityResponseMeta(now time.Time) capacityapi.ResponseMeta {
 	meta.ClusterContext = capacityapi.ClusterContext{ContextName: k8s.ActiveClusterContext(), ClusterName: k8s.GetClusterName()}
 	for _, source := range capacityapi.CoverageSources {
 		scope := capacityapi.CoverageScopeCluster
-		if source == capacityapi.CoveragePods || source == capacityapi.CoverageWorkloads || source == capacityapi.CoverageWorkloadEvents || source == capacityapi.CoveragePodDisruptionBudgets || source == capacityapi.CoveragePersistentVolumeClaims {
+		if source == capacityapi.CoveragePods || source == capacityapi.CoverageWorkloads {
 			scope = capacityapi.CoverageScopeAllAuthorizedNamespaces
 		}
 		coverage := capacityapi.NewSourceCoverage(capacityapi.CoverageUnavailable, scope)
 		coverage.ReasonCode = "not_observed"
-		switch source {
-		case capacityapi.CoverageWorkloadEvents:
-			coverage.ImpactFields = []string{"disruption.runtime"}
-		case capacityapi.CoveragePodDisruptionBudgets:
-			coverage.ImpactFields = []string{"disruption.runtime.blockers"}
-		}
 		meta.Coverage[source] = coverage
 	}
 	return meta

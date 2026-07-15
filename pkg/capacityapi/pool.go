@@ -105,34 +105,12 @@ type DisruptionBudget struct {
 	Duration string   `json:"duration,omitempty"`
 }
 
-type AllowedDisruption struct {
-	Reason string    `json:"reason"`
-	Count  int       `json:"count"`
-	Source string    `json:"source"`
-	AsOf   time.Time `json:"asOf"`
-}
-
-type DisruptionBlocker struct {
-	Code        string       `json:"code"`
-	Subject     *subject.Ref `json:"subject,omitempty"`
-	Message     string       `json:"message"`
-	SourcePaths []string     `json:"sourcePaths"`
-}
-
 type DisruptionPolicy struct {
 	ConsolidationPolicy string                        `json:"consolidationPolicy,omitempty"`
 	ConsolidateAfter    string                        `json:"consolidateAfter,omitempty"`
 	Budgets             []DisruptionBudget            `json:"budgets"`
-	Runtime             *DisruptionRuntimeObservation `json:"runtime,omitempty"`
 }
 
-type DisruptionRuntimeObservation struct {
-	Allowed   []AllowedDisruption `json:"allowed"`
-	Blockers  []DisruptionBlocker `json:"blockers"`
-	Certainty Certainty           `json:"certainty"`
-	Sources   []string            `json:"sources"`
-	AsOf      time.Time           `json:"asOf"`
-}
 
 func NewDisruptionPolicy() DisruptionPolicy {
 	return DisruptionPolicy{
@@ -235,7 +213,6 @@ type PoolObservation struct {
 	Nodes              *NodeLifecycleSummary  `json:"nodes,omitempty"`
 	Composition        *PoolComposition       `json:"composition,omitempty"`
 	Workloads          *WorkloadSummary       `json:"workloads,omitempty"`
-	Cost               *CostObservation       `json:"cost,omitempty"`
 	Issues             []issuesapi.Issue      `json:"issues"`
 	Facts              []PostureFact          `json:"facts"`
 	Coverage           CoverageBySource       `json:"coverage"`

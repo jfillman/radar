@@ -72,14 +72,6 @@ func NewUsageObservation(asOf time.Time) UsageObservation {
 	}
 }
 
-type CostObservation struct {
-	Value         float64   `json:"value"`
-	Unit          string    `json:"unit"`
-	Currency      string    `json:"currency,omitempty"`
-	Source        string    `json:"source"`
-	Authoritative bool      `json:"authoritative"`
-	AsOf          time.Time `json:"asOf"`
-}
 
 type Confidence string
 

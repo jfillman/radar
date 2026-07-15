@@ -536,7 +536,7 @@ func (v capacityActivityVisibility) describe(events []timeline.TimelineEvent, no
 		coverage.ReasonCode = "event_namespace_visibility_partial"
 	}
 	sources := make([]capacityapi.EvidenceSource, 0, len(sourceSet))
-	for _, source := range []capacityapi.EvidenceSource{capacityapi.EvidenceCondition, capacityapi.EvidenceKubernetesEvent, capacityapi.EvidenceResourceChange, capacityapi.EvidencePrometheus} {
+	for _, source := range []capacityapi.EvidenceSource{capacityapi.EvidenceCondition, capacityapi.EvidenceKubernetesEvent, capacityapi.EvidenceResourceChange} {
 		if sourceSet[source] {
 			sources = append(sources, source)
 		}

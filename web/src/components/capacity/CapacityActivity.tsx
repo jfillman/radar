@@ -482,7 +482,6 @@ function ActivityEpisodeCard({
     episode.pool,
     episode.claim,
     episode.node,
-    episode.workload,
   ].filter((identity): identity is CapacityResourceIdentity =>
     Boolean(identity),
   );

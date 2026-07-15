@@ -32,7 +32,6 @@ const (
 	EvidenceCondition       EvidenceSource = "condition"
 	EvidenceKubernetesEvent EvidenceSource = "k8s_event"
 	EvidenceResourceChange  EvidenceSource = "resource_change"
-	EvidencePrometheus      EvidenceSource = "prometheus"
 )
 
 type EvidenceRelationship string
@@ -74,7 +73,6 @@ type ActivityEpisode struct {
 	Pool              *ResourceIdentity  `json:"pool,omitempty"`
 	Claim             *ResourceIdentity  `json:"claim,omitempty"`
 	Node              *ResourceIdentity  `json:"node,omitempty"`
-	Workload          *ResourceIdentity  `json:"workload,omitempty"`
 	Evidence          []ActivityEvidence `json:"evidence"`
 	EvidenceMeta      BoundedResultMeta  `json:"evidenceMeta"`
 }

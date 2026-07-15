@@ -44,15 +44,6 @@ export interface CapacityUsageObservation {
   utilization: CapacityResourceUtilization[];
 }
 
-export interface CapacityCostObservation {
-  value: number;
-  unit: string;
-  currency?: string;
-  source: string;
-  authoritative: boolean;
-  asOf: string;
-}
-
 export type CapacityConfidence = "high" | "medium" | "low";
 export type CapacityConditionStatus = "True" | "False" | "Unknown";
 
@@ -89,8 +80,6 @@ export type CapacityControllerMode = "self_managed" | "eks_auto" | "unknown";
 
 export interface CapacityProviderFeatures {
   staticCapacity?: boolean;
-  nodeOverlay?: boolean;
-  capacityBuffer?: boolean;
   metrics?: boolean;
 }
 
@@ -117,13 +106,7 @@ export type CapacityCoverageSource =
   | "pods"
   | "workloads"
   | "karpenterObjectEvents"
-  | "workloadEvents"
-  | "podDisruptionBudgets"
-  | "persistentVolumeClaims"
-  | "persistentVolumes"
-  | "storageClasses"
   | "nodeMetrics"
-  | "prometheus"
   | "timeline";
 
 export type CapacityCoverageStatus =
@@ -230,33 +213,10 @@ export interface CapacityDisruptionBudget {
   duration?: string;
 }
 
-export interface CapacityAllowedDisruption {
-  reason: string;
-  count: number;
-  source: string;
-  asOf: string;
-}
-
-export interface CapacityDisruptionBlocker {
-  code: string;
-  subject?: CapacitySubjectRef;
-  message: string;
-  sourcePaths: string[];
-}
-
 export interface CapacityDisruptionPolicy {
   consolidationPolicy?: string;
   consolidateAfter?: string;
   budgets: CapacityDisruptionBudget[];
-  runtime?: CapacityDisruptionRuntimeObservation;
-}
-
-export interface CapacityDisruptionRuntimeObservation {
-  allowed: CapacityAllowedDisruption[];
-  blockers: CapacityDisruptionBlocker[];
-  certainty: CapacityCertainty;
-  sources: string[];
-  asOf: string;
 }
 
 export interface CapacityClaimLifecycleSummary {
@@ -337,7 +297,6 @@ export interface CapacityPoolObservation {
   nodes?: CapacityNodeLifecycleSummary;
   composition?: CapacityPoolComposition;
   workloads?: CapacityWorkloadSummary;
-  cost?: CapacityCostObservation;
   issues: Issue[];
   facts: CapacityPostureFact[];
   coverage: CapacityCoverageBySource;
@@ -561,7 +520,7 @@ export type CapacityActivityType =
 export type CapacityActivityState =
   "open" | "completed" | "failed" | "observed" | "blocked" | "unknown";
 export type CapacityEvidenceSource =
-  "condition" | "k8s_event" | "resource_change" | "prometheus";
+  "condition" | "k8s_event" | "resource_change";
 export type CapacityEvidenceRelationship =
   "direct" | "structural" | "correlated";
 
@@ -588,7 +547,6 @@ export interface CapacityActivityEpisode {
   pool?: CapacityResourceIdentity;
   claim?: CapacityResourceIdentity;
   node?: CapacityResourceIdentity;
-  workload?: CapacityResourceIdentity;
   evidence: CapacityActivityEvidence[];
   evidenceMeta: CapacityBoundedResultMeta;
 }

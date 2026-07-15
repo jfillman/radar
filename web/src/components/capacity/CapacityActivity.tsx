@@ -635,11 +635,13 @@ function ActivityEpisodeCard({
                                     event.key === " "
                                   ) {
                                     event.preventDefault();
-                                    ref.ref.kind === "NodePool"
-                                      ? onOpenPool(ref.ref.name)
-                                      : onOpenResource(
-                                          identityToSelectedResource(ref),
-                                        );
+                                    if (ref.ref.kind === "NodePool") {
+                                      onOpenPool(ref.ref.name);
+                                    } else {
+                                      onOpenResource(
+                                        identityToSelectedResource(ref),
+                                      );
+                                    }
                                   }
                                 }}
                               >

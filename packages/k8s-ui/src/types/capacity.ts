@@ -600,7 +600,6 @@ export interface CapacityObservationGap {
   reason: string;
   previousCursor?: string;
   newEpoch?: string;
-  newAnchor: string;
 }
 
 export interface CapacityRetention {
@@ -622,7 +621,6 @@ export interface CapacityActivityResponse extends CapacityResponseMeta {
   items: CapacityActivityEpisode[];
   page: CapacityPageInfo;
   cursorStatus: CapacityCursorStatus;
-  anchorCursor?: string;
   cursorGap?: CapacityObservationGap;
   observation: CapacityObservationWindow;
 }

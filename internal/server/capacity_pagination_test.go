@@ -258,7 +258,7 @@ func TestCapacityCursorRejectsChangedProvidedSnapshot(t *testing.T) {
 	}
 }
 
-func TestCapacitySnapshotIgnoresObservationTimeOnly(t *testing.T) {
+func TestCapacitySnapshotFingerprintsMembershipOnly(t *testing.T) {
 	type observed struct {
 		Name  string `json:"name"`
 		AsOf  string `json:"asOf"`
@@ -269,7 +269,7 @@ func TestCapacitySnapshotIgnoresObservationTimeOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse first request: %v", err)
 	}
-	first, err := paginateCapacityKeyset([]observed{{Name: "a", AsOf: "one", Value: "stable"}, {Name: "b", AsOf: "one", Value: "stable"}}, request, func(item observed) string { return item.Name })
+	first, err := paginateCapacityKeyset([]observed{{Name: "a", AsOf: "one", Value: "v1"}, {Name: "b", AsOf: "one", Value: "v1"}}, request, func(item observed) string { return item.Name })
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
@@ -277,8 +277,14 @@ func TestCapacitySnapshotIgnoresObservationTimeOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse continuation: %v", err)
 	}
-	if _, err := paginateCapacityKeyset([]observed{{Name: "a", AsOf: "two", Value: "stable"}, {Name: "b", AsOf: "two", Value: "stable"}}, continued, func(item observed) string { return item.Name }); err != nil {
-		t.Fatalf("observation time alone invalidated snapshot: %v", err)
+	// Live-value churn (usage resamples every ~30s) must NOT invalidate the
+	// cursor — keyset pagination on stable keys cannot skip or duplicate.
+	if _, err := paginateCapacityKeyset([]observed{{Name: "a", AsOf: "two", Value: "v2"}, {Name: "b", AsOf: "two", Value: "v2"}}, continued, func(item observed) string { return item.Name }); err != nil {
+		t.Fatalf("value churn invalidated snapshot: %v", err)
+	}
+	// Membership change does invalidate.
+	if _, err := paginateCapacityKeyset([]observed{{Name: "a", AsOf: "two", Value: "v2"}, {Name: "c", AsOf: "two", Value: "v2"}}, continued, func(item observed) string { return item.Name }); err == nil || !isCapacityCursorInvalidError(err) {
+		t.Fatalf("membership change error = %v, want cursor invalid", err)
 	}
 }
 

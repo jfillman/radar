@@ -96,7 +96,6 @@ type ObservationGap struct {
 	Reason         string    `json:"reason"`
 	PreviousCursor string    `json:"previousCursor,omitempty"`
 	NewEpoch       string    `json:"newEpoch,omitempty"`
-	NewAnchor      string    `json:"newAnchor"`
 }
 
 type Retention struct {

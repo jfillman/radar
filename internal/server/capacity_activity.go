@@ -116,7 +116,7 @@ func (s *Server) handleCapacityActivity(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	events := activityQuery.events
-	queryMaxSeq, queryMinSeq := activitySequenceBounds(events)
+	_, queryMinSeq := activitySequenceBounds(events)
 	retainedVisibleStart := storeBounds.oldestEvent
 	if stats.MaxEvents > 0 && stats.EventsEvicted {
 		retainedVisibleStart, err = queryOldestVisibleCapacityActivityTimestamp(r.Context(), store, clusterContext, visibility.allows)
@@ -129,32 +129,25 @@ func (s *Server) handleCapacityActivity(w http.ResponseWriter, r *http.Request) 
 	observationStart := capacityActivityObservationStart(now, processObservationStart, stats, retainedVisibleStart, events)
 	response.Observation.StartedAt = observationStart
 	epoch := strconv.FormatInt(processObservationStart.UnixNano(), 10)
-	anchorSeq := storeBounds.newestSeq
-	if queryMaxSeq > anchorSeq {
-		anchorSeq = queryMaxSeq
-	}
-	anchor, _ := encodeCapacityActivityCursor(epoch, request.filterFingerprint, clusterContext, anchorSeq, "newer")
-	response.AnchorCursor = anchor
 
 	if request.cursor != nil && request.cursor.Epoch != epoch {
-		gap := capacityActivityGap(now, "timeline_epoch_changed", request.cursor, epoch, anchor)
+		gap := capacityActivityGap(now, "timeline_epoch_changed", request.cursor, epoch)
 		response.CursorStatus = capacityapi.CursorEpochChanged
 		response.CursorGap = &gap
 		response.Observation.Gaps = append(response.Observation.Gaps, gap)
-		response.Page.NextCursor = anchor
 		s.writeJSON(w, response)
 		return
 	}
-	if request.cursor != nil && request.cursor.Direction == "newer" && ((storeBounds.newestSeq == 0 && request.cursor.Seq > 0) || (storeBounds.oldestSeq > 0 && request.cursor.Seq < storeBounds.oldestSeq-1) || (anchorSeq > 0 && request.cursor.Seq > anchorSeq)) {
-		gap := capacityActivityGap(now, "timeline_cursor_evicted", request.cursor, epoch, anchor)
+	// An older-direction cursor that points at (or below) the oldest retained
+	// record after any eviction has lost its history — an empty page here
+	// would silently read as "end of history" instead of a gap.
+	if request.cursor != nil && stats.EventsEvicted && storeBounds.oldestSeq > 0 && request.cursor.Seq <= storeBounds.oldestSeq && request.cursor.Seq > 1 {
+		gap := capacityActivityGap(now, "timeline_cursor_evicted", request.cursor, epoch)
 		response.CursorStatus = capacityapi.CursorEvicted
 		response.CursorGap = &gap
 		response.Observation.Gaps = append(response.Observation.Gaps, gap)
-		if storeBounds.newestSeq == 0 || request.cursor.Seq > anchorSeq {
-			response.Page.NextCursor = anchor
-			s.writeJSON(w, response)
-			return
-		}
+		s.writeJSON(w, response)
+		return
 	}
 
 	eventCoverage, sources := visibility.describe(events, now)
@@ -186,15 +179,6 @@ func (s *Server) handleCapacityActivity(w http.ResponseWriter, r *http.Request) 
 	records = filterCapacityActivityRecords(records, request.filters)
 	if request.cursor == nil {
 		reverseActivityRecords(records)
-	} else if request.cursor.Direction == "newer" {
-		cursorSeq := request.cursor.Seq
-		kept := records[:0]
-		for _, record := range records {
-			if record.MaxSeq > cursorSeq {
-				kept = append(kept, record)
-			}
-		}
-		records = kept
 	} else {
 		cursorSeq := request.cursor.Seq
 		kept := records[:0]
@@ -234,14 +218,6 @@ func (s *Server) handleCapacityActivity(w http.ResponseWriter, r *http.Request) 
 		response.Page.NextCursor, _ = encodeCapacityActivityCursor(epoch, request.filterFingerprint, clusterContext, oldestSeq, "older")
 	case request.cursor != nil && request.cursor.Direction == "older" && queryTruncated && queryMinSeq > 0:
 		response.Page.NextCursor, _ = encodeCapacityActivityCursor(epoch, request.filterFingerprint, clusterContext, queryMinSeq, "older")
-	case request.cursor != nil && request.cursor.Direction == "newer":
-		if recordsTruncated && lastSeq > 0 {
-			response.Page.NextCursor, _ = encodeCapacityActivityCursor(epoch, request.filterFingerprint, clusterContext, lastSeq, "newer")
-		} else if queryTruncated && queryMaxSeq > 0 {
-			response.Page.NextCursor, _ = encodeCapacityActivityCursor(epoch, request.filterFingerprint, clusterContext, queryMaxSeq, "newer")
-		} else {
-			response.Page.NextCursor = anchor
-		}
 	}
 	s.writeJSON(w, response)
 }
@@ -322,11 +298,6 @@ func queryCapacityActivityWindow(ctx context.Context, store timeline.EventStore,
 	query := newCapacityActivityStoreQuery(clusterContext, timeline.SequenceOrderDescending)
 	if request.sinceProvided {
 		query.Since = request.since
-	}
-	if request.cursor != nil && request.cursor.Direction == "newer" {
-		query.SinceSeq = request.cursor.Seq
-		query.SequenceOrder = timeline.SequenceOrderAscending
-		return queryCapacityActivityVisiblePage(ctx, store, query, allows)
 	}
 	if request.cursor == nil {
 		return queryCapacityActivityVisiblePage(ctx, store, query, allows)
@@ -477,7 +448,7 @@ func parseCapacityActivityRequest(query url.Values) (capacityActivityRequest, er
 }
 
 func encodeCapacityActivityCursor(epoch, filterFingerprint, clusterContext string, seq int64, direction string) (string, error) {
-	if epoch == "" || filterFingerprint == "" || seq < 0 || (direction != "older" && direction != "newer") {
+	if epoch == "" || filterFingerprint == "" || seq < 0 || direction != "older" {
 		return "", fmt.Errorf("invalid activity cursor fields")
 	}
 	payload, err := json.Marshal(capacityActivityCursor{Version: capacityActivityCursorVersion, Epoch: epoch, FilterFingerprint: filterFingerprint, Seq: seq, Direction: direction, ClusterContext: clusterContext})
@@ -501,7 +472,7 @@ func decodeCapacityActivityCursor(encoded string) (capacityActivityCursor, error
 	if err := decoder.Decode(&cursor); err != nil || ensureCapacityJSONEOF(decoder) != nil {
 		return capacityActivityCursor{}, newCapacityCursorInvalidError("invalid cursor payload")
 	}
-	if cursor.Version != capacityActivityCursorVersion || cursor.Epoch == "" || cursor.FilterFingerprint == "" || cursor.Seq < 0 || (cursor.Direction != "older" && cursor.Direction != "newer") {
+	if cursor.Version != capacityActivityCursorVersion || cursor.Epoch == "" || cursor.FilterFingerprint == "" || cursor.Seq < 0 || cursor.Direction != "older" {
 		return capacityActivityCursor{}, newCapacityCursorInvalidError("invalid cursor payload")
 	}
 	return cursor, nil
@@ -615,12 +586,12 @@ func activitySequenceBounds(events []timeline.TimelineEvent) (maxSeq, minSeq int
 	return maxSeq, minSeq
 }
 
-func capacityActivityGap(now time.Time, reason string, cursor *capacityActivityCursor, epoch, anchor string) capacityapi.ObservationGap {
+func capacityActivityGap(now time.Time, reason string, cursor *capacityActivityCursor, epoch string) capacityapi.ObservationGap {
 	previous := ""
 	if cursor != nil {
 		previous, _ = encodeCapacityActivityCursor(cursor.Epoch, cursor.FilterFingerprint, cursor.ClusterContext, cursor.Seq, cursor.Direction)
 	}
-	return capacityapi.ObservationGap{DetectedAt: now, Reason: reason, PreviousCursor: previous, NewEpoch: epoch, NewAnchor: anchor}
+	return capacityapi.ObservationGap{DetectedAt: now, Reason: reason, PreviousCursor: previous, NewEpoch: epoch}
 }
 
 func reverseActivityRecords(records []capacitymodel.ActivityRecord) {

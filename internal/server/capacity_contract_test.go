@@ -432,11 +432,11 @@ func TestCapacityDemandRejectsInvalidFiltersAndCursors(t *testing.T) {
 
 func TestCapacityActivityRejectsInvalidFiltersAndCursors(t *testing.T) {
 	fingerprint := capacityFilterFingerprint(url.Values{})
-	validCursor, err := encodeCapacityActivityCursor("epoch", fingerprint, k8s.ActiveClusterContext(), 1, "newer")
+	validCursor, err := encodeCapacityActivityCursor("epoch", fingerprint, k8s.ActiveClusterContext(), 1, "older")
 	if err != nil {
 		t.Fatalf("encode cursor: %v", err)
 	}
-	otherClusterCursor, err := encodeCapacityActivityCursor("epoch", fingerprint, "other-cluster", 1, "newer")
+	otherClusterCursor, err := encodeCapacityActivityCursor("epoch", fingerprint, "other-cluster", 1, "older")
 	if err != nil {
 		t.Fatalf("encode cross-cluster cursor: %v", err)
 	}
@@ -515,6 +515,20 @@ func TestCapacityActivityReportsCursorEpochAndEviction(t *testing.T) {
 		}
 	})
 
+	startedAt := timeline.ObservationStart().Add(-10 * time.Minute)
+	for index := 1; index <= 4; index++ {
+		id := "config-" + strconv.Itoa(index)
+		event := pkgtimeline.TimelineEvent{
+			ID: id, Timestamp: startedAt.Add(time.Duration(index) * time.Minute), Source: pkgtimeline.SourceInformer,
+			Kind: karpenter.NodePoolKind, APIVersion: karpenter.APIVersionV1, Name: "general", UID: "general-uid",
+			EventType: pkgtimeline.EventTypeUpdate, ClusterContext: k8s.ActiveClusterContext(),
+			Diff: &k8score.DiffInfo{Summary: id, Fields: []k8score.FieldChange{{Path: "spec.weight"}}},
+		}
+		if err := timeline.GetStore().Append(context.Background(), event); err != nil {
+			t.Fatalf("append %s: %v", id, err)
+		}
+	}
+
 	fingerprint := capacityFilterFingerprint(url.Values{})
 	epoch := strconv.FormatInt(timeline.ObservationStart().UnixNano(), 10)
 	tests := []struct {
@@ -530,8 +544,10 @@ func TestCapacityActivityReportsCursorEpochAndEviction(t *testing.T) {
 			wantReason: "timeline_epoch_changed",
 		},
 		{
+			// MaxSize 3 with 4 appends evicted seq 1; an older cursor at the
+			// retained boundary (seq 2) has lost its remaining history.
 			name:       "cursor evicted",
-			cursor:     mustEncodeCapacityActivityCursor(t, epoch, fingerprint, 1),
+			cursor:     mustEncodeCapacityActivityCursor(t, epoch, fingerprint, 2),
 			wantStatus: capacityapi.CursorEvicted,
 			wantReason: "timeline_cursor_evicted",
 		},
@@ -552,8 +568,8 @@ func TestCapacityActivityReportsCursorEpochAndEviction(t *testing.T) {
 			if len(body.Observation.Gaps) != 1 || body.Observation.Gaps[0].Reason != test.wantReason {
 				t.Fatalf("observation gaps = %#v", body.Observation.Gaps)
 			}
-			if body.AnchorCursor == "" || body.Page.NextCursor != body.AnchorCursor {
-				t.Fatalf("anchor=%q next=%q, want a matching recovery cursor", body.AnchorCursor, body.Page.NextCursor)
+			if body.Page.NextCursor != "" || len(body.Items) != 0 {
+				t.Fatalf("gap response next=%q items=%d, want no cursor and no items (client restarts from page 1)", body.Page.NextCursor, len(body.Items))
 			}
 		})
 	}
@@ -587,23 +603,24 @@ func TestCapacityActivityEvictedCursorStillDeliversRetainedEvents(t *testing.T) 
 	}
 
 	epoch := strconv.FormatInt(timeline.ObservationStart().UnixNano(), 10)
-	cursor := mustEncodeCapacityActivityCursor(t, epoch, capacityFilterFingerprint(url.Values{}), 0)
+	// Paging down from the newest record still works after eviction as long as
+	// older retained records remain: seq 4 -> the two retained older records.
+	pageCursor := mustEncodeCapacityActivityCursor(t, epoch, capacityFilterFingerprint(url.Values{}), 4)
 	var body capacityapi.ActivityResponse
-	assertOK(t, get(t, "/api/capacity/activity?cursor="+url.QueryEscape(cursor)), &body)
-	if body.CursorStatus != capacityapi.CursorEvicted || body.CursorGap == nil {
-		t.Fatalf("cursor status/gap = %q/%#v, want an explicit eviction gap", body.CursorStatus, body.CursorGap)
+	assertOK(t, get(t, "/api/capacity/activity?cursor="+url.QueryEscape(pageCursor)), &body)
+	if body.CursorGap != nil {
+		t.Fatalf("older page within retained history reported a gap: %#v", body.CursorGap)
 	}
-	if len(body.Items) != 3 {
-		t.Fatalf("retained activities = %d, want all 3 records after the gap", len(body.Items))
+	if len(body.Items) != 2 || body.Items[0].Evidence[0].RawMessage != "config-3" || body.Items[1].Evidence[0].RawMessage != "config-2" {
+		t.Fatalf("retained older page = %#v, want config-3 then config-2", body.Items)
 	}
-	for index, item := range body.Items {
-		want := "config-" + strconv.Itoa(index+2)
-		if len(item.Evidence) != 1 || item.Evidence[0].RawMessage != want {
-			t.Fatalf("retained activity %d = %#v, want %q", index, item, want)
-		}
-	}
-	if body.Page.NextCursor != body.AnchorCursor || body.Page.NextCursor == "" {
-		t.Fatalf("next cursor = %q, anchor = %q", body.Page.NextCursor, body.AnchorCursor)
+	// One step further (older than the oldest retained record) is a real gap,
+	// never a silent "end of history".
+	evictedCursor := mustEncodeCapacityActivityCursor(t, epoch, capacityFilterFingerprint(url.Values{}), 2)
+	var evicted capacityapi.ActivityResponse
+	assertOK(t, get(t, "/api/capacity/activity?cursor="+url.QueryEscape(evictedCursor)), &evicted)
+	if evicted.CursorStatus != capacityapi.CursorEvicted || evicted.CursorGap == nil || evicted.CursorGap.Reason != "timeline_cursor_evicted" {
+		t.Fatalf("evicted older cursor = %q/%#v, want an explicit eviction gap", evicted.CursorStatus, evicted.CursorGap)
 	}
 	wantObservationStart := timeline.ObservationStart()
 	if !body.Observation.StartedAt.Equal(wantObservationStart) || body.Observation.Retention.MaxEvents == nil || *body.Observation.Retention.MaxEvents != 3 {
@@ -742,24 +759,14 @@ func TestCapacityActivityUsesActiveClusterTimelineBounds(t *testing.T) {
 	if !body.Observation.StartedAt.Equal(activeAt) {
 		t.Fatalf("observation start = %s, want active-cluster boundary %s", body.Observation.StartedAt, activeAt)
 	}
-	anchor, err := decodeCapacityActivityCursor(body.AnchorCursor)
-	if err != nil {
-		t.Fatalf("decode active anchor: %v", err)
-	}
-	if anchor.Seq != 4 {
-		t.Fatalf("active anchor seq = %d, want 4 without foreign seq 5", anchor.Seq)
-	}
-
+	// Nothing was ever evicted from this persistent store, so an older cursor
+	// that exhausts history is a genuine end — never a fabricated gap.
 	epoch := strconv.FormatInt(timeline.ObservationStart().UnixNano(), 10)
-	evictedCursor := mustEncodeCapacityActivityCursor(t, epoch, capacityFilterFingerprint(url.Values{}), 1)
-	var evicted capacityapi.ActivityResponse
-	assertOK(t, get(t, "/api/capacity/activity?cursor="+url.QueryEscape(evictedCursor)), &evicted)
-	if evicted.CursorStatus != capacityapi.CursorEvicted || evicted.CursorGap == nil || len(evicted.Items) != 1 {
-		t.Fatalf("active-cluster eviction response = status %q gap %#v items %#v", evicted.CursorStatus, evicted.CursorGap, evicted.Items)
-	}
-	evictedAnchor, err := decodeCapacityActivityCursor(evicted.AnchorCursor)
-	if err != nil || evictedAnchor.Seq != 4 {
-		t.Fatalf("evicted recovery anchor = %#v, %v, want active seq 4", evictedAnchor, err)
+	endCursor := mustEncodeCapacityActivityCursor(t, epoch, capacityFilterFingerprint(url.Values{}), 4)
+	var exhausted capacityapi.ActivityResponse
+	assertOK(t, get(t, "/api/capacity/activity?cursor="+url.QueryEscape(endCursor)), &exhausted)
+	if exhausted.CursorGap != nil || len(exhausted.Items) != 0 || exhausted.Page.HasMore {
+		t.Fatalf("end-of-history response = gap %#v items %d hasMore %v, want a clean empty page", exhausted.CursorGap, len(exhausted.Items), exhausted.Page.HasMore)
 	}
 
 	k8s.SetTestContextName("capacity-empty")
@@ -768,10 +775,6 @@ func TestCapacityActivityUsesActiveClusterTimelineBounds(t *testing.T) {
 	assertOK(t, get(t, "/api/capacity/activity"), &empty)
 	if len(empty.Items) != 0 || empty.Observation.StartedAt.Before(requestStarted) {
 		t.Fatalf("empty active-cluster response leaked foreign history: start=%s items=%#v", empty.Observation.StartedAt, empty.Items)
-	}
-	emptyAnchor, err := decodeCapacityActivityCursor(empty.AnchorCursor)
-	if err != nil || emptyAnchor.Seq != 0 {
-		t.Fatalf("empty active-cluster anchor = %#v, %v, want seq 0", emptyAnchor, err)
 	}
 }
 
@@ -834,18 +837,18 @@ func TestCapacityActivityRBACMetadataUsesOnlyAuthorizedRelevantEvents(t *testing
 	if timelineCoverage.ItemCount == nil || *timelineCoverage.ItemCount != 1 || !body.Observation.StartedAt.Equal(base) {
 		t.Fatalf("denied activity affected timeline metadata: coverage=%#v observation=%#v", timelineCoverage, body.Observation)
 	}
-	anchor, err := decodeCapacityActivityCursor(body.AnchorCursor)
-	if err != nil || anchor.Seq != 1 {
-		t.Fatalf("denied activity affected anchor: %#v, %v", anchor, err)
-	}
 	if body.Coverage[capacityapi.CoverageKarpenterObjectEvents].Status != capacityapi.CoveragePartial {
 		t.Fatalf("event coverage = %#v, want permission-derived partial coverage", body.Coverage[capacityapi.CoverageKarpenterObjectEvents])
 	}
 
-	var delta capacityapi.ActivityResponse
-	assertOK(t, env.authGet(t, "/api/capacity/activity?cursor="+url.QueryEscape(body.AnchorCursor), "alice", ""), &delta)
-	if len(delta.Items) != 0 || delta.Page.HasMore || delta.CursorGap != nil || delta.AnchorCursor != body.AnchorCursor {
-		t.Fatalf("denied newer events affected delta metadata: %#v", delta)
+	// Paging older from the single visible record: invisible (denied) events
+	// must not surface as items, extra pages, or fabricated gaps.
+	epoch := strconv.FormatInt(timeline.ObservationStart().UnixNano(), 10)
+	olderCursor := mustEncodeCapacityActivityCursor(t, epoch, capacityFilterFingerprint(url.Values{}), 1)
+	var older capacityapi.ActivityResponse
+	assertOK(t, env.authGet(t, "/api/capacity/activity?cursor="+url.QueryEscape(olderCursor), "alice", ""), &older)
+	if len(older.Items) != 0 || older.Page.HasMore || older.CursorGap != nil {
+		t.Fatalf("denied events affected older paging: %#v", older)
 	}
 }
 
@@ -881,10 +884,6 @@ func TestCapacityActivityEvictedMemoryWithoutVisibleEventsStartsAtRequest(t *tes
 	}
 	if body.Observation.Retention.MaxEvents == nil || *body.Observation.Retention.MaxEvents != 2 {
 		t.Fatalf("retention = %#v, want maxEvents=2", body.Observation.Retention)
-	}
-	anchor, err := decodeCapacityActivityCursor(body.AnchorCursor)
-	if err != nil || anchor.Seq != 0 {
-		t.Fatalf("unrelated events affected empty anchor: %#v, %v", anchor, err)
 	}
 }
 
@@ -960,59 +959,6 @@ func TestCapacityActivitySQLiteIgnoresUnrelatedNodeNoiseAcrossRawQueryBounds(t *
 	if body.Page.HasMore || body.Page.NextCursor != "" {
 		t.Fatalf("unrelated Node events created a false continuation: %#v", body.Page)
 	}
-	anchor, err := decodeCapacityActivityCursor(body.AnchorCursor)
-	if err != nil || anchor.Seq != capacityActivityQueryLimit+2 {
-		t.Fatalf("subjectless controller event affected anchor: %#v, %v", anchor, err)
-	}
-
-	epoch := strconv.FormatInt(timeline.ObservationStart().UnixNano(), 10)
-	cursor := mustEncodeCapacityActivityCursor(t, epoch, capacityFilterFingerprint(url.Values{}), 0)
-	var firstDelta capacityapi.ActivityResponse
-	assertOK(t, get(t, "/api/capacity/activity?cursor="+url.QueryEscape(cursor)), &firstDelta)
-	if len(firstDelta.Items) != 2 || firstDelta.Items[0].Type != capacityapi.ActivityConfigChange || firstDelta.Items[1].Type != capacityapi.ActivityProvision || firstDelta.Items[1].State != capacityapi.ActivityCompleted {
-		t.Fatalf("delta activity = %#v, want config then completed provision", firstDelta.Items)
-	}
-	if firstDelta.Page.HasMore || firstDelta.Page.NextCursor != firstDelta.AnchorCursor {
-		t.Fatalf("unrelated Node events bounded the delta: page=%#v anchor=%q", firstDelta.Page, firstDelta.AnchorCursor)
-	}
-}
-
-func TestCapacityActivityNewerCursorIncludesLateTimestampArrival(t *testing.T) {
-	initCapacityContractDynamicState(t, true, true, capacityContractNodePool("general"))
-	timeline.ResetStore()
-	if err := timeline.InitStore(timeline.StoreConfig{Type: timeline.StoreTypeMemory, MaxSize: 100}); err != nil {
-		t.Fatalf("InitStore: %v", err)
-	}
-	t.Cleanup(func() {
-		timeline.ResetStore()
-		if err := timeline.InitStore(timeline.DefaultStoreConfig()); err != nil {
-			t.Fatalf("re-init global store: %v", err)
-		}
-	})
-	appendConfig := func(id string, timestamp time.Time) {
-		t.Helper()
-		event := pkgtimeline.TimelineEvent{
-			ID: id, Timestamp: timestamp, Source: pkgtimeline.SourceInformer,
-			Kind: karpenter.NodePoolKind, APIVersion: karpenter.APIVersionV1, Name: "general", UID: "general-uid",
-			EventType: pkgtimeline.EventTypeUpdate, ClusterContext: k8s.ActiveClusterContext(),
-			Diff: &k8score.DiffInfo{Summary: id, Fields: []k8score.FieldChange{{Path: "spec.weight"}}},
-		}
-		if err := timeline.GetStore().Append(context.Background(), event); err != nil {
-			t.Fatalf("append %s: %v", id, err)
-		}
-	}
-	appendConfig("initial", time.Now().UTC())
-	var initial capacityapi.ActivityResponse
-	assertOK(t, get(t, "/api/capacity/activity"), &initial)
-	if initial.AnchorCursor == "" {
-		t.Fatal("initial response omitted anchor cursor")
-	}
-	appendConfig("late-arrival", time.Now().UTC().Add(-48*time.Hour))
-	var delta capacityapi.ActivityResponse
-	assertOK(t, get(t, "/api/capacity/activity?cursor="+url.QueryEscape(initial.AnchorCursor)), &delta)
-	if len(delta.Items) != 1 || delta.Items[0].PrimaryReasonCode != "nodepool_spec_changed" || delta.Items[0].Evidence[0].RawMessage != "late-arrival" {
-		t.Fatalf("late arrival delta = %#v", delta.Items)
-	}
 }
 
 func initCapacityContractDynamicState(t *testing.T, discover, waitForSync bool, objects ...runtime.Object) {
@@ -1058,7 +1004,7 @@ func capacityContractNodePool(name string) *unstructured.Unstructured {
 
 func mustEncodeCapacityActivityCursor(t *testing.T, epoch, fingerprint string, seq int64) string {
 	t.Helper()
-	cursor, err := encodeCapacityActivityCursor(epoch, fingerprint, k8s.ActiveClusterContext(), seq, "newer")
+	cursor, err := encodeCapacityActivityCursor(epoch, fingerprint, k8s.ActiveClusterContext(), seq, "older")
 	if err != nil {
 		t.Fatalf("encode activity cursor: %v", err)
 	}

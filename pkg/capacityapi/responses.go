@@ -107,7 +107,6 @@ type ActivityResponse struct {
 	Items        []ActivityEpisode `json:"items"`
 	Page         PageInfo          `json:"page"`
 	CursorStatus CursorStatus      `json:"cursorStatus"`
-	AnchorCursor string            `json:"anchorCursor,omitempty"`
 	CursorGap    *ObservationGap   `json:"cursorGap,omitempty"`
 	Observation  ObservationWindow `json:"observation"`
 }

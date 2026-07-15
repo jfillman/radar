@@ -978,7 +978,14 @@ function capacityPageQuery(options?: CapacityPageQueryOptions): string {
   return query ? `?${query}` : ''
 }
 
-function capacityRefetchInterval(options: CapacityQueryOptions | undefined, enabled: boolean): number | false {
+function capacityRefetchInterval(
+  options: CapacityQueryOptions | undefined,
+  enabled: boolean,
+  cursor?: string,
+): number | false {
+  // A held cursor means the user deliberately paged forward — background
+  // polling there races membership changes and yanks them back to page 1.
+  if (cursor) return false
   return enabled ? (options?.refetchInterval ?? CAPACITY_REFRESH_INTERVAL_MS) : false
 }
 
@@ -1006,7 +1013,7 @@ export function useCapacityPools(options?: CapacityPageQueryOptions) {
     queryFn: ({ signal }) => fetchJSON<CapacityPoolListResponse>(`/capacity/pools${capacityPageQuery(options)}`, signal),
     enabled,
     staleTime: 15_000,
-    refetchInterval: capacityRefetchInterval(options, enabled),
+    refetchInterval: capacityRefetchInterval(options, enabled, options?.cursor),
     retry: shouldRetryCapacityQuery,
     placeholderData: (previous, previousQuery) => {
       const previousKey = previousQuery?.queryKey
@@ -1051,7 +1058,7 @@ export function useCapacityPoolMembers(
     ),
     enabled,
     staleTime: 15_000,
-    refetchInterval: capacityRefetchInterval(options, enabled),
+    refetchInterval: capacityRefetchInterval(options, enabled, options?.cursor),
     retry: shouldRetryCapacityQuery,
     placeholderData: (previous, previousQuery) => {
       const previousKey = previousQuery?.queryKey
@@ -1084,7 +1091,7 @@ export function useCapacityDemand(options?: CapacityDemandQueryOptions) {
     queryFn: ({ signal }) => fetchJSON<CapacityDemandResponse>(`/capacity/demand${query ? `?${query}` : ''}`, signal),
     enabled,
     staleTime: 15_000,
-    refetchInterval: capacityRefetchInterval(options, enabled),
+    refetchInterval: capacityRefetchInterval(options, enabled, options?.cursor),
     retry: shouldRetryCapacityQuery,
     placeholderData: (previous, previousQuery) => {
       const previousKey = previousQuery?.queryKey
@@ -1134,7 +1141,7 @@ export function useCapacityActivity(options?: CapacityActivityQueryOptions) {
     queryFn: ({ signal }) => fetchJSON<CapacityActivityResponse>(`/capacity/activity${query ? `?${query}` : ''}`, signal),
     enabled,
     staleTime: 15_000,
-    refetchInterval: capacityRefetchInterval(options, enabled),
+    refetchInterval: capacityRefetchInterval(options, enabled, options?.cursor),
     retry: shouldRetryCapacityQuery,
     placeholderData: (previous, previousQuery) => {
       const previousKey = previousQuery?.queryKey

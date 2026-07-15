@@ -39,7 +39,7 @@ func TestCapacityActivityObservationStartUsesRetainedMemoryEvidenceWithoutPredat
 func TestCapacityActivityCursorRoundTripAndFilterBinding(t *testing.T) {
 	filters := url.Values{"pool": {"general"}, "reason": {"launch"}}
 	fingerprint := capacityFilterFingerprint(filters)
-	encoded, err := encodeCapacityActivityCursor("epoch-a", fingerprint, "cluster-a", 42, "newer")
+	encoded, err := encodeCapacityActivityCursor("epoch-a", fingerprint, "cluster-a", 42, "older")
 	if err != nil {
 		t.Fatalf("encode cursor: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestCapacityActivityCursorRoundTripAndFilterBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode cursor: %v", err)
 	}
-	if decoded.Epoch != "epoch-a" || decoded.Seq != 42 || decoded.Direction != "newer" || decoded.FilterFingerprint != fingerprint || decoded.ClusterContext != "cluster-a" {
+	if decoded.Epoch != "epoch-a" || decoded.Seq != 42 || decoded.Direction != "older" || decoded.FilterFingerprint != fingerprint || decoded.ClusterContext != "cluster-a" {
 		t.Fatalf("decoded cursor = %#v", decoded)
 	}
 
@@ -85,9 +85,9 @@ func TestCapacityActivityRequestTracksExplicitSince(t *testing.T) {
 func TestCapacityActivityCursorRejectsMalformedPayload(t *testing.T) {
 	malformed := map[string]string{
 		"base64":        "%%%",
-		"unknown field": base64.RawURLEncoding.EncodeToString([]byte(`{"version":2,"epoch":"e","filterFingerprint":"f","seq":1,"direction":"newer","extra":true}`)),
-		"version":       base64.RawURLEncoding.EncodeToString([]byte(`{"version":1,"epoch":"e","filterFingerprint":"f","seq":1,"direction":"newer"}`)),
-		"negative seq":  base64.RawURLEncoding.EncodeToString([]byte(`{"version":2,"epoch":"e","filterFingerprint":"f","seq":-1,"direction":"newer"}`)),
+		"unknown field": base64.RawURLEncoding.EncodeToString([]byte(`{"version":2,"epoch":"e","filterFingerprint":"f","seq":1,"direction":"older","extra":true}`)),
+		"version":       base64.RawURLEncoding.EncodeToString([]byte(`{"version":1,"epoch":"e","filterFingerprint":"f","seq":1,"direction":"older"}`)),
+		"negative seq":  base64.RawURLEncoding.EncodeToString([]byte(`{"version":2,"epoch":"e","filterFingerprint":"f","seq":-1,"direction":"older"}`)),
 		"direction":     base64.RawURLEncoding.EncodeToString([]byte(`{"version":2,"epoch":"e","filterFingerprint":"f","seq":1,"direction":"sideways"}`)),
 	}
 	for name, cursor := range malformed {

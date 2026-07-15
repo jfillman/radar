@@ -312,41 +312,16 @@ func paginateCapacityKeyed[T any](keyed []capacityKeyedItem[T], request capacity
 	return result, nil
 }
 
+// capacitySnapshotFingerprint hashes MEMBERSHIP ONLY (the sorted item keys),
+// mirroring the demand endpoint. Keyset pagination on stable unique keys
+// cannot skip or duplicate items when values churn, so hashing item payloads
+// would only make cursors self-invalidate every metrics resample (~30s) and
+// bounce users off page ≥2 on any live cluster.
 func capacitySnapshotFingerprint[T any](items []capacityKeyedItem[T]) (string, error) {
 	hash := sha256.New()
 	for _, keyed := range items {
-		payload, err := json.Marshal(keyed.item)
-		if err != nil {
-			return "", fmt.Errorf("encode capacity page snapshot: %w", err)
-		}
-		var value any
-		if err := json.Unmarshal(payload, &value); err != nil {
-			return "", fmt.Errorf("normalize capacity page snapshot: %w", err)
-		}
-		stripCapacitySnapshotVolatileFields(value)
-		normalized, err := json.Marshal(value)
-		if err != nil {
-			return "", fmt.Errorf("encode normalized capacity page snapshot: %w", err)
-		}
 		hash.Write([]byte(keyed.key))
-		hash.Write([]byte{0})
-		hash.Write(normalized)
 		hash.Write([]byte{0})
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-func stripCapacitySnapshotVolatileFields(value any) {
-	switch typed := value.(type) {
-	case map[string]any:
-		delete(typed, "asOf")
-		delete(typed, "lastSeen")
-		for _, child := range typed {
-			stripCapacitySnapshotVolatileFields(child)
-		}
-	case []any:
-		for _, child := range typed {
-			stripCapacitySnapshotVolatileFields(child)
-		}
-	}
 }

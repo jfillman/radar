@@ -661,7 +661,10 @@ func TestDemandBoundsEvaluationEvidenceAndSignature(t *testing.T) {
 		t.Fatalf("constraint boundedness = %+v, len=%d", group.SchedulingSignature.ConstraintsMeta, len(group.SchedulingSignature.Constraints))
 	}
 	evaluation := group.PoolEvaluations[0]
-	if !evaluation.EvidenceMeta.Truncated || evaluation.EvidenceMeta.Total != defaultDemandEvidenceLimit+5 || len(evaluation.Evidence) != defaultDemandEvidenceLimit {
+	// Evidence: every untolerated taint plus every undeclared custom label
+	// (undeclared non-provider labels are incompatibility evidence, not unknowns).
+	wantEvidenceTotal := (defaultDemandEvidenceLimit + 5) + (defaultDemandConstraintLimit + 5)
+	if !evaluation.EvidenceMeta.Truncated || evaluation.EvidenceMeta.Total != wantEvidenceTotal || len(evaluation.Evidence) != defaultDemandEvidenceLimit {
 		t.Fatalf("evidence boundedness = %+v, len=%d", evaluation.EvidenceMeta, len(evaluation.Evidence))
 	}
 	if !evaluation.UnknownPredicatesMeta.Truncated || evaluation.UnknownPredicatesMeta.Total < defaultDemandUnknownLimit+5 || len(evaluation.UnknownPredicates) != defaultDemandUnknownLimit {
@@ -907,4 +910,88 @@ func assertDemandUnknown(t *testing.T, evaluation capacityapi.PoolEvaluation, pr
 		}
 	}
 	t.Fatalf("unknown predicate %q absent from %#v", predicate, evaluation.UnknownPredicates)
+}
+
+func TestDemandUndeclaredCustomLabelIsIncompatibleNotUnknown(t *testing.T) {
+	ready := true
+	pool := demandTestPool("general", &ready, demandPoolSpec(nil, nil, nil, nil, nil), nil)
+	pod := demandTestPod("worker", "500m")
+	// The classic Karpenter misconfiguration: Karpenter only applies labels
+	// declared in pool requirements/template labels, so this can never match.
+	pod.Spec.NodeSelector = map[string]string{"team": "ml"}
+	group := BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{pod}, Pools: []DemandPoolInput{{NodePool: pool}}})[0]
+	if group.PoolEvaluations[0].Result != capacityapi.PoolIncompatible {
+		t.Fatalf("undeclared custom label = %q, want incompatible", group.PoolEvaluations[0].Result)
+	}
+
+	// Provider/well-known labels stay honestly unknown — the offering
+	// catalogue can supply them without pool declaration.
+	pod.Spec.NodeSelector = map[string]string{"node.kubernetes.io/instance-type": "m7g.large"}
+	group = BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{pod}, Pools: []DemandPoolInput{{NodePool: pool}}})[0]
+	if group.PoolEvaluations[0].Result != capacityapi.PoolEvaluationUnknown {
+		t.Fatalf("provider offering label = %q, want unknown", group.PoolEvaluations[0].Result)
+	}
+}
+
+func TestDemandInstanceShapeExceedingObservedCapacityIsUnknown(t *testing.T) {
+	ready := true
+	pool := demandTestPool("general", &ready, demandPoolSpec(nil, nil, nil, nil, nil), nil)
+	largest := resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "48"})
+
+	oversized := demandTestPod("oversized", "96")
+	group := BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{oversized}, Pools: []DemandPoolInput{{NodePool: pool, LargestObservedCapacity: largest}}})[0]
+	evaluation := group.PoolEvaluations[0]
+	if evaluation.Result != capacityapi.PoolEvaluationUnknown {
+		t.Fatalf("96-CPU pod vs 48-CPU largest member = %q, want unknown (never a bare compatible)", evaluation.Result)
+	}
+	found := false
+	for _, predicate := range evaluation.UnknownPredicates {
+		if predicate == "instanceShape.cpu" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("unknown predicates = %v, want instanceShape.cpu", evaluation.UnknownPredicates)
+	}
+
+	fits := demandTestPod("fits", "8")
+	group = BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{fits}, Pools: []DemandPoolInput{{NodePool: pool, LargestObservedCapacity: largest}}})[0]
+	if group.PoolEvaluations[0].Result != capacityapi.PoolDeclaredCompatible {
+		t.Fatalf("fitting pod = %q, want declared compatible", group.PoolEvaluations[0].Result)
+	}
+
+	// No observed members -> nothing can be inferred; no fabricated unknown.
+	group = BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{demandTestPod("fresh", "96")}, Pools: []DemandPoolInput{{NodePool: pool}}})[0]
+	if group.PoolEvaluations[0].Result != capacityapi.PoolDeclaredCompatible {
+		t.Fatalf("no observed members = %q, want declared compatible", group.PoolEvaluations[0].Result)
+	}
+}
+
+func TestAnyPoolDeclaredCompatibleIsFailClosed(t *testing.T) {
+	ready := true
+	compatible := demandTestPool("compatible", &ready, demandPoolSpec(nil, nil, nil, nil, nil), nil)
+	tainted := demandTestPool("tainted", &ready, demandPoolSpec(nil, []any{map[string]any{"key": "dedicated", "effect": string(corev1.TaintEffectNoSchedule)}}, nil, nil, nil), nil)
+
+	pod := demandTestPod("worker", "500m")
+	// The real detection path only correlates pods the scheduler has rejected.
+	pod.Status.Conditions = []corev1.PodCondition{{
+		Type: corev1.PodScheduled, Status: corev1.ConditionFalse,
+		Reason: corev1.PodReasonUnschedulable, Message: "0/3 nodes are available: 3 Insufficient cpu.",
+	}}
+	models := BuildDemandGroupModels(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{pod}})
+	if len(models) != 1 {
+		t.Fatalf("models = %d, want 1", len(models))
+	}
+	if !AnyPoolDeclaredCompatible(models[0], []DemandPoolInput{{NodePool: compatible}, {NodePool: tainted}}) {
+		t.Fatal("permissive pool should qualify as declared compatible")
+	}
+	if AnyPoolDeclaredCompatible(models[0], []DemandPoolInput{{NodePool: tainted}}) {
+		t.Fatal("taint-blocked pool must not qualify")
+	}
+	// A NodeClass whose readiness is unknown keeps the pool at unknown — the
+	// fail-closed floor: uncertainty never qualifies.
+	withClass := demandTestPool("with-class", &ready, demandPoolSpecWithNodeClass(), nil)
+	if AnyPoolDeclaredCompatible(models[0], []DemandPoolInput{{NodePool: withClass}}) {
+		t.Fatal("unknown NodeClass readiness must not qualify")
+	}
 }

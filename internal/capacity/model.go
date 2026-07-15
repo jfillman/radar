@@ -155,7 +155,10 @@ func Build(snapshot Snapshot) Model {
 			continue
 		}
 		if pod.Spec.NodeName == "" {
-			if pod.DeletionTimestamp == nil && !isDaemonSetPod(pod) {
+			// Gated pods are excluded to match aggregate demand: the scheduler
+			// (and Karpenter) will not act on them until a controller lifts
+			// the gates, so counting them as pending demand misleads.
+			if pod.DeletionTimestamp == nil && !isDaemonSetPod(pod) && !isSchedulingGatedPod(pod) {
 				model.PendingPodCount++
 			}
 			continue

@@ -634,12 +634,10 @@ export function PoolEvaluationBadge({
 }: {
   result: CapacityDemandGroup["poolEvaluations"][number]["result"];
 }) {
-  const severity =
-    result === "declared_compatible"
-      ? "success"
-      : result === "incompatible"
-        ? "warning"
-        : "neutral";
+  // Declared-compatible is deliberately NOT success-styled: the pod is still
+  // pending, and the claim is about declared constraints only (no instance
+  // shape / bin-packing simulation) — green would overpromise placement.
+  const severity = result === "incompatible" ? "warning" : "neutral";
   return (
     <Badge severity={severity} size="sm">
       {result === "declared_compatible"

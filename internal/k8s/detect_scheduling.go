@@ -8,11 +8,13 @@ import (
 	"strings"
 	"time"
 
+	capacitymodel "github.com/skyhook-io/radar/internal/capacity"
 	"github.com/skyhook-io/radar/pkg/karpenter"
 	"github.com/skyhook-io/radar/pkg/scheduling"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -301,6 +303,7 @@ func DetectSchedulingProblems(cache *ResourceCache, namespace string) []Detectio
 	var problems []Detection
 	now := time.Now()
 	nodes := schedulingNodeFacts(cache)
+	karpenterPools := karpenterDemandPoolInputs(cache)
 
 	for _, pods := range listPodsByNamespace(cache, namespace) {
 		for _, pod := range pods {
@@ -339,7 +342,7 @@ func DetectSchedulingProblems(cache *ResourceCache, namespace string) []Detectio
 				OwnerGroup:       ownerGroup,
 				OwnerKind:        ownerKind,
 				OwnerName:        ownerName,
-				CapacityRelevant: podRequiresKarpenterNodePool(pod),
+				CapacityRelevant: podRequiresKarpenterNodePool(pod) || podHasDeclaredCompatibleKarpenterPool(pod, karpenterPools),
 			})
 		}
 	}
@@ -615,6 +618,96 @@ func nonEmptySchedulerSummaryParts(parts []string) []string {
 		}
 	}
 	return out
+}
+
+// karpenterDemandPoolInputs loads NodePools (+ their NodeClass readiness and
+// largest observed member capacity) for demand correlation. Fail-closed by
+// construction: any gap — Karpenter absent, cache unsynced, class unresolved —
+// yields inputs that evaluate unknown, never declared-compatible, so the
+// capacity link cannot fire on uncertainty.
+func karpenterDemandPoolInputs(cache *ResourceCache) []capacitymodel.DemandPoolInput {
+	discovery := GetResourceDiscovery()
+	dynamicCache := GetDynamicResourceCache()
+	if discovery == nil || dynamicCache == nil {
+		return nil
+	}
+	poolGVR, found := discovery.GetGVRWithGroup(karpenter.NodePoolKind, karpenter.Group)
+	if !found || !dynamicCache.IsSynced(poolGVR) {
+		return nil
+	}
+	pools, err := dynamicCache.List(poolGVR, "")
+	if err != nil || len(pools) == 0 {
+		return nil
+	}
+	var claims []*unstructured.Unstructured
+	if claimGVR, ok := discovery.GetGVRWithGroup(karpenter.NodeClaimKind, karpenter.Group); ok && dynamicCache.IsSynced(claimGVR) {
+		claims, _ = dynamicCache.List(claimGVR, "")
+	}
+	var nodes []*corev1.Node
+	if nodeLister := cache.Nodes(); nodeLister != nil {
+		nodes, _ = nodeLister.List(labels.Everything())
+	}
+	largestByPool := capacitymodel.LargestObservedCapacityByPool(nodes, claims)
+
+	classReadiness := func(pool *unstructured.Unstructured) *bool {
+		ref, ok := karpenter.NodeClassRefForNodePool(pool)
+		if !ok {
+			return nil
+		}
+		classGVR, ok := discovery.GetGVRWithGroup(ref.Kind, ref.Group)
+		if !ok || !dynamicCache.IsSynced(classGVR) {
+			return nil
+		}
+		classes, err := dynamicCache.List(classGVR, "")
+		if err != nil {
+			return nil
+		}
+		for _, class := range classes {
+			if class != nil && class.GetName() == ref.Name {
+				switch karpenter.ResourceReadiness(class) {
+				case karpenter.ReadinessReady:
+					ready := true
+					return &ready
+				case karpenter.ReadinessNotReady:
+					ready := false
+					return &ready
+				}
+				return nil
+			}
+		}
+		return nil
+	}
+
+	inputs := make([]capacitymodel.DemandPoolInput, 0, len(pools))
+	for _, pool := range pools {
+		if pool == nil || pool.GetName() == "" {
+			continue
+		}
+		inputs = append(inputs, capacitymodel.DemandPoolInput{
+			NodePool:                pool,
+			ProvisionedKnown:        karpenter.NodePoolStatusResources(pool) != nil,
+			NodeClassReady:          classReadiness(pool),
+			LargestObservedCapacity: largestByPool[pool.GetName()],
+		})
+	}
+	return inputs
+}
+
+// podHasDeclaredCompatibleKarpenterPool reports whether at least one Karpenter
+// NodePool evaluates declared-compatible for this pod's demand group — the
+// demand-correlated expansion of capacity relevance. The structural pin check
+// stays as the other qualifying path; this one covers the archetypal case
+// (plain "Insufficient cpu" pods in a dynamic-pool cluster) that the pin alone
+// never catches.
+func podHasDeclaredCompatibleKarpenterPool(pod *corev1.Pod, pools []capacitymodel.DemandPoolInput) bool {
+	if pod == nil || len(pools) == 0 {
+		return false
+	}
+	groups := capacitymodel.BuildDemandGroupModels(capacitymodel.DemandInput{GeneratedAt: time.Now(), Pods: []*corev1.Pod{pod}})
+	if len(groups) != 1 {
+		return false
+	}
+	return capacitymodel.AnyPoolDeclaredCompatible(groups[0], pools)
 }
 
 // podRequiresKarpenterNodePool reports whether the pod STRUCTURALLY pins itself

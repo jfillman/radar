@@ -36,6 +36,11 @@ type DemandPoolInput struct {
 	ProvisionedKnown        bool
 	StaticCapacityAvailable *bool
 	UnknownPredicates       []string
+	// LargestObservedCapacity holds, per resource, the largest single-member
+	// capacity ever observed for this pool (node allocatable / claim capacity).
+	// A pod requesting more than that cannot be proven placeable — instance
+	// shapes aren't simulated — so compatibility degrades to unknown.
+	LargestObservedCapacity corev1.ResourceList
 }
 
 type DemandInput struct {
@@ -270,6 +275,77 @@ func EvaluateDemandGroupModels(models []DemandGroupModel, pools []DemandPoolInpu
 		result = append(result, group)
 	}
 	return result
+}
+
+// instanceShapeUnknowns records an unknown per resource whose per-pod request
+// exceeds the largest single-member capacity this pool was ever observed to
+// run. Instance shapes are not simulated (no provider offering catalogue), so
+// such a pod cannot be proven placeable — a bare "declared compatible" there
+// would be an overclaim in exactly the case the honesty framing exists for.
+// With no observed members nothing can be inferred, so nothing is added.
+func instanceShapeUnknowns(requests corev1.ResourceList, largest corev1.ResourceList) []string {
+	if len(largest) == 0 || len(requests) == 0 {
+		return nil
+	}
+	var unknown []string
+	for name, request := range requests {
+		if capacity, ok := largest[name]; ok && request.Cmp(capacity) > 0 {
+			unknown = append(unknown, "instanceShape."+string(name))
+		}
+	}
+	sort.Strings(unknown)
+	return unknown
+}
+
+// LargestObservedCapacityByPool computes, per pool, the per-resource maximum
+// single-member capacity from observed nodes (allocatable) and claims
+// (status.capacity). Claim capacity slightly overstates the schedulable figure
+// versus allocatable — acceptable here: it can only under-report shape
+// mismatches, never fabricate one.
+func LargestObservedCapacityByPool(nodes []*corev1.Node, claims []*unstructured.Unstructured) map[string]corev1.ResourceList {
+	largest := map[string]corev1.ResourceList{}
+	record := func(pool string, resources corev1.ResourceList) {
+		if pool == "" || len(resources) == 0 {
+			return
+		}
+		entry := largest[pool]
+		if entry == nil {
+			entry = corev1.ResourceList{}
+			largest[pool] = entry
+		}
+		for name, quantity := range resources {
+			if existing, ok := entry[name]; !ok || quantity.Cmp(existing) > 0 {
+				entry[name] = quantity.DeepCopy()
+			}
+		}
+	}
+	for _, node := range nodes {
+		if node != nil {
+			record(node.Labels[karpenter.NodePoolLabelKey], node.Status.Allocatable)
+		}
+	}
+	for _, claim := range claims {
+		if claim != nil {
+			record(claim.GetLabels()[karpenter.NodePoolLabelKey], karpenter.NodeClaimCapacity(claim))
+		}
+	}
+	return largest
+}
+
+// AnyPoolDeclaredCompatible reports whether at least one pool evaluates
+// declared-compatible for a demand group — the fail-closed correlation floor
+// for marking scheduling issues capacity-relevant. Anything short of a clean
+// declared-compatible (unknowns included) does not qualify.
+func AnyPoolDeclaredCompatible(model DemandGroupModel, pools []DemandPoolInput) bool {
+	if model.Group.State != capacityapi.DemandAwaitingCapacity {
+		return false
+	}
+	for _, pool := range sortedDemandPoolInputs(pools) {
+		if evaluateDemandPool(model.scheduling, model.requests, pool).Result == capacityapi.PoolDeclaredCompatible {
+			return true
+		}
+	}
+	return false
 }
 
 func ClassifyDemandGroupModels(models []DemandGroupModel, pools []DemandPoolInput) {
@@ -532,6 +608,7 @@ func evaluateDemandPool(model demandSchedulingModel, requests corev1.ResourceLis
 	limitEvidence, limitUnknown := evaluateDemandLimits(pool, spec, requests, input.ProvisionedKnown)
 	evidence.merge(limitEvidence)
 	unknown = append(unknown, limitUnknown...)
+	unknown = append(unknown, instanceShapeUnknowns(requests, input.LargestObservedCapacity)...)
 
 	if spec.Replicas != nil {
 		switch {
@@ -678,7 +755,21 @@ func evaluateDemandSelectorTerm(podRequirements []demandRequirement, poolRequire
 			continue
 		}
 		if requirementNeedsPresentLabel(podForKey) && !requirementNeedsPresentLabel(poolForKey) {
-			unknown = append(unknown, "providerOfferings."+key)
+			// Provider/well-known labels can appear on nodes without the pool
+			// declaring them (the offering catalogue supplies them) — honest
+			// unknown. An arbitrary label the pool never declares is different:
+			// Karpenter only applies labels from pool requirements/template
+			// labels, so it will never provision a node carrying it. This is
+			// the classic misconfiguration and must read incompatible.
+			if isProviderOfferingLabel(key) {
+				unknown = append(unknown, "providerOfferings."+key)
+				continue
+			}
+			evidence.add(
+				"selectorRequirement", firstRequirementPath(podForKey), formatRequirements(podForKey),
+				[]string{"NodePool declares label " + key},
+				"The Pod requires a node label this NodePool never declares — Karpenter only applies labels from the pool's requirements or template labels.",
+			)
 			continue
 		}
 		if isProviderOfferingLabel(key) && !fixedLabels[key] {
@@ -1148,9 +1239,15 @@ func demandNumericValueAllowed(value string, greaterThan, lessThan *int64) bool 
 }
 
 func isProviderOfferingLabel(key string) bool {
-	return key == karpenter.CapacityTypeLabelKey || key == instanceTypeLabel || key == zoneLabel ||
-		key == "topology.kubernetes.io/region" || key == architectureLabel || key == "kubernetes.io/os" ||
-		strings.HasPrefix(key, "karpenter.k8s.aws/") || strings.HasPrefix(key, "eks.amazonaws.com/")
+	return key == karpenter.CapacityTypeLabelKey ||
+		strings.HasPrefix(key, "kubernetes.io/") ||
+		strings.HasPrefix(key, "node.kubernetes.io/") ||
+		strings.HasPrefix(key, "topology.kubernetes.io/") ||
+		strings.HasPrefix(key, "karpenter.sh/") ||
+		strings.HasPrefix(key, "karpenter.k8s.aws/") || strings.HasPrefix(key, "eks.amazonaws.com/") ||
+		strings.HasPrefix(key, "karpenter.azure.com/") || strings.HasPrefix(key, "cloud.google.com/") ||
+		strings.HasPrefix(key, "topology.gke.io/") || strings.HasPrefix(key, "topology.ebs.csi.aws.com/") ||
+		strings.HasPrefix(key, "topology.disk.csi.azure.com/")
 }
 
 func tolerationsTolerateTaint(tolerations []corev1.Toleration, taint corev1.Taint) bool {

@@ -17,9 +17,9 @@ export function CapacityCard({ onNavigate }: { onNavigate: () => void }) {
   if (!karpenterAvailable || !data || data.state !== 'available') return null
 
   const actions = data.summary.actions ?? []
-  const worst = actions.find((a) => a.severity === 'critical') ?? actions.find((a) => a.severity === 'warning')
+  const worst = actions.find((a) => a.highestSeverity === 'critical') ?? actions.find((a) => a.highestSeverity === 'warning')
   const headerTone = worst
-    ? worst.severity === 'critical'
+    ? worst.highestSeverity === 'critical'
       ? 'text-red-500'
       : 'text-amber-400'
     : 'text-emerald-500'
@@ -65,9 +65,9 @@ export function CapacityCard({ onNavigate }: { onNavigate: () => void }) {
                   <span
                     className={clsx(
                       'h-1.5 w-1.5 shrink-0 rounded-full',
-                      action.severity === 'critical'
+                      action.highestSeverity === 'critical'
                         ? 'bg-red-500'
-                        : action.severity === 'warning'
+                        : action.highestSeverity === 'warning'
                           ? 'bg-amber-400'
                           : 'bg-sky-400',
                     )}

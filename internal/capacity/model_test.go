@@ -232,6 +232,7 @@ func TestBuildUnallocatedRequestCertaintyUsesIntervalDirection(t *testing.T) {
 		nodeCoverage capacityapi.SourceCoverage
 		podCoverage  capacityapi.SourceCoverage
 		want         capacityapi.Certainty
+		wantAbsent   bool
 	}{
 		{
 			name:         "complete operands are exact",
@@ -242,26 +243,29 @@ func TestBuildUnallocatedRequestCertaintyUsesIntervalDirection(t *testing.T) {
 		{
 			name:         "exact allocatable minus lower-bound requests is an upper bound",
 			nodeCoverage: capacityapi.NewSourceCoverage(capacityapi.CoverageAvailable, capacityapi.CoverageScopeCluster),
-			podCoverage:  capacityapi.NewSourceCoverage(capacityapi.CoveragePartial, capacityapi.CoverageScopeAllAuthorizedNamespaces),
+			podCoverage:  capacityTestPartialCoverage(capacityapi.CoverageScopeAllAuthorizedNamespaces, 1),
 			want:         capacityapi.CertaintyUpperBound,
 		},
 		{
 			name:         "lower-bound allocatable minus exact requests is a lower bound",
-			nodeCoverage: capacityapi.NewSourceCoverage(capacityapi.CoveragePartial, capacityapi.CoverageScopeCluster),
+			nodeCoverage: capacityTestPartialCoverage(capacityapi.CoverageScopeCluster, 1),
 			podCoverage:  capacityapi.NewSourceCoverage(capacityapi.CoverageAvailable, capacityapi.CoverageScopeCluster),
 			want:         capacityapi.CertaintyLowerBound,
 		},
 		{
 			name:         "two lower bounds have no directional guarantee",
-			nodeCoverage: capacityapi.NewSourceCoverage(capacityapi.CoveragePartial, capacityapi.CoverageScopeCluster),
-			podCoverage:  capacityapi.NewSourceCoverage(capacityapi.CoveragePartial, capacityapi.CoverageScopeAllAuthorizedNamespaces),
+			nodeCoverage: capacityTestPartialCoverage(capacityapi.CoverageScopeCluster, 1),
+			podCoverage:  capacityTestPartialCoverage(capacityapi.CoverageScopeAllAuthorizedNamespaces, 1),
 			want:         capacityapi.CertaintyUnknown,
 		},
 		{
-			name:         "unknown operand makes the result unknown",
+			// A difference whose minuend was never observed is not emitted at
+			// all — with Nodes denied and claim-attributed pods it would be a
+			// meaningless negative number on the ledger.
+			name:         "unobserved allocatable emits no difference",
 			nodeCoverage: capacityapi.NewSourceCoverage(capacityapi.CoverageDenied, capacityapi.CoverageScopeCluster),
 			podCoverage:  capacityapi.NewSourceCoverage(capacityapi.CoverageAvailable, capacityapi.CoverageScopeCluster),
-			want:         capacityapi.CertaintyUnknown,
+			wantAbsent:   true,
 		},
 	}
 
@@ -276,6 +280,12 @@ func TestBuildUnallocatedRequestCertaintyUsesIntervalDirection(t *testing.T) {
 
 			model := Build(Snapshot{GeneratedAt: capacityTestTime(), NodePools: []*unstructured.Unstructured{pool}, Nodes: []*corev1.Node{node}, Pods: []*corev1.Pod{pod}, Coverage: coverage})
 			observation := capacityTestMustPool(t, model, "compute").Observation.Ledger.AggregateUnallocatedRequests
+			if tt.wantAbsent {
+				if observation != nil {
+					t.Fatalf("unallocated = %v, want absent when allocatable was unobserved", observation)
+				}
+				return
+			}
 			if observation == nil || observation.Certainty != tt.want {
 				t.Fatalf("unallocated certainty = %v, want %q", observation, tt.want)
 			}
@@ -299,8 +309,8 @@ func TestBuildLifecycleCountsFollowSourceAvailability(t *testing.T) {
 
 	t.Run("partial sources expose lower-bound zero", func(t *testing.T) {
 		coverage := capacityTestCoverage()
-		coverage[capacityapi.CoverageNodeClaims] = capacityapi.NewSourceCoverage(capacityapi.CoveragePartial, capacityapi.CoverageScopeCluster)
-		coverage[capacityapi.CoverageNodes] = capacityapi.NewSourceCoverage(capacityapi.CoveragePartial, capacityapi.CoverageScopeCluster)
+		coverage[capacityapi.CoverageNodeClaims] = capacityTestPartialCoverage(capacityapi.CoverageScopeCluster, 0)
+		coverage[capacityapi.CoverageNodes] = capacityTestPartialCoverage(capacityapi.CoverageScopeCluster, 0)
 		model := Build(Snapshot{GeneratedAt: capacityTestTime(), NodePools: []*unstructured.Unstructured{pool}, Coverage: coverage})
 		observation := capacityTestMustPool(t, model, "compute").Observation
 		if observation.Claims == nil || observation.Nodes == nil || observation.Claims.Total != 0 || observation.Nodes.Total != 0 {
@@ -427,7 +437,8 @@ func TestBuildActualUsageUsesOnlyCoveredAllocatable(t *testing.T) {
 	if usage.CoveredNodes != 2 || usage.TotalNodes != 3 {
 		t.Errorf("metrics coverage = %d/%d nodes, want 2/3", usage.CoveredNodes, usage.TotalNodes)
 	}
-	capacityTestAssertObservation(t, &usage.Quantity, capacityapi.CertaintyExact, capacityapi.GranularityAggregate, map[string]string{
+	// Only 2 of 3 nodes had samples — pool usage is a lower bound, never "=".
+	capacityTestAssertObservation(t, &usage.Quantity, capacityapi.CertaintyLowerBound, capacityapi.GranularityAggregate, map[string]string{
 		"cpu": "5", "memory": "10Gi",
 	})
 	capacityTestAssertObservation(t, &usage.CoveredAllocatable, capacityapi.CertaintyExact, capacityapi.GranularityAggregate, map[string]string{
@@ -469,7 +480,13 @@ func TestBuildClaimLifecycleStagesAndInFlightCapacity(t *testing.T) {
 		capacityTestClaimWithConditions("registered", pool, []map[string]any{{"type": "Launched", "status": "True"}, {"type": "Registered", "status": "True"}}),
 		capacityTestClaimWithConditions("initialized", pool, []map[string]any{{"type": "Initialized", "status": "True"}}),
 		capacityTestClaimWithConditions("ready", pool, []map[string]any{{"type": "Ready", "status": "True"}}),
-		capacityTestClaimWithConditions("failed", pool, []map[string]any{{"type": "Launched", "status": "False", "reason": "LaunchFailed"}}),
+		// Real Karpenter keeps a failed launch at status=Unknown with a failure
+		// reason; status=False is reserved for hard invariant failures like
+		// Registered=False/MultipleNodesFound. Both shapes must read as Failed,
+		// while Unknown with an in-progress reason (NodeNotFound) must not.
+		capacityTestClaimWithConditions("failed", pool, []map[string]any{{"type": "Launched", "status": "Unknown", "reason": "LaunchFailed"}}),
+		capacityTestClaimWithConditions("multiple-nodes", pool, []map[string]any{{"type": "Launched", "status": "True"}, {"type": "Registered", "status": "False", "reason": "MultipleNodesFound"}}),
+		capacityTestClaimWithConditions("stuck-registering", pool, []map[string]any{{"type": "Launched", "status": "True"}, {"type": "Registered", "status": "Unknown", "reason": "NodeNotFound"}}),
 		capacityTestClaimWithConditions("ready-with-unrelated-error", pool, []map[string]any{{"type": "Ready", "status": "True"}, {"type": "Consistency", "status": "False", "reason": "ReconciliationError"}}),
 		capacityTestClaimWithConditions("terminating", pool, []map[string]any{{"type": "Ready", "status": "True"}}),
 	}
@@ -499,6 +516,7 @@ func TestBuildClaimLifecycleStagesAndInFlightCapacity(t *testing.T) {
 		"pending": capacityapi.ClaimStagePending, "launched": capacityapi.ClaimStageLaunched,
 		"registered": capacityapi.ClaimStageRegistered, "initialized": capacityapi.ClaimStageInitialized,
 		"ready": capacityapi.ClaimStageReady, "failed": capacityapi.ClaimStageFailed,
+		"multiple-nodes": capacityapi.ClaimStageFailed, "stuck-registering": capacityapi.ClaimStageLaunched,
 		"ready-with-unrelated-error": capacityapi.ClaimStageReady, "terminating": capacityapi.ClaimStageTerminating,
 	}
 	for name, want := range wantStages {
@@ -510,11 +528,11 @@ func TestBuildClaimLifecycleStagesAndInFlightCapacity(t *testing.T) {
 	if summary == nil {
 		t.Fatal("claim lifecycle summary is nil with available claim coverage")
 	}
-	if summary.Total != 8 || summary.Pending != 1 || summary.Launched != 1 || summary.Registered != 1 || summary.Initialized != 1 || summary.Ready != 2 || summary.Failed != 1 || summary.Terminating != 1 {
+	if summary.Total != 10 || summary.Pending != 1 || summary.Launched != 2 || summary.Registered != 1 || summary.Initialized != 1 || summary.Ready != 2 || summary.Failed != 2 || summary.Terminating != 1 {
 		t.Errorf("claim lifecycle summary = %+v", summary)
 	}
 	capacityTestAssertObservation(t, got.Observation.Ledger.InFlightCapacity, capacityapi.CertaintyExact, capacityapi.GranularityAggregate, map[string]string{
-		"cpu": "2", "example.com/fpga": "2",
+		"cpu": "3", "example.com/fpga": "3",
 	})
 }
 
@@ -561,6 +579,12 @@ func TestBuildAttributesScheduledPodsThroughVisibleClaimsWhenNodesAreDenied(t *t
 	}
 	if got.Observation.Ledger.InFlightCapacity != nil {
 		t.Fatalf("registered claim with status.nodeName counted in flight: %#v", got.Observation.Ledger.InFlightCapacity)
+	}
+	// With Nodes denied, allocatable and allocatable−requests must be absent —
+	// emitting the difference here would fabricate a negative "unallocated".
+	if got.Observation.Ledger.Allocatable != nil || got.Observation.Ledger.AggregateUnallocatedRequests != nil {
+		t.Fatalf("nodes-denied ledger emitted allocatable=%#v unallocated=%#v, want both absent",
+			got.Observation.Ledger.Allocatable, got.Observation.Ledger.AggregateUnallocatedRequests)
 	}
 	claimMember := capacityTestMember(t, got.Claims, "registered")
 	if claimMember.Claim == nil || claimMember.Claim.Node != nil || claimMember.Claim.NodeName != "hidden-node" {
@@ -668,6 +692,15 @@ func TestBuildBoundsWorkloadNodeReferences(t *testing.T) {
 
 func capacityTestTime() time.Time {
 	return time.Date(2026, time.July, 13, 8, 0, 0, 0, time.UTC)
+}
+
+// capacityTestPartialCoverage mirrors real partial producers, which always
+// carry an item count — partial without one means "nothing was listed" and is
+// deliberately treated as unobserved.
+func capacityTestPartialCoverage(scope capacityapi.CoverageScope, itemCount int) capacityapi.SourceCoverage {
+	coverage := capacityapi.NewSourceCoverage(capacityapi.CoveragePartial, scope)
+	coverage.ItemCount = &itemCount
+	return coverage
 }
 
 func capacityTestCoverage() capacityapi.CoverageBySource {

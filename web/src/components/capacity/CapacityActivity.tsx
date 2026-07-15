@@ -212,7 +212,10 @@ export function CapacityActivity({
             </span>
           </div>
           <div className="mt-2">
-            <ScopeBadges coverage={response.coverage} />
+            <ScopeBadges
+              coverage={response.coverage}
+              source="karpenterObjectEvents"
+            />
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -506,6 +509,13 @@ function ActivityEpisodeCard({
               {activityTypeLabel(episode.type)}
             </Badge>
             <ActivityStateBadge state={episode.state} />
+            {!episode.evidence.some((item) => item.relationship === "direct") && (
+              <WithTooltip tip="No controller-recorded cause — this episode was inferred by correlating event text. Expand for the raw evidence.">
+                <Badge severity="neutral" size="sm">
+                  inferred
+                </Badge>
+              </WithTooltip>
+            )}
             <span className="min-w-0 truncate font-medium text-theme-text-primary">
               {episode.summary}
             </span>

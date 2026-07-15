@@ -16,6 +16,7 @@ import (
 
 const (
 	ReasonKarpenterNodePoolNotReady            = "NodePoolNotReady"
+	ReasonKarpenterNodeRegistrationUnhealthy   = "NodePoolNodeRegistrationUnhealthy"
 	ReasonKarpenterNodeClassNotReady           = "NodeClassNotReady"
 	ReasonKarpenterNodeClassNotFound           = "NodeClassNotFound"
 	ReasonKarpenterNodeClassKindNotInstalled   = "NodeClassKindNotInstalled"
@@ -75,6 +76,9 @@ func detectKarpenterIssues(p Provider, f Filters) ([]Issue, map[string]bool) {
 		owned[resourceKey(karpenter.Group, karpenter.NodePoolKind, pool.GetNamespace(), pool.GetName())] = true
 		if issue, ok := karpenterNotReadyIssue(poolsInventory.GVR, karpenter.NodePoolKind, pool, ReasonKarpenterNodePoolNotReady,
 			"Inspect the NodePool conditions and its referenced NodeClass, then resolve the controller-reported error."); ok {
+			out = append(out, issue)
+		}
+		if issue, ok := karpenterRegistrationUnhealthyIssue(poolsInventory.GVR, pool); ok {
 			out = append(out, issue)
 		}
 	}
@@ -238,6 +242,24 @@ func karpenterNotReadyIssue(gvr schema.GroupVersionResource, kind string, obj *u
 	return newKarpenterConditionIssue(gvr, kind, obj, condition, reason, cause, action), true
 }
 
+// karpenterRegistrationUnhealthyIssue surfaces NodePool NodeRegistrationHealthy=False.
+// Karpenter deliberately keeps this condition outside the pool's aggregate Ready,
+// so a pool can look Ready while every launched node fails to register — and the
+// failing NodeClaims themselves are deleted at the registration timeout, leaving
+// this condition as the only durable trace.
+func karpenterRegistrationUnhealthyIssue(gvr schema.GroupVersionResource, pool *unstructured.Unstructured) (Issue, bool) {
+	condition := karpenter.NodePoolCondition(pool, karpenter.NodeRegistrationHealthyConditionType)
+	if condition == nil || condition.Status != metav1.ConditionFalse {
+		return Issue{}, false
+	}
+	if pool.GetGeneration() > 0 && condition.ObservedGeneration > 0 && condition.ObservedGeneration < pool.GetGeneration() {
+		return Issue{}, false
+	}
+	cause := "The NodePool's NodeRegistrationHealthy condition is False: recently launched nodes failed to register before the registration timeout. This signal is outside the pool's Ready condition, so the pool can report Ready while launches keep failing."
+	action := "Inspect recent NodeClaims and the Karpenter controller logs for launch or registration errors (user data, networking, instance profile/credentials), then fix the NodeClass or pool template."
+	return newKarpenterConditionIssue(gvr, karpenter.NodePoolKind, pool, condition, ReasonKarpenterNodeRegistrationUnhealthy, cause, action), true
+}
+
 func newKarpenterConditionIssue(gvr schema.GroupVersionResource, kind string, obj *unstructured.Unstructured, condition *metav1.Condition, reason, cause, action string) Issue {
 	message := cause
 	var since time.Duration
@@ -323,7 +345,7 @@ func failingNodeClaimCondition(claim *unstructured.Unstructured) *metav1.Conditi
 	for _, conditionType := range []string{"Launched", "Registered", "Initialized", "Ready"} {
 		for i := range conditions {
 			condition := &conditions[i]
-			if condition.Type != conditionType || condition.Status != metav1.ConditionFalse {
+			if condition.Type != conditionType || !karpenter.IsFailedLifecycleCondition(*condition) {
 				continue
 			}
 			if claim.GetGeneration() > 0 && condition.ObservedGeneration > 0 && condition.ObservedGeneration < claim.GetGeneration() {

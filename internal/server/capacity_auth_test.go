@@ -145,7 +145,11 @@ func TestCapacityOwnerResolutionHonorsInformerCoverage(t *testing.T) {
 
 func TestCapacityWorkloadCoverageIncludesPoolAttributionSources(t *testing.T) {
 	available := capacityapi.NewSourceCoverage(capacityapi.CoverageAvailable, capacityapi.CoverageScopeCluster)
+	// Real partial producers always carry an item count; partial without one
+	// is deliberately unobserved.
+	partialCount := 1
 	partial := capacityapi.NewSourceCoverage(capacityapi.CoveragePartial, capacityapi.CoverageScopeCluster)
+	partial.ItemCount = &partialCount
 	denied := capacityapi.NewSourceCoverage(capacityapi.CoverageDenied, capacityapi.CoverageScopeCluster)
 
 	tests := []struct {

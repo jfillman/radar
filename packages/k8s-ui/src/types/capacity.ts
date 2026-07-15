@@ -559,7 +559,7 @@ export type CapacityActivityType =
   | "termination"
   | "config_change";
 export type CapacityActivityState =
-  "open" | "completed" | "failed" | "observed" | "unknown";
+  "open" | "completed" | "failed" | "observed" | "blocked" | "unknown";
 export type CapacityEvidenceSource =
   "condition" | "k8s_event" | "resource_change" | "prometheus";
 export type CapacityEvidenceRelationship =

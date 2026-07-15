@@ -3,6 +3,7 @@ package karpenter
 
 import (
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
@@ -22,6 +23,8 @@ const (
 	CapacityTypeLabelKey = "karpenter.sh/capacity-type"
 	APIVersionV1         = "karpenter.sh/v1"
 	APIVersionV1Beta1    = "karpenter.sh/v1beta1"
+
+	NodeRegistrationHealthyConditionType = "NodeRegistrationHealthy"
 )
 
 type NodeClassRef struct {
@@ -181,6 +184,10 @@ func NodePoolConditions(pool *unstructured.Unstructured) []metav1.Condition {
 	return Conditions(pool)
 }
 
+func NodePoolCondition(pool *unstructured.Unstructured, conditionType string) *metav1.Condition {
+	return apiMeta.FindStatusCondition(Conditions(pool), conditionType)
+}
+
 func NodePoolReadyCondition(pool *unstructured.Unstructured) *metav1.Condition {
 	return ReadyCondition(pool)
 }
@@ -191,6 +198,39 @@ func NodePoolReadiness(pool *unstructured.Unstructured) Readiness {
 
 func NodeClaimConditions(claim *unstructured.Unstructured) []metav1.Condition {
 	return Conditions(claim)
+}
+
+// nodeClaimFailureReasons are condition reasons that mark a lifecycle stage as
+// failed rather than in progress. Karpenter keeps a failing stage at
+// status=Unknown (e.g. Launched=Unknown/LaunchFailed) and reserves
+// status=False for hard invariant failures (Registered=False/MultipleNodesFound),
+// so status alone cannot distinguish "still working on it" from "broken".
+var nodeClaimFailureReasons = map[string]bool{
+	"LaunchFailed":              true,
+	"CreateError":               true,
+	"InsufficientCapacityError": true,
+	"NodeClassNotReady":         true,
+	"MultipleNodesFound":        true,
+	"UnregisteredTaintMissing":  true,
+}
+
+// IsFailedLifecycleCondition reports whether a NodeClaim lifecycle condition
+// (Launched/Registered/Initialized/Ready) records a failed stage. False always
+// counts; Unknown counts only with a failure reason — other Unknown reasons
+// (NodeNotFound, StartupTaintsExist, ...) are normal in-progress states.
+func IsFailedLifecycleCondition(condition metav1.Condition) bool {
+	switch condition.Status {
+	case metav1.ConditionFalse:
+		return true
+	case metav1.ConditionUnknown:
+		if nodeClaimFailureReasons[condition.Reason] {
+			return true
+		}
+		reason := strings.ToLower(condition.Reason)
+		return strings.Contains(reason, "fail") || strings.Contains(reason, "error")
+	default:
+		return false
+	}
 }
 
 func NodeClaimReadyCondition(claim *unstructured.Unstructured) *metav1.Condition {

@@ -22,6 +22,7 @@ const (
 	ActivityCompleted ActivityState = "completed"
 	ActivityFailed    ActivityState = "failed"
 	ActivityObserved  ActivityState = "observed"
+	ActivityBlocked   ActivityState = "blocked"
 	ActivityUnknown   ActivityState = "unknown"
 )
 

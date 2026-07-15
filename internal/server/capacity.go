@@ -238,7 +238,7 @@ func (s *Server) loadCapacityModel(w http.ResponseWriter, r *http.Request) (capa
 		result.meta.Coverage[capacityapi.CoverageNodePools] = sourceCoverageForState(capability.State, capability.ReasonCode)
 		return result, true
 	}
-	if capability.ReasonCode == "nodepool_cache_unavailable" {
+	if capability.CacheUnavailable {
 		result.meta.Coverage[capacityapi.CoverageNodePools] = unavailableCoverage("nodepool_cache_unavailable", []string{"summary", "pools"})
 		return result, true
 	}
@@ -659,8 +659,13 @@ func capacityProvider(provider capacityapi.Provider, pools, claims []*unstructur
 			}
 		}
 	}
-	metrics := coverage[capacityapi.CoverageNodeMetrics].Status == capacityapi.CoverageAvailable || coverage[capacityapi.CoverageNodeMetrics].Status == capacityapi.CoveragePartial
-	provider.Features.Metrics = &metrics
+	// Only an actual observation proves metrics support. Denied, syncing, or
+	// unavailable means "could not see" — serializing false there would tell
+	// consumers the provider doesn't support metrics.
+	if status := coverage[capacityapi.CoverageNodeMetrics].Status; status == capacityapi.CoverageAvailable || status == capacityapi.CoveragePartial {
+		metrics := true
+		provider.Features.Metrics = &metrics
+	}
 	_ = nodeClasses
 	return provider
 }
@@ -685,7 +690,7 @@ func capacityActions(model capacitymodel.Model, canonicalIssuesAvailable bool) [
 			}
 		}
 		for _, pressure := range pool.Observation.Ledger.LimitPressure {
-			if pressure.Percent != nil && *pressure.Percent >= 80 {
+			if pressure.OverLimit || (pressure.Percent != nil && *pressure.Percent >= 80) {
 				addCapacityAction(actions, "configured_limit_pressure", "warning", identity)
 				break
 			}
@@ -802,7 +807,11 @@ func capacityContainsString(values []string, target string) bool {
 }
 
 func capacityCoverageObserved(coverage capacityapi.SourceCoverage) bool {
-	return coverage.Status == capacityapi.CoverageAvailable || coverage.Status == capacityapi.CoveragePartial
+	// Partial without an item count means no list actually happened (e.g.
+	// discovery skew acknowledged the group but the kind never resolved) —
+	// emitting counts for it would fabricate "≥ 0" for an unobserved source.
+	return coverage.Status == capacityapi.CoverageAvailable ||
+		(coverage.Status == capacityapi.CoveragePartial && coverage.ItemCount != nil)
 }
 
 func applyCapacityPoolAttributionCoverage(coverage capacityapi.CoverageBySource) {

@@ -45,7 +45,8 @@ func TestComposeKarpenterIssuesAreCuratedOnceWithStableDiagnosis(t *testing.T) {
 	classGVR := schema.GroupVersionResource{Group: "capacity.acme.io", Version: "v1", Resource: "fleetnodeclasses"}
 	pool := karpenterIssueTestPool("compute", "capacity.acme.io", "FleetNodeClass", "general", "False", "NodeClassNotReady", "the class is blocked")
 	class := karpenterIssueTestObject("capacity.acme.io/v1", "FleetNodeClass", "general", "False", "AuthFailed", "cloud credentials are invalid")
-	claim := karpenterIssueTestClaim("compute-x1", pool, "Launched", "False", "LaunchFailed", "instance launch was rejected")
+	// Real Karpenter records launch failures at status=Unknown (not False).
+	claim := karpenterIssueTestClaim("compute-x1", pool, "Launched", "Unknown", "LaunchFailed", "instance launch was rejected")
 
 	p := newFakeKarpenterIssueProvider(map[schema.GroupVersionResource]struct {
 		kind  string
@@ -282,6 +283,56 @@ func TestComposeKarpenterStaleClaimFailureDoesNotAssertIssue(t *testing.T) {
 
 	if out := Compose(p, Filters{Limit: NoLimit}); len(out) != 0 {
 		t.Fatalf("stale NodeClaim failure produced an issue: %+v", out)
+	}
+}
+
+func TestComposeKarpenterInProgressClaimIsNotAFailure(t *testing.T) {
+	poolGVR := schema.GroupVersionResource{Group: karpenter.Group, Version: "v1", Resource: "nodepools"}
+	claimGVR := schema.GroupVersionResource{Group: karpenter.Group, Version: "v1", Resource: "nodeclaims"}
+	pool := karpenterIssueTestPool("compute", "", "", "", "True", "Ready", "")
+	// Registered=Unknown/NodeNotFound is the normal shape while a launched
+	// instance boots — it must not read as a provisioning failure.
+	claim := karpenterIssueTestClaim("compute-a", pool, "Registered", "Unknown", "NodeNotFound", "node has not joined yet")
+	p := newFakeKarpenterIssueProvider(map[schema.GroupVersionResource]struct {
+		kind  string
+		items []*unstructured.Unstructured
+	}{
+		poolGVR:  {kind: karpenter.NodePoolKind, items: []*unstructured.Unstructured{pool}},
+		claimGVR: {kind: karpenter.NodeClaimKind, items: []*unstructured.Unstructured{claim}},
+	})
+
+	if out := Compose(p, Filters{Limit: NoLimit}); len(out) != 0 {
+		t.Fatalf("in-progress NodeClaim produced an issue: %+v", out)
+	}
+}
+
+func TestComposeKarpenterNodeRegistrationUnhealthySurfacesOnReadyPool(t *testing.T) {
+	poolGVR := schema.GroupVersionResource{Group: karpenter.Group, Version: "v1", Resource: "nodepools"}
+	pool := karpenterIssueTestPool("compute", "", "", "", "True", "Ready", "")
+	status := pool.Object["status"].(map[string]any)
+	status["conditions"] = append(status["conditions"].([]any), map[string]any{
+		"type": karpenter.NodeRegistrationHealthyConditionType, "status": "False",
+		"reason": "RegistrationFailed", "message": "machines launched but never registered",
+		"observedGeneration": int64(1),
+		"lastTransitionTime": time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339),
+	})
+	p := newFakeKarpenterIssueProvider(map[schema.GroupVersionResource]struct {
+		kind  string
+		items []*unstructured.Unstructured
+	}{
+		poolGVR: {kind: karpenter.NodePoolKind, items: []*unstructured.Unstructured{pool}},
+	})
+
+	out := Compose(p, Filters{Limit: NoLimit})
+	if len(out) != 1 {
+		t.Fatalf("issues = %+v, want exactly the registration-health issue", out)
+	}
+	issue := out[0]
+	if issue.Reason != ReasonKarpenterNodeRegistrationUnhealthy || issue.Kind != karpenter.NodePoolKind || issue.Name != "compute" {
+		t.Fatalf("issue = %+v", issue)
+	}
+	if issue.Message != "machines launched but never registered" {
+		t.Fatalf("issue message = %q", issue.Message)
 	}
 }
 

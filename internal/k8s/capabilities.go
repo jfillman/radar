@@ -98,6 +98,10 @@ type Capabilities struct {
 type IntegrationCapability struct {
 	State      capacityapi.IntegrationState `json:"state"`
 	ReasonCode string                       `json:"reasonCode,omitempty"`
+	// CacheUnavailable marks "integration detected but its cache cannot serve
+	// right now" — a distinct condition every consumer must map to unavailable
+	// coverage, never to an observed/available source.
+	CacheUnavailable bool `json:"cacheUnavailable,omitempty"`
 }
 
 // WorkloadWritePermissions indicates which workload resources the user can patch.

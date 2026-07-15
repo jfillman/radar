@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/skyhook-io/radar/pkg/capacityapi"
 	"github.com/skyhook-io/radar/pkg/karpenter"
 	"github.com/skyhook-io/radar/pkg/subject"
@@ -202,6 +204,9 @@ func activityEpisodeSummary(activityType capacityapi.ActivityType, state capacit
 		if state == capacityapi.ActivityCompleted {
 			return "NodeClaim provisioning completed"
 		}
+		if state == capacityapi.ActivityFailed {
+			return "NodeClaim provisioning failed"
+		}
 		return "NodeClaim provisioning is in progress"
 	case capacityapi.ActivityLaunchFailure:
 		return "NodeClaim launch failed"
@@ -210,6 +215,9 @@ func activityEpisodeSummary(activityType capacityapi.ActivityType, state capacit
 	case capacityapi.ActivityInitializationFailure:
 		return "NodeClaim initialization failed"
 	case capacityapi.ActivityDisruption:
+		if state == capacityapi.ActivityBlocked {
+			return "Karpenter disruption is blocked"
+		}
 		return "Karpenter disruption activity was observed"
 	case capacityapi.ActivityInterruption:
 		return "Capacity interruption was observed"
@@ -283,7 +291,7 @@ func classifyNodeClaimConditionChange(event timeline.TimelineEvent) (activityCla
 		if conditionType == "Ready" && status == "True" {
 			return directActivity(capacityapi.ActivityProvision, capacityapi.ActivityCompleted, "nodeclaim_ready"), true
 		}
-		if status != "False" || (!strings.Contains(strings.ToLower(reason), "fail") && !strings.Contains(strings.ToLower(reason), "error")) {
+		if !karpenter.IsFailedLifecycleCondition(metav1.Condition{Status: metav1.ConditionStatus(status), Reason: reason}) {
 			continue
 		}
 		switch conditionType {
@@ -298,7 +306,46 @@ func classifyNodeClaimConditionChange(event timeline.TimelineEvent) (activityCla
 	return activityClassification{}, false
 }
 
+// karpenterEventClassifications maps exact event reasons Karpenter emits to
+// their real meaning. Exact matches are direct/high-confidence evidence; the
+// substring fallback below stays inferred/low. Without this table,
+// DisruptionBlocked and Unconsolidatable read as disruption *happening* — the
+// opposite of what they mean — and launch failures like
+// InsufficientCapacityError disappear into generic termination.
+var karpenterEventClassifications = map[string]activityClassification{
+	"InsufficientCapacityError": directActivity(capacityapi.ActivityLaunchFailure, capacityapi.ActivityFailed, "insufficient_capacity"),
+	"LaunchFailed":              directActivity(capacityapi.ActivityLaunchFailure, capacityapi.ActivityFailed, "launch_failed"),
+	"CreateError":               directActivity(capacityapi.ActivityLaunchFailure, capacityapi.ActivityFailed, "launch_failed"),
+	"NodeClassNotReady":         directActivity(capacityapi.ActivityLaunchFailure, capacityapi.ActivityFailed, "nodeclass_not_ready"),
+	"NoCompatibleInstanceTypes": directActivity(capacityapi.ActivityProvision, capacityapi.ActivityFailed, "no_compatible_instance_types"),
+	"UnregisteredTaintMissing":  directActivity(capacityapi.ActivityRegistrationFailure, capacityapi.ActivityFailed, "registration_failed"),
+
+	"DisruptionBlocked":     directActivity(capacityapi.ActivityDisruption, capacityapi.ActivityBlocked, "disruption_blocked"),
+	"Unconsolidatable":      directActivity(capacityapi.ActivityDisruption, capacityapi.ActivityBlocked, "unconsolidatable"),
+	"ConsolidationRejected": directActivity(capacityapi.ActivityDisruption, capacityapi.ActivityBlocked, "consolidation_rejected"),
+	"NodeRepairBlocked":     directActivity(capacityapi.ActivityDisruption, capacityapi.ActivityBlocked, "node_repair_blocked"),
+
+	"Disrupted":                  directActivity(capacityapi.ActivityDisruption, capacityapi.ActivityObserved, "disrupted"),
+	"DisruptionLaunching":        directActivity(capacityapi.ActivityDisruption, capacityapi.ActivityOpen, "disruption_launching"),
+	"DisruptionWaitingReadiness": directActivity(capacityapi.ActivityDisruption, capacityapi.ActivityOpen, "disruption_waiting_readiness"),
+	"DisruptionTerminating":      directActivity(capacityapi.ActivityDisruption, capacityapi.ActivityOpen, "disruption_terminating"),
+	"ConsolidationCandidate":     directActivity(capacityapi.ActivityDisruption, capacityapi.ActivityObserved, "consolidation_candidate"),
+
+	"SpotInterrupted":             directActivity(capacityapi.ActivityInterruption, capacityapi.ActivityObserved, "spot_interrupted"),
+	"SpotRebalanceRecommendation": directActivity(capacityapi.ActivityInterruption, capacityapi.ActivityObserved, "rebalance_recommendation"),
+	"InstanceStopping":            directActivity(capacityapi.ActivityInterruption, capacityapi.ActivityObserved, "instance_stopping"),
+	"InstanceTerminating":         directActivity(capacityapi.ActivityInterruption, capacityapi.ActivityObserved, "instance_terminating"),
+	"InstanceUnhealthy":           directActivity(capacityapi.ActivityInterruption, capacityapi.ActivityObserved, "instance_unhealthy"),
+
+	"FailedDraining":                 directActivity(capacityapi.ActivityTermination, capacityapi.ActivityFailed, "draining_failed"),
+	"FailedTermination":              directActivity(capacityapi.ActivityTermination, capacityapi.ActivityFailed, "termination_failed"),
+	"TerminationGracePeriodExpiring": directActivity(capacityapi.ActivityTermination, capacityapi.ActivityOpen, "grace_period_expiring"),
+}
+
 func classifyKarpenterReason(event timeline.TimelineEvent) (activityClassification, bool) {
+	if classification, ok := karpenterEventClassifications[event.Reason]; ok {
+		return classification, true
+	}
 	reason := strings.ToLower(event.Reason + " " + event.Message)
 	switch {
 	case strings.Contains(reason, "launch") && (event.EventType == timeline.EventTypeWarning || strings.Contains(reason, "fail") || strings.Contains(reason, "error")):
@@ -403,6 +450,8 @@ func activityEvidenceSource(source timeline.EventSource) capacityapi.EvidenceSou
 func activityStateRank(state capacityapi.ActivityState) int {
 	switch state {
 	case capacityapi.ActivityFailed:
+		return 5
+	case capacityapi.ActivityBlocked:
 		return 4
 	case capacityapi.ActivityCompleted:
 		return 3

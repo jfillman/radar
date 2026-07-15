@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/skyhook-io/radar/pkg/capacityapi"
@@ -303,10 +302,16 @@ func basePoolObservation(pool *unstructured.Unstructured, snapshot Snapshot) cap
 		observation.Ledger.LimitHeadroom = &headroom
 	}
 	for _, pressure := range observation.Ledger.LimitPressure {
-		if pressure.Percent != nil && *pressure.Percent >= 80 {
+		// OverLimit alone must fire too: a zero limit (the documented
+		// halt-provisioning idiom) has no percentage yet is maximally binding.
+		if pressure.OverLimit || (pressure.Percent != nil && *pressure.Percent >= 80) {
+			summary := pressure.Resource + " provisioned capacity is near its configured limit"
+			if pressure.OverLimit {
+				summary = pressure.Resource + " provisioned capacity exceeds its configured limit"
+			}
 			observation.Facts = append(observation.Facts, capacityapi.PostureFact{
 				Code:        "configured_limit_pressure",
-				Summary:     pressure.Resource + " provisioned capacity is near its configured limit",
+				Summary:     summary,
 				SourcePaths: []string{"spec.limits." + pressure.Resource, "status.resources." + pressure.Resource},
 			})
 		}
@@ -345,13 +350,19 @@ func populatePool(model *PoolModel, claims []*unstructured.Unstructured, nodes [
 	scheduledCertainty := scheduledRequestCertainty(snapshot.Coverage)
 
 	accounting := AccountResources(nodes, pods)
-	allocatable := QuantityObservation(accounting.Allocatable, nodeCertainty, capacityapi.GranularityAggregate, snapshot.GeneratedAt, "nodes.status.allocatable")
 	requests := QuantityObservation(accounting.ScheduledRequests, scheduledCertainty, capacityapi.GranularityAggregate, snapshot.GeneratedAt, "pods.spec.resources")
-	observation.Ledger.Allocatable = &allocatable
 	observation.Ledger.ScheduledRequests = &requests
-	unallocatedCertainty := differenceCertainty(nodeCertainty, podCertainty)
-	unallocated := QuantityObservation(subtractResourceLists(accounting.Allocatable, accounting.ScheduledRequests), unallocatedCertainty, capacityapi.GranularityAggregateNotBinpacked, snapshot.GeneratedAt, "nodes.status.allocatable", "pods.spec.resources")
-	observation.Ledger.AggregateUnallocatedRequests = &unallocated
+	// Allocatable and the allocatable−requests difference are only meaningful
+	// when Nodes were actually observed. With Nodes denied but pods attributed
+	// via NodeClaims, emitting the difference would produce a negative
+	// "unallocated" — a fabricated number on the trust surface.
+	if sourceObserved(snapshot.Coverage, capacityapi.CoverageNodes) {
+		allocatable := QuantityObservation(accounting.Allocatable, nodeCertainty, capacityapi.GranularityAggregate, snapshot.GeneratedAt, "nodes.status.allocatable")
+		observation.Ledger.Allocatable = &allocatable
+		unallocatedCertainty := differenceCertainty(nodeCertainty, podCertainty)
+		unallocated := QuantityObservation(subtractResourceLists(accounting.Allocatable, accounting.ScheduledRequests), unallocatedCertainty, capacityapi.GranularityAggregateNotBinpacked, snapshot.GeneratedAt, "nodes.status.allocatable", "pods.spec.resources")
+		observation.Ledger.AggregateUnallocatedRequests = &unallocated
+	}
 
 	if sourceObserved(snapshot.Coverage, capacityapi.CoverageNodeClaims) {
 		observation.Claims = &capacityapi.ClaimLifecycleSummary{Total: len(claims)}
@@ -478,7 +489,14 @@ func populatePool(model *PoolModel, claims []*unstructured.Unstructured, nodes [
 		usage := capacityapi.NewUsageObservation(actualAsOf)
 		usage.CoveredNodes = coveredNodes
 		usage.TotalNodes = len(nodes)
-		usage.Quantity = QuantityObservation(usageResources, capacityapi.CertaintyExact, capacityapi.GranularityAggregate, actualAsOf, "metrics.k8s.io/nodes")
+		// Usage summed over a sampled subset of the pool's nodes is a lower
+		// bound of pool usage, not an exact reading — 3 sampled nodes out of
+		// 100 must not present as "=".
+		usageCertainty := capacityapi.CertaintyExact
+		if coveredNodes < len(nodes) || nodeCertainty != capacityapi.CertaintyExact {
+			usageCertainty = capacityapi.CertaintyLowerBound
+		}
+		usage.Quantity = QuantityObservation(usageResources, usageCertainty, capacityapi.GranularityAggregate, actualAsOf, "metrics.k8s.io/nodes")
 		usage.CoveredAllocatable = QuantityObservation(coveredAllocatable, nodeCertainty, capacityapi.GranularityAggregate, actualAsOf, "node.status.allocatable")
 		usage.Utilization = utilization(usageResources, coveredAllocatable)
 		observation.Ledger.ActualUsage = &usage
@@ -728,7 +746,7 @@ func claimStage(claim *unstructured.Unstructured) capacityapi.ClaimStage {
 		return capacityapi.ClaimStageReady
 	}
 	for _, condition := range conditions {
-		if isClaimLifecycleCondition(condition.Type) && condition.Status == metav1.ConditionFalse && (strings.Contains(strings.ToLower(condition.Reason), "fail") || strings.Contains(strings.ToLower(condition.Reason), "error")) {
+		if isClaimLifecycleCondition(condition.Type) && karpenter.IsFailedLifecycleCondition(condition) {
 			return capacityapi.ClaimStageFailed
 		}
 	}
@@ -828,6 +846,9 @@ func sourceCertainty(coverage capacityapi.CoverageBySource, source capacityapi.C
 	if !ok || entry.Status == capacityapi.CoverageDenied || entry.Status == capacityapi.CoverageSyncing || entry.Status == capacityapi.CoverageUnavailable || entry.Status == capacityapi.CoverageError {
 		return capacityapi.CertaintyUnknown
 	}
+	if entry.Status == capacityapi.CoveragePartial && entry.ItemCount == nil {
+		return capacityapi.CertaintyUnknown
+	}
 	if entry.Status == capacityapi.CoverageAvailable && entry.Scope == capacityapi.CoverageScopeCluster {
 		return capacityapi.CertaintyExact
 	}
@@ -855,7 +876,13 @@ func scheduledRequestCertainty(coverage capacityapi.CoverageBySource) capacityap
 
 func sourceObserved(coverage capacityapi.CoverageBySource, source capacityapi.CoverageSource) bool {
 	entry, ok := coverage[source]
-	return ok && (entry.Status == capacityapi.CoverageAvailable || entry.Status == capacityapi.CoveragePartial)
+	if !ok {
+		return false
+	}
+	// Partial without an item count means discovery acknowledged the source but
+	// no list ever happened — treating it as observed would fabricate zeros.
+	return entry.Status == capacityapi.CoverageAvailable ||
+		(entry.Status == capacityapi.CoveragePartial && entry.ItemCount != nil)
 }
 
 func copyCoverage(source capacityapi.CoverageBySource) capacityapi.CoverageBySource {
@@ -906,6 +933,9 @@ func readinessRank(ready *bool) int {
 func highestPressure(pressures []capacityapi.LimitPressure) float64 {
 	result := -1.0
 	for _, pressure := range pressures {
+		if pressure.OverLimit && result < 100 {
+			result = 100
+		}
 		if pressure.Percent != nil && *pressure.Percent > result {
 			result = *pressure.Percent
 		}

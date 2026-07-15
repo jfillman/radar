@@ -659,11 +659,13 @@ export function ActivityStateBadge({
   const severity =
     state === "failed"
       ? "error"
-      : state === "open"
-        ? "info"
-        : state === "completed"
-          ? "success"
-          : "neutral";
+      : state === "blocked"
+        ? "warning"
+        : state === "open"
+          ? "info"
+          : state === "completed"
+            ? "success"
+            : "neutral";
   return (
     <Badge severity={severity} size="sm">
       {state}
@@ -758,10 +760,40 @@ export function QuantityInline({
   empty: string;
 }) {
   const text = quantityText(observation);
-  if (!text)
-    return <span className="text-xs text-theme-text-tertiary">{empty}</span>;
+  if (!text) {
+    // An empty observation is only a real zero when its certainty says so —
+    // an unknown/lower-bound observation rendered as the empty label would
+    // fabricate an exact-looking zero.
+    if (observation?.certainty === "unknown")
+      return (
+        <WithTooltip tip={observationTitle(observation)}>
+          <span className="text-xs text-theme-text-tertiary">Unknown</span>
+        </WithTooltip>
+      );
+    return (
+      <span className="text-xs text-theme-text-tertiary">
+        {empty}
+        {observation?.certainty === "lower_bound" && (
+          <>
+            {" "}
+            <CertaintyGlyph certainty="lower_bound" />
+          </>
+        )}
+      </span>
+    );
+  }
   return (
-    <span className="font-mono text-xs text-theme-text-secondary">{text}</span>
+    <WithTooltip tip={observation ? observationTitle(observation) : text}>
+      <span className="font-mono text-xs text-theme-text-secondary">
+        {text}
+        {observation && observation.certainty !== "exact" && (
+          <>
+            {" "}
+            <CertaintyGlyph certainty={observation.certainty} />
+          </>
+        )}
+      </span>
+    </WithTooltip>
   );
 }
 
@@ -1279,10 +1311,15 @@ export function CapacityFreshness({
 /** Header scope badge + optional lower-bound warning, from the pods coverage. */
 export function ScopeBadges({
   coverage,
+  source = "pods",
 }: {
   coverage: CapacityCoverageBySource;
+  // Which coverage entry carries this screen's namespace scope — Activity's
+  // namespaced data flows through karpenterObjectEvents, not pods; defaulting
+  // it to pods would show "Cluster-wide" for a namespace-scoped view.
+  source?: keyof CapacityCoverageBySource;
 }) {
-  const pods = coverage.pods;
+  const pods = coverage[source];
   const scope = pods?.scope;
   const explicit = scope === "explicit_namespaces";
   const scopeLabel = explicit

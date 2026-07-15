@@ -69,9 +69,13 @@ func (s *Server) handleCapacityActivity(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	response.State = capacityapi.IntegrationAvailable
-	nodePoolCoverage := capacityapi.NewSourceCoverage(capacityapi.CoverageAvailable, capacityapi.CoverageScopeCluster)
-	nodePoolCoverage.ImpactFields = []string{"activity"}
-	response.ResponseMeta.Coverage[capacityapi.CoverageNodePools] = nodePoolCoverage
+	if capability.CacheUnavailable {
+		response.ResponseMeta.Coverage[capacityapi.CoverageNodePools] = unavailableCoverage("nodepool_cache_unavailable", []string{"activity"})
+	} else {
+		nodePoolCoverage := capacityapi.NewSourceCoverage(capacityapi.CoverageAvailable, capacityapi.CoverageScopeCluster)
+		nodePoolCoverage.ImpactFields = []string{"activity"}
+		response.ResponseMeta.Coverage[capacityapi.CoverageNodePools] = nodePoolCoverage
+	}
 
 	store := internaltimeline.GetStore()
 	processObservationStart := internaltimeline.ObservationStart()

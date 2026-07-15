@@ -48,7 +48,7 @@ func (s *Server) karpenterCapability(r *http.Request) k8s.IntegrationCapability 
 		return k8s.IntegrationCapability{State: capacityapi.IntegrationAvailable}
 	}
 	if err := cache.EnsureWatching(gvr); err != nil {
-		return k8s.IntegrationCapability{State: capacityapi.IntegrationAvailable, ReasonCode: "nodepool_cache_unavailable"}
+		return k8s.IntegrationCapability{State: capacityapi.IntegrationAvailable, ReasonCode: "nodepool_cache_unavailable", CacheUnavailable: true}
 	}
 	return k8s.IntegrationCapability{State: capacityapi.IntegrationSyncing, ReasonCode: "nodepools_syncing"}
 }

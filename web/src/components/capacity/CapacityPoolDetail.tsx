@@ -289,30 +289,30 @@ const LEDGER_COLUMNS: {
   {
     key: "configuredLimit",
     header: "Configured limit",
-    glyph: "=",
-    tooltip: "Declared ceiling on the NodePool (exact, from spec)",
+    tooltip: "Declared ceiling on total provisioned capacity (spec.limits)",
   },
   {
     key: "provisioned",
     header: "Provisioned",
-    glyph: "=",
-    tooltip: "Capacity of nodes that currently exist (exact)",
+    tooltip:
+      "Capacity Karpenter has committed for this pool (status.resources) — includes claims still launching",
   },
   {
     key: "inFlightCapacity",
     header: "In flight",
-    tooltip: "Capacity represented by claims launched but not yet registered",
+    tooltip:
+      "Capacity of claims launched but not yet registered. Already counted inside Provisioned — shown separately to expose the launching share, not to be added on top",
   },
   {
     key: "limitHeadroom",
     header: "Limit headroom",
-    tooltip: "Configured limit minus provisioned and in-flight",
+    tooltip:
+      "Configured limit minus provisioned — Karpenter's actual provisioning gate (in-flight claims are already inside provisioned)",
   },
   {
     key: "allocatable",
     header: "Node allocatable",
-    glyph: "=",
-    tooltip: "What kubelets offer the scheduler after reservations (exact)",
+    tooltip: "What kubelets offer the scheduler after reservations",
   },
   {
     key: "scheduledRequests",
@@ -342,6 +342,7 @@ function ledgerResourceKeys(ledger: CapacityLedger): string[] {
   collect(ledger.configuredLimit);
   collect(ledger.scheduledRequests);
   collect(ledger.aggregateUnallocatedRequests);
+  collect(ledger.inFlightCapacity);
   ledger.actualUsage?.utilization.forEach((entry) => keys.add(entry.resource));
   return [...keys].sort(
     (left, right) =>
@@ -408,12 +409,29 @@ function LedgerCell({
         return <span className="text-theme-text-tertiary">Not observed</span>;
       return <span className="text-theme-text-tertiary">No samples</span>;
     }
+    const sampledSubset = usage.coveredNodes < usage.totalNodes;
     return (
-      <WithTooltip tip={observationTitle(usage.quantity)}>
+      <WithTooltip
+        tip={
+          sampledSubset
+            ? `${observationTitle(usage.quantity)} — only ${usage.coveredNodes} of ${usage.totalNodes} nodes had samples; the percentage covers the sampled nodes' allocatable, not the whole pool.`
+            : observationTitle(usage.quantity)
+        }
+      >
         <span>
-          {formatQuantity(resource, entry.usage)}{" "}
+          {formatQuantity(resource, entry.usage)}
+          {usage.quantity.certainty !== "exact" && (
+            <>
+              {" "}
+              <CertaintyGlyph certainty={usage.quantity.certainty} />
+            </>
+          )}{" "}
           <span className="text-theme-text-tertiary">
-            ({Math.round(entry.percent)}%)
+            ({Math.round(entry.percent)}%
+            {sampledSubset
+              ? ` of ${usage.coveredNodes}/${usage.totalNodes} sampled`
+              : ""}
+            )
           </span>
         </span>
       </WithTooltip>
@@ -440,6 +458,14 @@ function LedgerCell({
         return (
           <WithTooltip tip="NodeClaims were not observed — in-flight capacity is unknown, not zero.">
             <span className="text-theme-text-tertiary">Unknown</span>
+          </WithTooltip>
+        );
+      if (obs && obs.certainty === "unknown")
+        return (
+          <WithTooltip tip="Claims are launching but none report capacity yet — the in-flight quantity is unknown, not zero.">
+            <span className="text-theme-text-tertiary">
+              In flight — unknown
+            </span>
           </WithTooltip>
         );
       return (
@@ -469,6 +495,18 @@ function LedgerCell({
   ) {
     return (
       <WithTooltip tip="Pod access denied — cannot be computed. This is not zero.">
+        <span className="text-theme-text-tertiary">Unavailable</span>
+      </WithTooltip>
+    );
+  }
+
+  if (
+    (column.key === "allocatable" ||
+      column.key === "aggregateUnallocatedRequests") &&
+    !coverageHasObservations(coverage.nodes)
+  ) {
+    return (
+      <WithTooltip tip="Nodes were not observed — this value cannot be computed. This is not zero.">
         <span className="text-theme-text-tertiary">Unavailable</span>
       </WithTooltip>
     );
@@ -1122,7 +1160,7 @@ function PoolWorkloadsTab({
           <th className={TH}>Pods</th>
           <th className={TH}>Aggregate requests</th>
           <th className={TH}>
-            <WithTooltip tip="Exact when every pod's node was observed; otherwise an upper bound">
+            <WithTooltip tip="Distinct nodes this workload's scheduled pods run on">
               <span>Nodes used</span>
             </WithTooltip>
           </th>
@@ -1132,7 +1170,6 @@ function PoolWorkloadsTab({
         const workload = item.workload;
         if (!workload) return null;
         const owner = workload.owner;
-        const exact = !workload.nodesMeta.truncated;
         return (
           <tr key={identityKey(item.resource)} className={ROW_HOVER}>
             <td className={TD}>
@@ -1165,17 +1202,8 @@ function PoolWorkloadsTab({
               {quantityText(workload.requests) ?? "—"}
             </td>
             <td className={`${TD} font-mono`}>
-              <WithTooltip
-                tip={
-                  exact
-                    ? "Exact — every pod's node was observed"
-                    : "Upper bound — some pod locations unknown"
-                }
-              >
-                <span>
-                  {exact ? "" : "≤ "}
-                  {workload.nodesMeta.total}
-                </span>
+              <WithTooltip tip="Count of distinct nodes running this workload's scheduled pods">
+                <span>{workload.nodesMeta.total}</span>
               </WithTooltip>
             </td>
           </tr>

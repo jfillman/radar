@@ -28,6 +28,8 @@ import {
   coverageHasObservations,
   coverageIsDenied,
   coverageIsLowerBound,
+  CertaintyGlyph,
+  formatQuantity,
   coverageMessage,
   DeniedBadge,
   EmptyState,
@@ -108,6 +110,8 @@ interface OverviewSignal {
   severity: "error" | "warning" | "info" | "neutral";
   title: string;
   detail: string;
+  /** Named subjects (pools) rendered as individual links into their evidence. */
+  subjects?: { label: string; open: () => void }[];
   action?: { label: string; run: () => void };
 }
 
@@ -305,6 +309,7 @@ export function CapacityOverview({
         summary={summary}
         podsDenied={podsDeniedFlag}
         podsObserved={coverageHasObservations(coverage.pods)}
+        podsPartial={coverageIsLowerBound(coverage.pods)}
       />
 
       <SectionCard
@@ -346,8 +351,18 @@ export function CapacityOverview({
                 <div className="text-sm font-medium text-theme-text-primary">
                   {signal.title}
                 </div>
-                <div className="text-xs text-theme-text-secondary">
-                  {signal.detail}
+                <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-theme-text-secondary">
+                  {signal.subjects?.map((subject) => (
+                    <button
+                      key={subject.label}
+                      type="button"
+                      onClick={subject.open}
+                      className="font-mono text-accent-text hover:underline"
+                    >
+                      {subject.label}
+                    </button>
+                  ))}
+                  {signal.detail && <span>{signal.detail}</span>}
                 </div>
               </div>
               {signal.action && (
@@ -362,7 +377,7 @@ export function CapacityOverview({
 
       <SectionCard
         title="NodePool inventory"
-        subtitle="cluster-scoped · scales from a handful of pools to hundreds via pagination"
+        subtitle="every Karpenter NodePool in this cluster"
         actions={
           (data.poolsTruncated || showAllPools) && (
             <button
@@ -572,14 +587,19 @@ function PendingDemandChips({
   summary,
   podsDenied,
   podsObserved,
+  podsPartial,
 }: {
   summary: CapacityOverviewSummary;
   podsDenied: boolean;
   podsObserved: boolean;
+  /** Pod coverage is a lower bound (namespace-scoped or partial) — an empty
+   *  result then means "none observed in scope", never a global "none". */
+  podsPartial: boolean;
 }) {
   const entries = summary.aggregateDemand
     ? sortedResourceEntries(summary.aggregateDemand.resources)
     : [];
+  const demandCertainty = summary.aggregateDemand?.certainty;
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span className="text-xs text-theme-text-tertiary">
@@ -591,18 +611,25 @@ function PendingDemandChips({
         // Pods not yet observed (syncing/unavailable) — absence is not zero.
         <span className="text-xs text-theme-text-tertiary">Not observed</span>
       ) : entries.length === 0 ? (
-        <span className="text-xs text-theme-text-tertiary">None pending</span>
+        <span className="text-xs text-theme-text-tertiary">
+          {podsPartial ? "None observed in scope" : "None pending"}
+        </span>
       ) : (
         <>
           {entries.map(([resource, value]) => (
             <Badge key={resource} tone="structural" size="sm">
-              <span className="font-mono">{`${shortResourceLabel(resource)} ${value}`}</span>
+              <span className="font-mono">
+                {`${shortResourceLabel(resource)} ${formatQuantity(resource, value)}`}
+              </span>
             </Badge>
           ))}
           {summary.pendingPodCount !== undefined && (
             <Badge tone="structural" size="sm">
               <span className="font-mono">{`Pod slots ${summary.pendingPodCount}`}</span>
             </Badge>
+          )}
+          {demandCertainty && demandCertainty !== "exact" && (
+            <CertaintyGlyph certainty={demandCertainty} />
           )}
         </>
       )}
@@ -635,13 +662,17 @@ function buildSignals(
           : action.code === "pending_demand_unclassified"
             ? "unknown"
             : undefined;
-    const poolNames = action.pools.map((pool) => pool.ref.name);
+    const subjects = action.pools.slice(0, 3).map((pool) => ({
+      label: pool.ref.name,
+      open: () => handlers.onOpenPool(pool.ref.name),
+    }));
     const detailParts: string[] = [];
-    if (poolNames.length > 0)
-      detailParts.push(
-        poolNames.slice(0, 3).join(", ") +
-          (poolNames.length > 3 ? ` +${poolNames.length - 3} more` : ""),
-      );
+    // The wire caps subjects at 25 (`truncated`), so the visible array length
+    // must never masquerade as the total — an action over 50 pools is
+    // "+22+ more", not "+22 more".
+    const remainder = action.pools.length - subjects.length;
+    if (remainder > 0)
+      detailParts.push(`+${remainder}${action.truncated ? "+" : ""} more`);
     if (action.count > 0)
       detailParts.push(
         `${action.count} ${action.count === 1 ? "occurrence" : "occurrences"}`,
@@ -667,7 +698,10 @@ function buildSignals(
       title: humanizeCode(action.code),
       detail:
         detailParts.join(" · ") ||
-        "Reported by the Capacity API for this cluster.",
+        (subjects.length > 0
+          ? ""
+          : "Reported by the Capacity API for this cluster."),
+      subjects: subjects.length > 0 ? subjects : undefined,
       action: action_,
     };
   });

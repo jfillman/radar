@@ -499,9 +499,16 @@ function DemandGroupCard({
               {quantityText(group.aggregateRequests) ?? "No requests reported"}
             </span>
           </div>
-          <div className="mt-1 text-xs text-theme-text-tertiary">
-            first {formatTimestamp(group.firstSeen)} · last{" "}
-            {formatTimestamp(group.lastSeen)}
+          <div className="mt-1 flex flex-wrap items-baseline gap-x-2 text-xs text-theme-text-tertiary">
+            <span>
+              first {formatTimestamp(group.firstSeen)} · last{" "}
+              {formatTimestamp(group.lastSeen)}
+            </span>
+            {group.schedulerReasons.length > 0 && (
+              <span className="min-w-0 truncate text-theme-text-secondary">
+                e.g. {group.schedulerReasons[0].message}
+              </span>
+            )}
           </div>
         </div>
       </button>
@@ -569,9 +576,13 @@ function DemandGroupCard({
                 <h3 className="text-xs font-medium uppercase tracking-wide text-theme-text-tertiary">
                   Scheduling signature
                 </h3>
-                <div className="mt-1.5 font-mono text-[11px] text-theme-text-tertiary">
-                  {group.fingerprint}
-                </div>
+                <WithTooltip tip={group.fingerprint}>
+                  <div className="mt-1.5 w-fit font-mono text-[11px] text-theme-text-tertiary">
+                    {group.fingerprint.length > 24
+                      ? `${group.fingerprint.slice(0, 15)}…${group.fingerprint.slice(-6)}`
+                      : group.fingerprint}
+                  </div>
+                </WithTooltip>
                 <div className="mt-2 text-xs font-medium text-theme-text-tertiary">
                   Per pod
                 </div>

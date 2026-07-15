@@ -1056,3 +1056,22 @@ func TestCapacityActivitySQLitePruningReportsCursorEviction(t *testing.T) {
 		t.Fatalf("pruned-history cursor = %q/%#v, want eviction gap", evicted.CursorStatus, evicted.CursorGap)
 	}
 }
+
+func TestCapacityOverviewAggregateDemandCertaintyFollowsPodScope(t *testing.T) {
+	initCapacityContractDynamicState(t, true, true, capacityContractNodePool("general"))
+
+	// Cluster-wide observed pods -> the aggregate is an exact reading.
+	var clusterWide capacityapi.OverviewResponse
+	assertOK(t, get(t, "/api/capacity"), &clusterWide)
+	if clusterWide.Summary.AggregateDemand == nil || clusterWide.Summary.AggregateDemand.Certainty != capacityapi.CertaintyExact {
+		t.Fatalf("cluster-wide aggregate demand = %#v, want exact", clusterWide.Summary.AggregateDemand)
+	}
+
+	// Namespace-scoped pods -> the aggregate must hedge as a lower bound;
+	// presenting it as '=' would fabricate an exact cluster total.
+	var scoped capacityapi.OverviewResponse
+	assertOK(t, get(t, "/api/capacity?namespaces=default"), &scoped)
+	if scoped.Summary.AggregateDemand == nil || scoped.Summary.AggregateDemand.Certainty != capacityapi.CertaintyLowerBound {
+		t.Fatalf("namespace-scoped aggregate demand = %#v, want lower_bound", scoped.Summary.AggregateDemand)
+	}
+}

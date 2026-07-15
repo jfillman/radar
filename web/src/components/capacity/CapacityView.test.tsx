@@ -914,7 +914,7 @@ describe("CapacityView activity", () => {
       ),
     );
     expect(html).toContain("Activity");
-    expect(html).toContain("Bounded evidence timeline");
+    expect(html).toContain("Recent Karpenter capacity events");
     expect(html).toContain("Observation window");
     expect(html).toContain("Provisioned a node for pending pods");
     // First episode is expanded by default → its evidence table renders.

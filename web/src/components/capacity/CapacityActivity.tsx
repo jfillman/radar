@@ -204,8 +204,7 @@ export function CapacityActivity({
               Activity
             </h1>
             <span className="text-xs text-theme-text-tertiary">
-              Bounded evidence timeline — an observation window, not an audit
-              log.
+              Recent Karpenter capacity events, retained for a bounded window.
             </span>
           </div>
           <div className="mt-2">

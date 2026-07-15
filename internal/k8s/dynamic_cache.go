@@ -436,13 +436,21 @@ func fallbackListProbe(client dynamic.Interface, gvr schema.GroupVersionResource
 		// candidate per-GVR when it starts watching. Return every
 		// list-granted candidate so the caller can find one that also
 		// grants watch (list-only in the first namespace must not hide a
-		// CRD that is fully readable in a later one).
+		// CRD that is fully readable in a later one). One shared budget for
+		// the whole walk plus a per-candidate sub-deadline: a fresh 5s per
+		// candidate would let a degraded apiserver stall discovery for
+		// minutes at the 20-candidate cap.
+		walkCtx, walkCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer walkCancel()
 		var granted []string
 		for _, ns := range nsFallbacks {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if walkCtx.Err() != nil {
+				break
+			}
+			nsCtx, nsCancel := context.WithTimeout(walkCtx, 2*time.Second)
 			nsErr := func() error {
-				defer cancel()
-				_, e := client.Resource(gvr).Namespace(ns).List(ctx, metav1.ListOptions{Limit: 1})
+				defer nsCancel()
+				_, e := client.Resource(gvr).Namespace(ns).List(nsCtx, metav1.ListOptions{Limit: 1})
 				return e
 			}()
 			if nsErr == nil {

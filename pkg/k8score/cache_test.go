@@ -1751,3 +1751,87 @@ func TestDynamicResourceCache_EnsureWatchingFansOutAndUnions(t *testing.T) {
 		t.Fatalf("Count = %d, %v; want 2", n, err)
 	}
 }
+
+// Pins the unavailable-over-partial contract: a fanout GVR whose informers
+// exist only from namespace-specific reads (all-namespaces walk never
+// settled) must refuse an all-namespace count rather than sum the subset —
+// and must start counting once an all-namespaces read settles the walk.
+func TestDynamicResourceCache_CountRefusesUnsettledFanout(t *testing.T) {
+	const nsA, nsB = "team-a", "team-b"
+	gvr := schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgets"}
+	dyn := fakeDynamicForListAccess(t, map[schema.GroupVersionResource]string{
+		gvr: "WidgetList",
+	}, func(_ schema.GroupVersionResource, namespace string) bool {
+		return namespace == nsA || namespace == nsB
+	})
+	for _, ns := range []string{nsA, nsB} {
+		obj := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "example.com/v1",
+			"kind":       "Widget",
+			"metadata":   map[string]any{"name": "w-" + ns, "namespace": ns},
+		}}
+		if _, err := dyn.Resource(gvr).Namespace(ns).Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed %s: %v", ns, err)
+		}
+	}
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{
+		DynamicClient:      dyn,
+		NamespaceFallbacks: []string{nsA, nsB},
+	})
+	if err != nil {
+		t.Fatalf("NewDynamicResourceCache failed: %v", err)
+	}
+
+	// Namespace-specific read only — informer for nsA exists, walk unsettled.
+	if _, err := d.ListBlocking(gvr, nsA, 3*time.Second); err != nil {
+		t.Fatalf("ListBlocking(%s): %v", nsA, err)
+	}
+	if n, err := d.Count(gvr, nil); err == nil {
+		t.Fatalf("all-namespace count on unsettled fanout returned %d, want error", n)
+	}
+
+	// All-namespaces read settles the walk; the count becomes authoritative.
+	if _, err := d.ListBlocking(gvr, "", 3*time.Second); err != nil {
+		t.Fatalf("ListBlocking(all): %v", err)
+	}
+	if n, err := d.Count(gvr, nil); err != nil || n != 2 {
+		t.Fatalf("settled count = %d, %v; want 2", n, err)
+	}
+}
+
+// Legacy single-fallback regression: with exactly one configured fallback
+// namespace, an informer created by an explicit-namespace read fully covers
+// the configured scope — Count(gvr, nil) must work without ever seeing an
+// all-namespaces read.
+func TestDynamicResourceCache_SingleFallbackCountsWithoutAllNamespacesRead(t *testing.T) {
+	const ns = "team-a"
+	gvr := schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgets"}
+	dyn := fakeDynamicForListAccess(t, map[schema.GroupVersionResource]string{
+		gvr: "WidgetList",
+	}, func(_ schema.GroupVersionResource, namespace string) bool {
+		return namespace == ns
+	})
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "example.com/v1",
+		"kind":       "Widget",
+		"metadata":   map[string]any{"name": "w-1", "namespace": ns},
+	}}
+	if _, err := dyn.Resource(gvr).Namespace(ns).Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{
+		DynamicClient:     dyn,
+		NamespaceFallback: ns,
+	})
+	if err != nil {
+		t.Fatalf("NewDynamicResourceCache failed: %v", err)
+	}
+
+	// Explicit-namespace read only — never an all-namespaces read.
+	if _, err := d.ListBlocking(gvr, ns, 3*time.Second); err != nil {
+		t.Fatalf("ListBlocking(%s): %v", ns, err)
+	}
+	if n, err := d.Count(gvr, nil); err != nil || n != 1 {
+		t.Fatalf("single-fallback Count = %d, %v; want 1", n, err)
+	}
+}

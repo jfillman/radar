@@ -322,8 +322,33 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 	return nil
 }
 
+// nsCtxExpired reports whether a probe error is a context deadline/cancel —
+// the one non-auth error class that must NOT fail open into a grant during
+// the fanout walk.
+func nsCtxExpired(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
 // fallbackNamespaces returns the configured namespace-fallback candidates,
 // preferring the multi-namespace form.
+// fanoutSettled reports whether the all-namespaces scope for gvr is fully
+// resolved. A multi-candidate walk settles via the fallbackResolved marker;
+// a SINGLE-candidate configuration is trivially settled the moment its one
+// informer exists — a legacy --namespace user reading through explicit
+// namespace requests must not have counts withheld waiting for an
+// all-namespaces read that their UI never issues. Caller must hold d.mu.
+func (d *DynamicResourceCache) fanoutSettledLocked(gvr schema.GroupVersionResource) bool {
+	if d.fallbackResolved[gvr] {
+		return true
+	}
+	fallbacks := d.fallbackNamespaces()
+	if len(fallbacks) != 1 {
+		return false
+	}
+	_, ok := d.informers[informerKey{gvr: gvr, ns: fallbacks[0]}]
+	return ok
+}
+
 func (d *DynamicResourceCache) fallbackNamespaces() []string {
 	if len(d.config.NamespaceFallbacks) > 0 {
 		return d.config.NamespaceFallbacks
@@ -400,7 +425,14 @@ func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, pref
 			complete = false
 			break
 		}
-		scoped, nsErr := d.classifyScope(gvr, ns, d.listProbe(ctx, gvr, ns))
+		// Per-candidate sub-deadline: without it a single consistently slow
+		// namespace eats the whole walk budget on every retry, and since
+		// retries restart from the first candidate, later namespaces would
+		// never be reached at all.
+		nsCtx, nsCancel := context.WithTimeout(ctx, 2*time.Second)
+		probeErr := d.listProbe(nsCtx, gvr, ns)
+		nsCancel()
+		scoped, nsErr := d.classifyScope(gvr, ns, probeErr)
 		if ctx.Err() != nil {
 			// The probe ran into the shared deadline — classifyScope's
 			// fail-open would turn the deadline error into a grant, starting
@@ -410,6 +442,13 @@ func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, pref
 			break
 		}
 		if nsErr == nil {
+			if probeErr != nil && nsCtxExpired(probeErr) {
+				// The candidate's own sub-deadline fired; classifyScope's
+				// fail-open would count that as a grant. Record the walk as
+				// incomplete instead so a later attempt re-tries it.
+				complete = false
+				continue
+			}
 			granted = append(granted, scoped)
 		}
 	}
@@ -844,7 +883,7 @@ func (d *DynamicResourceCache) Count(gvr schema.GroupVersionResource, namespaces
 		}
 		// A truncated candidate walk leaves a partial namespace set whose sum
 		// would silently under-count; only a settled fanout is authoritative.
-		if !d.fallbackResolved[gvr] {
+		if !d.fanoutSettledLocked(gvr) {
 			return 0, fmt.Errorf("informer not found or not synced for %v", gvr)
 		}
 		total := 0
@@ -933,7 +972,7 @@ func (d *DynamicResourceCache) CountWatched(namespaces []string) map[schema.Grou
 			}
 			// All-namespaces sums over a fanout are only authoritative once
 			// the candidate walk settled and every informer synced.
-			if !d.fallbackResolved[gvr] || partiallySynced[gvr] {
+			if !d.fanoutSettledLocked(gvr) || partiallySynced[gvr] {
 				continue
 			}
 			total := 0

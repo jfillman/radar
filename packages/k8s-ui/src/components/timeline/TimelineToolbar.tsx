@@ -90,10 +90,6 @@ export interface TimelineToolbarProps {
   // Right-side counts. Render what's given: `resources` is swimlane-only.
   counts?: { events: number; resources?: number }
   countsFiltered?: boolean
-  // A fetch for a newly-requested window is in flight while the shown counts
-  // still reflect the prior range — surface a small spinner so a period change
-  // reads as "updating" rather than silently showing stale numbers.
-  countsUpdating?: boolean
 
   // View toggle
   view?: 'list' | 'swimlane'
@@ -139,7 +135,6 @@ export function TimelineToolbar({
   onTimeRangeChange,
   counts,
   countsFiltered,
-  countsUpdating,
   view,
   onViewChange,
   onRefresh,
@@ -263,9 +258,6 @@ export function TimelineToolbar({
         {/* META group — right-aligned: Showing · View (sort + group) · Legend ·
             view toggle. Its position is width-driven, never interaction. */}
         <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
-          {countsUpdating && (
-            <RefreshCw className="w-3 h-3 shrink-0 animate-spin text-theme-text-tertiary" aria-label="Updating timeline" />
-          )}
           {counts && (
             <span className="min-w-0 truncate text-xs text-theme-text-tertiary">
               {/* "Showing": the visible-slice count, worded apart from the

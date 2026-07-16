@@ -91,7 +91,6 @@ export type TimelineMode =
 // Default query: the last hour. Wide-enough for "what just happened" without
 // burying the lanes in a day of history; presets/URL widen it deliberately.
 const DEFAULT_LIVE_WIDTH_MS = 60 * 60 * 1000
-const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 // Presets wider than this land the swimlane on a bounded recent lens instead of
 // the full range, so it never renders every resource lane at once (a 30d domain
@@ -658,16 +657,16 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
   // Fetch all activity - zoom controls what's visible in the UI. This ring feeds
   // the swimlanes and the local strip's histogram, so it also runs in list mode
   // when that strip is shown; the list itself fetches its own 2000.
-  const { data: activity, isLoading, isRangeChanging, isError, error, refetch } = timelineSource.useEvents({
+  const { data: activity, isLoading, isError, error, refetch } = timelineSource.useEvents({
     namespaces: timelineNamespaces,
     timeRange: 'all',
     includeK8sEvents: true,
     includeManaged: true,
     includeDeleted: showDeleted,
     // Only the local in-memory ring imposes a client-side size cap (it can't
-    // hold more than its ring anyway). Retained mode renders every event the hub
-    // returns for the window — the hub owns the bound (31d range + a 50k-row hard
-    // stop that surfaces as a stream error, never a silent cut), so a busy window
+    // hold more than its ring anyway). Retained mode renders every event its
+    // ring holds — the hub bounds the ring itself (retention depth + a newest-
+    // 50k cap flagged as truncated, never a silent cut), so a busy window
     // never silently drops its oldest events on the client.
     limit: isRetained ? undefined : 10000,
     // The local strip derives its histogram from this ring fetch, so it must
@@ -675,7 +674,6 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
     enabled: appScopeReady && (showSwimlanes || showLocalScrubber),
     fromMs: isRetained ? selection.fromMs : undefined,
     toMs: isRetained ? selection.toMs : undefined,
-    sliding: isRetained && mode.kind === 'live',
   })
 
   // Topology powers both swimlane hierarchy and application-scoped attribution.
@@ -915,19 +913,10 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
     // A failed fetch must not render as the swimlane "No events yet" empty state —
     // that reads as a quiet cluster rather than a load failure.
     if (isError) {
-      // Surface the server's own message when it's actionable — the retained
-      // store caps a window at 50k events and replies "narrow the from/to
-      // range", which a generic "failed to load" would swallow. When a wide
-      // retained window fails, offer a one-click narrow so "Try again" (which
-      // would just re-fail at the same size) isn't the only recourse.
+      // Surface the server's own message — a generic "failed to load" would
+      // swallow whatever the hub said. "Try again" is a full resync: the
+      // retained source drops its delta cursor and reloads the whole ring.
       const detail = error?.message?.trim()
-      // Offer a narrower window whenever the current one is wider than the
-      // smallest preset. Narrow to 24h from a multi-day window, else to 1h — so
-      // a 24h window that itself trips the cap (dense cluster) still has a step
-      // down, not a "Try again" that just re-fails at the same size.
-      const span = selection.toMs - selection.fromMs
-      const narrowTargetMs = span > DAY_MS ? DAY_MS : HOUR_MS
-      const canNarrow = isRetained && span > HOUR_MS
       return wrap(
         <div className="flex-1 flex flex-col">
           <div className="flex items-center justify-between px-4 py-2 border-b border-theme-border">
@@ -938,23 +927,13 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
             <AlertTriangle className="w-10 h-10 text-amber-400/70" />
             <p className="text-base">Failed to load timeline data</p>
             {detail && <p className="max-w-md text-center text-sm text-theme-text-tertiary">{detail}</p>}
-            <div className="flex items-center gap-2">
-              {canNarrow && (
-                <button
-                  onClick={() => handlePresetSelect(narrowTargetMs)}
-                  className="btn-brand flex items-center gap-2 px-3 py-1.5 text-sm"
-                >
-                  {narrowTargetMs === DAY_MS ? 'Narrow to last 24h' : 'Narrow to last 1h'}
-                </button>
-              )}
-              <button
-                onClick={() => refetch()}
-                className="flex items-center gap-2 px-3 py-1.5 text-sm bg-theme-elevated border border-theme-border-light rounded-lg hover:bg-theme-hover transition-colors"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                Try again
-              </button>
-            </div>
+            <button
+              onClick={() => refetch()}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-theme-elevated border border-theme-border-light rounded-lg hover:bg-theme-hover transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Try again
+            </button>
           </div>
         </div>
       )
@@ -964,7 +943,6 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
       <TimelineSwimlanes
         events={events}
         isLoading={isLoading || focusedAppLoading}
-        countsUpdating={isRangeChanging}
         onResourceClick={onResourceClick}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
@@ -1021,7 +999,6 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
       // to own the range — passing it scrubber-less would hide the list's own
       // range dropdown and leave the user with no time control at all.
       selectionWindow={showScrubber ? selection : undefined}
-      sliding={showScrubber && mode.kind === 'live'}
       onVisibleWindowChange={setListVisibleWindow}
       // Seeded with the swimlane's window at the switch (see the viewMode
       // effect); afterwards, dragging the strip band retargets the scroll.

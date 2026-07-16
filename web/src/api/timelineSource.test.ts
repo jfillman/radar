@@ -1,28 +1,23 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
-// The retained NDJSON parser goes through apiFetch; mock the client module so a
-// test can hand fetchRetainedWindow an arbitrary streamed body. ApiError is only
-// hit on the non-ok branch (not exercised here) but must exist for module load.
-vi.mock('./client', () => ({
-  apiFetch: vi.fn(),
-  useChanges: vi.fn(),
-  ApiError: class ApiError extends Error {
-    status: number
-    constructor(message: string, status: number) {
-      super(message)
-      this.status = status
-    }
-  },
-}))
+// The retained NDJSON parser goes through apiFetch; mock ONLY the network in
+// the client module so a test can hand the stream readers an arbitrary body —
+// ApiError and mergeDeltaEvents stay real (the ring fetch depends on the real
+// merge semantics).
+vi.mock('./client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./client')>()
+  return { ...actual, apiFetch: vi.fn(), useChanges: vi.fn() }
+})
 
-import { apiFetch } from './client'
+import { apiFetch, ApiError } from './client'
 import {
   fetchRetainedWindow,
+  fetchRetainedDelta,
+  runRetainedRingFetch,
   applyClientFilters,
   localOverviewFromEvents,
-  LIVE_WINDOW_MS,
+  type RetainedRing,
 } from './timelineSource'
-import { BASE_QUANTIZE_STEP_MS } from '@skyhook-io/k8s-ui'
 import type { TimelineEvent } from '../types'
 
 const mockApiFetch = vi.mocked(apiFetch)
@@ -220,8 +215,134 @@ describe('localOverviewFromEvents', () => {
   })
 })
 
-describe('cross-package live-window invariant', () => {
-  it('quantization step stays under the live poll window so no fetch hole opens', () => {
-    expect(BASE_QUANTIZE_STEP_MS).toBeLessThan(LIVE_WINDOW_MS)
+describe('retained ring fetch (the OSS-identical accumulate model)', () => {
+  const DAY = 24 * 60 * 60 * 1000
+  const CAP = 31 * DAY
+  const NOW = T0 + 40 * DAY
+
+  const line = (e: TimelineEvent) => JSON.stringify(e) + '\n'
+  const end = (over: Record<string, unknown> = {}) => JSON.stringify({ type: 'end', ...over }) + '\n'
+
+  function ring(events: TimelineEvent[], truncated = false): RetainedRing {
+    return { events, coverage: [], truncated }
+  }
+
+  it('parses cursor/truncated from the end record and sends limit on the window fetch', async () => {
+    mockApiFetch.mockResolvedValue(
+      streamResponse([line(ev({ id: 'a' })), end({ cursor: '111', truncated: true })]),
+    )
+    const res = await fetchRetainedWindow(0, 1000, undefined, 50)
+    expect(mockApiFetch.mock.calls[0][0]).toContain('limit=50')
+    expect(res.cursor).toBe('111')
+    expect(res.truncated).toBe(true)
+  })
+
+  it('sends the cursor on the delta fetch and surfaces more', async () => {
+    mockApiFetch.mockResolvedValue(streamResponse([end({ cursor: '222', more: true })]))
+    const res = await fetchRetainedDelta('111')
+    expect(mockApiFetch.mock.calls[0][0]).toContain('since=111')
+    expect(res.cursor).toBe('222')
+    expect(res.more).toBe(true)
+  })
+
+  it('loads the full ring once, then accumulates deltas — including a LATE event', async () => {
+    const store = new Map()
+    // Full load: one event, cursor 100.
+    mockApiFetch.mockResolvedValueOnce(
+      streamResponse([line(ev({ id: 'e1', timestamp: new Date(NOW - DAY).toISOString() })), end({ cursor: '100' })]),
+    )
+    const first = await runRetainedRingFetch({ metaKey: 'k', cached: undefined, metaStore: store, capMs: CAP, now: NOW })
+    expect(first.events.map((e) => e.id)).toEqual(['e1'])
+    expect(mockApiFetch.mock.calls[0][0]).toContain('from=')
+    expect(store.get('k')?.cursor).toBe('100')
+
+    // Delta: a brand-new event AND a late one (event time 3 days back) — both
+    // ride the ingestion-ordered poll and land in the ring.
+    mockApiFetch.mockResolvedValueOnce(
+      streamResponse([
+        line(ev({ id: 'e-new', timestamp: new Date(NOW).toISOString() })),
+        line(ev({ id: 'e-late', timestamp: new Date(NOW - 3 * DAY).toISOString() })),
+        end({ cursor: '200' }),
+      ]),
+    )
+    const second = await runRetainedRingFetch({ metaKey: 'k', cached: first, metaStore: store, capMs: CAP, now: NOW })
+    expect(mockApiFetch.mock.calls[1][0]).toContain('since=100')
+    expect(second.events.map((e) => e.id).sort()).toEqual(['e-late', 'e-new', 'e1'])
+    expect(store.get('k')?.cursor).toBe('200')
+  })
+
+  it('a delta revision replaces its cached id', async () => {
+    const store = new Map([['k', { cursor: '100' }]])
+    const cached = ring([ev({ id: 'e1', eventType: 'add', timestamp: new Date(NOW - DAY).toISOString() })])
+    mockApiFetch.mockResolvedValueOnce(
+      streamResponse([line(ev({ id: 'e1', eventType: 'update', timestamp: new Date(NOW - DAY).toISOString() })), end({ cursor: '200' })]),
+    )
+    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    expect(out.events).toHaveLength(1)
+    expect(out.events[0].eventType).toBe('update')
+  })
+
+  it('an empty delta returns the cached reference (no re-render) but advances the cursor', async () => {
+    const store = new Map([['k', { cursor: '100' }]])
+    const cached = ring([ev({ id: 'e1' })])
+    mockApiFetch.mockResolvedValueOnce(streamResponse([end({ cursor: '150' })]))
+    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    expect(out).toBe(cached)
+    expect(store.get('k')?.cursor).toBe('150')
+  })
+
+  it('prunes events older than the retention depth on merge', async () => {
+    const store = new Map([['k', { cursor: '100' }]])
+    const cached = ring([
+      ev({ id: 'e-ancient', timestamp: new Date(NOW - CAP - DAY).toISOString() }),
+      ev({ id: 'e-kept', timestamp: new Date(NOW - DAY).toISOString() }),
+    ])
+    mockApiFetch.mockResolvedValueOnce(
+      streamResponse([line(ev({ id: 'e-new', timestamp: new Date(NOW).toISOString() })), end({ cursor: '200' })]),
+    )
+    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    expect(out.events.map((e) => e.id).sort()).toEqual(['e-kept', 'e-new'])
+  })
+
+  it('a capped delta page (more) pages forward within one fetch', async () => {
+    const store = new Map([['k', { cursor: '100' }]])
+    const cached = ring([ev({ id: 'e1', timestamp: new Date(NOW - DAY).toISOString() })])
+    mockApiFetch
+      .mockResolvedValueOnce(streamResponse([line(ev({ id: 'p1', timestamp: new Date(NOW).toISOString() })), end({ cursor: '150', more: true })]))
+      .mockResolvedValueOnce(streamResponse([line(ev({ id: 'p2', timestamp: new Date(NOW).toISOString() })), end({ cursor: '200' })]))
+    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    expect(mockApiFetch).toHaveBeenCalledTimes(2)
+    expect(mockApiFetch.mock.calls[1][0]).toContain('since=150')
+    expect(out.events.map((e) => e.id).sort()).toEqual(['e1', 'p1', 'p2'])
+    expect(store.get('k')?.cursor).toBe('200')
+  })
+
+  it('a rejected cursor (400) resyncs with a full ring load', async () => {
+    const store = new Map([['k', { cursor: 'bogus' }]])
+    const cached = ring([ev({ id: 'e-stale' })])
+    mockApiFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: () => Promise.resolve({ error: 'invalid since cursor' }),
+      } as unknown as Response)
+      .mockResolvedValueOnce(streamResponse([line(ev({ id: 'e-fresh' })), end({ cursor: '300' })]))
+    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    expect(out.events.map((e) => e.id)).toEqual(['e-fresh'])
+    expect(store.get('k')?.cursor).toBe('300')
+  })
+
+  it('a non-400 delta failure propagates and keeps the cursor for the next poll', async () => {
+    const store = new Map([['k', { cursor: '100' }]])
+    const cached = ring([ev({ id: 'e1' })])
+    mockApiFetch.mockResolvedValueOnce({
+      ok: false,
+      json: () => Promise.resolve({ error: 'boom' }),
+      status: 503,
+    } as unknown as Response)
+    await expect(
+      runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW }),
+    ).rejects.toBeInstanceOf(ApiError)
+    expect(store.get('k')?.cursor).toBe('100')
   })
 })

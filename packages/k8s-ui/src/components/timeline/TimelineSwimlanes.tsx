@@ -532,12 +532,6 @@ export function restoreIsPending(
 export interface TimelineSwimlanesProps {
   events: TimelineEvent[]
   isLoading?: boolean
-  // A NEW window's data is loading while the prior range stays on screen
-  // (keepPreviousData). Drives a non-blocking toolbar "updating" spinner;
-  // unlike isLoading it does NOT replace the timeline with the full-pane loader.
-  // The host passes a range-change-only signal here so it can't flicker on
-  // routine background refetches or the live poll.
-  countsUpdating?: boolean
   onResourceClick?: NavigateToResource
   viewMode?: 'list' | 'swimlane'
   onViewModeChange?: (mode: 'list' | 'swimlane') => void
@@ -756,7 +750,7 @@ function calculateInterestingnessWithBreakdown(lane: ResourceLane): ScoreBreakdo
   return breakdown
 }
 
-export function TimelineSwimlanes({ events, isLoading, countsUpdating, onResourceClick, viewMode, onViewModeChange, topology, namespaces, hasLimitedAccess = false, onNavigatePath, showDeleted: showDeletedProp, onShowDeletedChange, pinnedOnly: pinnedOnlyProp, onPinnedOnlyChange, viewWindow, onViewWindowChange, bounds, onExtendRequest, nowMs, gaps, onAppClick, search: searchProp, onSearchChange, activityFilter: activityFilterProp, onActivityFilterChange, kindFilter: kindFilterProp, onKindFilterChange, appIndex, grouping: groupingProp, onGroupingChange, sort: sortProp, onSortChange, pinnedLanes, onTogglePin, selectedEventId, onSelectedEventChange, isLive, compact = false }: TimelineSwimlanesProps) {
+export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode, onViewModeChange, topology, namespaces, hasLimitedAccess = false, onNavigatePath, showDeleted: showDeletedProp, onShowDeletedChange, pinnedOnly: pinnedOnlyProp, onPinnedOnlyChange, viewWindow, onViewWindowChange, bounds, onExtendRequest, nowMs, gaps, onAppClick, search: searchProp, onSearchChange, activityFilter: activityFilterProp, onActivityFilterChange, kindFilter: kindFilterProp, onKindFilterChange, appIndex, grouping: groupingProp, onGroupingChange, sort: sortProp, onSortChange, pinnedLanes, onTogglePin, selectedEventId, onSelectedEventChange, isLive, compact = false }: TimelineSwimlanesProps) {
   // Controlled when the host drives the visible window (retained-mode lens).
   const controlled = viewWindow != null
   // Compact gives the label column extra width — no namespace subtitle or nested
@@ -1735,16 +1729,7 @@ export function TimelineSwimlanes({ events, isLoading, countsUpdating, onResourc
 
   // Empty-state block — shared by the no-rows-at-all case and the
   // pinned-rows-but-nothing-else case (rendered below the pinned section).
-  // A range change in flight (keepPreviousData holds the old window while the
-  // new one loads and applyClientFilters bounds it to an as-yet-empty range)
-  // must read as loading, not as a quiet cluster — otherwise the "No events yet"
-  // copy is misinformation mid-fetch.
-  const emptyState = countsUpdating ? (
-    <div className="flex flex-col items-center justify-center h-64 text-theme-text-tertiary">
-      <RefreshCw className="w-8 h-8 mb-4 animate-spin opacity-60" aria-label="Loading timeline" />
-      <p className="text-lg">Loading this range…</p>
-    </div>
-  ) : (
+  const emptyState = (
     <div className="flex flex-col items-center justify-center h-64 text-theme-text-tertiary">
       <AlertCircle className="w-12 h-12 mb-4 opacity-50" />
       {windowInsideGap(viewWindow, gaps) ? (
@@ -1824,7 +1809,6 @@ export function TimelineSwimlanes({ events, isLoading, countsUpdating, onResourc
           counts={effectivePinnedOnly
             ? { resources: pinnedLaneRows.length, events: pinnedEventsInWindow }
             : { resources: visibleLanes.length + pinnedLaneRows.length, events: eventsInWindow.length }}
-          countsUpdating={countsUpdating}
           pinnedCount={pinnedLaneRows.length}
           pinnedOnly={effectivePinnedOnly}
           onPinnedOnlyChange={setPinnedOnly}

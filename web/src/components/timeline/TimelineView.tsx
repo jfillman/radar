@@ -662,7 +662,7 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
   // Fetch all activity - zoom controls what's visible in the UI. This ring feeds
   // the swimlanes and the local strip's histogram, so it also runs in list mode
   // when that strip is shown; the list itself fetches its own 2000.
-  const { data: activity, isLoading, isFetching, isError, error, refetch } = timelineSource.useEvents({
+  const { data: activity, isLoading, isRangeChanging, isError, error, refetch } = timelineSource.useEvents({
     namespaces: timelineNamespaces,
     timeRange: 'all',
     includeK8sEvents: true,
@@ -957,7 +957,7 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
       <TimelineSwimlanes
         events={events}
         isLoading={isLoading || focusedAppLoading}
-        isFetching={isFetching}
+        countsUpdating={isRangeChanging}
         onResourceClick={onResourceClick}
         viewMode={viewMode}
         onViewModeChange={setViewMode}

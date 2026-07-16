@@ -101,12 +101,17 @@ export interface TimelineOverviewResult {
 export interface TimelineEventsResult {
   data: TimelineEvent[] | undefined
   isLoading: boolean
-  // A fetch for the requested window is in flight while previous data is still
-  // shown (keepPreviousData). Distinct from isLoading, which is only true with
-  // NO data at all — so a period change, which swaps the window key and keeps
-  // the prior range visible, reports isFetching (not isLoading). Lets the UI
-  // show a non-blocking "updating" hint without blanking the timeline.
+  // Broad "is loading" signal: any fetch for the requested data is in flight
+  // (initial load, range change, background refresh). Distinct from isLoading,
+  // which is only true with NO data at all. Consumers that want a general
+  // loader — e.g. the Applications History tab — drive it from this.
   isFetching: boolean
+  // Narrow signal: a NEW window is loading while keepPreviousData holds the
+  // prior range on screen (a genuine period / quantize change) — NOT a same-key
+  // background refetch and NOT the live poll. Drives the toolbar "updating"
+  // spinner so it doesn't flicker on every routine refresh. Only the retained
+  // source can tell this apart; local re-windows client-side, so it's false.
+  isRangeChanging?: boolean
   isError: boolean
   // The failure behind isError, when one is available. Surfaced so the UI can
   // show the server's actionable message (e.g. the retained row-cap "narrow the
@@ -175,7 +180,10 @@ function useLocalEvents(query: TimelineQuery): TimelineEventsResult {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [data, query.fromMs, query.toMs, query.limit, kindsKey, query.includeManaged],
   )
-  return { data: events, isLoading, isFetching, isError, error, refetch }
+  // Local re-windows the loaded ring client-side, so a period change issues no
+  // fetch — isRangeChanging is always false (no toolbar spinner). isFetching
+  // still reflects real ring refetches for broad loading consumers.
+  return { data: events, isLoading, isFetching, isRangeChanging: false, isError, error, refetch }
 }
 
 export const localSource: TimelineSource = {
@@ -527,12 +535,14 @@ function createRetainedEventsHook(
     return {
       data,
       isLoading: base.isLoading,
-      // True only on a window-key change (period switch / quantize rotation)
-      // while keepPreviousData holds the prior range on screen. Gating on
-      // isPlaceholderData excludes same-key background refetches (focus,
-      // staleness, manual) AND the 10s live poll (a separate query) — those
-      // refresh in place and must not flicker the toolbar spinner every tick.
-      isFetching: base.isFetching && base.isPlaceholderData,
+      // Broad loading signal — true on the initial range fetch and any base
+      // refetch (so the History tab shows a loader on first open). The live
+      // poll is a separate query and stays excluded.
+      isFetching: base.isFetching,
+      // Narrow: a new window is loading while keepPreviousData holds the prior
+      // range (a real period / quantize change), NOT a same-key background
+      // refetch or the live poll. Drives the toolbar spinner without flickering.
+      isRangeChanging: base.isFetching && base.isPlaceholderData,
       // Base failure is a real error; a failing live poll must not blank an
       // already-loaded range.
       isError: base.isError,

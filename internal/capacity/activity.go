@@ -156,9 +156,11 @@ func BuildActivityRecords(events []timeline.TimelineEvent) []ActivityRecord {
 				terminalAt := event.Timestamp
 				provision.terminalAt = &terminalAt
 				provision.terminalReasonCode = "nodeclaim_deleted_before_ready"
-				if event.Seq > provision.MaxSeq {
-					provision.MaxSeq = event.Seq
-				}
+				// Deliberately NOT bumping provision.MaxSeq to the delete's
+				// seq: pagination cursors cut on MaxSeq alone, so two records
+				// sharing one seq would let a page boundary drop one of the
+				// pair. The episode keeps its own history position; only its
+				// outcome and end time come from the delete.
 				closing := capacityapi.NewActivityEvidence()
 				closing.At = event.Timestamp
 				closing.Source = activityEvidenceSource(event.Source)

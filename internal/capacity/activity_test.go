@@ -198,6 +198,11 @@ func TestBuildActivityRecordsDeleteClosesUnfinishedProvision(t *testing.T) {
 	if byType[capacityapi.ActivityTermination].State != capacityapi.ActivityCompleted {
 		t.Fatalf("termination = %#v", byType[capacityapi.ActivityTermination])
 	}
+	// Pagination cursors cut on MaxSeq alone — the closed pair must never
+	// share a sequence or a page boundary between them drops one.
+	if records[0].MaxSeq == records[1].MaxSeq {
+		t.Fatalf("paired episodes share MaxSeq %d — a page boundary would drop one", records[0].MaxSeq)
+	}
 
 	// A claim that became Ready first keeps its completed provision intact.
 	records = BuildActivityRecords([]timeline.TimelineEvent{

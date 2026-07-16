@@ -18,6 +18,11 @@ export interface AgentInfo {
 export interface AgentsResponse {
   agents: AgentInfo[];
   enabled: boolean;
+  // eligible: this run mode supports local BYO-agent diagnosis (no proxy/OIDC
+  // auth, /mcp mounted) — true even when no agent is installed. Lets the UI tell
+  // "install an agent to enable this" (eligible && !enabled) apart from "not
+  // available here" (auth/cloud/--no-mcp). Absent on older servers / embed hosts.
+  eligible?: boolean;
   // Machine-scoped consent per disclosure surface, recorded server-side
   // (~/.radar) — one acknowledgment covers the web panel and the CLI.
   consented?: Record<string, boolean>;

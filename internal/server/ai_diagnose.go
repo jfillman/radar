@@ -145,9 +145,16 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	} else {
 		agents = ai.DetectAgents(r.Context(), withVersions)
 	}
+	// eligible: this run mode supports local BYO-agent diagnosis (no proxy/OIDC
+	// auth, /mcp mounted) — the SAME gate the boot-time engine init uses. It's true
+	// even when no agent is installed, so the UI can distinguish "install an agent
+	// to enable this" (eligible && !enabled) from "not available in this deployment"
+	// (auth/cloud/--no-mcp), where nudging an install wouldn't help.
+	eligible := !s.authConfig.Enabled() && s.mcpHandler != nil
 	s.writeJSON(w, map[string]any{
 		"agents":    agents,
 		"enabled":   s.aiRuns != nil,
+		"eligible":  eligible,
 		"consented": currentConsents(),
 	})
 }

@@ -35,8 +35,18 @@ export interface Target {
 }
 export type DiagnoseView = "home" | "investigation";
 
+// Setup readiness of the local AI-diagnosis feature, derived from the agents API:
+//  - "ready":         an agent is installed and the engine is running (available)
+//  - "needs-install": the feature is supported here but no agent CLI is installed
+//  - "needs-restart": a supported agent is now on PATH but Radar booted before it
+//                     existed (the engine is decided once, at startup)
+//  - "off":           not available in this deployment (proxy/OIDC auth, --no-mcp,
+//                     or an embed host) — no install nudge would help
+export type DiagnoseSetup = "ready" | "needs-install" | "needs-restart" | "off";
+
 interface DiagnoseCtx {
   available: boolean; // an agent CLI is present (button/entry gate)
+  setupState: DiagnoseSetup; // readiness for the setup nudge (see DiagnoseSetup)
   agentLabel: string; // label of the selected agent, e.g. "Claude Code"
   hosted: boolean; // selected agent runs on the host's backend, not this machine
   agents: AgentInfo[]; // supported agents detected on PATH (for the picker)
@@ -86,7 +96,11 @@ interface DiagnoseLayoutCtx {
 
 // Stable key for "is THIS resource being investigated right now" — built the same way
 // from a run summary and from a button's target so the two always match.
-export function runTargetKey(kind: string, namespace: string, name: string): string {
+export function runTargetKey(
+  kind: string,
+  namespace: string,
+  name: string,
+): string {
   return `${kind} ${namespace} ${name}`;
 }
 
@@ -95,7 +109,8 @@ const LayoutCtx = createContext<DiagnoseLayoutCtx | null>(null);
 
 export function useDiagnoseLayout(): DiagnoseLayoutCtx {
   const c = useContext(LayoutCtx);
-  if (!c) throw new Error("useDiagnoseLayout must be used within DiagnoseProvider");
+  if (!c)
+    throw new Error("useDiagnoseLayout must be used within DiagnoseProvider");
   return c;
 }
 
@@ -161,6 +176,7 @@ function writeStored(key: string, value: string) {
 
 export function DiagnoseProvider({ children }: { children: ReactNode }) {
   const [available, setAvailable] = useState(false);
+  const [eligible, setEligible] = useState(false);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [consented, setConsented] = useState<Record<string, boolean>>({});
   const [selectedAgent, setSelectedAgentState] = useState<string>(
@@ -205,6 +221,7 @@ export function DiagnoseProvider({ children }: { children: ReactNode }) {
       .then((r) => {
         if (!live) return;
         setConsented(r.consented ?? {});
+        setEligible(!!r.eligible);
         const supported = r.agents.filter(
           (a) =>
             a.supported &&
@@ -256,7 +273,8 @@ export function DiagnoseProvider({ children }: { children: ReactNode }) {
     (name: string) => {
       setSelectedAgentState(name);
       writeStored(AGENT_KEY, name);
-      const nextProfile = agents.find((agent) => agent.name === name)?.profiles?.[0];
+      const nextProfile = agents.find((agent) => agent.name === name)
+        ?.profiles?.[0];
       if (nextProfile) {
         setProfileState(nextProfile);
         writeStored(PROFILE_KEY, nextProfile);
@@ -274,10 +292,9 @@ export function DiagnoseProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const selectedAgentInfo = agents.find((a) => a.name === selectedAgent);
-  const effectiveProfile =
-    selectedAgentInfo?.profiles?.includes(profile)
-      ? profile
-      : (selectedAgentInfo?.profiles?.[0] ?? profile);
+  const effectiveProfile = selectedAgentInfo?.profiles?.includes(profile)
+    ? profile
+    : (selectedAgentInfo?.profiles?.[0] ?? profile);
   const agentLabel = agentLabelFor(selectedAgent, selectedAgentInfo?.label);
   const hosted = !!selectedAgentInfo?.hosted;
   // Hosted Radar uses its existing per-user disclosure surface and supplies its
@@ -285,6 +302,16 @@ export function DiagnoseProvider({ children }: { children: ReactNode }) {
   const consentSurface = hosted
     ? "standard"
     : (selectedAgentInfo?.consentSurfaces?.[effectiveProfile] ?? "");
+
+  // `agents` holds only supported CLIs (filtered on fetch), so a non-empty list
+  // while the engine is off means a drivable agent appeared on PATH after boot.
+  const setupState: DiagnoseSetup = available
+    ? "ready"
+    : !eligible
+      ? "off"
+      : agents.length > 0
+        ? "needs-restart"
+        : "needs-install";
 
   useEffect(() => {
     const onResize = () => setViewportW(window.innerWidth);
@@ -374,7 +401,9 @@ export function DiagnoseProvider({ children }: { children: ReactNode }) {
       setOpen(true);
       if (!hosted && !consentSurface) {
         setPendingTarget(null);
-        setStartError("Radar can’t run this agent with a verified execution profile.");
+        setStartError(
+          "Radar can’t run this agent with a verified execution profile.",
+        );
         setView("investigation");
         return;
       }
@@ -410,7 +439,9 @@ export function DiagnoseProvider({ children }: { children: ReactNode }) {
         window.history.replaceState(
           null,
           "",
-          window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
+          window.location.pathname +
+            (qs ? `?${qs}` : "") +
+            window.location.hash,
         );
       }
     } catch {
@@ -464,6 +495,7 @@ export function DiagnoseProvider({ children }: { children: ReactNode }) {
 
   const value: DiagnoseCtx = {
     available,
+    setupState,
     agentLabel,
     hosted,
     agents,
@@ -513,7 +545,16 @@ export function DiagnoseProvider({ children }: { children: ReactNode }) {
       panelWidthKey: WIDTH_KEY,
       runningKeys,
     }),
-    [open, contentGutter, maximized, width, narrow, runningKeys, setMaximized, setWidth],
+    [
+      open,
+      contentGutter,
+      maximized,
+      width,
+      narrow,
+      runningKeys,
+      setMaximized,
+      setWidth,
+    ],
   );
 
   return (

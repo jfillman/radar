@@ -26,6 +26,7 @@ import {
 import { useDiagnoseCustomization } from "../../context/DiagnoseCustomization";
 import { InvestigationView } from "./InvestigationView";
 import { RecentList } from "./Home";
+import { AgentSetupNotice } from "./AgentSetupNotice";
 import { ConsentCard } from "./parts";
 import { buildLaunchCommand, launchAgentLabel, openInTerminal } from "./launch";
 import { type RunSummary, type ExecutionProfile } from "../../api/diagnose";
@@ -179,6 +180,11 @@ export function DiagnoseSurface({ topInset = 0 }: { topInset?: number }) {
     document.addEventListener("mouseup", onUp);
   };
 
+  // Feature is eligible here but not runnable yet (no agent installed, or one
+  // appeared after boot) — Home leads with the setup notice instead of an empty list.
+  const setupPending =
+    d.setupState === "needs-install" || d.setupState === "needs-restart";
+
   const activeRun = d.runs.find((r) => r.id === d.activeRunId) ?? null;
   // A focused run shows the agent it actually ran with; Home reflects the current pick.
   const activeAgentLabel = activeRun?.agent
@@ -262,6 +268,10 @@ export function DiagnoseSurface({ topInset = 0 }: { topInset?: number }) {
       >
         Dismiss
       </button>
+    </div>
+  ) : setupPending ? (
+    <div className="flex-1 overflow-y-auto">
+      <AgentSetupNotice setupState={d.setupState} />
     </div>
   ) : (
     <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-theme-text-tertiary">
@@ -381,12 +391,15 @@ export function DiagnoseSurface({ topInset = 0 }: { topInset?: number }) {
             key="main"
             className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-3"
           >
-            <RecentList
-              agentLabel={d.agentLabel}
-              runs={d.runs}
-              onSelect={d.openRun}
-              historyDegraded={d.historyDegraded}
-            />
+            {setupPending && <AgentSetupNotice setupState={d.setupState} />}
+            {(!setupPending || d.runs.length > 0) && (
+              <RecentList
+                agentLabel={d.agentLabel}
+                runs={d.runs}
+                onSelect={d.openRun}
+                historyDegraded={d.historyDegraded}
+              />
+            )}
           </div>
         ) : (
           <div key="main" className="flex min-h-0 min-w-0 flex-1 flex-col">

@@ -35,13 +35,14 @@ interface NavItemDef {
 // The full standalone view set, flat (no group dividers). Order descends by
 // day-to-day frequency: Home, then the Resources/Issues/Topology core ("what's
 // running / what's wrong / how's it wired"), then app + temporal views,
-// delivery, and finally the periodic posture/spend pair. The rail's vertical
-// room lets us surface the views the 8-slot pill bar dropped (Issues,
-// Applications, Cost).
+// delivery, and finally the posture tail (Checks, Capacity, Cost). Capacity
+// sits there — next to Cost, its spend-lever sibling — and only renders when
+// Karpenter is detected, so the unconditional items keep stable positions
+// across clusters. The rail's vertical room lets us surface the views the
+// 8-slot pill bar dropped (Issues, Applications, Cost).
 const NAV_ITEMS: NavItemDef[] = [
   { view: 'home', icon: Home, label: 'Home' },
   { view: 'resources', icon: List, label: 'Resources' },
-  { view: 'capacity', icon: Gauge, label: 'Capacity' },
   { view: 'issues', icon: AlertTriangle, label: 'Issues' },
   { view: 'topology', icon: Network, label: 'Topology' },
   { view: 'applications', icon: Boxes, label: 'Applications' },
@@ -50,6 +51,7 @@ const NAV_ITEMS: NavItemDef[] = [
   { view: 'helm', icon: Package, label: 'Helm' },
   { view: 'gitops', icon: GitBranch, label: 'GitOps' },
   { view: 'checks', icon: ShieldCheck, label: 'Checks' },
+  { view: 'capacity', icon: Gauge, label: 'Capacity' },
   { view: 'cost', icon: DollarSign, label: 'Cost' },
 ]
 

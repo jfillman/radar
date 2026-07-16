@@ -86,7 +86,6 @@ export interface CommandItemCallbacks {
 const VIEW_ENTRIES: { view: MainView; label: string; icon: React.ComponentType<{ className?: string }>; shortcut: string }[] = [
   { view: 'home', label: 'Home', icon: Home, shortcut: 'g h' },
   { view: 'resources', label: 'Resources', icon: List, shortcut: 'g r' },
-  { view: 'capacity', label: 'Capacity', icon: Gauge, shortcut: 'g p' },
   { view: 'issues', label: 'Issues', icon: AlertTriangle, shortcut: 'g i' },
   { view: 'topology', label: 'Topology', icon: Network, shortcut: 'g t' },
   { view: 'applications', label: 'Applications', icon: Boxes, shortcut: 'g a' },
@@ -95,6 +94,7 @@ const VIEW_ENTRIES: { view: MainView; label: string; icon: React.ComponentType<{
   { view: 'gitops', label: 'GitOps', icon: GitBranch, shortcut: 'g o' },
   { view: 'traffic', label: 'Live Traffic', icon: Activity, shortcut: 'g f' },
   { view: 'checks', label: 'Checks', icon: ShieldCheck, shortcut: 'g u' },
+  { view: 'capacity', label: 'Capacity', icon: Gauge, shortcut: 'g p' },
   { view: 'cost', label: 'Cost', icon: DollarSign, shortcut: 'g c' },
 ]
 

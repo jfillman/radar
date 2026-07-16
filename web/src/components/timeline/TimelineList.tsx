@@ -81,16 +81,15 @@ export function TimelineList({ namespaces, onViewChange, currentView, onResource
     fromMs: selectionWindow?.fromMs,
     toMs: selectionWindow?.toMs,
   })
-  const unscopedEvents = fetchedEvents ?? []
-  const events = useMemo(
-    () => appScoped
+  const events = useMemo(() => {
+    const unscoped = fetchedEvents ?? []
+    return appScoped
       ? focusedAppIndex
-        ? eventsForApplication(unscopedEvents, topology, focusedAppIndex)
+        ? eventsForApplication(unscoped, topology, focusedAppIndex)
         : []
-      : unscopedEvents,
-    [appScoped, focusedAppIndex, topology, unscopedEvents],
-  )
-  const sourceTruncated = unscopedEvents.length >= fetchLimit
+      : unscoped
+  }, [appScoped, focusedAppIndex, topology, fetchedEvents])
+  const sourceTruncated = (fetchedEvents?.length ?? 0) >= fetchLimit
 
   // Full-screen error only when nothing is loaded; a failing background poll
   // with data on screen keeps rendering (data before error).

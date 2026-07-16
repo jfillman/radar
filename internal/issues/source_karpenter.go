@@ -400,7 +400,7 @@ func failingNodeClaimCondition(claim *unstructured.Unstructured) *metav1.Conditi
 	for _, conditionType := range []string{"Launched", "Registered", "Initialized", "Ready"} {
 		for i := range conditions {
 			condition := &conditions[i]
-			if condition.Type != conditionType || !karpenter.IsFailedLifecycleCondition(*condition) {
+			if condition.Type != conditionType || !karpenter.IsFailedLifecycleConditionForVersion(claim.GetAPIVersion(), *condition) {
 				continue
 			}
 			if claim.GetGeneration() > 0 && condition.ObservedGeneration > 0 && condition.ObservedGeneration < claim.GetGeneration() {

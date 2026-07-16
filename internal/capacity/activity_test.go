@@ -225,8 +225,19 @@ func TestBuildActivityRecordsDoesNotReadFailureVocabularyAsCompletion(t *testing
 		t.Fatalf("records = %#v, want the open provision only", records)
 	}
 	episode := records[0].Episode
-	if episode.State == capacityapi.ActivityCompleted || episode.PrimaryReasonCode == "nodeclaim_ready" {
-		t.Fatalf("NodeNotInitialized read as completion: %q/%q", episode.State, episode.PrimaryReasonCode)
+	// In-progress vocabulary is neither a completion nor a failure — the
+	// claim is still provisioning and the episode must stay open.
+	if episode.State != capacityapi.ActivityOpen || episode.Type != capacityapi.ActivityProvision {
+		t.Fatalf("NodeNotInitialized episode = %q/%q, want open provision", episode.Type, episode.State)
+	}
+
+	// Failure text still infers a stage failure.
+	records = BuildActivityRecords([]timeline.TimelineEvent{
+		{ID: "created", Seq: 1, Timestamp: now, Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-b", UID: "claim-b-uid", EventType: timeline.EventTypeAdd},
+		{ID: "init-failed", Seq: 2, Timestamp: now.Add(time.Minute), Source: timeline.SourceK8sEvent, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-b", UID: "claim-b-uid", EventType: timeline.EventTypeWarning, Reason: "InitializationTimeout", Message: "node failed to initialize"},
+	})
+	if len(records) != 1 || records[0].Episode.State != capacityapi.ActivityFailed {
+		t.Fatalf("failure-text warning = %#v, want failed provision attempt", records)
 	}
 }
 

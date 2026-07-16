@@ -832,7 +832,7 @@ func claimStage(claim *unstructured.Unstructured) capacityapi.ClaimStage {
 		return capacityapi.ClaimStageReady
 	}
 	for _, condition := range conditions {
-		if isClaimLifecycleCondition(condition.Type) && karpenter.IsFailedLifecycleCondition(condition) {
+		if isClaimLifecycleCondition(condition.Type) && karpenter.IsFailedLifecycleConditionForVersion(claim.GetAPIVersion(), condition) {
 			return capacityapi.ClaimStageFailed
 		}
 	}

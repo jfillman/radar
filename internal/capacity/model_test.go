@@ -561,6 +561,39 @@ func TestBuildPartialInFlightClaimCapacityIsLowerBound(t *testing.T) {
 	capacityTestAssertObservation(t, ledger.InFlightCapacity, capacityapi.CertaintyLowerBound, capacityapi.GranularityAggregate, map[string]string{"cpu": "2"})
 }
 
+func TestClaimStageRespectsConditionDialects(t *testing.T) {
+	pool := capacityTestPool("compute", "pool-uid", nil, nil)
+
+	// v1beta1 used False for ordinary unmet stages — a claim still
+	// provisioning must not read as failed.
+	inProgress := capacityTestClaimWithConditions("in-progress", pool, []map[string]any{
+		{"type": "Launched", "status": "True"},
+		{"type": "Initialized", "status": "False", "reason": "NotInitialized"},
+		{"type": "Ready", "status": "False", "reason": "NotInitialized"},
+	})
+	inProgress.Object["apiVersion"] = karpenter.APIVersionV1Beta1
+	if stage := claimStage(inProgress); stage != capacityapi.ClaimStageLaunched {
+		t.Fatalf("v1beta1 in-progress claim stage = %q, want launched", stage)
+	}
+
+	// A v1beta1 failure still carries failure vocabulary.
+	failed := capacityTestClaimWithConditions("failed", pool, []map[string]any{
+		{"type": "Launched", "status": "False", "reason": "LaunchFailed"},
+	})
+	failed.Object["apiVersion"] = karpenter.APIVersionV1Beta1
+	if stage := claimStage(failed); stage != capacityapi.ClaimStageFailed {
+		t.Fatalf("v1beta1 failed claim stage = %q, want failed", stage)
+	}
+
+	// v1 reserves False for hard invariants — no failure text needed.
+	invariant := capacityTestClaimWithConditions("invariant", pool, []map[string]any{
+		{"type": "Registered", "status": "False", "reason": "MultipleNodesFound"},
+	})
+	if stage := claimStage(invariant); stage != capacityapi.ClaimStageFailed {
+		t.Fatalf("v1 invariant claim stage = %q, want failed", stage)
+	}
+}
+
 func TestBuildClusterSchedulingAggregateScopesToPooledNodes(t *testing.T) {
 	pool := capacityTestPool("compute", "pool-uid", nil, nil)
 	ghostPool := capacityTestPool("ghost", "ghost-uid", nil, nil)

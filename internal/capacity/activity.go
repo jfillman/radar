@@ -322,7 +322,7 @@ func classifyNodeClaimConditionChange(event timeline.TimelineEvent) (activityCla
 		if conditionType == "Ready" && status == "True" {
 			return directActivity(capacityapi.ActivityProvision, capacityapi.ActivityCompleted, "nodeclaim_ready"), true
 		}
-		if !karpenter.IsFailedLifecycleCondition(metav1.Condition{Status: metav1.ConditionStatus(status), Reason: reason}) {
+		if !karpenter.IsFailedLifecycleConditionForVersion(event.APIVersion, metav1.Condition{Status: metav1.ConditionStatus(status), Reason: reason}) {
 			continue
 		}
 		switch conditionType {
@@ -394,12 +394,15 @@ func classifyKarpenterReason(event timeline.TimelineEvent) (activityClassificati
 		return classification, true
 	}
 	reason := strings.ToLower(event.Reason + " " + event.Message)
+	// Inferred stage failures need failure text, not just a Warning — warnings
+	// carrying in-progress vocabulary (NodeNotInitialized, not registered yet)
+	// must never terminalize a provision episode as failed.
 	switch {
-	case strings.Contains(reason, "launch") && (event.EventType == timeline.EventTypeWarning || strings.Contains(reason, "fail") || strings.Contains(reason, "error")):
+	case strings.Contains(reason, "launch") && (strings.Contains(reason, "fail") || strings.Contains(reason, "error")):
 		return inferredActivity(capacityapi.ActivityLaunchFailure, capacityapi.ActivityFailed, "launch_failed"), true
-	case strings.Contains(reason, "register") && (event.EventType == timeline.EventTypeWarning || strings.Contains(reason, "fail")):
+	case strings.Contains(reason, "register") && (strings.Contains(reason, "fail") || strings.Contains(reason, "error")):
 		return inferredActivity(capacityapi.ActivityRegistrationFailure, capacityapi.ActivityFailed, "registration_failed"), true
-	case strings.Contains(reason, "initializ") && (event.EventType == timeline.EventTypeWarning || strings.Contains(reason, "fail")):
+	case strings.Contains(reason, "initializ") && (strings.Contains(reason, "fail") || strings.Contains(reason, "error")):
 		return inferredActivity(capacityapi.ActivityInitializationFailure, capacityapi.ActivityFailed, "initialization_failed"), true
 	case strings.Contains(reason, "interrupt") || strings.Contains(reason, "spot interruption"):
 		return inferredActivity(capacityapi.ActivityInterruption, capacityapi.ActivityObserved, "interruption"), true

@@ -239,6 +239,18 @@ func IsFailedLifecycleCondition(condition metav1.Condition) bool {
 	}
 }
 
+// IsFailedLifecycleConditionForVersion applies the API version's condition
+// dialect. v1 reserves False for hard invariant failures, but v1beta1 used
+// False for ordinary unmet stages (Initialized=False/NotInitialized is a
+// claim still provisioning), so on v1beta1 a False only reads as failed when
+// its reason carries failure vocabulary.
+func IsFailedLifecycleConditionForVersion(apiVersion string, condition metav1.Condition) bool {
+	if condition.Status == metav1.ConditionFalse && apiVersion == APIVersionV1Beta1 {
+		return IsFailureReason(condition.Reason)
+	}
+	return IsFailedLifecycleCondition(condition)
+}
+
 // IsFailureReason reports whether a condition reason carries failure
 // vocabulary — a known NodeClaim failure reason or generic fail/error text.
 // Callers use it where a bare False is NOT evidence of failure (the Ready

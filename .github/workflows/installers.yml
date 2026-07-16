@@ -24,6 +24,13 @@ jobs:
       - name: Check syntax
         run: sh -n install.sh
 
+      - name: Reject unauthenticated GitHub API discovery
+        run: |
+          if grep -Fq 'api.github.com' install.sh install.ps1; then
+            echo "Installers must not use api.github.com for discovery" >&2
+            exit 1
+          fi
+
       - name: Install into an isolated directory
         run: |
           install_dir="$RUNNER_TEMP/radar-bin"
@@ -32,17 +39,14 @@ jobs:
           "$install_dir/kubectl-radar" --version
           test -L "$install_dir/radar"
 
-  windows:
-    name: Windows installer (${{ matrix.shell }})
+  windows-powershell:
+    name: Windows PowerShell 5.1 installer
     runs-on: windows-latest
-    strategy:
-      matrix:
-        shell: [powershell, pwsh]
     steps:
       - uses: actions/checkout@v7
 
       - name: Check syntax
-        shell: ${{ matrix.shell }}
+        shell: powershell
         run: |
           $tokens = $null
           $errors = $null
@@ -57,11 +61,78 @@ jobs:
           }
 
       - name: Install into an isolated directory
-        shell: ${{ matrix.shell }}
+        shell: powershell
         run: |
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "radar-local-app-data"
+          $KubectlExe = "$env:LOCALAPPDATA\radar\kubectl-radar.exe"
+          $RadarExe = "$env:LOCALAPPDATA\radar\radar.exe"
+
           Get-Content -Raw ./install.ps1 | Invoke-Expression
-          & "$env:LOCALAPPDATA\radar\kubectl-radar.exe" --version
-          if (-not (Test-Path "$env:LOCALAPPDATA\radar\radar.exe")) {
-            throw "radar.exe alias was not installed"
+
+          if (-not (Test-Path $RadarExe)) {
+            throw "radar.exe was not installed"
+          }
+          Set-Content -LiteralPath $RadarExe -Value "stale alias" -NoNewline
+
+          Get-Content -Raw ./install.ps1 | Invoke-Expression
+
+          $KubectlVersion = (& $KubectlExe --version | Out-String).Trim()
+          $RadarVersion = (& $RadarExe --version | Out-String).Trim()
+          if ($KubectlVersion -ne $RadarVersion) {
+            throw "command versions differ: " +
+              "'$KubectlVersion' != '$RadarVersion'"
+          }
+          $KubectlHash = (Get-FileHash $KubectlExe).Hash
+          $RadarHash = (Get-FileHash $RadarExe).Hash
+          if ($KubectlHash -ne $RadarHash) {
+            throw "radar.exe was not refreshed from kubectl-radar.exe"
+          }
+
+  windows-pwsh:
+    name: PowerShell 7 installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+
+      - name: Install into an isolated directory
+        shell: pwsh
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "radar-local-app-data"
+          $KubectlExe = "$env:LOCALAPPDATA\radar\kubectl-radar.exe"
+          $RadarExe = "$env:LOCALAPPDATA\radar\radar.exe"
+
+          Get-Content -Raw ./install.ps1 | Invoke-Expression
+
+          if (-not (Test-Path $RadarExe)) {
+            throw "radar.exe was not installed"
+          }
+          Set-Content -LiteralPath $RadarExe -Value "stale alias" -NoNewline
+
+          Get-Content -Raw ./install.ps1 | Invoke-Expression
+
+          $KubectlVersion = (& $KubectlExe --version | Out-String).Trim()
+          $RadarVersion = (& $RadarExe --version | Out-String).Trim()
+          if ($KubectlVersion -ne $RadarVersion) {
+            throw "command versions differ: " +
+              "'$KubectlVersion' != '$RadarVersion'"
+          }
+          $KubectlHash = (Get-FileHash $KubectlExe).Hash
+          $RadarHash = (Get-FileHash $RadarExe).Hash
+          if ($KubectlHash -ne $RadarHash) {
+            throw "radar.exe was not refreshed from kubectl-radar.exe"
           }

@@ -284,15 +284,14 @@ func TestDemandPoolEvaluationUsesExplicitLimitAndStaticEvidence(t *testing.T) {
 	pod := demandTestPod("worker", "1")
 	ready := true
 	replicas := int64(2)
-	available := true
-	unavailable := false
+	zeroReplicas := int64(0)
 	limitedSpec := demandPoolSpec(nil, nil, nil, nil, map[string]any{"cpu": "4"})
 	staticSpec := demandPoolSpec(nil, nil, nil, &replicas, nil)
+	frozenSpec := demandPoolSpec(nil, nil, nil, &zeroReplicas, nil)
 	inputs := []DemandPoolInput{
 		{NodePool: demandTestPool("limit-exhausted", &ready, limitedSpec, map[string]any{"cpu": "3500m"}), ProvisionedKnown: true},
 		{NodePool: demandTestPool("limit-unknown", &ready, limitedSpec, nil)},
-		{NodePool: demandTestPool("static-available", &ready, staticSpec, nil), StaticCapacityAvailable: &available},
-		{NodePool: demandTestPool("static-full", &ready, staticSpec, nil), StaticCapacityAvailable: &unavailable},
+		{NodePool: demandTestPool("static-zero", &ready, frozenSpec, nil)},
 		{NodePool: demandTestPool("static-unknown", &ready, staticSpec, nil)},
 	}
 
@@ -300,8 +299,7 @@ func TestDemandPoolEvaluationUsesExplicitLimitAndStaticEvidence(t *testing.T) {
 	assertDemandEvaluation(t, evaluations, "limit-exhausted", capacityapi.PoolIncompatible, "configuredLimit")
 	limitUnknown := assertDemandEvaluation(t, evaluations, "limit-unknown", capacityapi.PoolEvaluationUnknown, "")
 	assertDemandUnknown(t, limitUnknown, "nodePool.limits")
-	assertDemandEvaluation(t, evaluations, "static-available", capacityapi.PoolDeclaredCompatible, "")
-	assertDemandEvaluation(t, evaluations, "static-full", capacityapi.PoolIncompatible, "staticCapacity")
+	assertDemandEvaluation(t, evaluations, "static-zero", capacityapi.PoolIncompatible, "staticCapacity")
 	staticUnknown := assertDemandEvaluation(t, evaluations, "static-unknown", capacityapi.PoolEvaluationUnknown, "")
 	assertDemandUnknown(t, staticUnknown, "staticCapacity")
 }
@@ -934,10 +932,57 @@ func TestDemandUndeclaredCustomLabelIsIncompatibleNotUnknown(t *testing.T) {
 	}
 }
 
+func TestDemandPoolBoundedProviderLabelIsDeclaredCompatible(t *testing.T) {
+	ready := true
+	pod := demandTestPod("spot-worker", "500m")
+	pod.Spec.NodeSelector = map[string]string{"karpenter.sh/capacity-type": "spot"}
+
+	bounded := demandTestPool("bounded", &ready, demandPoolSpec(
+		[]any{demandRequirementObject("karpenter.sh/capacity-type", corev1.NodeSelectorOpIn, "spot", "on-demand")}, nil, nil, nil, nil,
+	), nil)
+	disjoint := demandTestPool("disjoint", &ready, demandPoolSpec(
+		[]any{demandRequirementObject("karpenter.sh/capacity-type", corev1.NodeSelectorOpIn, "on-demand")}, nil, nil, nil, nil,
+	), nil)
+	unbounded := demandTestPool("unbounded", &ready, demandPoolSpec(
+		[]any{demandRequirementObject("karpenter.sh/capacity-type", corev1.NodeSelectorOpExists)}, nil, nil, nil, nil,
+	), nil)
+
+	group := BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{pod}, Pools: []DemandPoolInput{
+		{NodePool: bounded}, {NodePool: disjoint}, {NodePool: unbounded},
+	}})[0]
+	// The pool's In requirement bounds the label's values and the pod's need
+	// intersects them — the declaration answers compatibility on its own.
+	assertDemandEvaluation(t, group.PoolEvaluations, "bounded", capacityapi.PoolDeclaredCompatible, "")
+	assertDemandEvaluation(t, group.PoolEvaluations, "disjoint", capacityapi.PoolIncompatible, "selectorRequirement")
+	unbound := assertDemandEvaluation(t, group.PoolEvaluations, "unbounded", capacityapi.PoolEvaluationUnknown, "")
+	assertDemandUnknown(t, unbound, "providerOfferings.karpenter.sh/capacity-type")
+}
+
+func TestDemandInstanceShapeMissingResourceIsUnknownNotFit(t *testing.T) {
+	ready := true
+	pool := demandTestPool("general", &ready, demandPoolSpec(nil, nil, nil, nil, nil), nil)
+	cpuOnlyShape := []corev1.ResourceList{resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "48", corev1.ResourcePods: "110"})}
+
+	pod := demandTestPod("worker", "8")
+	pod.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = resource.MustParse("4Gi")
+	group := BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{pod}, Pools: []DemandPoolInput{{NodePool: pool, ObservedMemberShapes: cpuOnlyShape}}})[0]
+	if group.PoolEvaluations[0].Result != capacityapi.PoolEvaluationUnknown {
+		t.Fatalf("memory request vs memory-less shape = %q, want unknown (absent resource cannot prove the fit)", group.PoolEvaluations[0].Result)
+	}
+
+	// An explicit zero request for an absent resource still fits.
+	zero := demandTestPod("zero", "8")
+	zero.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = resource.MustParse("0")
+	group = BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{zero}, Pools: []DemandPoolInput{{NodePool: pool, ObservedMemberShapes: cpuOnlyShape}}})[0]
+	if group.PoolEvaluations[0].Result != capacityapi.PoolDeclaredCompatible {
+		t.Fatalf("zero request vs absent resource = %q, want declared compatible", group.PoolEvaluations[0].Result)
+	}
+}
+
 func TestDemandInstanceShapeExceedingObservedCapacityIsUnknown(t *testing.T) {
 	ready := true
 	pool := demandTestPool("general", &ready, demandPoolSpec(nil, nil, nil, nil, nil), nil)
-	shapes := []corev1.ResourceList{resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "48", corev1.ResourceMemory: "96Gi"})}
+	shapes := []corev1.ResourceList{resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "48", corev1.ResourceMemory: "96Gi", corev1.ResourcePods: "110"})}
 
 	oversized := demandTestPod("oversized", "96")
 	group := BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{oversized}, Pools: []DemandPoolInput{{NodePool: pool, ObservedMemberShapes: shapes}}})[0]
@@ -1003,8 +1048,8 @@ func TestDemandInstanceShapeComparesWholeVectorsNotPerResourceMaxima(t *testing.
 	// Biggest CPU and biggest memory live on DIFFERENT instance shapes — a
 	// composite per-resource max would fabricate an instance that fits.
 	shapes := []corev1.ResourceList{
-		resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "48", corev1.ResourceMemory: "32Gi"}),
-		resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "8", corev1.ResourceMemory: "128Gi"}),
+		resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "48", corev1.ResourceMemory: "32Gi", corev1.ResourcePods: "110"}),
+		resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "8", corev1.ResourceMemory: "128Gi", corev1.ResourcePods: "110"}),
 	}
 	pod := demandTestPod("wide", "32")
 	pod.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = resource.MustParse("64Gi")

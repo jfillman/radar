@@ -31,11 +31,10 @@ const (
 )
 
 type DemandPoolInput struct {
-	NodePool                *unstructured.Unstructured
-	NodeClassReady          *bool
-	ProvisionedKnown        bool
-	StaticCapacityAvailable *bool
-	UnknownPredicates       []string
+	NodePool          *unstructured.Unstructured
+	NodeClassReady    *bool
+	ProvisionedKnown  bool
+	UnknownPredicates []string
 	// ObservedMemberShapes holds the distinct member capacity vectors ever
 	// observed for this pool (node allocatable / claim capacity). A pod whose
 	// requests fit none of them cannot be proven placeable — instance shapes
@@ -293,7 +292,14 @@ func instanceShapeUnknowns(requests corev1.ResourceList, shapes []corev1.Resourc
 	for _, shape := range shapes {
 		fits := true
 		for name, request := range requests {
-			if capacity, ok := shape[name]; ok && request.Cmp(capacity) > 0 {
+			if request.IsZero() {
+				continue
+			}
+			// A resource absent from the shape (a GPU request against a
+			// GPU-less member) cannot prove the fit any more than an
+			// undersized one can.
+			capacity, ok := shape[name]
+			if !ok || request.Cmp(capacity) > 0 {
 				fits = false
 				break
 			}
@@ -648,19 +654,15 @@ func evaluateDemandPool(model demandSchedulingModel, requests corev1.ResourceLis
 	unknown = append(unknown, instanceShapeUnknowns(requests, input.ObservedMemberShapes)...)
 
 	if spec.Replicas != nil {
-		switch {
-		case *spec.Replicas == 0:
+		if *spec.Replicas == 0 {
 			evidence.add(
 				"staticCapacity", "spec.replicas", []string{"0"}, []string{"available static capacity"},
 				"The static NodePool has zero configured replicas.",
 			)
-		case input.StaticCapacityAvailable == nil:
+		} else {
+			// Headroom on a provisioned static fleet cannot be proven from
+			// declarations alone, so a non-zero static pool stays unknown.
 			unknown = append(unknown, "staticCapacity")
-		case !*input.StaticCapacityAvailable:
-			evidence.add(
-				"staticCapacity", "spec.replicas", []string{strconv.FormatInt(*spec.Replicas, 10)}, []string{"available static capacity"},
-				"No schedulable capacity was evidenced in the static NodePool.",
-			)
 		}
 	}
 
@@ -809,11 +811,25 @@ func evaluateDemandSelectorTerm(podRequirements []demandRequirement, poolRequire
 			)
 			continue
 		}
-		if isProviderOfferingLabel(key) && !fixedLabels[key] {
+		// A pool In requirement bounds the label's values, and feasibility
+		// already proved the pod's need intersects that declared set — the
+		// declaration itself answers compatibility, no offering catalogue
+		// needed. Without a value bound (undeclared, Exists, NotIn) the actual
+		// value comes from the provider, so it stays an honest unknown.
+		if isProviderOfferingLabel(key) && !fixedLabels[key] && !requirementBoundsValues(poolForKey) {
 			unknown = append(unknown, "providerOfferings."+key)
 		}
 	}
 	return evidence, unknown
+}
+
+func requirementBoundsValues(requirements []demandRequirement) bool {
+	for _, requirement := range requirements {
+		if requirement.Operator == corev1.NodeSelectorOpIn && len(requirement.Values) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func demandRequirementsFeasible(requirements []demandRequirement) (bool, bool) {

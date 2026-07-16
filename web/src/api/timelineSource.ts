@@ -110,6 +110,10 @@ export interface TimelineEventsResult {
   refetch: () => void
   // Present only for sources that report coverage (retained).
   coverage?: TimelineCoverageRecord[]
+  // Retained only: the ring load was row-capped, so the OLDEST part of the
+  // retention window is not loaded. Hosts must surface this — rendering a
+  // truncated ring without a note reads as "nothing older happened".
+  truncated?: boolean
 }
 
 export interface TimelineSource {
@@ -267,7 +271,7 @@ const DEFAULT_RETAINED_MAX_RANGE_DAYS = 7
 // Matches the hub's per-response row cap. A window holding more arrives as
 // the newest RETAINED_RING_LIMIT events with `truncated` set — ring
 // semantics, exactly like the local source's capped ring, never a silent cut.
-const RETAINED_RING_LIMIT = 50_000
+export const RETAINED_RING_LIMIT = 50_000
 
 // Depth ceiling of the initial ring load; the hub rejects wider windows.
 const RETAINED_MAX_DEPTH_DAYS = 31
@@ -580,6 +584,7 @@ function createRetainedEventsHook(
         ring.refetch()
       },
       coverage: ring.data?.coverage,
+      truncated: ring.data?.truncated,
     }
   }
 }

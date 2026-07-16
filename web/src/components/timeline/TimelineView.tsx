@@ -25,6 +25,7 @@ import { RetainedTimelineScrubber, extendSelection, type ScrubberDomainInfo } fr
 import { LocalTimelineScrubber } from './LocalTimelineScrubber'
 import { useTopology, useApplications } from '../../api/client'
 import { useTimelineSource } from '../../context/TimelineSource'
+import { RETAINED_RING_LIMIT } from '../../api/timelineSource'
 import type { Topology } from '../../types'
 import type { NavigateToResource } from '../../utils/navigation'
 import { LargeClusterNamespacePicker } from '../shared/LargeClusterNamespacePicker'
@@ -657,7 +658,7 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
   // Fetch all activity - zoom controls what's visible in the UI. This ring feeds
   // the swimlanes and the local strip's histogram, so it also runs in list mode
   // when that strip is shown; the list itself fetches its own 2000.
-  const { data: activity, isLoading, isError, error, refetch } = timelineSource.useEvents({
+  const { data: activity, isLoading, isError, error, refetch, truncated: ringTruncated } = timelineSource.useEvents({
     namespaces: timelineNamespaces,
     timeRange: 'all',
     includeK8sEvents: true,
@@ -825,6 +826,15 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
     return (
       <div className="flex-1 flex flex-col min-h-0">
         {appScopeBar}
+        {/* A row-capped ring load means the OLDEST part of the retention
+            window is not loaded — say so, or an old selection reads as
+            "nothing happened back then". */}
+        {ringTruncated && (
+          <div className="flex items-center gap-1.5 border-b border-theme-border px-4 py-1.5 text-xs text-theme-text-tertiary">
+            <AlertTriangle className={`h-3.5 w-3.5 shrink-0 ${SEVERITY_TEXT.warning}`} />
+            History is truncated: showing the newest {RETAINED_RING_LIMIT.toLocaleString()} events of the retention window — the oldest activity is not loaded.
+          </div>
+        )}
         {isRetained ? (
           <RetainedTimelineScrubber
             source={timelineSource}

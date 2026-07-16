@@ -224,8 +224,8 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
   const line = (e: TimelineEvent) => JSON.stringify(e) + '\n'
   const end = (over: Record<string, unknown> = {}) => JSON.stringify({ type: 'end', ...over }) + '\n'
 
-  function ring(events: TimelineEvent[], truncated = false): RetainedRing {
-    return { events, coverage: [], truncated }
+  function ring(events: TimelineEvent[], over: Partial<RetainedRing> = {}): RetainedRing {
+    return { events, coverage: [], truncated: false, cursor: '100', loadedAtMs: NOW, ...over }
   }
 
   it('parses cursor/truncated from the end record and sends limit on the window fetch', async () => {
@@ -247,15 +247,15 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
   })
 
   it('loads the full ring once, then accumulates deltas — including a LATE event', async () => {
-    const store = new Map()
+    const flags = new Set<string>()
     // Full load: one event, cursor 100.
     mockApiFetch.mockResolvedValueOnce(
       streamResponse([line(ev({ id: 'e1', timestamp: new Date(NOW - DAY).toISOString() })), end({ cursor: '100' })]),
     )
-    const first = await runRetainedRingFetch({ metaKey: 'k', cached: undefined, metaStore: store, capMs: CAP, now: NOW })
+    const first = await runRetainedRingFetch({ ringKey: 'k', cached: undefined, forceResync: flags, capMs: CAP, now: NOW })
     expect(first.events.map((e) => e.id)).toEqual(['e1'])
     expect(mockApiFetch.mock.calls[0][0]).toContain('from=')
-    expect(store.get('k')?.cursor).toBe('100')
+    // cursor is intact on the cached ring — nothing was committed
 
     // Delta: a brand-new event AND a late one (event time 3 days back) — both
     // ride the ingestion-ordered poll and land in the ring.
@@ -266,34 +266,46 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
         end({ cursor: '200' }),
       ]),
     )
-    const second = await runRetainedRingFetch({ metaKey: 'k', cached: first, metaStore: store, capMs: CAP, now: NOW })
+    const second = await runRetainedRingFetch({ ringKey: 'k', cached: first, forceResync: flags, capMs: CAP, now: NOW })
     expect(mockApiFetch.mock.calls[1][0]).toContain('since=100')
     expect(second.events.map((e) => e.id).sort()).toEqual(['e-late', 'e-new', 'e1'])
-    expect(store.get('k')?.cursor).toBe('200')
+    expect(second.cursor).toBe('200')
   })
 
   it('a delta revision replaces its cached id', async () => {
-    const store = new Map([['k', { cursor: '100', lastFullMs: NOW }]])
+    const flags = new Set<string>()
     const cached = ring([ev({ id: 'e1', eventType: 'add', timestamp: new Date(NOW - DAY).toISOString() })])
     mockApiFetch.mockResolvedValueOnce(
       streamResponse([line(ev({ id: 'e1', eventType: 'update', timestamp: new Date(NOW - DAY).toISOString() })), end({ cursor: '200' })]),
     )
-    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
     expect(out.events).toHaveLength(1)
     expect(out.events[0].eventType).toBe('update')
   })
 
-  it('an empty delta returns the cached reference (no re-render) but advances the cursor', async () => {
-    const store = new Map([['k', { cursor: '100', lastFullMs: NOW }]])
+  it('a no-op delta returns the cached reference (no re-render)', async () => {
+    const flags = new Set<string>()
     const cached = ring([ev({ id: 'e1' })])
-    mockApiFetch.mockResolvedValueOnce(streamResponse([end({ cursor: '150' })]))
-    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    // No rows, cursor unchanged — the idle-cluster steady state.
+    mockApiFetch.mockResolvedValueOnce(streamResponse([end({ cursor: '100' })]))
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
     expect(out).toBe(cached)
-    expect(store.get('k')?.cursor).toBe('150')
+  })
+
+  it('an empty delta with a moved cursor commits the cursor WITH the data', async () => {
+    const flags = new Set<string>()
+    const cached = ring([ev({ id: 'e1', timestamp: new Date(NOW - DAY).toISOString() })])
+    mockApiFetch.mockResolvedValueOnce(streamResponse([end({ cursor: '150' })]))
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
+    // The advanced cursor rides the same commit as the events it describes —
+    // a discarded fetch discards both, so they can never diverge.
+    expect(out).not.toBe(cached)
+    expect(out.cursor).toBe('150')
+    expect(out.events.map((e) => e.id)).toEqual(['e1'])
   })
 
   it('prunes events older than the retention depth on merge', async () => {
-    const store = new Map([['k', { cursor: '100', lastFullMs: NOW }]])
+    const flags = new Set<string>()
     const cached = ring([
       ev({ id: 'e-ancient', timestamp: new Date(NOW - CAP - DAY).toISOString() }),
       ev({ id: 'e-kept', timestamp: new Date(NOW - DAY).toISOString() }),
@@ -301,25 +313,25 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
     mockApiFetch.mockResolvedValueOnce(
       streamResponse([line(ev({ id: 'e-new', timestamp: new Date(NOW).toISOString() })), end({ cursor: '200' })]),
     )
-    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
     expect(out.events.map((e) => e.id).sort()).toEqual(['e-kept', 'e-new'])
   })
 
   it('a capped delta page (more) pages forward within one fetch', async () => {
-    const store = new Map([['k', { cursor: '100', lastFullMs: NOW }]])
+    const flags = new Set<string>()
     const cached = ring([ev({ id: 'e1', timestamp: new Date(NOW - DAY).toISOString() })])
     mockApiFetch
       .mockResolvedValueOnce(streamResponse([line(ev({ id: 'p1', timestamp: new Date(NOW).toISOString() })), end({ cursor: '150', more: true })]))
       .mockResolvedValueOnce(streamResponse([line(ev({ id: 'p2', timestamp: new Date(NOW).toISOString() })), end({ cursor: '200' })]))
-    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
     expect(mockApiFetch).toHaveBeenCalledTimes(2)
     expect(mockApiFetch.mock.calls[1][0]).toContain('since=150')
     expect(out.events.map((e) => e.id).sort()).toEqual(['e1', 'p1', 'p2'])
-    expect(store.get('k')?.cursor).toBe('200')
+    expect(out.cursor).toBe('200')
   })
 
   it('a rejected cursor (400) resyncs with a full ring load', async () => {
-    const store = new Map([['k', { cursor: 'bogus', lastFullMs: NOW }]])
+    const flags = new Set<string>()
     const cached = ring([ev({ id: 'e-stale' })])
     mockApiFetch
       .mockResolvedValueOnce({
@@ -328,13 +340,13 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
         json: () => Promise.resolve({ error: 'invalid since cursor' }),
       } as unknown as Response)
       .mockResolvedValueOnce(streamResponse([line(ev({ id: 'e-fresh' })), end({ cursor: '300' })]))
-    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
     expect(out.events.map((e) => e.id)).toEqual(['e-fresh'])
-    expect(store.get('k')?.cursor).toBe('300')
+    expect(out.cursor).toBe('300')
   })
 
   it('caps accumulated growth at the ring limit, dropping the oldest and flagging truncated', async () => {
-    const store = new Map([['k', { cursor: '100', lastFullMs: NOW }]])
+    const flags = new Set<string>()
     // A ring already at the cap, oldest-last after sort.
     const full: TimelineEvent[] = Array.from({ length: RETAINED_RING_LIMIT }, (_, i) =>
       ev({ id: `e${i}`, timestamp: new Date(NOW - DAY - i * 1000).toISOString() }),
@@ -346,7 +358,7 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
         end({ cursor: '200' }),
       ]),
     )
-    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
     expect(out.events).toHaveLength(RETAINED_RING_LIMIT)
     expect(out.events[0].id).toBe('e-newest')
     // The OLDEST row fell off the ring, and the drop is flagged, not silent.
@@ -355,40 +367,56 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
   })
 
   it('a hub without a delta cursor turns polls into no-ops instead of full reloads', async () => {
-    const store = new Map()
+    const flags = new Set<string>()
     // Full load whose end record has NO cursor (pre-delta hub).
     mockApiFetch.mockResolvedValueOnce(
       streamResponse([line(ev({ id: 'e1', timestamp: new Date(NOW).toISOString() })), end()]),
     )
-    const first = await runRetainedRingFetch({ metaKey: 'k', cached: undefined, metaStore: store, capMs: CAP, now: NOW })
+    const first = await runRetainedRingFetch({ ringKey: 'k', cached: undefined, forceResync: flags, capMs: CAP, now: NOW })
     expect(first.events.map((e) => e.id)).toEqual(['e1'])
     // Next poll: no network at all — the cached ring is returned as-is.
-    const second = await runRetainedRingFetch({ metaKey: 'k', cached: first, metaStore: store, capMs: CAP, now: NOW })
+    const second = await runRetainedRingFetch({ ringKey: 'k', cached: first, forceResync: flags, capMs: CAP, now: NOW })
     expect(second).toBe(first)
     expect(mockApiFetch).toHaveBeenCalledTimes(1)
   })
 
   it('a stale ring resyncs with a full reload past the anti-entropy window', async () => {
-    // lastFullMs two hours back: cursor is valid, but the resync clock is due —
+    // loadedAtMs two hours back: cursor is valid, but the resync clock is due —
     // the poll must take the FULL path (refreshing coverage + truncated).
-    const store = new Map([['k', { cursor: '100', lastFullMs: NOW - 2 * 60 * 60 * 1000 }]])
-    const cached = ring([ev({ id: 'e-old-copy', timestamp: new Date(NOW - DAY).toISOString() })])
+    const flags = new Set<string>()
+    const cached = ring(
+      [ev({ id: 'e-old-copy', timestamp: new Date(NOW - DAY).toISOString() })],
+      { loadedAtMs: NOW - 2 * 60 * 60 * 1000 },
+    )
     mockApiFetch.mockResolvedValueOnce(
       streamResponse([line(ev({ id: 'e-fresh', timestamp: new Date(NOW).toISOString() })), end({ cursor: '900' })]),
     )
-    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
     expect(mockApiFetch.mock.calls[0][0]).toContain('from=')
     expect(mockApiFetch.mock.calls[0][0]).not.toContain('since=')
     expect(out.events.map((e) => e.id)).toEqual(['e-fresh'])
-    expect(store.get('k')).toEqual({ cursor: '900', lastFullMs: NOW })
+    expect(out.cursor).toBe('900')
+    expect(out.loadedAtMs).toBe(NOW)
+  })
+
+  it('a manual refresh flag forces a full reload and is consumed', async () => {
+    const flags = new Set<string>(['k'])
+    const cached = ring([ev({ id: 'e1', timestamp: new Date(NOW - DAY).toISOString() })])
+    mockApiFetch.mockResolvedValueOnce(
+      streamResponse([line(ev({ id: 'e-resynced', timestamp: new Date(NOW).toISOString() })), end({ cursor: '500' })]),
+    )
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
+    expect(mockApiFetch.mock.calls[0][0]).toContain('from=')
+    expect(out.events.map((e) => e.id)).toEqual(['e-resynced'])
+    expect(flags.has('k')).toBe(false)
   })
 
   it('the initial window extends past the client clock by the skew slack', async () => {
     // A client clock behind the hub must not open a permanent hole at the live
     // edge: to > now, from slides back by the same slack to keep the span.
-    const store = new Map()
+    const flags = new Set<string>()
     mockApiFetch.mockResolvedValueOnce(streamResponse([end({ cursor: '1' })]))
-    await runRetainedRingFetch({ metaKey: 'k', cached: undefined, metaStore: store, capMs: CAP, now: NOW })
+    await runRetainedRingFetch({ ringKey: 'k', cached: undefined, forceResync: flags, capMs: CAP, now: NOW })
     const url = String(mockApiFetch.mock.calls[0][0])
     const from = Number(/from=(\d+)/.exec(url)?.[1])
     const to = Number(/to=(\d+)/.exec(url)?.[1])
@@ -397,7 +425,7 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
   })
 
   it('a non-400 delta failure propagates and keeps the cursor for the next poll', async () => {
-    const store = new Map([['k', { cursor: '100', lastFullMs: NOW }]])
+    const flags = new Set<string>()
     const cached = ring([ev({ id: 'e1' })])
     mockApiFetch.mockResolvedValueOnce({
       ok: false,
@@ -405,8 +433,8 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
       status: 503,
     } as unknown as Response)
     await expect(
-      runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW }),
+      runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW }),
     ).rejects.toBeInstanceOf(ApiError)
-    expect(store.get('k')?.cursor).toBe('100')
+    // cursor is intact on the cached ring — nothing was committed
   })
 })

@@ -179,11 +179,12 @@ export function RetainedTimelineScrubber({ source, selection, onSelectionChange,
   const availableFromMs = overview.data?.availableFromMs
 
   const domain = useMemo<ScrubberRange>(() => {
-    // Clamp the domain floor to the queryable window. availableFromMs can point
+    // Clamp the domain floor to the LOADED window. availableFromMs can point
     // at ancient synthesized-historical event times (resource creation dates on
-    // long-lived clusters), which would stretch the strip over years of
-    // unreachable nothing — the UI can never brush past maxRangeDays anyway.
-    const floor = now - maxRangeDays * DAY_MS
+    // long-lived clusters), and a host may declare maxRangeDays deeper than the
+    // ring the client actually loads (MAX_SELECTION_MS) — either would stretch
+    // the strip over regions that render empty despite overview density.
+    const floor = now - Math.min(maxRangeDays * DAY_MS, MAX_SELECTION_MS)
     const fromMs = availableFromMs != null ? Math.max(availableFromMs, floor) : floor
     return { fromMs: Math.min(fromMs, now - HOUR_MS), toMs: now }
   }, [availableFromMs, now, maxRangeDays])

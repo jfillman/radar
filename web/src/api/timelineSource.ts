@@ -480,44 +480,49 @@ export interface RetainedRing {
   events: TimelineEvent[]
   coverage: TimelineCoverageRecord[]
   truncated: boolean
+  // The delta cursor rides the SAME react-query commit as the events it
+  // describes: an aborted or discarded fetch discards both together, so the
+  // cursor can never advance past events that were thrown away. Absent = the
+  // hub predates the delta feed; polls become no-ops (manual refresh still
+  // resyncs) instead of hammering it with a full reload every tick.
+  cursor?: string
+  // When the last FULL ring load ran — the anti-entropy resync clock.
+  loadedAtMs: number
 }
 
-interface RetainedDeltaMeta {
-  cursor: string
-  // When the last FULL ring load ran — the anti-entropy resync clock.
-  lastFullMs: number
-  // The hub's end record carried no cursor — a build that predates the delta
-  // feed. Polls become no-ops (return the cached ring) instead of hammering
-  // the hub with a full window reload every tick; manual refresh still works.
-  deltaUnsupported?: boolean
-}
-const retainedDeltaMeta = new Map<string, RetainedDeltaMeta>()
+// Ring keys whose next fetch must be a full reload (manual refresh). A side
+// flag, not a side cursor: consuming it only switches the PATH of the next
+// fetch — all sync state that must stay consistent with the data lives inside
+// RetainedRing itself.
+const retainedForceResync = new Set<string>()
 
 // Ring-fetch orchestration, the retained twin of client.ts's
-// runDeltaSyncFetch: full ring load when there's no cursor or no cached page,
-// else delta pages merged in with replace-by-id. Extracted so the
+// runDeltaSyncFetch: full ring load when there's no cached page (or a resync
+// is due), else delta pages merged in with replace-by-id. Extracted so the
 // full-load → delta-poll → cursor-reset contract is exercisable without a
-// React render; state (cached page, meta store) is passed in explicitly.
+// React render; state (the cached page, the force flag) is passed in
+// explicitly.
 export async function runRetainedRingFetch(deps: {
-  metaKey: string
+  ringKey: string
   cached: RetainedRing | undefined
-  metaStore: Map<string, RetainedDeltaMeta>
+  forceResync: Set<string>
   capMs: number
   now: number
   signal?: AbortSignal
 }): Promise<RetainedRing> {
-  const { metaKey, cached, metaStore, capMs, now, signal } = deps
-  const meta = metaStore.get(metaKey)
-  // Anti-entropy: past the resync window, fall through to a full reload
-  // regardless of cursor state — refreshing coverage, recomputing the
-  // truncated flag, and dropping anything deltas can't retract.
-  const resyncDue = meta != null && now - meta.lastFullMs > RETAINED_FULL_RESYNC_MS
-  if (meta?.deltaUnsupported && cached && !resyncDue) {
-    return cached
-  }
-  if (meta?.cursor && cached && !resyncDue) {
+  const { ringKey, cached, forceResync, capMs, now, signal } = deps
+  // Anti-entropy: past the resync window (or on manual refresh), fall through
+  // to a full reload regardless of cursor state — refreshing coverage,
+  // recomputing the truncated flag, and dropping anything deltas can't
+  // retract.
+  const resyncDue =
+    forceResync.has(ringKey) || (cached != null && now - cached.loadedAtMs > RETAINED_FULL_RESYNC_MS)
+  if (cached && !resyncDue) {
+    if (!cached.cursor) {
+      return cached
+    }
     try {
-      let cursor = meta.cursor
+      let cursor = cached.cursor
       let merged = cached.events
       let changed = false
       for (let page = 0; page < RETAINED_DELTA_MAX_PAGES; page++) {
@@ -529,9 +534,10 @@ export async function runRetainedRingFetch(deps: {
         }
         if (!delta.more) break
       }
-      metaStore.set(metaKey, { ...meta, cursor })
-      // Returning the cached reference on an empty delta skips re-renders.
-      if (!changed) return cached
+      // Returning the cached reference on a no-op delta skips re-renders (an
+      // idle cluster's cursor is stable by construction: the server advances
+      // the frontier only past emitted rows).
+      if (!changed && cursor === cached.cursor) return cached
       // Two bounds keep an always-open tab from growing without limit: the
       // retention floor (the server TTL-deletes past the same boundary) and
       // the ring row cap — accumulation past it drops the OLDEST rows, the
@@ -544,14 +550,14 @@ export async function runRetainedRingFetch(deps: {
         events: capped ? pruned.slice(0, RETAINED_RING_LIMIT) : pruned,
         coverage: cached.coverage,
         truncated: cached.truncated || capped,
+        cursor,
+        loadedAtMs: cached.loadedAtMs,
       }
     } catch (err) {
       // A rejected cursor (hub restarted onto an older build, operator wiped
-      // the store) is recoverable: drop it and fall through to a full reload.
-      // Anything else propagates — react-query keeps the cached ring visible.
-      if (err instanceof ApiError && err.status === 400) {
-        metaStore.delete(metaKey)
-      } else {
+      // the store) is recoverable: fall through to a full reload. Anything
+      // else propagates — react-query keeps the cached ring visible.
+      if (!(err instanceof ApiError && err.status === 400)) {
         throw err
       }
     }
@@ -563,13 +569,14 @@ export async function runRetainedRingFetch(deps: {
   // maximum range.
   const to = now + RETAINED_CLOCK_SKEW_SLACK_MS
   const full = await fetchRetainedWindow(to - capMs, to, signal, RETAINED_RING_LIMIT)
-  metaStore.set(
-    metaKey,
-    full.cursor
-      ? { cursor: full.cursor, lastFullMs: now }
-      : { cursor: '', lastFullMs: now, deltaUnsupported: true },
-  )
-  return { events: full.events, coverage: full.coverage, truncated: full.truncated }
+  forceResync.delete(ringKey)
+  return {
+    events: full.events,
+    coverage: full.coverage,
+    truncated: full.truncated,
+    cursor: full.cursor,
+    loadedAtMs: now,
+  }
 }
 
 function createRetainedEventsHook(
@@ -597,9 +604,9 @@ function createRetainedEventsHook(
       queryKey,
       queryFn: ({ signal }) =>
         runRetainedRingFetch({
-          metaKey: JSON.stringify(queryKey),
+          ringKey: JSON.stringify(queryKey),
           cached: queryClient.getQueryData<RetainedRing>(queryKey),
-          metaStore: retainedDeltaMeta,
+          forceResync: retainedForceResync,
           capMs,
           now: Date.now(),
           signal,
@@ -650,9 +657,9 @@ function createRetainedEventsHook(
       isError: ring.isError,
       error: ring.error,
       refetch: () => {
-        // Manual refresh is the resync backstop: drop the cursor so the next
-        // fetch reloads the whole ring instead of trusting accumulated state.
-        retainedDeltaMeta.delete(JSON.stringify(queryKey))
+        // Manual refresh is the resync backstop: flag the ring so the next
+        // fetch reloads it whole instead of trusting accumulated state.
+        retainedForceResync.add(JSON.stringify(queryKey))
         ring.refetch()
       },
       coverage: ring.data?.coverage,

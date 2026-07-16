@@ -835,6 +835,17 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
             History is truncated: showing the newest {RETAINED_RING_LIMIT.toLocaleString()} events of the retention window — the oldest activity is not loaded.
           </div>
         )}
+        {/* Failing background polls with a loaded ring: keep the data, say
+            it's going stale. The full-screen error is reserved for no-data. */}
+        {isError && activity && (
+          <div className="flex items-center gap-1.5 border-b border-theme-border px-4 py-1.5 text-xs text-theme-text-tertiary">
+            <AlertTriangle className={`h-3.5 w-3.5 shrink-0 ${SEVERITY_TEXT.warning}`} />
+            Live updates are failing — the timeline may be stale.
+            <button type="button" onClick={() => refetch()} className="underline hover:text-theme-text-primary">
+              Retry now
+            </button>
+          </div>
+        )}
         {isRetained ? (
           <RetainedTimelineScrubber
             source={timelineSource}
@@ -920,9 +931,12 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
       )
     }
 
-    // A failed fetch must not render as the swimlane "No events yet" empty state —
-    // that reads as a quiet cluster rather than a load failure.
-    if (isError) {
+    // A failed fetch with NOTHING loaded must not render as the swimlane
+    // "No events yet" empty state — that reads as a quiet cluster rather than
+    // a load failure. With a loaded ring on screen, a failing background poll
+    // must NOT blank it (gate on data before error); the stale-data banner
+    // below carries the warning instead.
+    if (isError && !activity) {
       // Surface the server's own message — a generic "failed to load" would
       // swallow whatever the hub said. "Try again" is a full resync: the
       // retained source drops its delta cursor and reloads the whole ring.

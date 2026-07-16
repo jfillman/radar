@@ -16,7 +16,7 @@ import { useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useChanges, apiFetch, mergeDeltaEvents, ApiError, type UseChangesOptions } from './client'
 import { apiUrl, getApiBase } from './config'
-import type { TimelineEvent } from '../types'
+import type { TimelineEvent, TimeRange } from '../types'
 
 // The query the wrappers pass. Superset of the local store's params so most
 // call sites don't change shape when switching sources.
@@ -283,6 +283,37 @@ const RETAINED_POLL_MS = 10_000
 // bounded so a pathological feed can't spin a single poll forever.
 const RETAINED_DELTA_MAX_PAGES = 10
 
+// Anti-entropy: a periodic full ring reload, the retained twin of the local
+// source's FULL_RESYNC_MS. Catches what deltas structurally can't — server-
+// side deletions, coverage-gap updates, and a stale truncated flag. Hourly,
+// not the local 5 minutes: a full ring is a heavy transfer and the delta feed
+// carries revisions, so entropy accumulates far slower here.
+const RETAINED_FULL_RESYNC_MS = 60 * 60 * 1000
+
+// The initial window's recent edge extends past the client clock by this
+// slack. A client clock BEHIND the hub would otherwise exclude already-
+// ingested events in (clientNow, hubNow] from the window — and the delta
+// cursor (the hub's frontier) already covers them, so no poll would ever
+// deliver them. The window slides back by the same slack to stay within the
+// hub's maximum range.
+const RETAINED_CLOCK_SKEW_SLACK_MS = 5 * 60 * 1000
+
+// The client-side spans the `timeRange` presets resolve to when no explicit
+// [from,to] window rides the query — the retained twin of the local source's
+// server-side `since` resolution. Bounded by the ring depth.
+function rangeSpanMs(range: TimeRange | undefined, capMs: number): number {
+  switch (range) {
+    case '5m': return 5 * 60 * 1000
+    case '30m': return 30 * 60 * 1000
+    case '1h': return HOUR_MS
+    case '6h': return 6 * HOUR_MS
+    case '24h': return 24 * HOUR_MS
+    case '7d': return 7 * DAY_MS
+    case '30d': return 30 * DAY_MS
+    default: return capMs
+  }
+}
+
 interface RetainedWindowResult {
   events: TimelineEvent[]
   coverage: TimelineCoverageRecord[]
@@ -453,6 +484,8 @@ export interface RetainedRing {
 
 interface RetainedDeltaMeta {
   cursor: string
+  // When the last FULL ring load ran — the anti-entropy resync clock.
+  lastFullMs: number
   // The hub's end record carried no cursor — a build that predates the delta
   // feed. Polls become no-ops (return the cached ring) instead of hammering
   // the hub with a full window reload every tick; manual refresh still works.
@@ -475,10 +508,14 @@ export async function runRetainedRingFetch(deps: {
 }): Promise<RetainedRing> {
   const { metaKey, cached, metaStore, capMs, now, signal } = deps
   const meta = metaStore.get(metaKey)
-  if (meta?.deltaUnsupported && cached) {
+  // Anti-entropy: past the resync window, fall through to a full reload
+  // regardless of cursor state — refreshing coverage, recomputing the
+  // truncated flag, and dropping anything deltas can't retract.
+  const resyncDue = meta != null && now - meta.lastFullMs > RETAINED_FULL_RESYNC_MS
+  if (meta?.deltaUnsupported && cached && !resyncDue) {
     return cached
   }
-  if (meta?.cursor && cached) {
+  if (meta?.cursor && cached && !resyncDue) {
     try {
       let cursor = meta.cursor
       let merged = cached.events
@@ -492,7 +529,7 @@ export async function runRetainedRingFetch(deps: {
         }
         if (!delta.more) break
       }
-      metaStore.set(metaKey, { cursor })
+      metaStore.set(metaKey, { ...meta, cursor })
       // Returning the cached reference on an empty delta skips re-renders.
       if (!changed) return cached
       // Two bounds keep an always-open tab from growing without limit: the
@@ -519,10 +556,18 @@ export async function runRetainedRingFetch(deps: {
       }
     }
   }
-  const full = await fetchRetainedWindow(now - capMs, now, signal, RETAINED_RING_LIMIT)
+  // The recent edge extends past the client clock by the skew slack (a client
+  // clock behind the hub would otherwise leave a permanent hole: events in
+  // (clientNow, hubNow] are under the returned cursor, so no delta re-delivers
+  // them). The window slides back by the same slack to stay within the hub's
+  // maximum range.
+  const to = now + RETAINED_CLOCK_SKEW_SLACK_MS
+  const full = await fetchRetainedWindow(to - capMs, to, signal, RETAINED_RING_LIMIT)
   metaStore.set(
     metaKey,
-    full.cursor ? { cursor: full.cursor } : { cursor: '', deltaUnsupported: true },
+    full.cursor
+      ? { cursor: full.cursor, lastFullMs: now }
+      : { cursor: '', lastFullMs: now, deltaUnsupported: true },
   )
   return { events: full.events, coverage: full.coverage, truncated: full.truncated }
 }
@@ -568,7 +613,17 @@ function createRetainedEventsHook(
     const namespacesKey = query.namespaces?.join(',')
     const data = useMemo(() => {
       if (!ring.data) return undefined
-      return applyClientFilters(ring.data.events, query)
+      // A `timeRange` preset without an explicit [from,to] window resolves to
+      // a client-side bound over the ring — the retained twin of the local
+      // source's server-side `since` resolution. Without this, a consumer
+      // like the Applications History tab picking "24h" would silently get
+      // the whole ring. The edge is the memo-run clock; it refreshes on every
+      // ring change (each delta with data), which is as live as the data.
+      let effective = query
+      if (query.fromMs == null && query.toMs == null && query.timeRange && query.timeRange !== 'all') {
+        effective = { ...query, fromMs: Date.now() - Math.min(rangeSpanMs(query.timeRange, capMs), capMs) }
+      }
+      return applyClientFilters(ring.data.events, effective)
       // Every filter is client-side here (the ring key carries none of them),
       // so each rides the memo: array-valued ones via join keys so identity
       // churn from the host doesn't re-filter. The live tick advances
@@ -584,6 +639,8 @@ function createRetainedEventsHook(
       query.limit,
       query.fromMs,
       query.toMs,
+      query.timeRange,
+      capMs,
     ])
 
     return {

@@ -70,7 +70,7 @@ export function TimelineList({ namespaces, onViewChange, currentView, onResource
   }, [])
 
   const fetchLimit = appScoped ? APP_SCOPED_FETCH_LIMIT : LIST_FETCH_LIMIT
-  const { data: unscopedEvents = [], isLoading, isError, error, refetch } = timelineSource.useEvents({
+  const { data: fetchedEvents, isLoading, isError, error, refetch } = timelineSource.useEvents({
     namespaces,
     kinds: queryParams.kinds,
     timeRange: queryParams.timeRange,
@@ -81,6 +81,7 @@ export function TimelineList({ namespaces, onViewChange, currentView, onResource
     fromMs: selectionWindow?.fromMs,
     toMs: selectionWindow?.toMs,
   })
+  const unscopedEvents = fetchedEvents ?? []
   const events = useMemo(
     () => appScoped
       ? focusedAppIndex
@@ -91,7 +92,9 @@ export function TimelineList({ namespaces, onViewChange, currentView, onResource
   )
   const sourceTruncated = unscopedEvents.length >= fetchLimit
 
-  if (isError) {
+  // Full-screen error only when nothing is loaded; a failing background poll
+  // with data on screen keeps rendering (data before error).
+  if (isError && !fetchedEvents) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-theme-text-tertiary gap-3">
         <AlertTriangle className="w-10 h-10 text-amber-400/70" />

@@ -12,6 +12,7 @@ vi.mock('./client', async (importOriginal) => {
 import { apiFetch, ApiError } from './client'
 import {
   fetchRetainedWindow,
+  RETAINED_RING_LIMIT,
   fetchRetainedDelta,
   runRetainedRingFetch,
   applyClientFilters,
@@ -330,6 +331,41 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
     const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
     expect(out.events.map((e) => e.id)).toEqual(['e-fresh'])
     expect(store.get('k')?.cursor).toBe('300')
+  })
+
+  it('caps accumulated growth at the ring limit, dropping the oldest and flagging truncated', async () => {
+    const store = new Map([['k', { cursor: '100' }]])
+    // A ring already at the cap, oldest-last after sort.
+    const full: TimelineEvent[] = Array.from({ length: RETAINED_RING_LIMIT }, (_, i) =>
+      ev({ id: `e${i}`, timestamp: new Date(NOW - DAY - i * 1000).toISOString() }),
+    )
+    const cached = ring(full)
+    mockApiFetch.mockResolvedValueOnce(
+      streamResponse([
+        line(ev({ id: 'e-newest', timestamp: new Date(NOW).toISOString() })),
+        end({ cursor: '200' }),
+      ]),
+    )
+    const out = await runRetainedRingFetch({ metaKey: 'k', cached, metaStore: store, capMs: CAP, now: NOW })
+    expect(out.events).toHaveLength(RETAINED_RING_LIMIT)
+    expect(out.events[0].id).toBe('e-newest')
+    // The OLDEST row fell off the ring, and the drop is flagged, not silent.
+    expect(out.events.some((e) => e.id === `e${RETAINED_RING_LIMIT - 1}`)).toBe(false)
+    expect(out.truncated).toBe(true)
+  })
+
+  it('a hub without a delta cursor turns polls into no-ops instead of full reloads', async () => {
+    const store = new Map()
+    // Full load whose end record has NO cursor (pre-delta hub).
+    mockApiFetch.mockResolvedValueOnce(
+      streamResponse([line(ev({ id: 'e1', timestamp: new Date(NOW).toISOString() })), end()]),
+    )
+    const first = await runRetainedRingFetch({ metaKey: 'k', cached: undefined, metaStore: store, capMs: CAP, now: NOW })
+    expect(first.events.map((e) => e.id)).toEqual(['e1'])
+    // Next poll: no network at all — the cached ring is returned as-is.
+    const second = await runRetainedRingFetch({ metaKey: 'k', cached: first, metaStore: store, capMs: CAP, now: NOW })
+    expect(second).toBe(first)
+    expect(mockApiFetch).toHaveBeenCalledTimes(1)
   })
 
   it('a non-400 delta failure propagates and keeps the cursor for the next poll', async () => {

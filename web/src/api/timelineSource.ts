@@ -453,6 +453,10 @@ export interface RetainedRing {
 
 interface RetainedDeltaMeta {
   cursor: string
+  // The hub's end record carried no cursor — a build that predates the delta
+  // feed. Polls become no-ops (return the cached ring) instead of hammering
+  // the hub with a full window reload every tick; manual refresh still works.
+  deltaUnsupported?: boolean
 }
 const retainedDeltaMeta = new Map<string, RetainedDeltaMeta>()
 
@@ -471,6 +475,9 @@ export async function runRetainedRingFetch(deps: {
 }): Promise<RetainedRing> {
   const { metaKey, cached, metaStore, capMs, now, signal } = deps
   const meta = metaStore.get(metaKey)
+  if (meta?.deltaUnsupported && cached) {
+    return cached
+  }
   if (meta?.cursor && cached) {
     try {
       let cursor = meta.cursor
@@ -488,13 +495,18 @@ export async function runRetainedRingFetch(deps: {
       metaStore.set(metaKey, { cursor })
       // Returning the cached reference on an empty delta skips re-renders.
       if (!changed) return cached
-      // Prune to the retention depth so an always-open tab can't grow
-      // unbounded; the server deletes past the same boundary (TTL).
+      // Two bounds keep an always-open tab from growing without limit: the
+      // retention floor (the server TTL-deletes past the same boundary) and
+      // the ring row cap — accumulation past it drops the OLDEST rows, the
+      // same semantics as the initial load and the local source's ring, and
+      // flips `truncated` so the UI says so.
       const floor = now - capMs
+      const pruned = merged.filter((e) => new Date(e.timestamp).getTime() >= floor)
+      const capped = pruned.length > RETAINED_RING_LIMIT
       return {
-        events: merged.filter((e) => new Date(e.timestamp).getTime() >= floor),
+        events: capped ? pruned.slice(0, RETAINED_RING_LIMIT) : pruned,
         coverage: cached.coverage,
-        truncated: cached.truncated,
+        truncated: cached.truncated || capped,
       }
     } catch (err) {
       // A rejected cursor (hub restarted onto an older build, operator wiped
@@ -508,7 +520,10 @@ export async function runRetainedRingFetch(deps: {
     }
   }
   const full = await fetchRetainedWindow(now - capMs, now, signal, RETAINED_RING_LIMIT)
-  metaStore.set(metaKey, { cursor: full.cursor ?? '0' })
+  metaStore.set(
+    metaKey,
+    full.cursor ? { cursor: full.cursor } : { cursor: '', deltaUnsupported: true },
+  )
   return { events: full.events, coverage: full.coverage, truncated: full.truncated }
 }
 

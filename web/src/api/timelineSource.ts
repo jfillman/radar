@@ -95,12 +95,12 @@ export interface TimelineOverviewResult {
 export interface TimelineEventsResult {
   data: TimelineEvent[] | undefined
   isLoading: boolean
-  // Broad "is loading" signal: any fetch for the requested data is in flight
-  // (initial load or background refresh). Distinct from isLoading, which is
-  // only true with NO data at all. Consumers that want a general loader —
-  // e.g. the Applications History tab — drive it from this. Period changes
-  // re-window the loaded ring client-side in BOTH sources, so they never
-  // fetch and never signal.
+  // Broad "is loading" signal: any fetch for the requested data is in flight,
+  // INCLUDING routine background polls (every ~10s on the retained source).
+  // Do not drive user-visible loaders from this — they would flicker on every
+  // poll; use isLoading (true only with no data at all) for loaders. Period
+  // changes re-window the loaded ring client-side in both sources, so they
+  // never fetch and never signal either flag.
   isFetching: boolean
   isError: boolean
   // The failure behind isError, when one is available. Surfaced so the UI can
@@ -305,7 +305,9 @@ const RETAINED_PRESET_TICK_MS = 5 * 60 * 1000
 
 // The client-side spans the `timeRange` presets resolve to when no explicit
 // [from,to] window rides the query — the retained twin of the local source's
-// server-side `since` resolution. Bounded by the ring depth. Exported for
+// server-side `since` resolution. Preset arms return their nominal span; only
+// 'all'/unset falls back to the ring depth — clamping a preset wider than a
+// shallow host is the CALLER's job (Math.min at the use site). Exported for
 // unit tests; not re-exported publicly.
 export function rangeSpanMs(range: TimeRange | undefined, capMs: number): number {
   switch (range) {
@@ -635,12 +637,18 @@ function createRetainedEventsHook(
     // honest without meaningful churn.
     const derivedWindow =
       query.fromMs == null && query.toMs == null && !!query.timeRange && query.timeRange !== 'all'
+    // Gated on `enabled` too: a disabled consumer (an unopened tab) must not
+    // pay a periodic re-filter of the shared ring. The bump on arming keeps
+    // the window fresh across a disable→enable gap (tab reopened hours later
+    // must not show the stale bound until the next tick).
+    const tickActive = derivedWindow && enabled
     const [presetTick, setPresetTick] = useState(0)
     useEffect(() => {
-      if (!derivedWindow) return
+      if (!tickActive) return
+      setPresetTick((t) => t + 1)
       const id = setInterval(() => setPresetTick((t) => t + 1), RETAINED_PRESET_TICK_MS)
       return () => clearInterval(id)
-    }, [derivedWindow])
+    }, [tickActive])
     const data = useMemo(() => {
       if (!ring.data) return undefined
       // A `timeRange` preset without an explicit [from,to] window resolves to

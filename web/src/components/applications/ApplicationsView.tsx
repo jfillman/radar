@@ -645,7 +645,8 @@ function AppDetailRoute({
         historyRange={historyRange}
         historyRangeOptions={historyRangeOptions}
         historyCoverageRecordCount={historyTimelineQuery.coverage?.length ?? 0}
-        historyRuntimeLimited={historyRuntimeLimited || (historyTimelineQuery.truncated ?? false)}
+        historyRuntimeLimited={historyRuntimeLimited}
+        historyRingTruncated={historyTimelineQuery.truncated ?? false}
         onHistoryRangeChange={setRetainedHistoryRange}
         onOpenTimeline={openApplicationTimeline}
         onOpenSource={openSource}

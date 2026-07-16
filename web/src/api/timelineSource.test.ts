@@ -227,9 +227,11 @@ describe('rangeSpanMs (client-side preset resolution)', () => {
     expect(rangeSpanMs('all', CAP)).toBe(CAP)
     expect(rangeSpanMs(undefined, CAP)).toBe(CAP)
   })
-  it('a preset wider than a shallow host clamps at the depth (via the caller Math.min)', () => {
+  it('preset arms return their nominal span — clamping is the caller`s job', () => {
+    // A 30d preset against a 7d host returns 30d here; the use site clamps
+    // with Math.min against the ring depth (pinned indirectly by the hook).
     const shallow = 7 * 24 * 60 * 60 * 1000
-    expect(Math.min(rangeSpanMs('30d', shallow), shallow)).toBe(shallow)
+    expect(rangeSpanMs('30d', shallow)).toBe(30 * 24 * 60 * 60 * 1000)
   })
 })
 

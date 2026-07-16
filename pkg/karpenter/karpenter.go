@@ -214,13 +214,13 @@ var nodeClaimFailureReasons = map[string]bool{
 	// Cloud providers write their error mapping verbatim into
 	// Launched=Unknown — the AWS provider's vocabulary carries no
 	// fail/error substring for most of them.
-	"Unauthorized":                    true,
-	"LaunchTemplateNotFound":          true,
-	"SecurityGroupSubnetVPCMismatch":  true,
-	"InstanceProfileNameInvalid":      true,
-	"RequestLimitExceeded":            true,
-	"VCPULimitExceeded":               true,
-	"InsufficientInstanceCapacity":    true,
+	"Unauthorized":                      true,
+	"LaunchTemplateNotFound":            true,
+	"SecurityGroupSubnetVPCMismatch":    true,
+	"InstanceProfileNameInvalid":        true,
+	"RequestLimitExceeded":              true,
+	"VCPULimitExceeded":                 true,
+	"InsufficientInstanceCapacity":      true,
 	"InsufficientFreeAddressesInSubnet": true,
 }
 

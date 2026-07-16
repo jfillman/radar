@@ -92,6 +92,10 @@ export type TimelineMode =
 // burying the lanes in a day of history; presets/URL widen it deliberately.
 const DEFAULT_LIVE_WIDTH_MS = 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
+// Presets wider than this land the swimlane on a bounded recent lens instead of
+// the full range, so it never renders every resource lane at once (a 30d domain
+// has thousands). 7d and narrower keep the full-range lens.
+const WIDE_LENS_THRESHOLD_MS = 7 * DAY_MS
 // Fallback cap for a retained hand-entered ?from&to when the source doesn't
 // declare maxRangeDays — mirrors the retained source's own default.
 const DEFAULT_MAX_RANGE_DAYS = 7
@@ -418,8 +422,8 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
   // Above this selected-domain width, a preset lands on a bounded recent lens
   // instead of the full range, so the swimlane never tries to render every
   // resource lane at once (a 30d domain has thousands). 7d and narrower keep
-  // the full-range lens — they render an acceptable number of rows.
-  const WIDE_LENS_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000
+  // the full-range lens — they render an acceptable number of rows. Threshold
+  // (WIDE_LENS_THRESHOLD_MS) is module-scoped so it isn't a hook dependency.
   const [lensWindow, setLensWindow] = useState<ScrubberRange>(() => {
     const width = Math.min(DEFAULT_LENS_MS, selection.toMs - selection.fromMs)
     return { fromMs: selection.toMs - width, toMs: selection.toMs }

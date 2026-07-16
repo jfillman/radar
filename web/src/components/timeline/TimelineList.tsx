@@ -15,10 +15,12 @@ import { AlertTriangle, RefreshCw } from 'lucide-react'
 
 export type { ActivityTypeFilter, ActivityFilterKey }
 
-// Server-side cap on the list fetch. Generous so a busy query window isn't
-// silently truncated — the list is already bounded to the selection range, so
-// this only caps pathological bursts. Surfaced to the list as `truncatedAt` so a
-// window that does hit it shows an end-of-list note instead of dropping silently.
+// Cap on the list fetch — server-side for local (the /changes limit param),
+// client-side for retained (which streams the full window; applyClientFilters
+// slices). Generous so a busy query window isn't silently truncated; the list
+// is already bounded to the selection range, so this only caps pathological
+// bursts. Surfaced as `truncatedAt` so a window that hits it shows an
+// end-of-list note instead of dropping silently.
 const LIST_FETCH_LIMIT = 2000
 const APP_SCOPED_FETCH_LIMIT = 10000
 

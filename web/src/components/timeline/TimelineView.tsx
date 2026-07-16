@@ -91,6 +91,7 @@ export type TimelineMode =
 // Default query: the last hour. Wide-enough for "what just happened" without
 // burying the lanes in a day of history; presets/URL widen it deliberately.
 const DEFAULT_LIVE_WIDTH_MS = 60 * 60 * 1000
+const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 // Presets wider than this land the swimlane on a bounded recent lens instead of
 // the full range, so it never renders every resource lane at once (a 30d domain
@@ -297,8 +298,8 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
   const effectiveInitialMode = scopeRequiresNamespaceFilter ? 'list' : (parseView(searchParams) ?? initialViewMode ?? DEFAULT_VIEW)
   const [viewMode, setViewMode] = useState<TimelineViewMode>(effectiveInitialMode)
   // Shared across list + swimlane so the toggle carries across the view switch,
-  // and so the swimlane fetch can exclude deletes server-side (before LIMIT)
-  // rather than only hiding them client-side after the 10k cap.
+  // and so the fetch can exclude deletes at the source rather than only hiding
+  // them client-side.
   const [showDeleted, setShowDeleted] = useState(() => searchParams.get('deleted') !== '0')
   // ?pinnedOnly=1 is inert without pins: honoring it with no stored pins would
   // arm a filter that hides everything. Gate the read on stored pins so the param
@@ -419,11 +420,6 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
   // hour of the selection (what the swimlane shows at its default zoom), or the
   // whole selection if that's narrower.
   const DEFAULT_LENS_MS = 60 * 60 * 1000
-  // Above this selected-domain width, a preset lands on a bounded recent lens
-  // instead of the full range, so the swimlane never tries to render every
-  // resource lane at once (a 30d domain has thousands). 7d and narrower keep
-  // the full-range lens — they render an acceptable number of rows. Threshold
-  // (WIDE_LENS_THRESHOLD_MS) is module-scoped so it isn't a hook dependency.
   const [lensWindow, setLensWindow] = useState<ScrubberRange>(() => {
     const width = Math.min(DEFAULT_LENS_MS, selection.toMs - selection.fromMs)
     return { fromMs: selection.toMs - width, toMs: selection.toMs }
@@ -925,7 +921,13 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
       // retained window fails, offer a one-click narrow so "Try again" (which
       // would just re-fail at the same size) isn't the only recourse.
       const detail = error?.message?.trim()
-      const canNarrow = isRetained && selection.toMs - selection.fromMs > DAY_MS
+      // Offer a narrower window whenever the current one is wider than the
+      // smallest preset. Narrow to 24h from a multi-day window, else to 1h — so
+      // a 24h window that itself trips the cap (dense cluster) still has a step
+      // down, not a "Try again" that just re-fails at the same size.
+      const span = selection.toMs - selection.fromMs
+      const narrowTargetMs = span > DAY_MS ? DAY_MS : HOUR_MS
+      const canNarrow = isRetained && span > HOUR_MS
       return wrap(
         <div className="flex-1 flex flex-col">
           <div className="flex items-center justify-between px-4 py-2 border-b border-theme-border">
@@ -939,10 +941,10 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
             <div className="flex items-center gap-2">
               {canNarrow && (
                 <button
-                  onClick={() => handlePresetSelect(DAY_MS)}
+                  onClick={() => handlePresetSelect(narrowTargetMs)}
                   className="btn-brand flex items-center gap-2 px-3 py-1.5 text-sm"
                 >
-                  Narrow to last 24h
+                  {narrowTargetMs === DAY_MS ? 'Narrow to last 24h' : 'Narrow to last 1h'}
                 </button>
               )}
               <button

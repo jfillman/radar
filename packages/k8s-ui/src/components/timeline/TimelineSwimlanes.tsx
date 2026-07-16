@@ -1735,7 +1735,16 @@ export function TimelineSwimlanes({ events, isLoading, countsUpdating, onResourc
 
   // Empty-state block — shared by the no-rows-at-all case and the
   // pinned-rows-but-nothing-else case (rendered below the pinned section).
-  const emptyState = (
+  // A range change in flight (keepPreviousData holds the old window while the
+  // new one loads and applyClientFilters bounds it to an as-yet-empty range)
+  // must read as loading, not as a quiet cluster — otherwise the "No events yet"
+  // copy is misinformation mid-fetch.
+  const emptyState = countsUpdating ? (
+    <div className="flex flex-col items-center justify-center h-64 text-theme-text-tertiary">
+      <RefreshCw className="w-8 h-8 mb-4 animate-spin opacity-60" aria-label="Loading timeline" />
+      <p className="text-lg">Loading this range…</p>
+    </div>
+  ) : (
     <div className="flex flex-col items-center justify-center h-64 text-theme-text-tertiary">
       <AlertCircle className="w-12 h-12 mb-4 opacity-50" />
       {windowInsideGap(viewWindow, gaps) ? (

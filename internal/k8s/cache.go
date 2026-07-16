@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/skyhook-io/radar/internal/timeline"
@@ -881,8 +882,152 @@ func (c *ResourceCache) ListDynamic(ctx context.Context, kind string, namespace 
 	return c.ListDynamicWithGroup(ctx, kind, namespace, "")
 }
 
+// typedRouteGVR reports whether a dynamic-cache read for (kind, group) must
+// be served by the typed cache instead of spinning up a dynamic informer
+// that would duplicate a typed one (cluster-wide Secrets/ConfigMaps twice is
+// a real memory cost, and the serial informer startups were the dominant
+// cold-path cost of the GitOps tree). Dispatch mirrors the REST/MCP
+// handlers' convention exactly: an explicit group must be owned by the
+// built-in (CRDs whose kind shadows a built-in, e.g. Knative Service, keep
+// their dynamic route); an empty group means "the built-in if this name is
+// built-in".
+func typedRouteGVR(kind, group string) (schema.GroupVersionResource, bool) {
+	if group != "" && !TypedKindOwnsGroup(kind, group) {
+		return schema.GroupVersionResource{}, false
+	}
+	return lookupTypedBuiltinGVR(kind)
+}
+
+// typedObjectToUnstructured converts a typed lister object to unstructured
+// and stamps apiVersion/kind (informer objects carry no TypeMeta). The
+// conversion allocates fresh maps, so the shared informer object is never
+// mutated — which also makes the in-place strip below safe.
+func typedObjectToUnstructured(obj runtime.Object, gvr schema.GroupVersionResource) (*unstructured.Unstructured, error) {
+	m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+	u := &unstructured.Unstructured{Object: m}
+	// Match the dynamic path's outward contract (StripUnstructuredFields):
+	// no managedFields, no kubectl last-applied. The typed informer
+	// transform (DropManagedFields) covers only its explicit kind list —
+	// RBAC kinds among others fall through with last-applied intact, and
+	// exposing it here would leak a full JSON copy of the object into every
+	// tree/list payload. Stripped in place: the converted map is fresh.
+	unstructured.RemoveNestedField(u.Object, "metadata", "managedFields")
+	if annotations := u.GetAnnotations(); annotations != nil {
+		if _, ok := annotations["kubectl.kubernetes.io/last-applied-configuration"]; ok {
+			delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+			if len(annotations) == 0 {
+				u.SetAnnotations(nil)
+			} else {
+				u.SetAnnotations(annotations)
+			}
+		}
+	}
+	if u.GetAPIVersion() == "" || u.GetKind() == "" {
+		apiVersion := gvr.Version
+		if gvr.Group != "" {
+			apiVersion = gvr.Group + "/" + gvr.Version
+		}
+		u.SetAPIVersion(apiVersion)
+		if kindName, ok := builtinKindForResource(gvr.Resource); ok {
+			u.SetKind(kindName)
+		}
+	}
+	return u, nil
+}
+
+// getTypedAsUnstructured serves a single-object read for a typed built-in
+// kind from the typed cache. Tri-state: a kind whose deferred informer
+// hasn't synced yet falls back to a one-off direct GET — never to starting
+// a dynamic informer; a kind the RBAC probe disabled stays forbidden.
+// handled=false means the typed path can't answer and the caller should fall
+// through to the dynamic cache.
+//
+// The deferred check runs BEFORE the lister read: several deferred kinds
+// (ServiceAccounts, ReplicaSets, HPAs, LimitRanges, ResourceQuotas) expose
+// a non-nil lister as soon as they're enabled, so during the warmup window
+// they'd otherwise serve empty stores as confident NotFound/empty results.
+// After it, a nil-lister "forbidden" error can only mean the RBAC probe
+// disabled the kind — returned as-is.
+func (c *ResourceCache) getTypedAsUnstructured(ctx context.Context, gvr schema.GroupVersionResource, kind, namespace, name string) (*unstructured.Unstructured, bool, error) {
+	if c.IsDeferredPending(gvr.Resource) {
+		return c.typedDirectGet(ctx, gvr, namespace, name)
+	}
+	obj, err := FetchResource(c, kind, namespace, name)
+	if err != nil {
+		if errors.Is(err, ErrUnknownKind) {
+			return nil, false, nil
+		}
+		return nil, true, err
+	}
+	u, cerr := typedObjectToUnstructured(obj, gvr)
+	return u, true, cerr
+}
+
+func (c *ResourceCache) typedDirectGet(ctx context.Context, gvr schema.GroupVersionResource, namespace, name string) (*unstructured.Unstructured, bool, error) {
+	dynamicCache := GetDynamicResourceCache()
+	if dynamicCache == nil {
+		return nil, true, fmt.Errorf("dynamic resource cache not initialized")
+	}
+	u, err := dynamicCache.GetDirect(ctx, gvr, namespace, name)
+	return u, true, err
+}
+
+func (c *ResourceCache) typedDirectList(ctx context.Context, gvr schema.GroupVersionResource, namespace string) ([]*unstructured.Unstructured, bool, error) {
+	dynamicCache := GetDynamicResourceCache()
+	if dynamicCache == nil {
+		return nil, true, fmt.Errorf("dynamic resource cache not initialized")
+	}
+	us, err := dynamicCache.ListDirect(ctx, gvr, namespace)
+	return us, true, err
+}
+
+// listTypedAsUnstructured is the list counterpart of getTypedAsUnstructured,
+// with the same tri-state semantics (see there for why the deferred check
+// precedes the lister read). A namespace filter on a cluster-only kind
+// returns empty to match the dynamic cache's namespace-index behavior
+// (FetchResourceList would ignore the filter and return everything).
+func (c *ResourceCache) listTypedAsUnstructured(ctx context.Context, gvr schema.GroupVersionResource, kind, namespace string) ([]*unstructured.Unstructured, bool, error) {
+	if namespace != "" {
+		if _, _, clusterOnly := ClusterOnlyKindGVR(kind); clusterOnly {
+			return []*unstructured.Unstructured{}, true, nil
+		}
+	}
+	if c.IsDeferredPending(gvr.Resource) {
+		return c.typedDirectList(ctx, gvr, namespace)
+	}
+	var namespaces []string
+	if namespace != "" {
+		namespaces = []string{namespace}
+	}
+	objs, err := FetchResourceList(c, kind, namespaces)
+	if err != nil {
+		if errors.Is(err, ErrUnknownKind) {
+			return nil, false, nil
+		}
+		return nil, true, err
+	}
+	out := make([]*unstructured.Unstructured, 0, len(objs))
+	for _, obj := range objs {
+		u, cerr := typedObjectToUnstructured(obj, gvr)
+		if cerr != nil {
+			return nil, true, cerr
+		}
+		out = append(out, u)
+	}
+	return out, true, nil
+}
+
 // ListDynamicWithGroup returns resources, using the group to disambiguate
 func (c *ResourceCache) ListDynamicWithGroup(ctx context.Context, kind string, namespace string, group string) ([]*unstructured.Unstructured, error) {
+	if gvr, ok := typedRouteGVR(kind, group); ok {
+		if out, handled, err := c.listTypedAsUnstructured(ctx, gvr, kind, namespace); handled {
+			return out, err
+		}
+	}
+
 	discovery := GetResourceDiscovery()
 	if discovery == nil {
 		return nil, fmt.Errorf("resource discovery not initialized")
@@ -961,6 +1106,17 @@ func (c *ResourceCache) GetDynamicWithGroupPreserveLastApplied(ctx context.Conte
 }
 
 func (c *ResourceCache) getDynamicWithGroup(ctx context.Context, kind string, namespace string, name string, group string, preserveLastApplied bool) (*unstructured.Unstructured, error) {
+	// preserveLastApplied must never take the typed route: the typed cache
+	// strips kubectl last-applied at ingestion, so serving drift reads from it
+	// would silently return "no drift" for every built-in kind.
+	if !preserveLastApplied {
+		if gvr, ok := typedRouteGVR(kind, group); ok {
+			if u, handled, err := c.getTypedAsUnstructured(ctx, gvr, kind, namespace, name); handled {
+				return u, err
+			}
+		}
+	}
+
 	discovery := GetResourceDiscovery()
 	if discovery == nil {
 		return nil, fmt.Errorf("resource discovery not initialized")

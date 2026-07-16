@@ -264,7 +264,9 @@ export function TimelineToolbar({
             view toggle. Its position is width-driven, never interaction. */}
         <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
           {countsUpdating && (
-            <RefreshCw className="w-3 h-3 shrink-0 animate-spin text-theme-text-tertiary" aria-label="Updating timeline" title="Updating timeline…" />
+            <span title="Updating timeline…" className="inline-flex shrink-0">
+              <RefreshCw className="w-3 h-3 animate-spin text-theme-text-tertiary" aria-label="Updating timeline" />
+            </span>
           )}
           {counts && (
             <span className="min-w-0 truncate text-xs text-theme-text-tertiary">

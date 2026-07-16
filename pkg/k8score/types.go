@@ -294,7 +294,12 @@ type DynamicCacheConfig struct {
 	// NamespaceFallback is used when informers should prefer cluster-wide
 	// access but retry namespace-scoped after a cluster-wide 403/401.
 	// Ignored when NamespaceScoped is true.
-	NamespaceFallback string
+	// NamespaceFallbacks is the multi-namespace form: after a cluster-wide
+	// 403/401 every listed namespace is probed and each granted one gets its
+	// own informer, with reads unioning across them. When set it takes
+	// precedence over NamespaceFallback.
+	NamespaceFallback  string
+	NamespaceFallbacks []string
 
 	// DebugEvents enables verbose debug logging.
 	DebugEvents bool

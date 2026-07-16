@@ -72,6 +72,7 @@ type PermissionCheckResult struct {
 	Namespace       string // The fallback namespace used for namespace-scoped probes
 	Scopes          map[string]k8score.ResourceScope
 	ScopeNamespaces map[string][]string // Per-kind namespace-scoped informer fanout; nil/empty means use Scopes[key].Namespace
+	ScopeCandidates []string            // The candidate namespaces the probe walked — the dynamic CRD cache probes these per-GVR as its namespace fallbacks
 }
 
 // Capabilities represents the features available based on RBAC permissions
@@ -901,6 +902,7 @@ func CheckResourcePermissions(ctx context.Context) *PermissionCheckResult {
 			Namespace:       cachedPermResult.Namespace,
 			Scopes:          scopesCopy,
 			ScopeNamespaces: scopeNamespacesCopy,
+			ScopeCandidates: append([]string(nil), cachedPermResult.ScopeCandidates...),
 		}
 		resourcePermsMu.RUnlock()
 		return result
@@ -1038,13 +1040,14 @@ func mergeScopeCandidateLists(ctxNs string, flagNamespaces []string, accessible 
 }
 
 // pickPrimaryNs picks the namespace that PermissionCheckResult.Namespace
-// reports. The dynamic CRD cache reads it as NamespaceFallback (single
-// anchor for all CRD informers); it has to be a namespace where the user
-// actually has reads, otherwise CRD informers get pinned where they 403.
-// Walk candidates in order and pick the first one any typed kind landed
-// in. Fall back to scopeNamespaces[0] when nothing was granted — the
-// dynamic cache short-circuits on NamespaceScoped=false in that case, so
-// the value is only used by the diagnostics page (preserves prior shape).
+// reports — the stable primary for single-namespace consumers (legacy
+// diagnostics, the dynamic cache's last-resort single fallback). The dynamic
+// CRD cache fans out across ScopeCandidates per-GVR, so this is no longer
+// the only namespace CRDs can watch. Walk candidates in order and pick the
+// first one any typed kind landed in. Fall back to scopeNamespaces[0] when
+// nothing was granted — the dynamic cache short-circuits on
+// NamespaceScoped=false in that case, so the value is only used by the
+// diagnostics page (preserves prior shape).
 func pickPrimaryNs(scopeNamespaces []string, scopes map[string]k8score.ResourceScope) string {
 	granted := map[string]bool{}
 	for _, s := range scopes {
@@ -1054,12 +1057,6 @@ func pickPrimaryNs(scopeNamespaces []string, scopes map[string]k8score.ResourceS
 	}
 	for _, ns := range scopeNamespaces {
 		if granted[ns] {
-			// CRDs the user reads in the OTHER granted namespaces will
-			// silently 403 — proper fix needs multi-ns scope per kind in
-			// pkg/k8score; warn so the operator can see the asymmetry.
-			if len(granted) > 1 {
-				log.Printf("RBAC: typed kinds granted in %d distinct namespaces; CRD informer fallback pinned to %q — CRDs in the others will be marked denied", len(granted), SanitizeForLog(ns))
-			}
 			return ns
 		}
 	}
@@ -1301,6 +1298,7 @@ func probeResourceAccess(ctx context.Context, dyn dynamic.Interface, scopeNamesp
 		Namespace:       primaryNs,
 		Scopes:          scopes,
 		ScopeNamespaces: scopeNamespacesByKind,
+		ScopeCandidates: append([]string(nil), scopeNamespaces...),
 	}, hadErrors.Load()
 }
 
@@ -1329,6 +1327,7 @@ func GetCachedPermissionResult() *PermissionCheckResult {
 		Namespace:       cachedPermResult.Namespace,
 		Scopes:          scopesCopy,
 		ScopeNamespaces: scopeNamespacesCopy,
+		ScopeCandidates: append([]string(nil), cachedPermResult.ScopeCandidates...),
 	}
 }
 

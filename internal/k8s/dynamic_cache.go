@@ -43,8 +43,15 @@ func InitDynamicResourceCache(changeCh chan k8score.ResourceChange) error {
 		// cluster-wide is denied); per-user namespace filtering happens at
 		// the HTTP layer (see internal/server/namespace_scope.go).
 		var nsFallback string
-		if permResult := GetCachedPermissionResult(); permResult != nil && permResult.NamespaceScoped && permResult.Namespace != "" {
-			nsFallback = permResult.Namespace
+		var nsFallbacks []string
+		if permResult := GetCachedPermissionResult(); permResult != nil {
+			if permResult.NamespaceScoped && permResult.Namespace != "" {
+				nsFallback = permResult.Namespace
+			}
+			// Candidates apply regardless of the typed outcome: an identity
+			// can hold cluster-wide built-in access but namespace-only CRD
+			// access (or the reverse) — the per-GVR probe decides.
+			nsFallbacks = permResult.ScopeCandidates
 		}
 
 		// --namespace-scope pins namespaced CRD informers to the target namespace
@@ -70,13 +77,14 @@ func InitDynamicResourceCache(changeCh chan k8score.ResourceChange) error {
 		recordClusterContext := ActiveClusterContext()
 
 		core, err := k8score.NewDynamicResourceCache(k8score.DynamicCacheConfig{
-			DynamicClient:     client,
-			Discovery:         sharedDiscovery,
-			Changes:           changeCh,
-			NamespaceFallback: nsFallback,
-			NamespaceScoped:   nsScoped,
-			Namespace:         nsTarget,
-			DebugEvents:       DebugEvents,
+			DynamicClient:      client,
+			Discovery:          sharedDiscovery,
+			Changes:            changeCh,
+			NamespaceFallback:  nsFallback,
+			NamespaceFallbacks: nsFallbacks,
+			NamespaceScoped:    nsScoped,
+			Namespace:          nsTarget,
+			DebugEvents:        DebugEvents,
 			OnReceived: func(kind string) {
 				timeline.IncrementReceived(kind)
 			},
@@ -344,9 +352,12 @@ func RegisterSupportedCRDFallbacks() {
 		return
 	}
 
-	nsFallback := ""
-	if permResult := GetCachedPermissionResult(); permResult != nil && permResult.NamespaceScoped && permResult.Namespace != "" {
-		nsFallback = permResult.Namespace
+	var nsFallbacks []string
+	if permResult := GetCachedPermissionResult(); permResult != nil {
+		nsFallbacks = permResult.ScopeCandidates
+		if len(nsFallbacks) == 0 && permResult.NamespaceScoped && permResult.Namespace != "" {
+			nsFallbacks = []string{permResult.Namespace}
+		}
 	}
 
 	const maxConcurrentProbes = 12
@@ -371,11 +382,18 @@ func RegisterSupportedCRDFallbacks() {
 
 			for _, version := range c.Versions {
 				gvr := schema.GroupVersionResource{Group: c.Group, Version: version, Resource: c.Resource}
-				namespace, ok := fallbackListProbe(client, gvr, c.Namespaced, nsFallback)
+				namespaces, ok := fallbackListProbe(client, gvr, c.Namespaced, nsFallbacks)
 				if !ok {
 					continue
 				}
-				if !fallbackWatchProbe(client, gvr, namespace) {
+				watchable := false
+				for _, namespace := range namespaces {
+					if fallbackWatchProbe(client, gvr, namespace) {
+						watchable = true
+						break
+					}
+				}
+				if !watchable {
 					continue
 				}
 				discovery.AddAPIResource(k8score.APIResource{
@@ -402,33 +420,53 @@ func RegisterSupportedCRDFallbacks() {
 	}
 }
 
-func fallbackListProbe(client dynamic.Interface, gvr schema.GroupVersionResource, namespaced bool, nsFallback string) (string, bool) {
+func fallbackListProbe(client dynamic.Interface, gvr schema.GroupVersionResource, namespaced bool, nsFallbacks []string) ([]string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, err := client.Resource(gvr).List(ctx, metav1.ListOptions{Limit: 1})
 	if err == nil {
-		return "", true
+		return []string{""}, true
 	}
-	if namespaced && nsFallback != "" {
+	if namespaced && len(nsFallbacks) > 0 {
 		if !isExpectedFallbackProbeDenial(err) {
 			log.Printf("[crd-fallback] Cluster-wide list probe failed for %s.%s/%s: %v", gvr.Resource, gvr.Group, gvr.Version, err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, err = client.Resource(gvr).Namespace(nsFallback).List(ctx, metav1.ListOptions{Limit: 1})
-		if err == nil {
-			return nsFallback, true
+		// Registration probe only — the dynamic cache re-probes every
+		// candidate per-GVR when it starts watching. Return every
+		// list-granted candidate so the caller can find one that also
+		// grants watch (list-only in the first namespace must not hide a
+		// CRD that is fully readable in a later one). One shared budget for
+		// the whole walk plus a per-candidate sub-deadline: a fresh 5s per
+		// candidate would let a degraded apiserver stall discovery for
+		// minutes at the 20-candidate cap.
+		walkCtx, walkCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer walkCancel()
+		var granted []string
+		for _, ns := range nsFallbacks {
+			if walkCtx.Err() != nil {
+				break
+			}
+			nsCtx, nsCancel := context.WithTimeout(walkCtx, 2*time.Second)
+			nsErr := func() error {
+				defer nsCancel()
+				_, e := client.Resource(gvr).Namespace(ns).List(nsCtx, metav1.ListOptions{Limit: 1})
+				return e
+			}()
+			if nsErr == nil {
+				granted = append(granted, ns)
+				continue
+			}
+			if !isExpectedFallbackProbeDenial(nsErr) {
+				log.Printf("[crd-fallback] Namespace list probe failed for %s.%s/%s in ns=%q: %v", gvr.Resource, gvr.Group, gvr.Version, ns, nsErr)
+			}
 		}
-		if !isExpectedFallbackProbeDenial(err) {
-			log.Printf("[crd-fallback] Namespace list probe failed for %s.%s/%s in ns=%q: %v", gvr.Resource, gvr.Group, gvr.Version, nsFallback, err)
-		}
-		return "", false
+		return granted, len(granted) > 0
 	}
 	if !isExpectedFallbackProbeDenial(err) {
 		log.Printf("[crd-fallback] List probe failed for %s.%s/%s: %v", gvr.Resource, gvr.Group, gvr.Version, err)
 	}
-	return "", false
+	return nil, false
 }
 
 func fallbackWatchProbe(client dynamic.Interface, gvr schema.GroupVersionResource, namespace string) bool {

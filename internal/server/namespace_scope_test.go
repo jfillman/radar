@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -329,9 +331,11 @@ func TestParseNamespacesForUser_EvictsDeletedSavedPick(t *testing.T) {
 		t.Errorf("stale pick survived in memory: %v", picks)
 	}
 	// The eviction must reach settings.json — otherwise loadSavedNamespace-
-	// Preference re-seeds the stale pick on the next request.
-	if saved := settings.Load().ActiveNamespaces["test-ctx"]; len(saved) != 0 {
-		t.Errorf("stale pick survived in settings: %v", saved)
+	// Preference re-seeds the stale pick on the next request. The entry must
+	// be deleted, not emptied: an empty entry is the explicit-All marker,
+	// which would wrongly suppress the kubeconfig-namespace default.
+	if saved, ok := settings.Load().ActiveNamespaces["test-ctx"]; ok {
+		t.Errorf("stale pick survived in settings (entry = %v, want deleted)", saved)
 	}
 }
 
@@ -641,5 +645,420 @@ func TestPruneDeletedNamespacePicks_SkipsAcrossContextSwitch(t *testing.T) {
 	// The original context's pick is also untouched.
 	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, snapshot) {
 		t.Errorf("old-context pick mutated across switch: %v, want %v", picks, snapshot)
+	}
+}
+
+// With no saved entry for the context, the first read defaults the pick to
+// the kubeconfig context's explicitly-set namespace (kubectl parity). The
+// seed is in-memory only — persisting it would freeze the kubeconfig value
+// at first launch instead of following later kubens-style changes.
+func TestLoadSavedNamespacePreference_DefaultsToKubeconfigNamespace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+	prevNs := k8s.SetTestContextNamespace("default")
+	t.Cleanup(func() { k8s.SetTestContextNamespace(prevNs) })
+
+	s.loadSavedNamespacePreference(req)
+
+	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, []string{"default"}) {
+		t.Errorf("pick = %v, want [default]", picks)
+	}
+	if _, ok := settings.Load().ActiveNamespaces["test-ctx"]; ok {
+		t.Error("kubeconfig-namespace seed was persisted to settings")
+	}
+}
+
+// A kubeconfig context with no explicit namespace must not narrow the view —
+// the historical "All namespaces" default stays.
+func TestLoadSavedNamespacePreference_NoKubeconfigNamespaceNoSeed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+	prevNs := k8s.SetTestContextNamespace("")
+	t.Cleanup(func() { k8s.SetTestContextNamespace(prevNs) })
+
+	s.loadSavedNamespacePreference(req)
+
+	if picks := s.getActiveNamespaceForUser(req); picks != nil {
+		t.Errorf("pick = %v, want none", picks)
+	}
+}
+
+// A saved pick from a previous session wins over the kubeconfig namespace.
+func TestLoadSavedNamespacePreference_SavedPickBeatsKubeconfigNamespace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+	prevNs := k8s.SetTestContextNamespace("default")
+	t.Cleanup(func() { k8s.SetTestContextNamespace(prevNs) })
+
+	if _, err := settings.Update(func(st *settings.Settings) {
+		st.ActiveNamespaces = map[string][]string{"test-ctx": {"saved"}}
+	}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+
+	s.loadSavedNamespacePreference(req)
+
+	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, []string{"saved"}) {
+		t.Errorf("pick = %v, want [saved]", picks)
+	}
+}
+
+// An explicit "All namespaces" choice (persisted as an empty entry) must
+// survive restarts — it suppresses the kubeconfig-namespace default.
+func TestLoadSavedNamespacePreference_ExplicitAllBeatsKubeconfigNamespace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+	prevNs := k8s.SetTestContextNamespace("default")
+	t.Cleanup(func() { k8s.SetTestContextNamespace(prevNs) })
+
+	if err := persistNamespacePick("test-ctx", nil, true); err != nil {
+		t.Fatalf("persistNamespacePick: %v", err)
+	}
+
+	s.loadSavedNamespacePreference(req)
+
+	if picks := s.getActiveNamespaceForUser(req); picks != nil {
+		t.Errorf("pick = %v, want none (explicit All)", picks)
+	}
+}
+
+// Authenticated users never get the shared kubeconfig default — the
+// kubeconfig identity belongs to the server operator, not to them.
+func TestLoadSavedNamespacePreference_AuthedUserGetsNoKubeconfigSeed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("alice")
+	prevNs := k8s.SetTestContextNamespace("default")
+	t.Cleanup(func() { k8s.SetTestContextNamespace(prevNs) })
+
+	s.loadSavedNamespacePreference(req)
+
+	if picks := s.getActiveNamespaceForUser(req); picks != nil {
+		t.Errorf("pick = %v, want none for authed user", picks)
+	}
+}
+
+// Under --namespace-scope the cache-scope lifecycle owns namespace defaulting;
+// the view-filter seed must stay out of the way.
+func TestLoadSavedNamespacePreference_SkipsSeedUnderForceNamespaceScope(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+	prevNs := k8s.SetTestContextNamespace("default")
+	t.Cleanup(func() { k8s.SetTestContextNamespace(prevNs) })
+	prevForce := k8s.ForceNamespaceScope
+	k8s.ForceNamespaceScope = true
+	t.Cleanup(func() { k8s.ForceNamespaceScope = prevForce })
+
+	s.loadSavedNamespacePreference(req)
+
+	if picks := s.getActiveNamespaceForUser(req); picks != nil {
+		t.Errorf("pick = %v, want none under --namespace-scope", picks)
+	}
+}
+
+// The two empty-pick persistence modes must round-trip distinctly: an explicit
+// clear keeps an empty entry (user chose All), a system prune deletes it
+// (context returns to the kubeconfig default).
+func TestPersistNamespacePick_ExplicitAllRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	if err := persistNamespacePick("test-ctx", nil, true); err != nil {
+		t.Fatalf("persistNamespacePick(explicitAll): %v", err)
+	}
+	saved, ok := settings.Load().ActiveNamespaces["test-ctx"]
+	if !ok {
+		t.Fatal("explicit-all marker was not persisted")
+	}
+	if len(saved) != 0 {
+		t.Fatalf("explicit-all marker holds namespaces: %v", saved)
+	}
+
+	if err := persistNamespacePick("test-ctx", nil, false); err != nil {
+		t.Fatalf("persistNamespacePick(prune): %v", err)
+	}
+	if _, ok := settings.Load().ActiveNamespaces["test-ctx"]; ok {
+		t.Error("prune-to-empty left an entry behind")
+	}
+}
+
+// A kubeconfig namespace that doesn't exist in the cluster must not seed —
+// otherwise every read would seed it, prune it, and rewrite settings.json in
+// a loop.
+func TestLoadSavedNamespacePreference_NonexistentKubeconfigNamespaceNoSeed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+	prevNs := k8s.SetTestContextNamespace("ghost")
+	t.Cleanup(func() { k8s.SetTestContextNamespace(prevNs) })
+
+	s.loadSavedNamespacePreference(req)
+
+	if picks := s.getActiveNamespaceForUser(req); picks != nil {
+		t.Errorf("pick = %v, want none for nonexistent kubeconfig namespace", picks)
+	}
+}
+
+// The singular --namespace flag outranks the kubeconfig context namespace.
+// This is what makes the flag effective for --no-browser and embedder flows,
+// where no URL parameter carries it to the frontend.
+func TestLoadSavedNamespacePreference_SingularFlagBeatsKubeconfigNamespace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+	prevNs := k8s.SetTestContextNamespace("default")
+	t.Cleanup(func() { k8s.SetTestContextNamespace(prevNs) })
+	k8s.SetFallbackNamespace("broken")
+	t.Cleanup(func() { k8s.SetFallbackNamespace("") })
+
+	s.loadSavedNamespacePreference(req)
+
+	if picks := s.getActiveNamespaceForUser(req); !slices.Equal(picks, []string{"broken"}) {
+		t.Errorf("pick = %v, want [broken] (singular flag over kubeconfig)", picks)
+	}
+}
+
+// A failed settings read must not seed: the zero value is indistinguishable
+// from "never picked", and a seed would stick in memory past the transient
+// failure, shadowing the user's real saved pick until restart.
+func TestLoadSavedNamespacePreference_UnreadableSettingsNoSeed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	s := newTestServer(t)
+	req := reqAs("")
+	prevNs := k8s.SetTestContextNamespace("default")
+	t.Cleanup(func() { k8s.SetTestContextNamespace(prevNs) })
+
+	if err := os.MkdirAll(filepath.Join(home, ".radar"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".radar", "settings.json"), []byte("{corrupt"), 0o644); err != nil {
+		t.Fatalf("write corrupt settings: %v", err)
+	}
+
+	s.loadSavedNamespacePreference(req)
+
+	if picks := s.getActiveNamespaceForUser(req); picks != nil {
+		t.Errorf("pick = %v, want none while settings are unreadable", picks)
+	}
+}
+
+// A user clear must hold for the session even when persisting the explicit-All
+// marker to disk fails: the in-memory empty entry blocks the kubeconfig seed,
+// so the clear isn't reverted by the response's own scope read.
+func TestSetActiveNamespaceForUser_ClearBlocksKubeconfigSeed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := newTestServer(t)
+	req := reqAs("")
+	prevNs := k8s.SetTestContextNamespace("default")
+	t.Cleanup(func() { k8s.SetTestContextNamespace(prevNs) })
+
+	s.setActiveNamespaceForUser(req, []string{"default"})
+	s.setActiveNamespaceForUser(req, nil) // clear; disk has no marker
+
+	s.loadSavedNamespacePreference(req)
+
+	if picks := s.getActiveNamespaceForUser(req); len(picks) != 0 {
+		t.Errorf("pick = %v, want cleared (seed must not override an in-session clear)", picks)
+	}
+}
+
+// --namespaces seeds each user's picker once per session; a clear back to
+// "All namespaces" must stick instead of being re-applied on the next read.
+func TestLoadSavedNamespacePreference_SeedsConfiguredNamespacesOnce(t *testing.T) {
+	s := newTestServer(t)
+	k8s.SetFallbackNamespaces([]string{"team-a", "team-b"})
+	t.Cleanup(func() { k8s.SetFallbackNamespace("") })
+	req := reqAs("alice")
+
+	s.loadSavedNamespacePreference(req)
+	if got := s.getActiveNamespaceForUser(req); !slices.Equal(got, []string{"team-a", "team-b"}) {
+		t.Fatalf("configured seed = %v, want [team-a team-b]", got)
+	}
+
+	s.setActiveNamespaceForUser(req, nil) // user clears to All
+	s.loadSavedNamespacePreference(req)
+	if got := s.getActiveNamespaceForUser(req); len(got) != 0 {
+		t.Fatalf("configured list re-seeded after clear: %v", got)
+	}
+
+	// A different user gets their own seed.
+	bob := reqAs("bob")
+	s.loadSavedNamespacePreference(bob)
+	if got := s.getActiveNamespaceForUser(bob); !slices.Equal(got, []string{"team-a", "team-b"}) {
+		t.Fatalf("second user seed = %v, want [team-a team-b]", got)
+	}
+}
+
+// A locally persisted pick outranks the configured startup list, and the
+// seed eligibility burned in that pass keeps the configured list from
+// re-applying after the user clears.
+func TestLoadSavedNamespacePreference_LocalSavedPickBeatsConfigured(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	s := newTestServer(t)
+	k8s.SetFallbackNamespaces([]string{"team-a", "team-b"})
+	t.Cleanup(func() { k8s.SetFallbackNamespace("") })
+	if _, err := settings.Update(func(st *settings.Settings) {
+		st.ActiveNamespaces = map[string][]string{"test-ctx": {"team-b"}}
+	}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+
+	req := reqAs("")
+	s.loadSavedNamespacePreference(req)
+	if got := s.getActiveNamespaceForUser(req); !slices.Equal(got, []string{"team-b"}) {
+		t.Fatalf("saved pick = %v, want [team-b]", got)
+	}
+}
+
+// --namespace (singular) steers RBAC probing but must NOT seed the picker;
+// and after a context switch the configured list references the previous
+// cluster, so it must not seed either.
+func TestLoadSavedNamespacePreference_ConfiguredSeedGates(t *testing.T) {
+	s := newTestServer(t)
+	k8s.SetFallbackNamespace("solo-ns")
+	t.Cleanup(func() { k8s.SetFallbackNamespace("") })
+	req := reqAs("alice")
+	s.loadSavedNamespacePreference(req)
+	if got := s.getActiveNamespaceForUser(req); len(got) != 0 {
+		t.Fatalf("--namespace must not seed the picker, got %v", got)
+	}
+
+	// Plural flag set, but context switched afterwards → stale list, no seed.
+	k8s.SetFallbackNamespaces([]string{"team-a"})
+	prev := k8s.SetTestContextName("other-ctx")
+	t.Cleanup(func() { k8s.SetTestContextName(prev) })
+	req2 := reqAs("bob")
+	s.loadSavedNamespacePreference(req2)
+	if got := s.getActiveNamespaceForUser(req2); len(got) != 0 {
+		t.Fatalf("stale-context configured list must not seed, got %v", got)
+	}
+}
+
+// Context switch drops seed marks: returning to the startup context
+// re-applies the configured initial view to a fresh session.
+func TestClearAllNamespacePreferences_ResetsSeedMarks(t *testing.T) {
+	s := newTestServer(t)
+	k8s.SetFallbackNamespaces([]string{"team-a"})
+	t.Cleanup(func() { k8s.SetFallbackNamespace("") })
+	req := reqAs("alice")
+
+	s.loadSavedNamespacePreference(req)
+	s.setActiveNamespaceForUser(req, nil) // clear → seed mark burned
+
+	s.clearAllNamespacePreferences() // context switch
+
+	s.loadSavedNamespacePreference(req)
+	if got := s.getActiveNamespaceForUser(req); !slices.Equal(got, []string{"team-a"}) {
+		t.Fatalf("seed after context-switch reset = %v, want [team-a]", got)
+	}
+}
+
+// The deterministic seed-override case: a user who picked and then cleared
+// BEFORE the first load must not receive the configured list — the explicit
+// set burned seed eligibility even though no load had run yet.
+func TestLoadSavedNamespacePreference_PostBeforeFirstLoadBurnsSeed(t *testing.T) {
+	s := newTestServer(t)
+	k8s.SetFallbackNamespaces([]string{"team-a", "team-b"})
+	t.Cleanup(func() { k8s.SetFallbackNamespace("") })
+	req := reqAs("alice")
+
+	s.setActiveNamespaceForUser(req, []string{"team-b"}) // pick before any load
+	s.setActiveNamespaceForUser(req, nil)                // then clear
+
+	s.loadSavedNamespacePreference(req)
+	if got := s.getActiveNamespaceForUser(req); len(got) != 0 {
+		t.Fatalf("explicit clear before first load was overridden by seed: %v", got)
+	}
+}
+
+// finalizePostContextSwitch takes nsPickMu itself; no caller may hold it.
+// This pins the lock discipline: it must complete promptly when nothing
+// holds the lock, and the rescope path in handleSetActiveNamespace releases
+// the lock before any k8s operation whose callbacks reach finalize.
+func TestFinalizePostContextSwitch_TakesNsPickMuItself(t *testing.T) {
+	s := newTestServer(t)
+	s.setActiveNamespaceForUser(reqAs("alice"), []string{"alpha"})
+
+	done := make(chan struct{})
+	go func() {
+		s.finalizePostContextSwitch()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("finalizePostContextSwitch blocked with no lock holders")
+	}
+	if got := s.getActiveNamespaceForUser(reqAs("alice")); len(got) != 0 {
+		t.Fatalf("picks survived finalize: %v", got)
+	}
+}
+
+// A stale settings snapshot must not resurrect a pick the user explicitly
+// cleared: the settings seed goes through the same marker-gated protocol as
+// the configured seed, and an explicit set/clear burns the marker.
+func TestLoadSavedNamespacePreference_StaleSettingsCannotOverrideClear(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	s := newTestServer(t)
+	if _, err := settings.Update(func(st *settings.Settings) {
+		st.ActiveNamespaces = map[string][]string{"test-ctx": {"stale-ns"}}
+	}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+	req := reqAs("")
+
+	// User expressed intent (set then clear) before/while a load's settings
+	// snapshot was in flight; the disk entry still says stale-ns.
+	s.setActiveNamespaceForUser(req, []string{"fresh-ns"})
+	s.setActiveNamespaceForUser(req, nil)
+
+	s.loadSavedNamespacePreference(req)
+	if got := s.getActiveNamespaceForUser(req); len(got) != 0 {
+		t.Fatalf("stale settings snapshot overrode explicit clear: %v", got)
+	}
+}
+
+// A settings.json pick burns configured-seed eligibility: once the pick is
+// later evicted (deleted-namespace prune, explicit clear), reads fall back to
+// All namespaces — the configured list must not resurface.
+func TestLoadSavedNamespacePreference_SettingsSeedBurnsConfigured(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	s := newTestServer(t)
+	k8s.SetFallbackNamespaces([]string{"team-a", "team-b"})
+	t.Cleanup(func() { k8s.SetFallbackNamespace("") })
+	if _, err := settings.Update(func(st *settings.Settings) {
+		st.ActiveNamespaces = map[string][]string{"test-ctx": {"team-b"}}
+	}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+	req := reqAs("")
+
+	s.loadSavedNamespacePreference(req)
+	if got := s.getActiveNamespaceForUser(req); !slices.Equal(got, []string{"team-b"}) {
+		t.Fatalf("saved pick = %v, want [team-b]", got)
+	}
+
+	// Evict the pick the way the prune does: in-memory + settings entry.
+	s.setActiveNamespaceForUser(req, nil)
+	if _, err := settings.Update(func(st *settings.Settings) {
+		st.ActiveNamespaces = map[string][]string{}
+	}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+
+	s.loadSavedNamespacePreference(req)
+	if got := s.getActiveNamespaceForUser(req); len(got) != 0 {
+		t.Fatalf("configured list resurfaced after settings pick eviction: %v", got)
 	}
 }

@@ -152,7 +152,7 @@ function useLocalEvents(query: TimelineQuery): TimelineEventsResult {
   // query and the list's windowed one): SSE-driven refetches then transfer only
   // what arrived since the last full load. Dropdown-ranged (`since`) queries
   // stay plain — they're small and their range moves with the clock.
-  const { data, isLoading, isError, error, refetch } = useChanges(
+  const { data, isLoading, isFetching, isError, error, refetch } = useChanges(
     windowed
       ? { ...query, timeRange: 'all', limit: LOCAL_RING_LIMIT, deltaSync: true }
       : { ...query, deltaSync: query.timeRange === 'all' },
@@ -175,9 +175,7 @@ function useLocalEvents(query: TimelineQuery): TimelineEventsResult {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [data, query.fromMs, query.toMs, query.limit, kindsKey, query.includeManaged],
   )
-  // Local mode loads the whole ring once and re-windows client-side, so a period
-  // change issues no per-window server fetch — nothing to signal as "updating".
-  return { data: events, isLoading, isFetching: false, isError, error, refetch }
+  return { data: events, isLoading, isFetching, isError, error, refetch }
 }
 
 export const localSource: TimelineSource = {
@@ -532,9 +530,8 @@ function createRetainedEventsHook(
       // True only on a window-key change (period switch / quantize rotation)
       // while keepPreviousData holds the prior range on screen. Gating on
       // isPlaceholderData excludes same-key background refetches (focus,
-      // staleness, manual) — those refresh in place and aren't "the range is
-      // loading". The live poll's own fetching is excluded too (it's a separate
-      // query).
+      // staleness, manual) AND the 10s live poll (a separate query) — those
+      // refresh in place and must not flicker the toolbar spinner every tick.
       isFetching: base.isFetching && base.isPlaceholderData,
       // Base failure is a real error; a failing live poll must not blank an
       // already-loaded range.

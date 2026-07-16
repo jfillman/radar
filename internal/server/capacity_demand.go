@@ -18,7 +18,7 @@ func (s *Server) handleCapacityDemand(w http.ResponseWriter, r *http.Request) {
 	if !s.requireConnected(w) {
 		return
 	}
-	filters, stateFilter, poolFilter, err := parseCapacityDemandFilters(r.URL.Query())
+	filters, stateFilter, poolFilter, ownerFilter, err := parseCapacityDemandFilters(r.URL.Query())
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -72,6 +72,20 @@ func (s *Server) handleCapacityDemand(w http.ResponseWriter, r *http.Request) {
 		}
 		groups = filtered
 	}
+	if ownerFilter != nil {
+		// Server-side subject filter (the Issues deep link): filtering ALL
+		// groups here is what makes the link reliable — client-side matching
+		// against one 25-group page can miss a live group and read as
+		// "already scheduled". An empty result is an honest 200: this owner
+		// has no pending demand right now.
+		filtered := groups[:0]
+		for _, group := range groups {
+			if demandGroupMatchesOwner(group, *ownerFilter) {
+				filtered = append(filtered, group)
+			}
+		}
+		groups = filtered
+	}
 	snapshotFingerprint := capacitymodel.DemandSnapshotFingerprint(groups, pools)
 	page, err := paginateCapacityKeysetWithSnapshot(groups, pageRequest, func(group capacitymodel.DemandGroupModel) string {
 		return group.Group.ID
@@ -85,17 +99,42 @@ func (s *Server) handleCapacityDemand(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, response)
 }
 
-func parseCapacityDemandFilters(query url.Values) (url.Values, capacityapi.DemandState, string, error) {
+type demandOwnerFilter struct {
+	Namespace string
+	Kind      string
+	Name      string
+}
+
+func demandGroupMatchesOwner(group capacitymodel.DemandGroupModel, owner demandOwnerFilter) bool {
+	subject := group.Group.Owner
+	return subject != nil &&
+		group.Group.Namespace == owner.Namespace &&
+		strings.EqualFold(subject.Kind, owner.Kind) &&
+		subject.Name == owner.Name
+}
+
+func parseCapacityDemandFilters(query url.Values) (url.Values, capacityapi.DemandState, string, *demandOwnerFilter, error) {
 	filters := url.Values{}
 	pool := strings.TrimSpace(query.Get("pool"))
 	if values := query["pool"]; len(values) > 1 {
-		return nil, "", "", fmt.Errorf("pool must be specified at most once")
+		return nil, "", "", nil, fmt.Errorf("pool must be specified at most once")
 	} else if pool != "" {
 		filters.Set("pool", pool)
 	}
+	var owner *demandOwnerFilter
+	if values := query["owner"]; len(values) > 1 {
+		return nil, "", "", nil, fmt.Errorf("owner must be specified at most once")
+	} else if raw := strings.TrimSpace(query.Get("owner")); raw != "" {
+		parts := strings.Split(raw, "/")
+		if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+			return nil, "", "", nil, fmt.Errorf("owner must be namespace/kind/name")
+		}
+		owner = &demandOwnerFilter{Namespace: parts[0], Kind: parts[1], Name: parts[2]}
+		filters.Set("owner", raw)
+	}
 	state := capacityapi.DemandState(strings.TrimSpace(query.Get("state")))
 	if values := query["state"]; len(values) > 1 {
-		return nil, "", "", fmt.Errorf("state must be specified at most once")
+		return nil, "", "", nil, fmt.Errorf("state must be specified at most once")
 	}
 	if state != "" {
 		valid := map[capacityapi.DemandState]bool{
@@ -106,7 +145,7 @@ func parseCapacityDemandFilters(query url.Values) (url.Values, capacityapi.Deman
 			capacityapi.DemandUnknown:             true,
 		}
 		if !valid[state] {
-			return nil, "", "", fmt.Errorf("invalid demand state %q", state)
+			return nil, "", "", nil, fmt.Errorf("invalid demand state %q", state)
 		}
 		filters.Set("state", string(state))
 	}
@@ -115,7 +154,7 @@ func parseCapacityDemandFilters(query url.Values) (url.Values, capacityapi.Deman
 		sort.Strings(namespaces)
 		filters["namespaces"] = namespaces
 	}
-	return filters, state, pool, nil
+	return filters, state, pool, owner, nil
 }
 
 func capacityDemandPoolInputs(result capacityLoadResult, poolFilter string) []capacitymodel.DemandPoolInput {

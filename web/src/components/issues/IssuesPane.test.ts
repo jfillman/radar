@@ -87,3 +87,51 @@ describe("capacityHrefForIssue", () => {
     ).toBeNull();
   });
 });
+
+describe("capacityHrefForIssue subject carry", () => {
+  it("carries the grouped subject (the workload) into a filtered Demand", () => {
+    expect(
+      capacityHrefForIssue(
+        issue({
+          source: "scheduling",
+          capacity_relevant: true,
+          kind: "Deployment",
+          namespace: "shop",
+          name: "web",
+        }),
+        true,
+      ),
+    ).toBe("/capacity/demand?owner=shop%2FDeployment%2Fweb");
+  });
+
+  it("prefers the flat row's owner over its Pod subject", () => {
+    expect(
+      capacityHrefForIssue(
+        issue({
+          source: "scheduling",
+          capacity_relevant: true,
+          kind: "Pod",
+          namespace: "shop",
+          name: "web-abc12",
+          owner: { kind: "Deployment", name: "web" },
+        }),
+        true,
+      ),
+    ).toBe("/capacity/demand?owner=shop%2FDeployment%2Fweb");
+  });
+
+  it("fails closed to the unfiltered link when no complete subject exists", () => {
+    expect(
+      capacityHrefForIssue(
+        issue({
+          source: "scheduling",
+          capacity_relevant: true,
+          kind: "Pod",
+          namespace: "shop",
+          name: "orphan-abc12",
+        }),
+        true,
+      ),
+    ).toBe("/capacity/demand");
+  });
+});

@@ -48,8 +48,21 @@ export function capacityHrefForIssue(
   // pools can (or can't) take them. Unfiltered on purpose: the issue doesn't map
   // cleanly to a single demand state (blocked vs awaiting capacity), so we avoid
   // a filter that could hide the very group being investigated.
-  // Capacity is deliberately cluster-wide — no view-filter forwarding.
+  // Capacity is deliberately cluster-wide — no view-filter forwarding. The
+  // link carries its subject so Demand lands filtered server-side: grouped
+  // scheduling issues have the workload AS their subject (grouping promotes
+  // the owner); flat pod rows carry issue.owner. Fail closed to the
+  // unfiltered link when no complete subject exists.
   if (issue.capacity_relevant) {
+    const owner =
+      issue.owner?.kind && issue.owner.name
+        ? { kind: issue.owner.kind, namespace: issue.owner.namespace ?? issue.namespace, name: issue.owner.name }
+        : issue.kind && issue.kind !== 'Pod' && issue.name
+          ? { kind: issue.kind, namespace: issue.namespace, name: issue.name }
+          : undefined
+    if (owner?.namespace) {
+      return `/capacity/demand?owner=${encodeURIComponent(`${owner.namespace}/${owner.kind}/${owner.name}`)}`
+    }
     return '/capacity/demand'
   }
   return null

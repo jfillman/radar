@@ -1067,6 +1067,10 @@ export function useCapacityPoolMembers(
 export interface CapacityDemandQueryOptions extends CapacityPageQueryOptions {
   state?: CapacityDemandState
   pool?: string
+  /** Subject filter (namespace/kind/name) — the Issues deep link. Filtered
+   *  server-side across ALL groups, so an empty result is a true "no pending
+   *  demand for this workload", never a paging artifact. */
+  owner?: string
 }
 
 export function useCapacityDemand(options?: CapacityDemandQueryOptions) {
@@ -1076,8 +1080,9 @@ export function useCapacityDemand(options?: CapacityDemandQueryOptions) {
   if (options?.cursor) params.set('cursor', options.cursor)
   if (options?.state) params.set('state', options.state)
   if (options?.pool) params.set('pool', options.pool)
+  if (options?.owner) params.set('owner', options.owner)
   const query = params.toString()
-  const queryKey = ['capacity', 'demand', options?.limit, options?.cursor, options?.state, options?.pool]
+  const queryKey = ['capacity', 'demand', options?.limit, options?.cursor, options?.state, options?.pool, options?.owner]
   return useQuery<CapacityDemandResponse>({
     queryKey,
     queryFn: ({ signal }) => fetchJSON<CapacityDemandResponse>(`/capacity/demand${query ? `?${query}` : ''}`, signal),
@@ -1089,7 +1094,8 @@ export function useCapacityDemand(options?: CapacityDemandQueryOptions) {
       const previousKey = previousQuery?.queryKey
       return previousKey?.[2] === options?.limit &&
         previousKey?.[4] === options?.state &&
-        previousKey?.[5] === options?.pool ? previous : undefined
+        previousKey?.[5] === options?.pool &&
+        previousKey?.[6] === options?.owner ? previous : undefined
     },
   })
 }

@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/skyhook-io/radar/internal/auth"
+	capacitymodel "github.com/skyhook-io/radar/internal/capacity"
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/timeline"
 	"github.com/skyhook-io/radar/pkg/capacityapi"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/karpenter"
+	"github.com/skyhook-io/radar/pkg/subject"
 	pkgtimeline "github.com/skyhook-io/radar/pkg/timeline"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -1073,5 +1075,55 @@ func TestCapacityOverviewAggregateDemandCertaintyFollowsPodScope(t *testing.T) {
 	assertOK(t, get(t, "/api/capacity?namespaces=default"), &scoped)
 	if scoped.Summary.AggregateDemand == nil || scoped.Summary.AggregateDemand.Certainty != capacityapi.CertaintyLowerBound {
 		t.Fatalf("namespace-scoped aggregate demand = %#v, want lower_bound", scoped.Summary.AggregateDemand)
+	}
+}
+
+func TestCapacityDemandOwnerFilterSemantics(t *testing.T) {
+	// Parse: well-formed, malformed, and cursor binding via the filters map.
+	filters, _, _, owner, err := parseCapacityDemandFilters(url.Values{"owner": {"shop/Deployment/web"}})
+	if err != nil || owner == nil || *owner != (demandOwnerFilter{Namespace: "shop", Kind: "Deployment", Name: "web"}) {
+		t.Fatalf("parsed owner = %#v, err %v", owner, err)
+	}
+	if filters.Get("owner") != "shop/Deployment/web" {
+		t.Fatalf("owner missing from cursor-bound filters: %#v", filters)
+	}
+	for _, malformed := range []string{"not-a-ref", "a/b", "//x", "a//c"} {
+		if _, _, _, _, err := parseCapacityDemandFilters(url.Values{"owner": {malformed}}); err == nil {
+			t.Fatalf("owner %q parsed without error", malformed)
+		}
+	}
+
+	// Match: only the subject's groups; kind case-insensitive; ownerless
+	// groups never match.
+	group := func(namespace, kind, name string) capacitymodel.DemandGroupModel {
+		value := capacityapi.NewDemandGroup(time.Unix(0, 0).UTC())
+		value.Namespace = namespace
+		if kind != "" {
+			value.Owner = &subject.Ref{Kind: kind, Namespace: namespace, Name: name}
+		}
+		return capacitymodel.DemandGroupModel{Group: value}
+	}
+	want := demandOwnerFilter{Namespace: "shop", Kind: "Deployment", Name: "web"}
+	if !demandGroupMatchesOwner(group("shop", "deployment", "web"), want) {
+		t.Fatal("kind match must be case-insensitive")
+	}
+	for _, other := range []capacitymodel.DemandGroupModel{
+		group("shop", "Deployment", "api"),
+		group("media", "Deployment", "web"),
+		group("shop", "Job", "web"),
+		group("shop", "", ""),
+	} {
+		if demandGroupMatchesOwner(other, want) {
+			t.Fatalf("unrelated group matched the owner filter: %#v", other.Group)
+		}
+	}
+}
+
+func TestCapacityDemandRejectsMalformedOwnerFilter(t *testing.T) {
+	initCapacityContractDynamicState(t, true, true, capacityContractNodePool("general"))
+	resp := get(t, "/api/capacity/demand?owner=not-a-ref")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed owner status = %d, want 400", resp.StatusCode)
 	}
 }

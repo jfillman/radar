@@ -69,7 +69,7 @@ const LOAD_MORE_POOLS = "__load_more_nodepools__";
 
 export function updateDemandSearchParam(
   search: string,
-  key: "pool" | "state",
+  key: "pool" | "state" | "owner",
   value: string | undefined,
 ): string {
   const params = new URLSearchParams(search);
@@ -106,6 +106,8 @@ export function CapacityDemand({
       ? (stateValue as CapacityDemandState)
       : undefined;
   const poolFilter = search.get("pool") || undefined;
+  const ownerFilter = search.get("owner") || undefined;
+  const ownerFilterName = ownerFilter?.split("/").slice(1).join(" ");
   const pagination = useCapacityPagination<CapacityDemandResponse>(
     `${location.search}`,
   );
@@ -114,6 +116,7 @@ export function CapacityDemand({
     cursor: pagination.cursor,
     state: stateFilter,
     pool: poolFilter,
+    owner: ownerFilter,
   });
   const recoveringCursor = useCapacityCursorRecovery(
     query.error,
@@ -124,7 +127,7 @@ export function CapacityDemand({
   const responseData =
     query.data ?? (recoveredCursor ? pagination.retainedPage : undefined);
   const updateSearchParam = (
-    key: "pool" | "state",
+    key: "pool" | "state" | "owner",
     value: string | undefined,
   ) => {
     navigate(
@@ -136,6 +139,7 @@ export function CapacityDemand({
     );
   };
   const clearPoolFilter = () => updateSearchParam("pool", undefined);
+  const clearOwnerFilter = () => updateSearchParam("owner", undefined);
   if (poolFilter && !responseData && isNotFoundError(query.error)) {
     return (
       <EmptyState
@@ -250,6 +254,18 @@ export function CapacityDemand({
           total.
         </Notice>
       )}
+      {ownerFilter && (
+        <Notice>
+          Showing pending demand for{" "}
+          <span className="font-medium text-theme-text-primary">
+            {ownerFilterName}
+          </span>{" "}
+          only.{" "}
+          <LinkButton className="inline" onClick={clearOwnerFilter}>
+            Show all demand
+          </LinkButton>
+        </Notice>
+      )}
       {poolFilter && (
         <Notice>
           Evaluated against NodePool{" "}
@@ -315,14 +331,21 @@ export function CapacityDemand({
           ))}
         </div>
       ) : coverageHasObservations(response.coverage.pods) ? (
-        <InlineEmpty
-          title="No demand groups match these filters"
-          detail={
-            stateFilter
-              ? `A true zero here means every readable pending pod is excluded by the current filters — not that data is missing. No pending groups are in “${demandStateLabel(stateFilter)}”.`
-              : "A true zero here means every readable pending pod is excluded by the current filters — not that data is missing."
-          }
-        />
+        ownerFilter ? (
+          <InlineEmpty
+            title={`No pending demand for ${ownerFilterName}`}
+            detail="Its pods may have scheduled since this link was created — this is a true zero across all pending demand, not a paging artifact."
+          />
+        ) : (
+          <InlineEmpty
+            title="No demand groups match these filters"
+            detail={
+              stateFilter
+                ? `A true zero here means every readable pending pod is excluded by the current filters — not that data is missing. No pending groups are in “${demandStateLabel(stateFilter)}”.`
+                : "A true zero here means every readable pending pod is excluded by the current filters — not that data is missing."
+            }
+          />
+        )
       ) : (
         <InlineEmpty
           title="Demand unavailable"

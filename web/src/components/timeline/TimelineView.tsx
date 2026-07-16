@@ -745,7 +745,12 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
   )
   const focusedAppLoading = Boolean(focusedAppKey) && appsLoading
   const focusedAppUnavailable = Boolean(focusedAppKey) && (!appScopeReady || (!appsLoading && (appsError || !focusedApp)))
-  const focusedAppTimelineLimited = Boolean(focusedAppKey) && unscopedEvents.length >= 10_000
+  // Only local truncates the swimlane fetch at 10k (the in-memory ring cap), so
+  // hitting 10k there genuinely means older app activity is hidden. Retained
+  // sends no client limit — the full hub window is on screen (the hub bounds it
+  // with a 50k stream-error surfaced by the error state, not a silent cut) — so
+  // this "showing newest 10k" banner would be false there.
+  const focusedAppTimelineLimited = isLocal && Boolean(focusedAppKey) && unscopedEvents.length >= 10_000
   const clearFocusedApp = useCallback(() => {
     const next = new URLSearchParams(searchParamsRef.current)
     next.delete('app')

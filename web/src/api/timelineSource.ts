@@ -101,7 +101,17 @@ export interface TimelineOverviewResult {
 export interface TimelineEventsResult {
   data: TimelineEvent[] | undefined
   isLoading: boolean
+  // A fetch for the requested window is in flight while previous data is still
+  // shown (keepPreviousData). Distinct from isLoading, which is only true with
+  // NO data at all — so a period change, which swaps the window key and keeps
+  // the prior range visible, reports isFetching (not isLoading). Lets the UI
+  // show a non-blocking "updating" hint without blanking the timeline.
+  isFetching: boolean
   isError: boolean
+  // The failure behind isError, when one is available. Surfaced so the UI can
+  // show the server's actionable message (e.g. the retained row-cap "narrow the
+  // from/to range") instead of a generic "failed to load".
+  error?: Error | null
   refetch: () => void
   // Present only for sources that report coverage (retained).
   coverage?: TimelineCoverageRecord[]
@@ -142,7 +152,7 @@ function useLocalEvents(query: TimelineQuery): TimelineEventsResult {
   // query and the list's windowed one): SSE-driven refetches then transfer only
   // what arrived since the last full load. Dropdown-ranged (`since`) queries
   // stay plain — they're small and their range moves with the clock.
-  const { data, isLoading, isError, refetch } = useChanges(
+  const { data, isLoading, isError, error, refetch } = useChanges(
     windowed
       ? { ...query, timeRange: 'all', limit: LOCAL_RING_LIMIT, deltaSync: true }
       : { ...query, deltaSync: query.timeRange === 'all' },
@@ -165,7 +175,9 @@ function useLocalEvents(query: TimelineQuery): TimelineEventsResult {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [data, query.fromMs, query.toMs, query.limit, kindsKey, query.includeManaged],
   )
-  return { data: events, isLoading, isError, refetch }
+  // Local mode loads the whole ring once and re-windows client-side, so a period
+  // change issues no per-window server fetch — nothing to signal as "updating".
+  return { data: events, isLoading, isFetching: false, isError, error, refetch }
 }
 
 export const localSource: TimelineSource = {
@@ -517,9 +529,17 @@ function createRetainedEventsHook(
     return {
       data,
       isLoading: base.isLoading,
+      // True only on a window-key change (period switch / quantize rotation)
+      // while keepPreviousData holds the prior range on screen. Gating on
+      // isPlaceholderData excludes same-key background refetches (focus,
+      // staleness, manual) — those refresh in place and aren't "the range is
+      // loading". The live poll's own fetching is excluded too (it's a separate
+      // query).
+      isFetching: base.isFetching && base.isPlaceholderData,
       // Base failure is a real error; a failing live poll must not blank an
       // already-loaded range.
       isError: base.isError,
+      error: base.error,
       refetch: () => {
         base.refetch()
         live.refetch()

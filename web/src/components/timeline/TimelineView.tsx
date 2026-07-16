@@ -391,6 +391,11 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
   // hour of the selection (what the swimlane shows at its default zoom), or the
   // whole selection if that's narrower.
   const DEFAULT_LENS_MS = 60 * 60 * 1000
+  // Above this selected-domain width, a preset lands on a bounded recent lens
+  // instead of the full range, so the swimlane never tries to render every
+  // resource lane at once (a 30d domain has thousands). 7d and narrower keep
+  // the full-range lens — they render an acceptable number of rows.
+  const WIDE_LENS_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000
   const [lensWindow, setLensWindow] = useState<ScrubberRange>(() => {
     const width = Math.min(DEFAULT_LENS_MS, selection.toMs - selection.fromMs)
     return { fromMs: selection.toMs - width, toMs: selection.toMs }
@@ -495,11 +500,21 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
     // plain fixed widths.
     const all = isLocal && scrubberDomain != null && widthMs >= scrubberDomain.maxSelectionMs
     const now = Date.now()
+    const sel = deriveLiveSelection(capped, now)
     setMode({ kind: 'live', widthMs: capped, all: all || undefined })
     setFrozenAsOfMs(null)
     setNowTick(now)
-    resetLensToFull(deriveLiveSelection(capped, now))
-  }, [isLocal, scrubberDomain, resetLensToFull])
+    // A full-range lens on a very wide domain (e.g. 30d) renders EVERY resource
+    // lane at once — thousands of rows — which freezes the browser for seconds
+    // before the view settles. Land directly on a bounded recent lens instead;
+    // the density strip still spans the full selected range for context, and the
+    // user scrubs it. Narrow presets (<= 7d) keep the full-range lens unchanged.
+    if (capped > WIDE_LENS_THRESHOLD_MS) {
+      resetLensToRecent(sel)
+    } else {
+      resetLensToFull(sel)
+    }
+  }, [isLocal, scrubberDomain, resetLensToFull, resetLensToRecent])
 
   // "→ Now" → LIVE, width = current selection width. Pins to now and resets the
   // lens to the live edge.
@@ -616,16 +631,21 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
     setSearchParamsRef.current(target, { replace })
   }, [viewMode, mode, showDeleted, pinnedOnly, search, activityFilter, kindFilter, grouping, sort, selectedEventId, isRetained, isLocal, requiresNamespaceFilter])
 
-  // Fetch all activity - zoom controls what's visible in the UI. The heavy 10k
-  // ring feeds the swimlanes and the local strip's histogram, so it also runs in
-  // list mode when that strip is shown; the list itself fetches its own 2000.
-  const { data: activity, isLoading, isError, refetch } = timelineSource.useEvents({
+  // Fetch all activity - zoom controls what's visible in the UI. This ring feeds
+  // the swimlanes and the local strip's histogram, so it also runs in list mode
+  // when that strip is shown; the list itself fetches its own 2000.
+  const { data: activity, isLoading, isFetching, isError, error, refetch } = timelineSource.useEvents({
     namespaces,
     timeRange: 'all',
     includeK8sEvents: true,
     includeManaged: true,
     includeDeleted: showDeleted,
-    limit: 10000,
+    // Only the local in-memory ring imposes a client-side size cap (it can't
+    // hold more than its ring anyway). Retained mode renders every event the hub
+    // returns for the window — the hub owns the bound (31d range + a 50k-row hard
+    // stop that surfaces as a stream error, never a silent cut), so a busy window
+    // never silently drops its oldest events on the client.
+    limit: isRetained ? undefined : 10000,
     // The local strip derives its histogram from this ring fetch, so it must
     // run in list mode too whenever the strip is shown.
     enabled: showSwimlanes || showLocalScrubber,
@@ -764,22 +784,40 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
     // A failed fetch must not render as the swimlane "No events yet" empty state —
     // that reads as a quiet cluster rather than a load failure.
     if (isError) {
+      // Surface the server's own message when it's actionable — the retained
+      // store caps a window at 50k events and replies "narrow the from/to
+      // range", which a generic "failed to load" would swallow. When a wide
+      // retained window fails, offer a one-click narrow so "Try again" (which
+      // would just re-fail at the same size) isn't the only recourse.
+      const detail = error?.message?.trim()
+      const canNarrow = isRetained && selection.toMs - selection.fromMs > DAY_MS
       return wrap(
         <div className="flex-1 flex flex-col">
           <div className="flex items-center justify-between px-4 py-2 border-b border-theme-border">
             <div />
             <ViewModeToggle viewMode={viewMode} onViewModeChange={setViewMode} />
           </div>
-          <div className="flex-1 flex flex-col items-center justify-center text-theme-text-tertiary gap-3">
+          <div className="flex-1 flex flex-col items-center justify-center text-theme-text-tertiary gap-3 px-6">
             <AlertTriangle className="w-10 h-10 text-amber-400/70" />
             <p className="text-base">Failed to load timeline data</p>
-            <button
-              onClick={() => refetch()}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-theme-elevated border border-theme-border-light rounded-lg hover:bg-theme-hover transition-colors"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Try again
-            </button>
+            {detail && <p className="max-w-md text-center text-sm text-theme-text-tertiary">{detail}</p>}
+            <div className="flex items-center gap-2">
+              {canNarrow && (
+                <button
+                  onClick={() => handlePresetSelect(DAY_MS)}
+                  className="btn-brand flex items-center gap-2 px-3 py-1.5 text-sm"
+                >
+                  Narrow to last 24h
+                </button>
+              )}
+              <button
+                onClick={() => refetch()}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm bg-theme-elevated border border-theme-border-light rounded-lg hover:bg-theme-hover transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Try again
+              </button>
+            </div>
           </div>
         </div>
       )
@@ -789,6 +827,7 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
       <TimelineSwimlanes
         events={events}
         isLoading={isLoading}
+        isFetching={isFetching}
         onResourceClick={onResourceClick}
         viewMode={viewMode}
         onViewModeChange={setViewMode}

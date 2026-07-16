@@ -58,7 +58,7 @@ export function TimelineList({ namespaces, onViewChange, currentView, onResource
     setQueryParams(params)
   }, [])
 
-  const { data: events = [], isLoading, isError, refetch } = timelineSource.useEvents({
+  const { data: events = [], isLoading, isError, error, refetch } = timelineSource.useEvents({
     namespaces,
     kinds: queryParams.kinds,
     timeRange: queryParams.timeRange,
@@ -75,6 +75,9 @@ export function TimelineList({ namespaces, onViewChange, currentView, onResource
       <div className="flex flex-col items-center justify-center h-full text-theme-text-tertiary gap-3">
         <AlertTriangle className="w-10 h-10 text-amber-400/70" />
         <p className="text-base">Failed to load timeline data</p>
+        {error?.message?.trim() && (
+          <p className="max-w-md px-6 text-center text-sm text-theme-text-tertiary">{error.message.trim()}</p>
+        )}
         <button
           onClick={() => refetch()}
           className="flex items-center gap-2 px-3 py-1.5 text-sm bg-theme-elevated border border-theme-border-light rounded-lg hover:bg-theme-hover transition-colors"

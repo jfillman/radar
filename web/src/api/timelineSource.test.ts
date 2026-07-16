@@ -152,6 +152,16 @@ describe('applyClientFilters', () => {
     expect(out.map((e) => e.id)).toEqual(['del1', 'p1'])
   })
 
+  // Retained mode passes no limit — the hub owns the window bound (31d + a 50k
+  // row hard stop that surfaces as a stream error). The client must never
+  // silently drop older events, so an unset limit returns the full window.
+  it('returns every event when no limit is set', () => {
+    const many: TimelineEvent[] = Array.from({ length: 12000 }, (_, i) =>
+      ev({ id: `e${i}`, kind: 'Pod', namespace: 'ns-a', timestamp: new Date(T0 + i).toISOString() }),
+    )
+    expect(applyClientFilters(many, {})).toHaveLength(12000)
+  })
+
   // Mirrors Go's TimelineEvent.IsManaged: owned, or ReplicaSet/Pod/Event.
   // Enforced client-side so retained mode (whose endpoint has no
   // include_managed param) behaves exactly like local mode.

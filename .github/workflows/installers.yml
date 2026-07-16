@@ -1,0 +1,67 @@
+name: Installer smoke tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+      - install.ps1
+      - .github/workflows/installers.yml
+  pull_request:
+    paths:
+      - install.sh
+      - install.ps1
+      - .github/workflows/installers.yml
+  workflow_dispatch:
+
+jobs:
+  posix:
+    name: POSIX installer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check syntax
+        run: sh -n install.sh
+
+      - name: Install into an isolated directory
+        run: |
+          install_dir="$RUNNER_TEMP/radar-bin"
+          mkdir -p "$install_dir"
+          RADAR_INSTALL_DIR="$install_dir" sh ./install.sh
+          "$install_dir/kubectl-radar" --version
+          test -L "$install_dir/radar"
+
+  windows:
+    name: Windows installer (${{ matrix.shell }})
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        shell: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check syntax
+        shell: ${{ matrix.shell }}
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+
+      - name: Install into an isolated directory
+        shell: ${{ matrix.shell }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "radar-local-app-data"
+          Get-Content -Raw ./install.ps1 | Invoke-Expression
+          & "$env:LOCALAPPDATA\radar\kubectl-radar.exe" --version
+          if (-not (Test-Path "$env:LOCALAPPDATA\radar\radar.exe")) {
+            throw "radar.exe alias was not installed"
+          }

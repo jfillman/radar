@@ -15,7 +15,7 @@ set -e
 
 REPO="skyhook-io/radar"
 BINARY_NAME="kubectl-radar"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="${RADAR_INSTALL_DIR:-/usr/local/bin}"
 
 # Detect OS and architecture
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -34,14 +34,28 @@ case "$OS" in
   *) echo "Unsupported OS: $OS"; exit 1 ;;
 esac
 
-# Get latest release version
+# Resolve the ordinary GitHub web redirect instead of using the REST API.
+# The API's unauthenticated per-IP quota can be exhausted by unrelated users
+# behind the same NAT, while this redirect is the same path browsers use.
 echo "Fetching latest release..."
-VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
-
-if [ -z "$VERSION" ]; then
-  echo "Failed to fetch latest version"
+if ! LATEST_RELEASE_URL=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  "https://github.com/${REPO}/releases/latest"); then
+  echo "Failed to fetch latest release" >&2
   exit 1
 fi
+
+TAG=${LATEST_RELEASE_URL##*/}
+if [ "$LATEST_RELEASE_URL" != "https://github.com/${REPO}/releases/tag/${TAG}" ]; then
+  echo "Failed to resolve latest release: unexpected redirect URL" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$TAG" | grep -Eq \
+  '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+  echo "Failed to resolve latest release: unexpected tag" >&2
+  exit 1
+fi
+VERSION=${TAG#v}
 
 echo "Installing Radar v${VERSION}..."
 

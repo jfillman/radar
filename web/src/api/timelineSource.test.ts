@@ -12,6 +12,7 @@ vi.mock('./client', async (importOriginal) => {
 import { apiFetch, ApiError } from './client'
 import {
   fetchRetainedWindow,
+  rangeSpanMs,
   RETAINED_RING_LIMIT,
   fetchRetainedDelta,
   runRetainedRingFetch,
@@ -216,6 +217,22 @@ describe('localOverviewFromEvents', () => {
   })
 })
 
+describe('rangeSpanMs (client-side preset resolution)', () => {
+  const CAP = 31 * 24 * 60 * 60 * 1000
+  it('resolves presets to their spans', () => {
+    expect(rangeSpanMs('24h', CAP)).toBe(24 * 60 * 60 * 1000)
+    expect(rangeSpanMs('7d', CAP)).toBe(7 * 24 * 60 * 60 * 1000)
+  })
+  it("falls back to the ring depth for 'all' and unset", () => {
+    expect(rangeSpanMs('all', CAP)).toBe(CAP)
+    expect(rangeSpanMs(undefined, CAP)).toBe(CAP)
+  })
+  it('a preset wider than a shallow host clamps at the depth (via the caller Math.min)', () => {
+    const shallow = 7 * 24 * 60 * 60 * 1000
+    expect(Math.min(rangeSpanMs('30d', shallow), shallow)).toBe(shallow)
+  })
+})
+
 describe('retained ring fetch (the OSS-identical accumulate model)', () => {
   const DAY = 24 * 60 * 60 * 1000
   const CAP = 31 * DAY
@@ -294,7 +311,8 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
 
   it('an empty delta with a moved cursor commits the cursor WITH the data', async () => {
     const flags = new Set<string>()
-    const cached = ring([ev({ id: 'e1', timestamp: new Date(NOW - DAY).toISOString() })])
+    const loadedAt = NOW - 1000
+    const cached = ring([ev({ id: 'e1', timestamp: new Date(NOW - DAY).toISOString() })], { loadedAtMs: loadedAt })
     mockApiFetch.mockResolvedValueOnce(streamResponse([end({ cursor: '150' })]))
     const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
     // The advanced cursor rides the same commit as the events it describes —
@@ -302,6 +320,20 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
     expect(out).not.toBe(cached)
     expect(out.cursor).toBe('150')
     expect(out.events.map((e) => e.id)).toEqual(['e1'])
+    // Delta commits must PRESERVE the full-load clock — resetting it to `now`
+    // would silently disable the hourly anti-entropy on any active cluster.
+    expect(out.loadedAtMs).toBe(loadedAt)
+  })
+
+  it('a ring loaded "in the future" (backward clock step) resyncs instead of suspending', async () => {
+    const flags = new Set<string>()
+    const cached = ring([ev({ id: 'e1', timestamp: new Date(NOW - DAY).toISOString() })], { loadedAtMs: NOW + 10 * 60 * 1000 })
+    mockApiFetch.mockResolvedValueOnce(
+      streamResponse([line(ev({ id: 'e-resynced', timestamp: new Date(NOW).toISOString() })), end({ cursor: '700' })]),
+    )
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
+    expect(mockApiFetch.mock.calls[0][0]).toContain('from=')
+    expect(out.loadedAtMs).toBe(NOW)
   })
 
   it('prunes events older than the retention depth on merge', async () => {

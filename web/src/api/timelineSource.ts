@@ -12,7 +12,7 @@
 //
 // Both sources expose the same `useEvents(query)` hook shape so the timeline
 // wrappers stay source-agnostic: pick the source from context, call useEvents.
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useChanges, apiFetch, mergeDeltaEvents, ApiError, type UseChangesOptions } from './client'
 import { apiUrl, getApiBase } from './config'
@@ -298,10 +298,16 @@ const RETAINED_FULL_RESYNC_MS = 60 * 60 * 1000
 // hub's maximum range.
 const RETAINED_CLOCK_SKEW_SLACK_MS = 5 * 60 * 1000
 
+// How often a preset-derived window's sliding lower bound refreshes on an
+// IDLE ring (the no-op cached return keeps ring identity stable, so the memo
+// otherwise never re-samples the clock and a "24h" label slowly overstays).
+const RETAINED_PRESET_TICK_MS = 5 * 60 * 1000
+
 // The client-side spans the `timeRange` presets resolve to when no explicit
 // [from,to] window rides the query — the retained twin of the local source's
-// server-side `since` resolution. Bounded by the ring depth.
-function rangeSpanMs(range: TimeRange | undefined, capMs: number): number {
+// server-side `since` resolution. Bounded by the ring depth. Exported for
+// unit tests; not re-exported publicly.
+export function rangeSpanMs(range: TimeRange | undefined, capMs: number): number {
   switch (range) {
     case '5m': return 5 * 60 * 1000
     case '30m': return 30 * 60 * 1000
@@ -515,8 +521,11 @@ export async function runRetainedRingFetch(deps: {
   // to a full reload regardless of cursor state — refreshing coverage,
   // recomputing the truncated flag, and dropping anything deltas can't
   // retract.
-  const resyncDue =
-    forceResync.has(ringKey) || (cached != null && now - cached.loadedAtMs > RETAINED_FULL_RESYNC_MS)
+  // A negative age (loadedAtMs in the future — backward clock step, suspend/
+  // resume) counts as due: the resync clock must fail toward refreshing, not
+  // toward silently suspending anti-entropy for hours.
+  const ringAge = cached != null ? now - cached.loadedAtMs : 0
+  const resyncDue = forceResync.has(ringKey) || (cached != null && (ringAge < 0 || ringAge > RETAINED_FULL_RESYNC_MS))
   if (cached && !resyncDue) {
     if (!cached.cursor) {
       return cached
@@ -534,9 +543,11 @@ export async function runRetainedRingFetch(deps: {
         }
         if (!delta.more) break
       }
-      // Returning the cached reference on a no-op delta skips re-renders (an
-      // idle cluster's cursor is stable by construction: the server advances
-      // the frontier only past emitted rows).
+      // Returning the cached reference on a no-op delta skips re-renders. An
+      // idle cluster's cursor is stable by construction — verified against the
+      // hub: EventsIngestedSince starts its frontier AT `since` and advances
+      // it only past emitted rows, and the read-side clamp can only lower a
+      // frontier that already rests at or below the visibility edge.
       if (!changed && cursor === cached.cursor) return cached
       // Two bounds keep an always-open tab from growing without limit: the
       // retention floor (the server TTL-deletes past the same boundary) and
@@ -618,16 +629,27 @@ function createRetainedEventsHook(
 
     const kindsKey = query.kinds?.join(',')
     const namespacesKey = query.namespaces?.join(',')
+    // A preset-derived window slides with the clock; on an idle ring the memo
+    // would never re-sample it (the no-op cached return keeps ring identity
+    // stable), freezing a "24h" bound overnight. A coarse tick keeps the label
+    // honest without meaningful churn.
+    const derivedWindow =
+      query.fromMs == null && query.toMs == null && !!query.timeRange && query.timeRange !== 'all'
+    const [presetTick, setPresetTick] = useState(0)
+    useEffect(() => {
+      if (!derivedWindow) return
+      const id = setInterval(() => setPresetTick((t) => t + 1), RETAINED_PRESET_TICK_MS)
+      return () => clearInterval(id)
+    }, [derivedWindow])
     const data = useMemo(() => {
       if (!ring.data) return undefined
       // A `timeRange` preset without an explicit [from,to] window resolves to
       // a client-side bound over the ring — the retained twin of the local
       // source's server-side `since` resolution. Without this, a consumer
       // like the Applications History tab picking "24h" would silently get
-      // the whole ring. The edge is the memo-run clock; it refreshes on every
-      // ring change (each delta with data), which is as live as the data.
+      // the whole ring.
       let effective = query
-      if (query.fromMs == null && query.toMs == null && query.timeRange && query.timeRange !== 'all') {
+      if (derivedWindow) {
         effective = { ...query, fromMs: Date.now() - Math.min(rangeSpanMs(query.timeRange, capMs), capMs) }
       }
       return applyClientFilters(ring.data.events, effective)
@@ -648,6 +670,8 @@ function createRetainedEventsHook(
       query.toMs,
       query.timeRange,
       capMs,
+      derivedWindow,
+      presetTick,
     ])
 
     return {

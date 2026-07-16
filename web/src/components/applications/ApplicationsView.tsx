@@ -639,13 +639,13 @@ function AppDetailRoute({
         history={historyQuery.data}
         historyLoading={historyQuery.isLoading}
         historyItems={historyItems}
-        historyRuntimeLoading={historyTimelineQuery.isFetching}
+        historyRuntimeLoading={historyTimelineQuery.isLoading}
         historyRuntimeError={historyTimelineQuery.isError}
         historyMode={timelineSource.capabilities.mode}
         historyRange={historyRange}
         historyRangeOptions={historyRangeOptions}
         historyCoverageRecordCount={historyTimelineQuery.coverage?.length ?? 0}
-        historyRuntimeLimited={historyRuntimeLimited}
+        historyRuntimeLimited={historyRuntimeLimited || (historyTimelineQuery.truncated ?? false)}
         onHistoryRangeChange={setRetainedHistoryRange}
         onOpenTimeline={openApplicationTimeline}
         onOpenSource={openSource}

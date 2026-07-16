@@ -278,6 +278,31 @@ describe("ApplicationDetail shell", () => {
     expect(html).not.toContain('Recording coverage is incomplete')
   })
 
+  it('reports ring truncation with its own copy, only in retained mode', () => {
+    const base = {
+      selectedView: 'history' as const,
+      onSelectView: () => {},
+      selectedWorkloadKey: null,
+      onSelectWorkload: () => {},
+      historyRange: '7d',
+      historyRangeOptions: [{ value: '7d', label: '7 days' }],
+      historyRingTruncated: true,
+      historyItems: [{
+        id: 'ring-change',
+        category: 'change' as const,
+        title: 'Deployment updated',
+        timestamp: '2026-07-13T09:00:00.000Z',
+      }],
+    }
+    const retained = renderDetail({ ...base, historyMode: 'retained' })
+    expect(retained).toContain('the retained window exceeded')
+    // Distinct cause, distinct copy — not the per-query 10k note.
+    expect(retained).not.toContain('Showing the 10,000 most recent events')
+
+    const local = renderDetail({ ...base, historyMode: 'local' })
+    expect(local).not.toContain('the retained window exceeded')
+  })
+
   it('shows a single honest error state when runtime history fails without source history', () => {
     const html = renderDetail({
       selectedView: 'history',

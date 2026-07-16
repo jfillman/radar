@@ -252,16 +252,10 @@ export function CapacityPoolDetail({
         />
       )}
       {section === "workloads" && (
-        <PoolWorkloadsTab
-          name={name}
-          onOpenResource={onOpenResource}
-        />
+        <PoolWorkloadsTab name={name} onOpenResource={onOpenResource} />
       )}
       {section === "members" && (
-        <PoolMembersTab
-          name={name}
-          onOpenResource={onOpenResource}
-        />
+        <PoolMembersTab name={name} onOpenResource={onOpenResource} />
       )}
       {section === "configuration" && (
         <PoolConfigurationTab pool={pool} onOpenResource={onOpenResource} />
@@ -818,10 +812,10 @@ function WorkloadAttribution({
         {workloads.pendingEligibleGroupsMeta.total > 0 ? (
           <>
             <div className="text-xs text-theme-text-secondary">
-              {workloads.pendingEligibleGroupsMeta.total} pending{" "}
+              {workloads.pendingEligibleGroupsMeta.total}{" "}
               {workloads.pendingEligibleGroupsMeta.total === 1
-                ? "group is"
-                : "groups are"}{" "}
+                ? "group awaiting capacity is"
+                : "groups awaiting capacity are"}{" "}
               declared eligible for this pool.
             </div>
             <LinkButton

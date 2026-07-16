@@ -324,6 +324,14 @@ func TestBuildPendingEligibilityUsesObservedNodeClassReadiness(t *testing.T) {
 	notReadyPool := capacityTestPoolWithNodeClass("class-not-ready", "not-ready-class")
 	unobservedPool := capacityTestPoolWithNodeClass("class-unobserved", "unobserved-class")
 	pod := demandTestPod("pending", "500m")
+	pod.Status.Conditions = []corev1.PodCondition{{
+		Type: corev1.PodScheduled, Status: corev1.ConditionFalse,
+		Reason: corev1.PodReasonUnschedulable, Message: "0/3 nodes are available: 3 Insufficient cpu.",
+	}}
+	// A gated group is not awaiting capacity — it must never read as eligible
+	// pending demand for a pool.
+	held := demandTestPod("held", "500m")
+	held.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: "example.com/gate"}}
 
 	snapshot := Snapshot{
 		GeneratedAt: capacityTestTime(),
@@ -332,7 +340,7 @@ func TestBuildPendingEligibilityUsesObservedNodeClassReadiness(t *testing.T) {
 			NodeClassLookupKey("karpenter.k8s.aws", "EC2NodeClass", "ready-class"):     capacityTestNodeClass("ready-class", corev1.ConditionTrue),
 			NodeClassLookupKey("karpenter.k8s.aws", "EC2NodeClass", "not-ready-class"): capacityTestNodeClass("not-ready-class", corev1.ConditionFalse),
 		},
-		Pods:     []*corev1.Pod{pod},
+		Pods:     []*corev1.Pod{pod, held},
 		Coverage: capacityTestCoverage(),
 	}
 	model := Build(snapshot)
@@ -551,6 +559,82 @@ func TestBuildPartialInFlightClaimCapacityIsLowerBound(t *testing.T) {
 
 	ledger := capacityTestMustPool(t, model, "compute").Observation.Ledger
 	capacityTestAssertObservation(t, ledger.InFlightCapacity, capacityapi.CertaintyLowerBound, capacityapi.GranularityAggregate, map[string]string{"cpu": "2"})
+}
+
+func TestBuildClusterSchedulingAggregateScopesToPooledNodes(t *testing.T) {
+	pool := capacityTestPool("compute", "pool-uid", nil, nil)
+	ghostPool := capacityTestPool("ghost", "ghost-uid", nil, nil)
+	inFlight := capacityTestClaimWithConditions("launching", pool, []map[string]any{{"type": "Launched", "status": "True"}})
+	inFlight.Object["status"].(map[string]any)["capacity"] = map[string]any{"cpu": "2"}
+	// References a pool absent from the snapshot — orphaned, so it must count
+	// in the claim-stage rollup but never in pooled in-flight capacity.
+	orphan := capacityTestClaimWithConditions("orphan", ghostPool, []map[string]any{{"type": "Launched", "status": "True"}})
+	orphan.Object["status"].(map[string]any)["capacity"] = map[string]any{"cpu": "64"}
+
+	model := Build(Snapshot{
+		GeneratedAt: capacityTestTime(),
+		NodePools:   []*unstructured.Unstructured{pool},
+		NodeClaims:  []*unstructured.Unstructured{inFlight, orphan},
+		Nodes: []*corev1.Node{
+			capacityTestNode("pooled", "pooled-uid", "", "compute", resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "4"})),
+			capacityTestNode("unpooled", "unpooled-uid", "", "", resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "32"})),
+		},
+		Pods: []*corev1.Pod{
+			capacityTestPod("worker", "pooled", "worker", map[corev1.ResourceName]string{corev1.ResourceCPU: "500m"}),
+			capacityTestPod("outsider", "unpooled", "outsider", map[corev1.ResourceName]string{corev1.ResourceCPU: "8"}),
+		},
+		Coverage: capacityTestCoverage(),
+	})
+
+	if model.Scheduling == nil {
+		t.Fatal("cluster scheduling aggregate is nil with observed sources")
+	}
+	capacityTestAssertObservation(t, model.Scheduling.Allocatable, capacityapi.CertaintyExact, capacityapi.GranularityAggregate, map[string]string{"cpu": "4"})
+	capacityTestAssertObservation(t, model.Scheduling.ScheduledRequests, capacityapi.CertaintyExact, capacityapi.GranularityAggregate, map[string]string{"cpu": "500m", "pods": "1"})
+	capacityTestAssertObservation(t, model.Scheduling.InFlightCapacity, capacityapi.CertaintyExact, capacityapi.GranularityAggregate, map[string]string{"cpu": "2"})
+	if model.ClaimStages == nil || model.ClaimStages.Total != 2 || model.ClaimStages.Launched != 2 {
+		t.Fatalf("claim stage rollup = %+v, want total 2 launched 2 (orphan included)", model.ClaimStages)
+	}
+}
+
+func TestBuildClusterSchedulingAggregateGatesOnCoverage(t *testing.T) {
+	pool := capacityTestPool("compute", "pool-uid", nil, nil)
+	node := capacityTestNode("pooled", "pooled-uid", "", "compute", resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "4"}))
+	pod := capacityTestPod("worker", "pooled", "worker", map[corev1.ResourceName]string{corev1.ResourceCPU: "500m"})
+
+	coverage := capacityTestCoverage()
+	coverage[capacityapi.CoveragePods] = capacityapi.NewSourceCoverage(capacityapi.CoverageDenied, capacityapi.CoverageScopeCluster)
+	model := Build(Snapshot{
+		GeneratedAt: capacityTestTime(), NodePools: []*unstructured.Unstructured{pool},
+		Nodes: []*corev1.Node{node}, Coverage: coverage,
+	})
+	if model.Scheduling == nil || model.Scheduling.ScheduledRequests != nil {
+		t.Fatalf("pods-denied aggregate = %+v, want allocatable only (absent requests, never zero)", model.Scheduling)
+	}
+	capacityTestAssertObservation(t, model.Scheduling.Allocatable, capacityapi.CertaintyExact, capacityapi.GranularityAggregate, map[string]string{"cpu": "4"})
+
+	coverage = capacityTestCoverage()
+	coverage[capacityapi.CoverageNodes] = capacityapi.NewSourceCoverage(capacityapi.CoverageUnavailable, capacityapi.CoverageScopeCluster)
+	coverage[capacityapi.CoverageNodeClaims] = capacityapi.NewSourceCoverage(capacityapi.CoverageDenied, capacityapi.CoverageScopeCluster)
+	model = Build(Snapshot{
+		GeneratedAt: capacityTestTime(), NodePools: []*unstructured.Unstructured{pool},
+		Pods: []*corev1.Pod{pod}, Coverage: coverage,
+	})
+	if model.Scheduling == nil || model.Scheduling.Allocatable != nil || model.Scheduling.InFlightCapacity != nil {
+		t.Fatalf("nodes-unavailable aggregate = %+v, want requests only", model.Scheduling)
+	}
+	if model.ClaimStages != nil {
+		t.Fatalf("claims-denied stage rollup = %+v, want nil (unavailable is not zero claims)", model.ClaimStages)
+	}
+	// The pod cannot be attributed to a pool without nodes or claims — pooled
+	// requests degrade to an unknown-certainty empty vector, never a made-up
+	// exact zero.
+	capacityTestAssertObservation(t, model.Scheduling.ScheduledRequests, capacityapi.CertaintyUnknown, capacityapi.GranularityAggregate, map[string]string{})
+
+	model = Build(Snapshot{GeneratedAt: capacityTestTime(), NodePools: []*unstructured.Unstructured{pool}, Coverage: capacityapi.CoverageBySource{}})
+	if model.Scheduling != nil {
+		t.Fatalf("no-coverage aggregate = %+v, want nil", model.Scheduling)
+	}
 }
 
 func TestBuildAttributesScheduledPodsThroughVisibleClaimsWhenNodesAreDenied(t *testing.T) {

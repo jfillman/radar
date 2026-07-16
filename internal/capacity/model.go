@@ -56,6 +56,11 @@ type Model struct {
 	PendingPodCount    int
 	OrphanedClaimCount int
 	UnpooledNodeCount  int
+	// Scheduling is the cluster-level ledger across Karpenter-pooled nodes
+	// only; ClaimStages rolls up lifecycle stages across ALL claims,
+	// orphaned ones included, matching the claim count the overview reports.
+	Scheduling  *capacityapi.SchedulingCapacity
+	ClaimStages *capacityapi.ClaimLifecycleSummary
 }
 
 func NodeClassLookupKey(group, kind, name string) string {
@@ -168,14 +173,102 @@ func Build(snapshot Snapshot) Model {
 		}
 	}
 
+	var pooledNodes []*corev1.Node
+	var pooledPods []*corev1.Pod
+	var pooledClaims []*unstructured.Unstructured
 	for i := range model.Pools {
 		poolName := model.Pools[i].Observation.Resource.Ref.Name
+		pooledNodes = append(pooledNodes, nodesByPool[poolName]...)
+		pooledPods = append(pooledPods, podsByPool[poolName]...)
+		pooledClaims = append(pooledClaims, claimsByPool[poolName]...)
 		populatePool(&model.Pools[i], claimsByPool[poolName], nodesByPool[poolName], podsByPool[poolName], nodeForClaim, snapshot)
 	}
+	buildSchedulingAggregate(&model, pooledNodes, pooledPods, pooledClaims, nodeForClaim, snapshot)
 	sort.Slice(model.Pools, func(i, j int) bool {
 		return poolModelLess(model.Pools[i], model.Pools[j])
 	})
 	return model
+}
+
+// inFlightAccumulator gathers capacity of claims that are neither settled
+// (ready/failed/terminating) nor linked to a node yet — capacity Karpenter
+// has asked the provider for but the scheduler cannot use.
+type inFlightAccumulator struct {
+	resources    corev1.ResourceList
+	count        int
+	withCapacity int
+}
+
+func (a *inFlightAccumulator) add(claim *unstructured.Unstructured, stage capacityapi.ClaimStage, nodeForClaim map[*unstructured.Unstructured]*corev1.Node) {
+	if stage == capacityapi.ClaimStageReady || stage == capacityapi.ClaimStageFailed || stage == capacityapi.ClaimStageTerminating {
+		return
+	}
+	if karpenter.ClaimNodeName(claim) != "" || nodeForClaim[claim] != nil {
+		return
+	}
+	a.count++
+	if capacityResources := karpenter.NodeClaimCapacity(claim); capacityResources != nil {
+		a.withCapacity++
+		addResources(a.resources, capacityResources)
+	}
+}
+
+func (a *inFlightAccumulator) observation(claimCertainty capacityapi.Certainty, asOf time.Time) *capacityapi.QuantityObservation {
+	if a.count == 0 {
+		return nil
+	}
+	certainty := claimCertainty
+	if a.withCapacity == 0 {
+		certainty = capacityapi.CertaintyUnknown
+	} else if a.withCapacity < a.count && certainty == capacityapi.CertaintyExact {
+		certainty = capacityapi.CertaintyLowerBound
+	}
+	observation := QuantityObservation(a.resources, certainty, capacityapi.GranularityAggregate, asOf, "nodeclaims.status.capacity")
+	return &observation
+}
+
+// buildSchedulingAggregate mirrors populatePool's ledger semantics at cluster
+// scope: requests and allocatable cover Karpenter-pooled nodes only (the bar
+// explicitly excludes unpooled nodes), in-flight covers pooled claims, and
+// the claim-stage rollup covers every claim — orphans included — so it sums
+// to the overview's claim count. The same nil-gates apply: values from an
+// unobserved source are absent, never zero.
+func buildSchedulingAggregate(model *Model, pooledNodes []*corev1.Node, pooledPods []*corev1.Pod, pooledClaims []*unstructured.Unstructured, nodeForClaim map[*unstructured.Unstructured]*corev1.Node, snapshot Snapshot) {
+	nodeCertainty := sourceCertainty(snapshot.Coverage, capacityapi.CoverageNodes)
+	claimCertainty := sourceCertainty(snapshot.Coverage, capacityapi.CoverageNodeClaims)
+
+	scheduling := capacityapi.SchedulingCapacity{}
+	accounting := AccountResources(pooledNodes, pooledPods)
+	if sourceObserved(snapshot.Coverage, capacityapi.CoveragePods) {
+		requests := QuantityObservation(accounting.ScheduledRequests, scheduledRequestCertainty(snapshot.Coverage), capacityapi.GranularityAggregate, snapshot.GeneratedAt, "pods.spec.resources")
+		scheduling.ScheduledRequests = &requests
+	}
+	if sourceObserved(snapshot.Coverage, capacityapi.CoverageNodes) {
+		allocatable := QuantityObservation(accounting.Allocatable, nodeCertainty, capacityapi.GranularityAggregate, snapshot.GeneratedAt, "nodes.status.allocatable")
+		scheduling.Allocatable = &allocatable
+	}
+	inFlight := inFlightAccumulator{resources: corev1.ResourceList{}}
+	for _, claim := range pooledClaims {
+		if claim != nil {
+			inFlight.add(claim, claimStage(claim), nodeForClaim)
+		}
+	}
+	scheduling.InFlightCapacity = inFlight.observation(claimCertainty, snapshot.GeneratedAt)
+	if scheduling.ScheduledRequests != nil || scheduling.Allocatable != nil || scheduling.InFlightCapacity != nil {
+		model.Scheduling = &scheduling
+	}
+
+	if sourceObserved(snapshot.Coverage, capacityapi.CoverageNodeClaims) {
+		stages := capacityapi.ClaimLifecycleSummary{}
+		for _, claim := range snapshot.NodeClaims {
+			if claim == nil {
+				continue
+			}
+			stages.Total++
+			incrementClaimStage(&stages, claimStage(claim))
+		}
+		model.ClaimStages = &stages
+	}
 }
 
 func AttachPendingEligibilityForPool(model *Model, snapshot Snapshot, poolName string) {
@@ -197,7 +290,11 @@ func AttachPendingEligibilityForPool(model *Model, snapshot Snapshot, poolName s
 		return
 	}
 
-	input := DemandPoolInput{NodePool: nodePool, ProvisionedKnown: karpenter.NodePoolStatusResources(nodePool) != nil}
+	input := DemandPoolInput{
+		NodePool:             nodePool,
+		ProvisionedKnown:     karpenter.NodePoolStatusResources(nodePool) != nil,
+		ObservedMemberShapes: ObservedMemberShapesByPool(snapshot.Nodes, snapshot.NodeClaims)[poolName],
+	}
 	if poolModel.Observation.NodeClass != nil {
 		input.NodeClassReady = poolModel.Observation.NodeClass.Ready
 	}
@@ -214,6 +311,9 @@ func AttachPendingEligibilityForPool(model *Model, snapshot Snapshot, poolName s
 	workloads.PendingEligibleGroupIDs = []string{}
 	workloads.PendingEligibleGroupsMeta = capacityapi.BoundedResultMeta{}
 	for _, group := range groups {
+		if group.Group.State != capacityapi.DemandAwaitingCapacity {
+			continue
+		}
 		if evaluateDemandPool(group.scheduling, group.requests, input).Result != capacityapi.PoolDeclaredCompatible {
 			continue
 		}
@@ -370,9 +470,7 @@ func populatePool(model *PoolModel, claims []*unstructured.Unstructured, nodes [
 	if sourceObserved(snapshot.Coverage, capacityapi.CoverageNodeClaims) {
 		observation.Claims = &capacityapi.ClaimLifecycleSummary{Total: len(claims)}
 	}
-	inFlightResources := corev1.ResourceList{}
-	inFlightCount := 0
-	inFlightCapacityCount := 0
+	inFlight := inFlightAccumulator{resources: corev1.ResourceList{}}
 	for _, claim := range claims {
 		if claim == nil {
 			continue
@@ -381,13 +479,7 @@ func populatePool(model *PoolModel, claims []*unstructured.Unstructured, nodes [
 		if observation.Claims != nil {
 			incrementClaimStage(observation.Claims, stage)
 		}
-		if stage != capacityapi.ClaimStageReady && stage != capacityapi.ClaimStageFailed && stage != capacityapi.ClaimStageTerminating && karpenter.ClaimNodeName(claim) == "" && nodeForClaim[claim] == nil {
-			inFlightCount++
-			if capacityResources := karpenter.NodeClaimCapacity(claim); capacityResources != nil {
-				inFlightCapacityCount++
-				addResources(inFlightResources, capacityResources)
-			}
-		}
+		inFlight.add(claim, stage, nodeForClaim)
 		member := capacityapi.NewClaimMember()
 		member.Stage = stage
 		member.Conditions = normalizeConditions(karpenter.NodeClaimConditions(claim))
@@ -403,16 +495,7 @@ func populatePool(model *PoolModel, claims []*unstructured.Unstructured, nodes [
 		}
 		model.Claims = append(model.Claims, capacityapi.PoolMember{Type: capacityapi.MemberClaim, Resource: identityForUnstructured(claim), Claim: &member})
 	}
-	if inFlightCount > 0 {
-		certainty := claimCertainty
-		if inFlightCapacityCount == 0 {
-			certainty = capacityapi.CertaintyUnknown
-		} else if inFlightCapacityCount < inFlightCount && certainty == capacityapi.CertaintyExact {
-			certainty = capacityapi.CertaintyLowerBound
-		}
-		inFlight := QuantityObservation(inFlightResources, certainty, capacityapi.GranularityAggregate, snapshot.GeneratedAt, "nodeclaims.status.capacity")
-		observation.Ledger.InFlightCapacity = &inFlight
-	}
+	observation.Ledger.InFlightCapacity = inFlight.observation(claimCertainty, snapshot.GeneratedAt)
 
 	if sourceObserved(snapshot.Coverage, capacityapi.CoverageNodes) {
 		observation.Nodes = &capacityapi.NodeLifecycleSummary{Total: len(nodes)}

@@ -376,12 +376,25 @@ export interface CapacityActionSummary {
 export interface CapacityOverviewSummary {
   actions: CapacityActionSummary[];
   aggregateDemand?: CapacityQuantityObservation;
+  scheduling?: CapacitySchedulingCapacity;
+  claimStages?: CapacityClaimLifecycleSummary;
   poolCount: number;
   claimCount?: number;
   nodeCount?: number;
   pendingPodCount?: number;
   orphanedClaimCount?: number;
   unpooledNodeCount?: number;
+}
+
+/**
+ * Cluster-level scheduling ledger across Karpenter-pooled nodes only. Each
+ * value carries its own certainty; an absent value means the source was not
+ * observed (unavailable ≠ zero).
+ */
+export interface CapacitySchedulingCapacity {
+  scheduledRequests?: CapacityQuantityObservation;
+  allocatable?: CapacityQuantityObservation;
+  inFlightCapacity?: CapacityQuantityObservation;
 }
 
 export interface CapacityOverviewResponse extends CapacityResponseMeta {

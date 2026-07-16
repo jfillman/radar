@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Layers3 } from "lucide-react";
 import {
@@ -6,6 +6,7 @@ import {
   CollapseChevron,
   WithTooltip,
   type CapacityCertainty,
+  type CapacityClaimLifecycleSummary,
   type CapacityCoverageBySource,
   type CapacityDemandState,
   type CapacityOverviewResponse,
@@ -14,6 +15,7 @@ import {
   type CapacityPoolSummary,
   type CapacitySourceCoverage,
 } from "@skyhook-io/k8s-ui";
+import { ClusterSchedulingCard } from "./ClusterSchedulingCard";
 import { Badge } from "@skyhook-io/k8s-ui/components/ui/Badge";
 import type { useCapacityOverview } from "../../api/client";
 import {
@@ -85,6 +87,14 @@ const EXPLAIN_CARDS: { term: string; body: string }[] = [
     term: "Unallocated",
     body: "Allocatable minus requests, summed across nodes. Not bin-packed: it does not prove another pod can schedule.",
   },
+  {
+    term: "In flight",
+    body: "Capacity of NodeClaims Karpenter has requested that have not registered as nodes yet. Drawn beyond the allocatable edge — the scheduler cannot use it until registration.",
+  },
+  {
+    term: "Pending demand",
+    body: "Requests of unscheduled pods. Shown as a count, never to scale — demand can exceed the whole fleet. Demand is what Karpenter still has to answer for, not usage.",
+  },
 ];
 
 const SEVERITY_RANK: Record<string, number> = {
@@ -131,6 +141,15 @@ export function CapacityOverview({
   const location = useLocation();
   const navigate = useNavigate();
   const [showExplain, setShowExplain] = useState(false);
+  const explainAnchorRef = useRef<HTMLDivElement>(null);
+  const inventoryRef = useRef<HTMLDivElement>(null);
+  const openExplainer = () => {
+    setShowExplain(true);
+    explainAnchorRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  };
 
   const showAllPools =
     new URLSearchParams(location.search).get("poolView") === "all";
@@ -196,7 +215,7 @@ export function CapacityOverview({
 
   return (
     <ScrollableContent>
-      <div>
+      <div ref={explainAnchorRef}>
         <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
           <div>
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -243,8 +262,8 @@ export function CapacityOverview({
             <p className="mt-3 border-t border-theme-border-subtle pt-3 text-[11px] text-theme-text-tertiary">
               Certainty on each value — <span className="font-mono">=</span>{" "}
               exact · <span className="font-mono">≥</span> lower bound ·{" "}
-              <span className="font-mono">?</span> unknown. Hover a glyph for its
-              coverage detail.
+              <span className="font-mono">?</span> unknown. Hover a glyph for
+              its coverage detail.
             </p>
           </div>
         </Collapse>
@@ -260,6 +279,13 @@ export function CapacityOverview({
           certainty="exact"
           certaintyTitle="Exact — cluster-scoped watch on Karpenter NodePools."
           attention={data.pools.some((pool) => pool.ready === false)}
+          linkLabel="View inventory ↓"
+          onClick={() =>
+            inventoryRef.current?.scrollIntoView({
+              behavior: "smooth",
+              block: "start",
+            })
+          }
         />
         <KpiTile
           label="Nodes"
@@ -276,12 +302,17 @@ export function CapacityOverview({
           label="NodeClaims"
           value={summary.claimCount ?? "—"}
           sub={
-            summary.orphanedClaimCount
-              ? `+${summary.orphanedClaimCount} orphaned (deleted NodePool)`
-              : coverageMessage(coverage.nodeClaims, "Claim inventory")
+            claimStagesDetail(
+              summary.claimStages,
+              summary.orphanedClaimCount,
+            ) ?? coverageMessage(coverage.nodeClaims, "Claim inventory")
           }
           certainty={coverageCertainty(coverage.nodeClaims)}
-          certaintyTitle={coverageMessage(coverage.nodeClaims, "Claim inventory")}
+          certaintyTitle={coverageMessage(
+            coverage.nodeClaims,
+            "Claim inventory",
+          )}
+          attention={(summary.claimStages?.failed ?? 0) > 0}
         />
         {podsDeniedFlag ? (
           <KpiTile
@@ -304,6 +335,12 @@ export function CapacityOverview({
           />
         )}
       </div>
+
+      <ClusterSchedulingCard
+        scheduling={summary.scheduling}
+        pending={podsDeniedFlag ? undefined : summary.aggregateDemand}
+        onExplain={openExplainer}
+      />
 
       <PendingDemandChips
         summary={summary}
@@ -375,112 +412,118 @@ export function CapacityOverview({
         )}
       </SectionCard>
 
-      <SectionCard
-        title="NodePool inventory"
-        subtitle="every Karpenter NodePool in this cluster"
-        actions={
-          (data.poolsTruncated || showAllPools) && (
-            <button
-              type="button"
-              className="rounded-lg border border-theme-border px-2.5 py-1 text-xs font-medium text-accent-text transition-colors hover:bg-theme-hover"
-              onClick={() => setShowAllPools(!showAllPools)}
-            >
-              {showAllPools ? "Return to posture list" : "Browse all NodePools"}
-            </button>
-          )
-        }
-        bodyClassName=""
-      >
-        {recoveredPoolCursor && (
-          <div className="border-b border-theme-border-subtle px-4 py-2">
-            <Notice>Pool inventory changed; showing the latest results.</Notice>
-          </div>
-        )}
-        {showAllPools &&
-          poolQuery.error &&
-          !isCapacityCursorInvalidError(poolQuery.error) && (
+      <div ref={inventoryRef} className="scroll-mt-4">
+        <SectionCard
+          title="NodePool inventory"
+          subtitle="every Karpenter NodePool in this cluster"
+          actions={
+            (data.poolsTruncated || showAllPools) && (
+              <button
+                type="button"
+                className="rounded-lg border border-theme-border px-2.5 py-1 text-xs font-medium text-accent-text transition-colors hover:bg-theme-hover"
+                onClick={() => setShowAllPools(!showAllPools)}
+              >
+                {showAllPools
+                  ? "Return to posture list"
+                  : "Browse all NodePools"}
+              </button>
+            )
+          }
+          bodyClassName=""
+        >
+          {recoveredPoolCursor && (
             <div className="border-b border-theme-border-subtle px-4 py-2">
-              <RefreshError message={errorMessage(poolQuery.error)} />
+              <Notice>
+                Pool inventory changed; showing the latest results.
+              </Notice>
             </div>
           )}
-        {showAllPools && poolQuery.isLoading && (
-          <div className="border-b border-theme-border-subtle px-4 py-2 text-xs text-theme-text-tertiary">
-            Loading paginated NodePool inventory…
-          </div>
-        )}
-        <div className={TABLE_WRAP}>
-          <table className="w-full min-w-[1180px] text-left">
-            <thead className={TABLE_HEAD}>
-              <tr>
-                <th className={TH}>Pool</th>
-                <th className={TH}>Readiness</th>
-                <th className={TH}>Mode</th>
-                <th className={TH}>NodeClass</th>
-                <th className={TH}>Nodes · claims</th>
-                <th className={`${TH} w-[190px]`}>
-                  <WithTooltip tip="Provisioned capacity as a share of the configured NodePool limit">
-                    <span>Limit pressure</span>
-                  </WithTooltip>
-                </th>
-                <th className={TH}>
-                  <WithTooltip tip="Sum of scheduled pod requests on this pool's nodes">
-                    <span>Scheduled requests</span>
-                  </WithTooltip>
-                </th>
-                <th className={`${TH} w-[210px]`}>
-                  <WithTooltip tip="Point-in-time usage from the metrics API — an efficiency signal, not headroom">
-                    <span>Usage (live)</span>
-                  </WithTooltip>
-                </th>
-                <th className={TH}>Signals</th>
-                <th className={TH} />
-              </tr>
-            </thead>
-            <tbody className={TBODY}>
-              {visiblePools.map((pool) => (
-                <InventoryRow
-                  key={pool.resource.ref.name}
-                  pool={pool}
-                  coverage={visiblePoolCoverage}
-                  podsDenied={coverageIsDenied(visiblePoolCoverage.pods)}
-                  onOpenPool={onOpenPool}
-                  onOpenResource={onOpenResource}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {visiblePools.length === 0 && (
-          <InlineEmpty
-            title="No NodePools"
-            detail="Karpenter is available, but no NodePools are visible to this user."
-          />
-        )}
-        <div className="flex items-center gap-3 border-t border-theme-border-subtle px-4 py-2.5 text-xs text-theme-text-tertiary">
-          <span>
-            {summary.poolCount} {summary.poolCount === 1 ? "pool" : "pools"} ·
-            cluster-scoped watch (exact)
-          </span>
-          <div className="flex-1" />
           {showAllPools &&
-            poolPage &&
-            (poolPagination.history.length > 0 || poolPage.page.hasMore) && (
-              <PageControls
-                page={poolPagination.history.length + 1}
-                hasPrevious={poolPagination.history.length > 0}
-                hasNext={
-                  poolPage.page.hasMore && Boolean(poolPage.page.nextCursor)
-                }
-                busy={poolQuery.isFetching}
-                onPrevious={() => poolPagination.goBack(poolPage)}
-                onNext={() =>
-                  poolPage.page.nextCursor &&
-                  poolPagination.goNext(poolPage.page.nextCursor, poolPage)
-                }
-              />
+            poolQuery.error &&
+            !isCapacityCursorInvalidError(poolQuery.error) && (
+              <div className="border-b border-theme-border-subtle px-4 py-2">
+                <RefreshError message={errorMessage(poolQuery.error)} />
+              </div>
             )}
-        </div>
-      </SectionCard>
+          {showAllPools && poolQuery.isLoading && (
+            <div className="border-b border-theme-border-subtle px-4 py-2 text-xs text-theme-text-tertiary">
+              Loading paginated NodePool inventory…
+            </div>
+          )}
+          <div className={TABLE_WRAP}>
+            <table className="w-full min-w-[1180px] text-left">
+              <thead className={TABLE_HEAD}>
+                <tr>
+                  <th className={TH}>Pool</th>
+                  <th className={TH}>Readiness</th>
+                  <th className={TH}>Mode</th>
+                  <th className={TH}>NodeClass</th>
+                  <th className={TH}>Nodes · claims</th>
+                  <th className={`${TH} w-[190px]`}>
+                    <WithTooltip tip="Provisioned capacity as a share of the configured NodePool limit">
+                      <span>Limit pressure</span>
+                    </WithTooltip>
+                  </th>
+                  <th className={TH}>
+                    <WithTooltip tip="Sum of scheduled pod requests on this pool's nodes">
+                      <span>Scheduled requests</span>
+                    </WithTooltip>
+                  </th>
+                  <th className={`${TH} w-[210px]`}>
+                    <WithTooltip tip="Point-in-time usage from the metrics API — an efficiency signal, not headroom">
+                      <span>Usage (live)</span>
+                    </WithTooltip>
+                  </th>
+                  <th className={TH}>Signals</th>
+                  <th className={TH} />
+                </tr>
+              </thead>
+              <tbody className={TBODY}>
+                {visiblePools.map((pool) => (
+                  <InventoryRow
+                    key={pool.resource.ref.name}
+                    pool={pool}
+                    coverage={visiblePoolCoverage}
+                    podsDenied={coverageIsDenied(visiblePoolCoverage.pods)}
+                    onOpenPool={onOpenPool}
+                    onOpenResource={onOpenResource}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {visiblePools.length === 0 && (
+            <InlineEmpty
+              title="No NodePools"
+              detail="Karpenter is available, but no NodePools are visible to this user."
+            />
+          )}
+          <div className="flex items-center gap-3 border-t border-theme-border-subtle px-4 py-2.5 text-xs text-theme-text-tertiary">
+            <span>
+              {summary.poolCount} {summary.poolCount === 1 ? "pool" : "pools"} ·
+              cluster-scoped watch (exact)
+            </span>
+            <div className="flex-1" />
+            {showAllPools &&
+              poolPage &&
+              (poolPagination.history.length > 0 || poolPage.page.hasMore) && (
+                <PageControls
+                  page={poolPagination.history.length + 1}
+                  hasPrevious={poolPagination.history.length > 0}
+                  hasNext={
+                    poolPage.page.hasMore && Boolean(poolPage.page.nextCursor)
+                  }
+                  busy={poolQuery.isFetching}
+                  onPrevious={() => poolPagination.goBack(poolPage)}
+                  onNext={() =>
+                    poolPage.page.nextCursor &&
+                    poolPagination.goNext(poolPage.page.nextCursor, poolPage)
+                  }
+                />
+              )}
+          </div>
+        </SectionCard>
+      </div>
     </ScrollableContent>
   );
 }
@@ -517,9 +560,7 @@ function InventoryRow({
         {pool.mode === "unknown" ? "—" : pool.mode}
       </td>
       <td className={`${TD} font-mono text-xs`}>
-        {pool.nodeClass
-          ? `${pool.nodeClass.kind}/${pool.nodeClass.name}`
-          : "—"}
+        {pool.nodeClass ? `${pool.nodeClass.kind}/${pool.nodeClass.name}` : "—"}
       </td>
       <td className={`${TD} whitespace-nowrap text-theme-text-secondary`}>
         {nodes ? `${nodes.total} nodes` : "— nodes"} ·{" "}
@@ -637,9 +678,32 @@ function PendingDemandChips({
   );
 }
 
-function signalSeverityLabel(
-  severity: OverviewSignal["severity"],
-): string {
+/** "8 ready · 1 launched · 1 failed · +1 orphaned" — nonzero stages in
+ *  lifecycle order, failed kept late for adjacency with the orphan note.
+ *  Null when the stage rollup is absent so the tile can fall back to its
+ *  coverage message (unavailable ≠ zero claims). */
+export function claimStagesDetail(
+  stages: CapacityClaimLifecycleSummary | undefined,
+  orphaned: number | undefined,
+): string | null {
+  if (!stages) return null;
+  const parts: string[] = [];
+  const push = (count: number, label: string) => {
+    if (count > 0) parts.push(`${count} ${label}`);
+  };
+  push(stages.ready, "ready");
+  push(stages.initialized, "initialized");
+  push(stages.registered, "registered");
+  push(stages.launched, "launched");
+  push(stages.pending, "pending");
+  push(stages.failed, "failed");
+  push(stages.terminating, "terminating");
+  if (orphaned) parts.push(`+${orphaned} orphaned`);
+  if (parts.length === 0) return stages.total === 0 ? "none yet" : null;
+  return parts.join(" · ");
+}
+
+function signalSeverityLabel(severity: OverviewSignal["severity"]): string {
   if (severity === "error") return "Alert";
   if (severity === "warning") return "Warn";
   if (severity === "info") return "Info";

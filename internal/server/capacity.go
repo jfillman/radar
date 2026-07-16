@@ -79,6 +79,8 @@ func (s *Server) handleCapacityOverview(w http.ResponseWriter, r *http.Request) 
 		orphaned := result.model.OrphanedClaimCount
 		response.Summary.OrphanedClaimCount = &orphaned
 	}
+	response.Summary.Scheduling = result.model.Scheduling
+	response.Summary.ClaimStages = result.model.ClaimStages
 	if capacityCoverageObserved(result.meta.Coverage[capacityapi.CoverageNodes]) {
 		nodeCount := len(result.snapshot.Nodes)
 		response.Summary.NodeCount = &nodeCount

@@ -16,14 +16,26 @@ func NewActionSummary() ActionSummary {
 }
 
 type OverviewSummary struct {
-	Actions            []ActionSummary      `json:"actions"`
-	AggregateDemand    *QuantityObservation `json:"aggregateDemand,omitempty"`
-	PoolCount          int                  `json:"poolCount"`
-	ClaimCount         *int                 `json:"claimCount,omitempty"`
-	NodeCount          *int                 `json:"nodeCount,omitempty"`
-	PendingPodCount    *int                 `json:"pendingPodCount,omitempty"`
-	OrphanedClaimCount *int                 `json:"orphanedClaimCount,omitempty"`
-	UnpooledNodeCount  *int                 `json:"unpooledNodeCount,omitempty"`
+	Actions            []ActionSummary        `json:"actions"`
+	AggregateDemand    *QuantityObservation   `json:"aggregateDemand,omitempty"`
+	Scheduling         *SchedulingCapacity    `json:"scheduling,omitempty"`
+	ClaimStages        *ClaimLifecycleSummary `json:"claimStages,omitempty"`
+	PoolCount          int                    `json:"poolCount"`
+	ClaimCount         *int                   `json:"claimCount,omitempty"`
+	NodeCount          *int                   `json:"nodeCount,omitempty"`
+	PendingPodCount    *int                   `json:"pendingPodCount,omitempty"`
+	OrphanedClaimCount *int                   `json:"orphanedClaimCount,omitempty"`
+	UnpooledNodeCount  *int                   `json:"unpooledNodeCount,omitempty"`
+}
+
+// SchedulingCapacity is the cluster-level scheduling ledger across
+// Karpenter-pooled nodes only — scheduled requests vs allocatable, plus
+// capacity of claims still in flight. Each value carries its own certainty;
+// absent values mean the source was not observed (unavailable ≠ zero).
+type SchedulingCapacity struct {
+	ScheduledRequests *QuantityObservation `json:"scheduledRequests,omitempty"`
+	Allocatable       *QuantityObservation `json:"allocatable,omitempty"`
+	InFlightCapacity  *QuantityObservation `json:"inFlightCapacity,omitempty"`
 }
 
 type OverviewResponse struct {

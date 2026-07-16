@@ -159,6 +159,25 @@ function overview(
         },
       ],
       aggregateDemand: quantity({ cpu: "6", memory: "24Gi" }),
+      scheduling: {
+        scheduledRequests: quantity({
+          cpu: "21900m",
+          memory: "79Gi",
+          pods: "27",
+        }),
+        allocatable: quantity({ cpu: "31200m", memory: "102Gi", pods: "220" }),
+        inFlightCapacity: quantity({ cpu: "4" }),
+      },
+      claimStages: {
+        total: 4,
+        pending: 0,
+        launched: 0,
+        registered: 0,
+        initialized: 0,
+        ready: 3,
+        failed: 1,
+        terminating: 0,
+      },
       poolCount: 1,
       claimCount: 4,
       nodeCount: 4,
@@ -476,6 +495,18 @@ describe("CapacityView overview", () => {
     expect(html).toContain("NodePool inventory");
     expect(html).toContain("Operational signals");
     expect(html).toContain("default");
+  });
+
+  it("draws cluster scheduling capacity with honest scale semantics", () => {
+    const html = renderCapacity("/capacity", (client) =>
+      client.setQueryData(["capacity", "overview"], overview()),
+    );
+    expect(html).toContain("Cluster scheduling capacity");
+    expect(html).toContain("not usage, not a health score");
+    expect(html).toContain("in flight (beyond the edge)");
+    expect(html).toContain("pending demand — count, not to scale");
+    expect(html).toContain("3 ready · 1 failed");
+    expect(html).toContain("View inventory ↓");
   });
 
   it("frames the aggregate demand as scheduling demand, not usage", () => {

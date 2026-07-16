@@ -173,6 +173,99 @@ func TestBuildActivityRecordsRecoversFailedProvisionWhenClaimBecomesReady(t *tes
 	}
 }
 
+func TestBuildActivityRecordsDeleteClosesUnfinishedProvision(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	// Karpenter's registration-timeout path: the claim never reached Ready
+	// and was deleted. The deletion is the provisioning outcome.
+	records := BuildActivityRecords([]timeline.TimelineEvent{
+		{ID: "created", Seq: 1, Timestamp: now, Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeAdd},
+		{ID: "deleted", Seq: 2, Timestamp: now.Add(15 * time.Minute), Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeDelete},
+	})
+	if len(records) != 2 {
+		t.Fatalf("records = %#v, want provision and termination", records)
+	}
+	byType := map[capacityapi.ActivityType]capacityapi.ActivityEpisode{}
+	for _, record := range records {
+		byType[record.Episode.Type] = record.Episode
+	}
+	provision := byType[capacityapi.ActivityProvision]
+	if provision.State != capacityapi.ActivityFailed || provision.PrimaryReasonCode != "nodeclaim_deleted_before_ready" {
+		t.Fatalf("unfinished provision after delete = %q/%q, want failed/nodeclaim_deleted_before_ready", provision.State, provision.PrimaryReasonCode)
+	}
+	if provision.EndedAt == nil || !provision.EndedAt.Equal(now.Add(15*time.Minute)) || len(provision.Evidence) != 2 {
+		t.Fatalf("unfinished provision end/evidence = %v/%d", provision.EndedAt, len(provision.Evidence))
+	}
+	if byType[capacityapi.ActivityTermination].State != capacityapi.ActivityCompleted {
+		t.Fatalf("termination = %#v", byType[capacityapi.ActivityTermination])
+	}
+
+	// A claim that became Ready first keeps its completed provision intact.
+	records = BuildActivityRecords([]timeline.TimelineEvent{
+		{ID: "created", Seq: 1, Timestamp: now, Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-b", UID: "claim-b-uid", EventType: timeline.EventTypeAdd},
+		{ID: "ready", Seq: 2, Timestamp: now.Add(2 * time.Minute), Source: timeline.SourceK8sEvent, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-b", UID: "claim-b-uid", EventType: timeline.EventTypeNormal, Reason: "Ready"},
+		{ID: "deleted", Seq: 3, Timestamp: now.Add(3 * time.Hour), Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-b", UID: "claim-b-uid", EventType: timeline.EventTypeDelete},
+	})
+	byType = map[capacityapi.ActivityType]capacityapi.ActivityEpisode{}
+	for _, record := range records {
+		byType[record.Episode.Type] = record.Episode
+	}
+	provision = byType[capacityapi.ActivityProvision]
+	if provision.State != capacityapi.ActivityCompleted || provision.PrimaryReasonCode != "nodeclaim_ready" {
+		t.Fatalf("ready-then-deleted provision = %q/%q, want completed/nodeclaim_ready", provision.State, provision.PrimaryReasonCode)
+	}
+}
+
+func TestBuildActivityRecordsDoesNotReadFailureVocabularyAsCompletion(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	records := BuildActivityRecords([]timeline.TimelineEvent{
+		{ID: "created", Seq: 1, Timestamp: now, Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeAdd},
+		{ID: "not-initialized", Seq: 2, Timestamp: now.Add(time.Minute), Source: timeline.SourceK8sEvent, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeWarning, Reason: "NodeNotInitialized"},
+	})
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want the open provision only", records)
+	}
+	episode := records[0].Episode
+	if episode.State == capacityapi.ActivityCompleted || episode.PrimaryReasonCode == "nodeclaim_ready" {
+		t.Fatalf("NodeNotInitialized read as completion: %q/%q", episode.State, episode.PrimaryReasonCode)
+	}
+}
+
+func TestClassifyNodeClaimReadyRollupFailure(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	records := BuildActivityRecords([]timeline.TimelineEvent{{
+		ID: "ready-failed", Seq: 1, Timestamp: now, Source: timeline.SourceInformer,
+		Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeUpdate,
+		Diff: &k8score.DiffInfo{Fields: []k8score.FieldChange{{Path: "status.conditions[Ready]", NewValue: "Unknown\x00LaunchFailed"}}},
+	}})
+	if len(records) != 1 || records[0].Episode.State != capacityapi.ActivityFailed || records[0].Episode.PrimaryReasonCode != "nodeclaim_not_ready" {
+		t.Fatalf("ready rollup failure = %#v, want provision failed nodeclaim_not_ready", records)
+	}
+
+	// A bare Ready=False is a claim still provisioning — never a failure.
+	records = BuildActivityRecords([]timeline.TimelineEvent{{
+		ID: "still-provisioning", Seq: 1, Timestamp: now, Source: timeline.SourceInformer,
+		Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-b", UID: "claim-b-uid", EventType: timeline.EventTypeUpdate,
+		Diff: &k8score.DiffInfo{Fields: []k8score.FieldChange{{Path: "status.conditions[Ready]", NewValue: "False\x00NotInitialized"}}},
+	}})
+	if len(records) != 0 {
+		t.Fatalf("bare Ready=False classified: %#v", records)
+	}
+
+	// When the failing sub-condition arrives in the same diff, it wins the
+	// attribution even when Ready appears first.
+	records = BuildActivityRecords([]timeline.TimelineEvent{{
+		ID: "both", Seq: 1, Timestamp: now, Source: timeline.SourceInformer,
+		Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-c", UID: "claim-c-uid", EventType: timeline.EventTypeUpdate,
+		Diff: &k8score.DiffInfo{Fields: []k8score.FieldChange{
+			{Path: "status.conditions[Ready]", NewValue: "Unknown\x00RegistrationFailed"},
+			{Path: "status.conditions[Registered]", NewValue: "Unknown\x00RegistrationFailed"},
+		}},
+	}})
+	if len(records) != 1 || records[0].Episode.Type != capacityapi.ActivityRegistrationFailure {
+		t.Fatalf("sub-condition attribution = %#v, want registration failure", records)
+	}
+}
+
 func TestBuildActivityRecordsKeepsTerminalMetadataWhenInformerAddArrivesLater(t *testing.T) {
 	createdAt := time.Date(2026, time.July, 13, 9, 58, 0, 0, time.UTC)
 	readyAt := createdAt.Add(90 * time.Second)

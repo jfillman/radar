@@ -233,14 +233,22 @@ func IsFailedLifecycleCondition(condition metav1.Condition) bool {
 	case metav1.ConditionFalse:
 		return true
 	case metav1.ConditionUnknown:
-		if nodeClaimFailureReasons[condition.Reason] {
-			return true
-		}
-		reason := strings.ToLower(condition.Reason)
-		return strings.Contains(reason, "fail") || strings.Contains(reason, "error")
+		return IsFailureReason(condition.Reason)
 	default:
 		return false
 	}
+}
+
+// IsFailureReason reports whether a condition reason carries failure
+// vocabulary — a known NodeClaim failure reason or generic fail/error text.
+// Callers use it where a bare False is NOT evidence of failure (the Ready
+// rollup, which is False for every claim still provisioning).
+func IsFailureReason(reason string) bool {
+	if nodeClaimFailureReasons[reason] {
+		return true
+	}
+	lowered := strings.ToLower(reason)
+	return strings.Contains(lowered, "fail") || strings.Contains(lowered, "error")
 }
 
 func NodeClaimReadyCondition(claim *unstructured.Unstructured) *metav1.Condition {

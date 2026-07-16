@@ -139,6 +139,38 @@ func BuildActivityRecords(events []timeline.TimelineEvent) []ActivityRecord {
 		evidence.Confidence = classification.confidence
 		evidence.Refs = append(evidence.Refs, activityResourceIdentity(event, uid))
 		record.Episode.Evidence = append(record.Episode.Evidence, evidence)
+
+		// A claim deleted before ever reaching Ready is Karpenter's
+		// registration/initialization timeout path — the deletion IS the
+		// provisioning outcome. Terminalize the open provision episode so
+		// "nodes not joining" never reads as provisioning still in progress
+		// next to a completed termination.
+		if classification.reasonCode == "nodeclaim_deleted" {
+			provision := records[activityCorrelationKey(event, uid, capacityapi.ActivityProvision)]
+			if provision != nil && provision.terminalAt != nil {
+				provision = nil
+			}
+			if provision != nil {
+				provision.Episode.State = capacityapi.ActivityFailed
+				provision.Episode.Type = capacityapi.ActivityProvision
+				terminalAt := event.Timestamp
+				provision.terminalAt = &terminalAt
+				provision.terminalReasonCode = "nodeclaim_deleted_before_ready"
+				if event.Seq > provision.MaxSeq {
+					provision.MaxSeq = event.Seq
+				}
+				closing := capacityapi.NewActivityEvidence()
+				closing.At = event.Timestamp
+				closing.Source = activityEvidenceSource(event.Source)
+				closing.ReasonCode = "nodeclaim_deleted_before_ready"
+				closing.RawReason = event.Reason
+				closing.RawMessage = event.Message
+				closing.Relationship = classification.relationship
+				closing.Confidence = classification.confidence
+				closing.Refs = append(closing.Refs, activityResourceIdentity(event, uid))
+				provision.Episode.Evidence = append(provision.Episode.Evidence, closing)
+			}
+		}
 	}
 
 	result := make([]ActivityRecord, 0, len(records))
@@ -258,11 +290,10 @@ func classifyActivityEvent(event timeline.TimelineEvent) (activityClassification
 		if classification, ok := classifyKarpenterReason(event); ok {
 			return classification, true
 		}
+		// Exact reasons only — a substring match would let failure vocabulary
+		// like NodeNotInitialized read as a completed provision.
 		if strings.EqualFold(event.Reason, "Ready") || strings.EqualFold(event.Reason, "Initialized") {
 			return directActivity(capacityapi.ActivityProvision, capacityapi.ActivityCompleted, "nodeclaim_ready"), true
-		}
-		if strings.Contains(strings.ToLower(event.Reason), "initialized") {
-			return inferredActivity(capacityapi.ActivityProvision, capacityapi.ActivityCompleted, "nodeclaim_ready"), true
 		}
 	}
 	if event.Kind == "Node" && event.Labels[karpenter.NodePoolLabelKey] != "" {
@@ -301,6 +332,22 @@ func classifyNodeClaimConditionChange(event timeline.TimelineEvent) (activityCla
 			return directActivity(capacityapi.ActivityRegistrationFailure, capacityapi.ActivityFailed, "registration_failed"), true
 		case "Initialized":
 			return directActivity(capacityapi.ActivityInitializationFailure, capacityapi.ActivityFailed, "initialization_failed"), true
+		}
+	}
+	// Ready is a rollup: a bare False is just "not ready yet", so only
+	// failure-flavored reasons classify — and only after the specific
+	// sub-condition pass above found nothing to attribute it to.
+	for _, field := range event.Diff.Fields {
+		if strings.TrimSuffix(strings.TrimPrefix(field.Path, "status.conditions["), "]") != "Ready" {
+			continue
+		}
+		signal, ok := field.NewValue.(string)
+		if !ok {
+			continue
+		}
+		status, reason, _ := strings.Cut(signal, "\x00")
+		if (status == string(metav1.ConditionFalse) || status == string(metav1.ConditionUnknown)) && karpenter.IsFailureReason(reason) {
+			return directActivity(capacityapi.ActivityProvision, capacityapi.ActivityFailed, "nodeclaim_not_ready"), true
 		}
 	}
 	return activityClassification{}, false

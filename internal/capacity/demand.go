@@ -708,11 +708,37 @@ func evaluateDemandSelectors(model demandSchedulingModel, spec karpenter.NodePoo
 		})
 	}
 
+	podKeys := map[string]bool{}
+	for _, requirement := range model.NodeSelector {
+		podKeys[requirement.Key] = true
+	}
+	for _, term := range model.AffinityTerms {
+		for _, requirement := range term.Requirements {
+			podKeys[requirement.Key] = true
+		}
+	}
+	requirementCountByKey := map[string]int{}
+	for _, requirement := range spec.Requirements {
+		requirementCountByKey[requirement.Key]++
+	}
 	baseUnknown := []string{}
 	for _, requirement := range spec.Requirements {
-		if requirement.MinValues != nil {
-			baseUnknown = append(baseUnknown, "nodePool.requirements."+requirement.Key+".minValues")
+		if requirement.MinValues == nil {
+			continue
 		}
+		// When the pod imposes nothing on this key and the pool's sole
+		// requirement is an In set that already meets its own minValues, the
+		// merged value set is exactly that declaration — no uncertainty to
+		// report. Anything narrower (pod constrains the key, multiple pool
+		// requirements on it, non-In operators, or an In set smaller than
+		// minValues) keeps the honest unknown: cardinality of a merged set is
+		// where overclaims live.
+		if !podKeys[requirement.Key] && requirementCountByKey[requirement.Key] == 1 &&
+			requirement.Operator == corev1.NodeSelectorOpIn &&
+			int64(len(sortedUniqueStrings(requirement.Values))) >= *requirement.MinValues {
+			continue
+		}
+		baseUnknown = append(baseUnknown, "nodePool.requirements."+requirement.Key+".minValues")
 	}
 	if model.RequiredEmpty {
 		evidence := demandEvidenceCollection{}

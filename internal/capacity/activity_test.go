@@ -220,6 +220,28 @@ func TestBuildActivityRecordsDeleteClosesUnfinishedProvision(t *testing.T) {
 	}
 }
 
+func TestBuildActivityRecordsCompletedProvisionSurvivesLaterFailureSignal(t *testing.T) {
+	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
+	records := BuildActivityRecords([]timeline.TimelineEvent{
+		{ID: "created", Seq: 1, Timestamp: now, Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeAdd},
+		{ID: "ready", Seq: 2, Timestamp: now.Add(2 * time.Minute), Source: timeline.SourceK8sEvent, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeNormal, Reason: "Ready"},
+		// Post-Ready health degradation — a failure signal, not a
+		// provisioning outcome. History must survive it.
+		{ID: "degraded", Seq: 3, Timestamp: now.Add(time.Hour), Source: timeline.SourceInformer, Kind: "NodeClaim", APIVersion: "karpenter.sh/v1", Name: "claim-a", UID: "claim-uid", EventType: timeline.EventTypeUpdate,
+			Diff: &k8score.DiffInfo{Fields: []k8score.FieldChange{{Path: "status.conditions[Ready]", NewValue: "Unknown\x00NodeRepairFailed"}}}},
+	})
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one provision episode", records)
+	}
+	episode := records[0].Episode
+	if episode.State != capacityapi.ActivityCompleted || episode.PrimaryReasonCode != "nodeclaim_ready" {
+		t.Fatalf("completed provision after later failure = %q/%q, want completed/nodeclaim_ready", episode.State, episode.PrimaryReasonCode)
+	}
+	if len(episode.Evidence) != 3 {
+		t.Fatalf("evidence = %d, want the failure signal retained as history", len(episode.Evidence))
+	}
+}
+
 func TestBuildActivityRecordsDoesNotReadFailureVocabularyAsCompletion(t *testing.T) {
 	now := time.Date(2026, time.July, 13, 10, 0, 0, 0, time.UTC)
 	records := BuildActivityRecords([]timeline.TimelineEvent{

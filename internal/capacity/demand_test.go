@@ -958,6 +958,40 @@ func TestDemandPoolBoundedProviderLabelIsDeclaredCompatible(t *testing.T) {
 	assertDemandUnknown(t, unbound, "providerOfferings.karpenter.sh/capacity-type")
 }
 
+func TestDemandMinValuesOnlyBlocksWhenMergedSetIsUncertain(t *testing.T) {
+	ready := true
+	pod := demandTestPod("worker", "500m")
+	minTwo := int64(2)
+	minThree := int64(3)
+
+	haSpec := demandPoolSpec([]any{
+		map[string]any{"key": "node.kubernetes.io/instance-type", "operator": "In", "values": []any{"m5.large", "m5.xlarge", "c5.large"}, "minValues": minTwo},
+	}, nil, nil, nil, nil)
+	misconfiguredSpec := demandPoolSpec([]any{
+		map[string]any{"key": "node.kubernetes.io/instance-type", "operator": "In", "values": []any{"m5.large", "m5.xlarge"}, "minValues": minThree},
+	}, nil, nil, nil, nil)
+
+	group := BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{pod}, Pools: []DemandPoolInput{
+		{NodePool: demandTestPool("ha", &ready, haSpec, nil)},
+		{NodePool: demandTestPool("misconfigured", &ready, misconfiguredSpec, nil)},
+	}})[0]
+	// The pod imposes nothing on instance-type, so the HA pool's own In set
+	// answers its minValues — the common diversity pattern must not be locked
+	// out of declared compatibility.
+	assertDemandEvaluation(t, group.PoolEvaluations, "ha", capacityapi.PoolDeclaredCompatible, "")
+	misconfigured := assertDemandEvaluation(t, group.PoolEvaluations, "misconfigured", capacityapi.PoolEvaluationUnknown, "")
+	assertDemandUnknown(t, misconfigured, "nodePool.requirements.node.kubernetes.io/instance-type.minValues")
+
+	// A pod that constrains the key narrows the merged set — honest unknown.
+	pinned := demandTestPod("pinned", "500m")
+	pinned.Spec.NodeSelector = map[string]string{"node.kubernetes.io/instance-type": "m5.large"}
+	group = BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{pinned}, Pools: []DemandPoolInput{
+		{NodePool: demandTestPool("ha", &ready, haSpec, nil)},
+	}})[0]
+	pinnedEvaluation := assertDemandEvaluation(t, group.PoolEvaluations, "ha", capacityapi.PoolEvaluationUnknown, "")
+	assertDemandUnknown(t, pinnedEvaluation, "nodePool.requirements.node.kubernetes.io/instance-type.minValues")
+}
+
 func TestDemandInstanceShapeMissingResourceIsUnknownNotFit(t *testing.T) {
 	ready := true
 	pool := demandTestPool("general", &ready, demandPoolSpec(nil, nil, nil, nil, nil), nil)

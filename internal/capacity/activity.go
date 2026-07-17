@@ -114,11 +114,20 @@ func BuildActivityRecords(events []timeline.TimelineEvent) []ActivityRecord {
 			record.Episode.StartedAt = startedAt
 		}
 		if state == capacityapi.ActivityCompleted || state == capacityapi.ActivityFailed {
-			record.Episode.State = state
-			record.Episode.Type = activityType
-			terminalAt := event.Timestamp
-			record.terminalAt = &terminalAt
-			record.terminalReasonCode = classification.reasonCode
+			// Failed→completed stays allowed — recovery IS the provisioning
+			// outcome. The reverse is not: a completed provision is history,
+			// and a later failure signal (post-Ready health degradation) must
+			// not rewrite it. The evidence still records the failure.
+			failureAfterCompletion := record.terminalAt != nil &&
+				record.Episode.State == capacityapi.ActivityCompleted &&
+				state == capacityapi.ActivityFailed
+			if !failureAfterCompletion {
+				record.Episode.State = state
+				record.Episode.Type = activityType
+				terminalAt := event.Timestamp
+				record.terminalAt = &terminalAt
+				record.terminalReasonCode = classification.reasonCode
+			}
 		} else if activityStateRank(state) > activityStateRank(record.Episode.State) {
 			record.Episode.State = state
 			record.Episode.Type = activityType

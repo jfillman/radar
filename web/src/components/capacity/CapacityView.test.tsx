@@ -748,6 +748,30 @@ describe("CapacityView pool detail", () => {
 });
 
 describe("CapacityView demand", () => {
+  it("never mixes the global denominator into an owner-scoped header", () => {
+    const html = renderCapacity(
+      "/capacity/demand?owner=payments%2FDeployment%2Fcheckout",
+      (client) =>
+        client.setQueryData(
+          [
+            "capacity",
+            "demand",
+            25,
+            undefined,
+            undefined,
+            undefined,
+            "payments/Deployment/checkout",
+          ],
+          demandResponse(),
+        ),
+    );
+    expect(html).toContain("for this workload");
+    expect(html).not.toContain("showing");
+    expect(html).toContain(
+      "the state counts below describe all observed demand",
+    );
+  });
+
   it("groups pending pods by scheduling signature with pool evaluations", () => {
     const html = renderCapacity("/capacity/demand", (client) =>
       client.setQueryData(

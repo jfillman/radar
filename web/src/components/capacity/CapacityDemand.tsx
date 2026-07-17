@@ -190,11 +190,18 @@ export function CapacityDemand({
   const noun = stateFilter
     ? `${demandStateLabel(stateFilter).toLowerCase()} pods`
     : "pending pods";
-  const headerSummary = denom
-    ? denom.podCount === pagePods && denom.groupCount === pageGroups
-      ? `${denom.podCount} ${noun} in ${denom.groupCount} ${denom.groupCount === 1 ? "group" : "groups"}`
-      : `showing ${pagePods} of ${denom.podCount} ${noun} in ${pageGroups} of ${denom.groupCount} groups`
-    : null;
+  // Under an owner filter the rollup denominator describes ALL observed
+  // demand, not this workload — "showing X of Y" would imply Y pods exist for
+  // this owner. Owner-scoped views get honest page-local counts instead.
+  const headerSummary = ownerFilter
+    ? pagePods > 0 || pageGroups > 0
+      ? `${pagePods}${response.page.hasMore ? "+" : ""} ${noun} in ${pageGroups}${response.page.hasMore ? "+" : ""} ${pageGroups === 1 ? "group" : "groups"} for this workload`
+      : null
+    : denom
+      ? denom.podCount === pagePods && denom.groupCount === pageGroups
+        ? `${denom.podCount} ${noun} in ${denom.groupCount} ${denom.groupCount === 1 ? "group" : "groups"}`
+        : `showing ${pagePods} of ${denom.podCount} ${noun} in ${pageGroups} of ${denom.groupCount} groups`
+      : null;
 
   return (
     <ScrollableContent>
@@ -260,7 +267,8 @@ export function CapacityDemand({
           <span className="font-medium text-theme-text-primary">
             {ownerFilterName}
           </span>{" "}
-          only.{" "}
+          only — the state counts below describe all observed demand, not just
+          this workload.{" "}
           <LinkButton className="inline" onClick={clearOwnerFilter}>
             Show all demand
           </LinkButton>

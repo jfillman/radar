@@ -573,7 +573,8 @@ func TestBuildLedgerOmitsPodDerivedValuesWhenPodsUnobserved(t *testing.T) {
 		Nodes:       []*corev1.Node{node},
 		Coverage:    coverage,
 	})
-	ledger := capacityTestMustPool(t, model, "compute").Observation.Ledger
+	poolModel := capacityTestMustPool(t, model, "compute")
+	ledger := poolModel.Observation.Ledger
 	// Requests from an unobserved pod source would be an empty vector, and
 	// allocatable minus that empty vector reads as a fully free pool —
 	// fabricated headroom. Both must be absent, never zero.
@@ -582,6 +583,11 @@ func TestBuildLedgerOmitsPodDerivedValuesWhenPodsUnobserved(t *testing.T) {
 			ledger.ScheduledRequests, ledger.AggregateUnallocatedRequests)
 	}
 	capacityTestAssertObservation(t, ledger.Allocatable, capacityapi.CertaintyExact, capacityapi.GranularityAggregate, map[string]string{"cpu": "4"})
+	// Same contract per node member: no pod source, no per-node requests.
+	member := capacityTestMember(t, poolModel.Nodes, "pooled")
+	if member.Node == nil || member.Node.ScheduledRequests != nil || member.Node.PodCount != nil {
+		t.Fatalf("pods-unobserved node member = %#v, want absent requests and pod count", member.Node)
+	}
 }
 
 func TestClaimStageRespectsConditionDialects(t *testing.T) {

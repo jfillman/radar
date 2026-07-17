@@ -550,12 +550,12 @@ func populatePool(model *PoolModel, claims []*unstructured.Unstructured, nodes [
 		if sourceObserved(snapshot.Coverage, capacityapi.CoveragePods) {
 			podCount := len(podsByNode[node.Name])
 			member.PodCount = &podCount
+			nodeRequests := AccountResources(nil, podsByNode[node.Name]).ScheduledRequests
+			nodeRequestObservation := QuantityObservation(nodeRequests, podCertainty, capacityapi.GranularityPerNode, snapshot.GeneratedAt, "pods.spec.resources")
+			member.ScheduledRequests = &nodeRequestObservation
 		}
 		nodeAllocatable := QuantityObservation(node.Status.Allocatable, nodeCertainty, capacityapi.GranularityPerNode, snapshot.GeneratedAt, "node.status.allocatable")
 		member.Allocatable = &nodeAllocatable
-		nodeRequests := AccountResources(nil, podsByNode[node.Name]).ScheduledRequests
-		nodeRequestObservation := QuantityObservation(nodeRequests, podCertainty, capacityapi.GranularityPerNode, snapshot.GeneratedAt, "pods.spec.resources")
-		member.ScheduledRequests = &nodeRequestObservation
 		if sample, ok := snapshot.NodeUsage[node.Name]; ok {
 			coveredNodes++
 			addResources(usageResources, sample.Resources)

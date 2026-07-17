@@ -335,9 +335,30 @@ func (s *Server) handleApplicationHistory(w http.ResponseWriter, r *http.Request
 		anchors, partial := s.historyAnchorsForSource(r, app.SourceRef)
 		history.Anchors = anchors
 		history.PartialSources = append(history.PartialSources, partial...)
+	} else if message := unavailableSourceHistoryMessage(app); message != "" {
+		history.PartialSources = append(history.PartialSources, message)
 	}
 	history.Summary = historySummary(history.Anchors, history.Incidents)
 	s.writeJSON(w, history)
+}
+
+func unavailableSourceHistoryMessage(app *appRow) string {
+	if app == nil || app.SourceRef != nil {
+		return ""
+	}
+	if app.SourceConflict {
+		return "Deployment-source history is unavailable because workloads resolve to different deployment sources."
+	}
+	switch subject.Tier(app.Tier) {
+	case subject.TierFluxHelmRelease, subject.TierFluxKustomize:
+		return "Flux deployment history is unavailable because the source object could not be resolved in this cluster."
+	case subject.TierArgoTrackingID, subject.TierArgoInstance:
+		return "Argo CD deployment history is unavailable because the source Application could not be resolved in this cluster."
+	case subject.TierHelmRelease:
+		return "Helm deployment history is unavailable because the exact release could not be resolved."
+	default:
+		return ""
+	}
 }
 
 func (s *Server) historyAnchorsForSource(r *http.Request, source *appSourceRef) ([]appHistoryAnchor, []string) {
@@ -365,32 +386,16 @@ func (s *Server) gitOpsHistoryAnchors(r *http.Request, source *appSourceRef) ([]
 	if cache == nil {
 		return nil, []string{"Resource cache is not available."}
 	}
-	req := &gitopsRequest{
-		Kind:              gitOpsPluralKind(source.Kind),
-		Namespace:         source.Namespace,
-		Name:              source.Name,
-		Group:             source.Group,
-		Cache:             cache,
-		AllowedNamespaces: s.getUserNamespaces(r, nil),
-	}
-	if req.Kind == "" {
+	if gitOpsPluralKind(source.Kind) == "" {
 		return nil, []string{"Unsupported GitOps source kind."}
 	}
-	if !req.HasNamespaceAccess() {
-		return nil, []string{"No namespace access for GitOps history."}
-	}
-	tree, root, err := s.buildGitOpsTree(r.Context(), req)
+	root, err := cache.GetDynamicWithGroup(r.Context(), source.Kind, source.Namespace, source.Name, source.Group)
 	if err != nil {
 		return nil, []string{fmt.Sprintf("GitOps history unavailable: %v", err)}
 	}
-	tree = s.filterGitOpsTreeForUser(r, req, tree)
-	canAccess := func(group, kind, namespace, name string) bool {
-		return s.canAccessGitOpsRef(r, req, group, kind, namespace, name, false)
-	}
-	resolver := newInsightsResolver(r.Context(), req.Cache, req.AllowedNamespaces, canAccess)
-	insight := gitopsinsights.Build(root, tree, resolver)
-	anchors := make([]appHistoryAnchor, 0, len(insight.History))
-	for _, item := range insight.History {
+	history := gitopsinsights.BuildHistory(root)
+	anchors := make([]appHistoryAnchor, 0, len(history))
+	for _, item := range history {
 		title := "GitOps reconcile"
 		if source.Tool == "argocd" {
 			title = "Argo CD sync"
@@ -751,7 +756,6 @@ func (g *appGraph) relationshipsFor(kind, ns, name string) *appRelationships {
 		pdbRefs:           refsByKey(rel.PDBs),
 		networkPolicyRefs: refsByKey(rel.NetworkPolicies),
 	}
-	g.addServiceEntrypoints(out, rel.Services)
 	out.Services = refNames(sortedRefs(out.serviceRefs, 20), 20)
 	out.Ingresses = refNames(sortedRefs(out.ingressRefs, 20), 20)
 	out.Routes = routeRefNames(sortedRefs(out.routeRefs, 20), 20)
@@ -761,23 +765,6 @@ func (g *appGraph) relationshipsFor(kind, ns, name string) *appRelationships {
 		return nil
 	}
 	return out
-}
-
-func (g *appGraph) addServiceEntrypoints(out *appRelationships, services []topology.ResourceRef) {
-	if g == nil || g.topo == nil || out == nil {
-		return
-	}
-	for _, svc := range services {
-		if !strings.EqualFold(svc.Kind, "Service") {
-			continue
-		}
-		rel := topology.GetRelationshipsWithIndex(svc.Kind, svc.Namespace, svc.Name, g.topo, g.provider, g.dp, g.idx)
-		if rel == nil {
-			continue
-		}
-		out.ingressRefs = mergeRefs(out.ingressRefs, refsByKey(rel.Ingresses))
-		out.routeRefs = mergeRefs(out.routeRefs, refsByKey(appRouteRefs(rel.Routes, rel.Gateways, rel.Services)))
-	}
 }
 
 func appRouteRefs(routes []topology.ResourceRef, routeLikeGroups ...[]topology.ResourceRef) []topology.ResourceRef {

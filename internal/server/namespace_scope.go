@@ -10,6 +10,7 @@ import (
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/settings"
+	gitopstree "github.com/skyhook-io/radar/pkg/gitops/tree"
 )
 
 // NamespaceScopeMode is the closed enum the frontend's `mode` discriminator
@@ -171,6 +172,7 @@ func (s *Server) invalidatePostContextSwitchCaches() {
 	clearPackagesCache()
 	clearApplicationsCache()
 	s.vitalsMetrics.clear()
+	gitopstree.ResetUnknownKindLogDedup()
 }
 
 // loadSavedNamespacePreference seeds the per-user map on first reach.

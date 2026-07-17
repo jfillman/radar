@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ActivityFilterKey, TimelineGrouping, TimelineSort } from '@skyhook-io/k8s-ui'
 import {
   parseTimeMode,
+  resolveApplicationTimelineScope,
   writeTimelineParams,
   onlyHighFreqDiffer,
   timeModeEqual,
@@ -172,10 +173,17 @@ describe('writeTimelineParams', () => {
     expect(written.has('window')).toBe(false)
   })
 
-  it('preserves foreign params and strips the legacy filter seed', () => {
-    const base = new URLSearchParams({ tab: 'topology', filter: 'warnings' })
+  it('preserves foreign params, including application scope, and strips the legacy filter seed', () => {
+    const base = new URLSearchParams({
+      tab: 'topology',
+      app: 'staging/Deployment/api',
+      scopeNamespaces: 'argocd,staging',
+      filter: 'warnings',
+    })
     const written = writeTimelineParams(base, defaultState, retainedOpts)
     expect(written.get('tab')).toBe('topology')
+    expect(written.get('app')).toBe('staging/Deployment/api')
+    expect(written.get('scopeNamespaces')).toBe('argocd,staging')
     expect(written.has('filter')).toBe(false)
   })
 
@@ -185,6 +193,39 @@ describe('writeTimelineParams', () => {
       requiresNamespaceFilter: true,
     })
     expect(written.has('view')).toBe(false)
+  })
+})
+
+describe('resolveApplicationTimelineScope', () => {
+  it('uses the current namespace selection outside application scope', () => {
+    expect(resolveApplicationTimelineScope(new URLSearchParams(), ['default', 'staging'])).toEqual({
+      appKey: null,
+      namespaces: ['default', 'staging'],
+      ready: true,
+    })
+  })
+
+  it('uses the application scope namespaces and removes duplicates', () => {
+    const params = sp({
+      app: '/Application/radar-hub-staging',
+      scopeNamespaces: 'argocd, staging,argocd',
+    })
+
+    expect(resolveApplicationTimelineScope(params, ['default'])).toEqual({
+      appKey: '/Application/radar-hub-staging',
+      namespaces: ['argocd', 'staging'],
+      ready: true,
+    })
+  })
+
+  it('fails closed when an application link omits its namespace scope', () => {
+    const params = sp({ app: '/Application/radar-hub-staging' })
+
+    expect(resolveApplicationTimelineScope(params, ['default'])).toEqual({
+      appKey: '/Application/radar-hub-staging',
+      namespaces: [],
+      ready: false,
+    })
   })
 })
 

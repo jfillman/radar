@@ -290,12 +290,14 @@ const RETAINED_DELTA_MAX_PAGES = 10
 // carries revisions, so entropy accumulates far slower here.
 const RETAINED_FULL_RESYNC_MS = 60 * 60 * 1000
 
-// The initial window's recent edge extends past the client clock by this
-// slack. A client clock BEHIND the hub would otherwise exclude already-
-// ingested events in (clientNow, hubNow] from the window — and the delta
-// cursor (the hub's frontier) already covers them, so no poll would ever
-// deliver them. The window slides back by the same slack to stay within the
-// hub's maximum range.
+// Client-vs-hub clock skew allowance, applied at both edges of the ring:
+// the initial window's recent edge extends past the client clock by this
+// slack (a clock BEHIND the hub would otherwise exclude already-ingested
+// events in (clientNow, hubNow] — and the delta cursor already covers them,
+// so no poll would ever deliver them; the window slides back by the same
+// slack to stay within the hub's maximum range), and the delta-merge prune
+// floor sits below the retention depth by the same slack (a clock AHEAD of
+// the hub would otherwise prune oldest events the hub still retains).
 const RETAINED_CLOCK_SKEW_SLACK_MS = 5 * 60 * 1000
 
 // How often a preset-derived window's sliding lower bound refreshes on an
@@ -552,11 +554,13 @@ export async function runRetainedRingFetch(deps: {
       // frontier that already rests at or below the visibility edge.
       if (!changed && cursor === cached.cursor) return cached
       // Two bounds keep an always-open tab from growing without limit: the
-      // retention floor (the server TTL-deletes past the same boundary) and
-      // the ring row cap — accumulation past it drops the OLDEST rows, the
-      // same semantics as the initial load and the local source's ring, and
+      // retention floor (the server TTL-deletes past the same boundary,
+      // held below the depth by the skew slack so a client clock ahead of
+      // the hub cannot prune events the hub still retains) and the ring row
+      // cap — accumulation past it drops the OLDEST rows, the same
+      // semantics as the initial load and the local source's ring, and
       // flips `truncated` so the UI says so.
-      const floor = now - capMs
+      const floor = now - capMs - RETAINED_CLOCK_SKEW_SLACK_MS
       const pruned = merged.filter((e) => new Date(e.timestamp).getTime() >= floor)
       const capped = pruned.length > RETAINED_RING_LIMIT
       return {

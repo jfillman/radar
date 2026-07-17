@@ -337,17 +337,20 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
     expect(out.loadedAtMs).toBe(NOW)
   })
 
-  it('prunes events older than the retention depth on merge', async () => {
+  it('prunes events older than the retention depth on merge, keeping the skew-slack band', async () => {
     const flags = new Set<string>()
     const cached = ring([
       ev({ id: 'e-ancient', timestamp: new Date(NOW - CAP - DAY).toISOString() }),
+      // Inside the clock-skew slack band just past the depth: a client clock
+      // ahead of the hub must not prune what the hub still retains.
+      ev({ id: 'e-slack', timestamp: new Date(NOW - CAP - 60 * 1000).toISOString() }),
       ev({ id: 'e-kept', timestamp: new Date(NOW - DAY).toISOString() }),
     ])
     mockApiFetch.mockResolvedValueOnce(
       streamResponse([line(ev({ id: 'e-new', timestamp: new Date(NOW).toISOString() })), end({ cursor: '200' })]),
     )
     const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW })
-    expect(out.events.map((e) => e.id).sort()).toEqual(['e-kept', 'e-new'])
+    expect(out.events.map((e) => e.id).sort()).toEqual(['e-kept', 'e-new', 'e-slack'])
   })
 
   it('a capped delta page (more) pages forward within one fetch', async () => {

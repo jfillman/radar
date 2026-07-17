@@ -13,10 +13,11 @@ import {
   type ScrubberRange,
   type TimelineLiveState,
 } from '@skyhook-io/k8s-ui'
-import type {
-  TimelineSource,
-  TimelineOverviewBucket,
-  TimelineOverviewResult,
+import {
+  RETAINED_CLOCK_SKEW_SLACK_MS,
+  type TimelineSource,
+  type TimelineOverviewBucket,
+  type TimelineOverviewResult,
 } from '../../api/timelineSource'
 import { getApiBase } from '../../api/config'
 
@@ -183,8 +184,11 @@ export function RetainedTimelineScrubber({ source, selection, onSelectionChange,
     // at ancient synthesized-historical event times (resource creation dates on
     // long-lived clusters), and a host may declare maxRangeDays deeper than the
     // ring the client actually loads (MAX_SELECTION_MS) — either would stretch
-    // the strip over regions that render empty despite overview density.
-    const floor = now - Math.min(maxRangeDays * DAY_MS, MAX_SELECTION_MS)
+    // the strip over regions that render empty despite overview density. The
+    // ring's window slides forward by the clock-skew slack, so the floor does
+    // too — without it the oldest slack-width sliver is brushable but never
+    // loadable.
+    const floor = now - Math.min(maxRangeDays * DAY_MS, MAX_SELECTION_MS) + RETAINED_CLOCK_SKEW_SLACK_MS
     const fromMs = availableFromMs != null ? Math.max(availableFromMs, floor) : floor
     return { fromMs: Math.min(fromMs, now - HOUR_MS), toMs: now }
   }, [availableFromMs, now, maxRangeDays])

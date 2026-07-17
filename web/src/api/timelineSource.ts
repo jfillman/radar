@@ -298,7 +298,7 @@ const RETAINED_FULL_RESYNC_MS = 60 * 60 * 1000
 // slack to stay within the hub's maximum range), and the delta-merge prune
 // floor sits below the retention depth by the same slack (a clock AHEAD of
 // the hub would otherwise prune oldest events the hub still retains).
-const RETAINED_CLOCK_SKEW_SLACK_MS = 5 * 60 * 1000
+export const RETAINED_CLOCK_SKEW_SLACK_MS = 5 * 60 * 1000
 
 // How often a preset-derived window's sliding lower bound refreshes on an
 // IDLE ring (the no-op cached return keeps ring identity stable, so the memo
@@ -586,7 +586,11 @@ export async function runRetainedRingFetch(deps: {
   // maximum range.
   const to = now + RETAINED_CLOCK_SKEW_SLACK_MS
   const full = await fetchRetainedWindow(to - capMs, to, signal, RETAINED_RING_LIMIT)
-  forceResync.delete(ringKey)
+  // Consume the flag only while this fetch still owns the query. A resolved
+  // load can still be discarded — a manual refresh cancels the in-flight poll
+  // AFTER its network call finished — and deleting then would eat the flag
+  // that refresh just armed, turning it into a silent no-op delta poll.
+  if (!signal?.aborted) forceResync.delete(ringKey)
   return {
     events: full.events,
     coverage: full.coverage,

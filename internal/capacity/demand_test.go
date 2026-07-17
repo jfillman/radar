@@ -958,6 +958,29 @@ func TestDemandPoolBoundedProviderLabelIsDeclaredCompatible(t *testing.T) {
 	assertDemandUnknown(t, unbound, "providerOfferings.karpenter.sh/capacity-type")
 }
 
+func TestDemandUnevaluableTolerationKeepsTaintMissUnknown(t *testing.T) {
+	ready := true
+	tainted := demandPoolSpec(nil, []any{demandTaintObject("dedicated", "batch", corev1.TaintEffectNoSchedule)}, nil, nil, nil)
+
+	pod := demandTestPod("worker", "500m")
+	pod.Spec.Tolerations = []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOperator("Extended"), Value: "batch"}}
+	group := BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{pod}, Pools: []DemandPoolInput{
+		{NodePool: demandTestPool("tainted", &ready, tainted, nil)},
+	}})[0]
+	// The operator cannot be evaluated, so the taint miss is unprovable —
+	// hard permanentTaint evidence would outrank the unknown and overclaim.
+	evaluation := assertDemandEvaluation(t, group.PoolEvaluations, "tainted", capacityapi.PoolEvaluationUnknown, "")
+	assertDemandUnknown(t, evaluation, "nodePool.taints")
+	assertDemandUnknown(t, evaluation, "toleration.operator")
+
+	// Without any toleration the miss is a proven incompatibility.
+	bare := demandTestPod("bare", "500m")
+	group = BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{bare}, Pools: []DemandPoolInput{
+		{NodePool: demandTestPool("tainted", &ready, tainted, nil)},
+	}})[0]
+	assertDemandEvaluation(t, group.PoolEvaluations, "tainted", capacityapi.PoolIncompatible, "permanentTaint")
+}
+
 func TestDemandMinValuesOnlyBlocksWhenMergedSetIsUncertain(t *testing.T) {
 	ready := true
 	pod := demandTestPod("worker", "500m")

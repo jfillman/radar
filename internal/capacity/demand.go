@@ -628,12 +628,26 @@ func evaluateDemandPool(model demandSchedulingModel, requests corev1.ResourceLis
 		}
 	}
 
+	unevaluableToleration := false
+	for _, unknownPredicate := range model.Unknown {
+		if unknownPredicate == "toleration.operator" {
+			unevaluableToleration = true
+			break
+		}
+	}
 	for _, taint := range sortedTaints(spec.Taints) {
 		switch taint.Effect {
 		case corev1.TaintEffectPreferNoSchedule:
 			continue
 		case corev1.TaintEffectNoSchedule, corev1.TaintEffectNoExecute:
 			if !tolerationsTolerateTaint(model.Tolerations, taint) {
+				// A toleration operator we cannot evaluate makes the miss
+				// unprovable — hard incompatibility evidence would outrank
+				// the unknown and overclaim.
+				if unevaluableToleration {
+					unknown = append(unknown, "nodePool.taints")
+					continue
+				}
 				evidence.add(
 					"permanentTaint", "spec.template.spec.taints", []string{formatTaint(taint)}, []string{"matching toleration"},
 					"The Pod does not tolerate a permanent NodePool taint.",

@@ -10,15 +10,13 @@ Radar automatically discovers and displays **any** Custom Resource Definition (C
 
 ### What Radar Shows
 
-**Capacity Workspace:** When Radar discovers Karpenter NodePools, a cluster-scoped Capacity view appears in navigation. It compares every pool in one place:
-- Provisioned CPU, memory, pod, storage, and extended resources versus `spec.limits`
-- Actual CPU and memory usage across the Nodes in each pool, with explicit metrics coverage
-- Ready/cordoned Nodes, NodeClaims, purchase types, zones, architectures, and instance types
-- Pending Pods grouped by scheduling signature, including held workloads and declared NodePool compatibility
-- Correlated provisioning, interruption, disruption, and termination activity from Radar's retained timeline
-- Consolidation policy and direct drill-down to NodePool, NodeClass, NodeClaim, and Node resources
+**Capacity view:** When Radar discovers Karpenter NodePools (and the current identity can list them), a cluster-wide **Capacity** view appears in navigation — a read-only diagnosis surface across four screens:
+- **Overview** — fleet KPIs with claim lifecycle detail, a cluster scheduling-capacity bar (scheduled requests vs allocatable, in-flight claim capacity beyond the allocatable edge, pending demand as a not-to-scale count), prioritized operational signals, and the NodePool inventory
+- **NodePool detail** — the capacity ledger (configured limit, provisioned, headroom, allocatable, scheduled requests, unallocated, actual usage) plus claim lifecycle, fleet composition, and workload attribution
+- **Demand** — pending pods grouped by scheduling signature, each group evaluated against every NodePool's declared constraints with per-predicate evidence
+- **Activity** — provisioning, disruption, interruption, and termination episodes classified from Karpenter's exact event vocabulary
 
-Radar keeps two different signals separate: **configured ceiling pressure** is `status.resources` versus `spec.limits`; **actual usage** is point-in-time metrics-server usage versus Node allocatable capacity. Karpenter makes scheduling decisions from pod requests, so Radar presents actual usage as an efficiency signal, not scheduler headroom.
+Every quantity carries per-value certainty (`= ≥ ≤ ?`): unavailable is never rendered as zero, partial is never rendered as exact, and **scheduling capacity is kept structurally distinct from actual usage** — Karpenter schedules on pod requests, so usage is an efficiency signal, never scheduler headroom. Issues, Pending-pod drawers, and the Home posture card deep-link into the right diagnosis. Full reference: [Capacity documentation](capacity.md).
 
 **Topology:** Full provisioning chain — NodePool → NodeClaim → Node → Pod. See which NodePool owns which NodeClaims, which Nodes they provisioned, and what Pods are running on them. NodePool → NodeClass edges show the provider-specific configuration each pool uses.
 

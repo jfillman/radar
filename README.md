@@ -356,6 +356,19 @@ Visualize live network traffic between services using Hubble or Caretta.
 - Filter by namespace, protocol, or status code
 - Setup wizard to install a traffic source if none is detected
 
+### Capacity (Karpenter)
+
+Read-only diagnosis for Karpenter-managed fleets — why is my pod pending, which NodePool could take it, why aren't my nodes joining, what is disruption doing to my fleet? Appears automatically when Karpenter NodePools are detected (RBAC-gated).
+
+- **Overview** — fleet KPIs with claim lifecycle detail, a cluster scheduling-capacity bar (requests vs allocatable, in-flight beyond the edge, pending demand as an honest not-to-scale count), prioritized operational signals, and the NodePool inventory
+- **NodePool detail** — the capacity ledger (configured limit, provisioned, headroom, allocatable, scheduled requests, unallocated, actual usage), claim lifecycle, fleet composition, and workload attribution
+- **Demand** — pending pods grouped by scheduling signature, each group evaluated against every NodePool's declared constraints with per-predicate evidence; filterable by state, pool, and workload
+- **Activity** — provisioning / disruption / interruption episodes classified from Karpenter's exact event vocabulary, with per-evidence confidence
+- Every quantity carries per-value certainty (`= ≥ ≤ ?`) — unavailable is never rendered as zero, partial is never rendered as exact
+- Issues, Pending-pod drawers, and the Home posture card deep-link into the right diagnosis
+
+See [docs/capacity.md](docs/capacity.md) for the full reference.
+
 ### Cost Insights
 
 Track Kubernetes spending with OpenCost integration — no additional configuration needed.

@@ -284,8 +284,8 @@ describe("ApplicationDetail shell", () => {
       onSelectView: () => {},
       selectedWorkloadKey: null,
       onSelectWorkload: () => {},
-      historyRange: '7d',
-      historyRangeOptions: [{ value: '7d', label: '7 days' }],
+      historyRange: '7d' as const,
+      historyRangeOptions: [{ value: '7d' as const, label: '7 days' }],
       historyRingTruncated: true,
       historyItems: [{
         id: 'ring-change',

@@ -227,7 +227,7 @@ describe('rangeSpanMs (client-side preset resolution)', () => {
     expect(rangeSpanMs('all', CAP)).toBe(CAP)
     expect(rangeSpanMs(undefined, CAP)).toBe(CAP)
   })
-  it('preset arms return their nominal span — clamping is the caller applies the clamp', () => {
+  it("preset arms return their nominal span — clamping is the caller's job", () => {
     // A 30d preset against a 7d host returns 30d here; the use site clamps
     // with Math.min against the ring depth (pinned indirectly by the hook).
     const shallow = 7 * 24 * 60 * 60 * 1000
@@ -274,7 +274,6 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
     const first = await runRetainedRingFetch({ ringKey: 'k', cached: undefined, forceResync: flags, capMs: CAP, now: NOW })
     expect(first.events.map((e) => e.id)).toEqual(['e1'])
     expect(mockApiFetch.mock.calls[0][0]).toContain('from=')
-    // cursor is intact on the cached ring — nothing was committed
 
     // Delta: a brand-new event AND a late one (event time 3 days back) — both
     // ride the ingestion-ordered poll and land in the ring.

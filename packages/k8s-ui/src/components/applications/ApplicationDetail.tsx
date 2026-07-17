@@ -854,8 +854,6 @@ function ApplicationWorkspace({
   }>;
   historyCoverageRecordCount?: number;
   historyRuntimeLimited?: boolean;
-  // The retained ring itself was row-capped: the OLDEST part of the retention
-  // window is not loaded, independent of the per-query event limit.
   historyRingTruncated?: boolean;
   onHistoryRangeChange?: (range: ApplicationHistoryRange) => void;
   onOpenTimeline?: (timestamp?: string) => void;

@@ -491,6 +491,18 @@ function LedgerCell({
   }
 
   if (
+    (column.key === "scheduledRequests" ||
+      column.key === "aggregateUnallocatedRequests") &&
+    !coverageHasObservations(coverage.pods)
+  ) {
+    return (
+      <WithTooltip tip="Pods were not observed — this value cannot be computed. This is not zero.">
+        <span className="text-theme-text-tertiary">Not observed</span>
+      </WithTooltip>
+    );
+  }
+
+  if (
     (column.key === "allocatable" ||
       column.key === "aggregateUnallocatedRequests") &&
     !coverageHasObservations(coverage.nodes)

@@ -561,6 +561,29 @@ func TestBuildPartialInFlightClaimCapacityIsLowerBound(t *testing.T) {
 	capacityTestAssertObservation(t, ledger.InFlightCapacity, capacityapi.CertaintyLowerBound, capacityapi.GranularityAggregate, map[string]string{"cpu": "2"})
 }
 
+func TestBuildLedgerOmitsPodDerivedValuesWhenPodsUnobserved(t *testing.T) {
+	pool := capacityTestPool("compute", "pool-uid", nil, nil)
+	node := capacityTestNode("pooled", "pooled-uid", "", "compute", resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "4"}))
+	coverage := capacityTestCoverage()
+	coverage[capacityapi.CoveragePods] = capacityapi.NewSourceCoverage(capacityapi.CoverageUnavailable, capacityapi.CoverageScopeCluster)
+
+	model := Build(Snapshot{
+		GeneratedAt: capacityTestTime(),
+		NodePools:   []*unstructured.Unstructured{pool},
+		Nodes:       []*corev1.Node{node},
+		Coverage:    coverage,
+	})
+	ledger := capacityTestMustPool(t, model, "compute").Observation.Ledger
+	// Requests from an unobserved pod source would be an empty vector, and
+	// allocatable minus that empty vector reads as a fully free pool —
+	// fabricated headroom. Both must be absent, never zero.
+	if ledger.ScheduledRequests != nil || ledger.AggregateUnallocatedRequests != nil {
+		t.Fatalf("pods-unobserved ledger emitted requests=%#v unallocated=%#v, want both absent",
+			ledger.ScheduledRequests, ledger.AggregateUnallocatedRequests)
+	}
+	capacityTestAssertObservation(t, ledger.Allocatable, capacityapi.CertaintyExact, capacityapi.GranularityAggregate, map[string]string{"cpu": "4"})
+}
+
 func TestClaimStageRespectsConditionDialects(t *testing.T) {
 	pool := capacityTestPool("compute", "pool-uid", nil, nil)
 

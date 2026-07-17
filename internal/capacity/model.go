@@ -453,18 +453,23 @@ func populatePool(model *PoolModel, claims []*unstructured.Unstructured, nodes [
 	scheduledCertainty := scheduledRequestCertainty(snapshot.Coverage)
 
 	accounting := AccountResources(nodes, pods)
-	requests := QuantityObservation(accounting.ScheduledRequests, scheduledCertainty, capacityapi.GranularityAggregate, snapshot.GeneratedAt, "pods.spec.resources")
-	observation.Ledger.ScheduledRequests = &requests
-	// Allocatable and the allocatable−requests difference are only meaningful
-	// when Nodes were actually observed. With Nodes denied but pods attributed
-	// via NodeClaims, emitting the difference would produce a negative
-	// "unallocated" — a fabricated number on the trust surface.
+	// Pod-derived values are only meaningful when Pods were actually observed
+	// — otherwise "requests" is an empty vector and allocatable−requests
+	// fabricates a fully-free pool. Same for the difference when Nodes are
+	// missing: with pods attributed via NodeClaims it would go negative.
+	// Absent, never zero, in both directions.
+	if sourceObserved(snapshot.Coverage, capacityapi.CoveragePods) {
+		requests := QuantityObservation(accounting.ScheduledRequests, scheduledCertainty, capacityapi.GranularityAggregate, snapshot.GeneratedAt, "pods.spec.resources")
+		observation.Ledger.ScheduledRequests = &requests
+	}
 	if sourceObserved(snapshot.Coverage, capacityapi.CoverageNodes) {
 		allocatable := QuantityObservation(accounting.Allocatable, nodeCertainty, capacityapi.GranularityAggregate, snapshot.GeneratedAt, "nodes.status.allocatable")
 		observation.Ledger.Allocatable = &allocatable
-		unallocatedCertainty := differenceCertainty(nodeCertainty, podCertainty)
-		unallocated := QuantityObservation(subtractResourceLists(accounting.Allocatable, accounting.ScheduledRequests), unallocatedCertainty, capacityapi.GranularityAggregateNotBinpacked, snapshot.GeneratedAt, "nodes.status.allocatable", "pods.spec.resources")
-		observation.Ledger.AggregateUnallocatedRequests = &unallocated
+		if sourceObserved(snapshot.Coverage, capacityapi.CoveragePods) {
+			unallocatedCertainty := differenceCertainty(nodeCertainty, podCertainty)
+			unallocated := QuantityObservation(subtractResourceLists(accounting.Allocatable, accounting.ScheduledRequests), unallocatedCertainty, capacityapi.GranularityAggregateNotBinpacked, snapshot.GeneratedAt, "nodes.status.allocatable", "pods.spec.resources")
+			observation.Ledger.AggregateUnallocatedRequests = &unallocated
+		}
 	}
 
 	if sourceObserved(snapshot.Coverage, capacityapi.CoverageNodeClaims) {

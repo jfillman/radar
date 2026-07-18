@@ -140,14 +140,17 @@ export function deriveSchedulingRows(
     const allocatableNumber = numeric(allocatable, resource);
     const requestedNumber = numeric(requested, resource);
     const pendingNumber = numeric(pendingValue, resource);
-    if (resource !== "cpu" && resource !== "memory") {
-      const worthARow =
-        (allocatableNumber ?? 0) > 0 ||
-        (pendingNumber ?? 0) > 0 ||
-        (requestedNumber ?? 0) > 0 ||
-        inFlight !== null;
-      if (!worthARow) continue;
-    }
+    // A row earns its place with a signal: capacity that exists, requests or
+    // demand that exist, in-flight claims, or an unobserved source worth an
+    // honest "not zero". A fully-zero row (empty fleet, nothing pending) is
+    // noise — the card-level empty state covers that story.
+    const hasSignal =
+      allocatable === null ||
+      (allocatableNumber ?? 0) > 0 ||
+      (requestedNumber ?? 0) > 0 ||
+      (pendingNumber ?? 0) > 0 ||
+      inFlight !== null;
+    if (!hasSignal) continue;
 
     const components: SchedulingBarRow["components"] = [];
     for (const component of [
@@ -222,12 +225,29 @@ export function ClusterSchedulingCard({
   const visible = expanded ? rows : rows.slice(0, VISIBLE_ROW_LIMIT);
   const hidden = rows.length - visible.length;
 
+  if (rows.length === 0) {
+    return (
+      <SectionCard
+        title="Cluster scheduling capacity"
+        subtitle="scheduled requests vs node allocatable, Karpenter-pooled nodes · not usage, not a health score"
+        actions={<LinkButton onClick={onExplain}>How to read →</LinkButton>}
+        bodyClassName="px-4 py-3"
+      >
+        <p className="text-xs text-theme-text-tertiary">
+          No Karpenter-provisioned capacity yet — the fleet has no pooled nodes
+          or in-flight claims, and no pending demand. Bars appear as soon as
+          either side of the ledger exists.
+        </p>
+      </SectionCard>
+    );
+  }
+
   return (
     <SectionCard
       title="Cluster scheduling capacity"
       subtitle="scheduled requests vs node allocatable, Karpenter-pooled nodes · not usage, not a health score"
       actions={<LinkButton onClick={onExplain}>How to read →</LinkButton>}
-      bodyClassName="flex flex-col gap-3"
+      bodyClassName="flex flex-col gap-3 px-4 py-3"
     >
       {visible.map((row) => (
         <SchedulingBarRowView key={row.resource} row={row} />

@@ -289,7 +289,11 @@ export function CapacityOverview({
         />
         <KpiTile
           label="Nodes"
-          value={summary.nodeCount ?? "—"}
+          value={
+            summary.nodeCount !== undefined
+              ? summary.nodeCount - (summary.unpooledNodeCount ?? 0)
+              : "—"
+          }
           sub={
             summary.unpooledNodeCount
               ? `+${summary.unpooledNodeCount} outside Karpenter pools`
@@ -637,8 +641,11 @@ function PendingDemandChips({
    *  result then means "none observed in scope", never a global "none". */
   podsPartial: boolean;
 }) {
+  // The "pods" resource duplicates the dedicated "Pod slots" chip below.
   const entries = summary.aggregateDemand
-    ? sortedResourceEntries(summary.aggregateDemand.resources)
+    ? sortedResourceEntries(summary.aggregateDemand.resources).filter(
+        ([resource]) => resource !== "pods",
+      )
     : [];
   const demandCertainty = summary.aggregateDemand?.certainty;
   return (

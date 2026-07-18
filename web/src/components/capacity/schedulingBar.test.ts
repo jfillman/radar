@@ -97,7 +97,7 @@ describe("deriveSchedulingRows", () => {
     expect(rows[0].certainty).toBe("exact");
   });
 
-  it("drops extended resources with no capacity, demand, or flight", () => {
+  it("drops rows carrying no signal at all", () => {
     const rows = deriveSchedulingRows(
       {
         scheduledRequests: observation({ cpu: "1", "example.com/fpga": "0" }),
@@ -105,7 +105,22 @@ describe("deriveSchedulingRows", () => {
       },
       observation({}),
     );
-    expect(rows.map((row) => row.resource)).toEqual(["cpu", "memory"]);
+    // Memory and the fpga row are all-zero against observed sources — noise.
+    expect(rows.map((row) => row.resource)).toEqual(["cpu"]);
+  });
+
+  it("returns no rows for an empty fleet with no demand", () => {
+    // One pool, zero nodes, zero claims, nothing pending: every value is an
+    // observed zero. Stub bars would read as broken UI — the card renders an
+    // honest empty state instead.
+    const rows = deriveSchedulingRows(
+      {
+        scheduledRequests: observation({}),
+        allocatable: observation({}),
+      },
+      observation({}),
+    );
+    expect(rows).toEqual([]);
   });
 });
 

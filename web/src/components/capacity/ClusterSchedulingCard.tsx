@@ -325,7 +325,7 @@ function SchedulingBarRowView({ row }: { row: SchedulingBarRow }) {
   return (
     <div role="group" aria-label={ariaLabel}>
       <div className="flex items-center gap-3">
-        <span className="flex w-36 shrink-0 items-center gap-1.5">
+        <span className="flex w-44 shrink-0 items-center gap-1.5">
           <span className="truncate font-mono text-xs text-theme-text-primary">
             {row.resource === "cpu" || row.resource === "memory"
               ? resourceLabel(row.resource)
@@ -394,7 +394,7 @@ function SchedulingBarRowView({ row }: { row: SchedulingBarRow }) {
           </div>
         )}
       </div>
-      <div className="ml-[9.75rem] mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs">
+      <div className="ml-[11.75rem] mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs">
         <NumberPart
           value={
             row.requested !== null

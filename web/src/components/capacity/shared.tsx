@@ -333,6 +333,7 @@ export function resourceLabel(resource: string): string {
   if (resource === "ephemeral-storage") return "Ephemeral storage";
   if (resource === "nvidia.com/gpu") return "GPU";
   if (resource === "pods") return "Pods";
+  if (resource === "nodes") return "Nodes";
   return resource;
 }
 

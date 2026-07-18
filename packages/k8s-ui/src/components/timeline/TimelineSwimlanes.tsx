@@ -1077,16 +1077,29 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
     return { start, end, windowMs, now: effectiveNow }
   }, [zoom, panOffset, effectiveNow, viewWindow])
 
+  // The visible window WITHOUT the live-`now` field. Keyed on the primitive
+  // bounds so its identity changes only when the window actually moves — a live
+  // `now` tick (30s) advances `visibleTimeRange.now` for the now-line but must
+  // NOT invalidate the lane-ordering / window-clip memos below, which only care
+  // about [start,end]. This stops the heavy build from re-running on each tick
+  // while the window is static — the controlled retained lens or a paused view.
+  // (In uncontrolled live mode start/end track `effectiveNow`, so they advance
+  // every tick regardless; the win is for the static-window cases this targets.)
+  const visibleWindow = useMemo(
+    () => ({ start: visibleTimeRange.start, end: visibleTimeRange.end, windowMs: visibleTimeRange.windowMs }),
+    [visibleTimeRange.start, visibleTimeRange.end, visibleTimeRange.windowMs],
+  )
+
   // Apply the chosen ordering to the top-level lanes. 'recent' needs the visible
   // window (newest-in-view first), so this lives after visibleTimeRange. The
   // pinned section is ordered separately (strict pin order) and never flows here.
   const orderedLanes = useMemo(
     () => sortTimelineLanes(lanes, sort, {
-      windowStart: visibleTimeRange.start,
-      windowEnd: visibleTimeRange.end,
+      windowStart: visibleWindow.start,
+      windowEnd: visibleWindow.end,
       scoreOf: (lane) => lane.scoreBreakdown?.total ?? calculateInterestingness(lane),
     }),
-    [lanes, sort, visibleTimeRange],
+    [lanes, sort, visibleWindow],
   )
 
   // Live-mode order hysteresis. The importance rank recomputes every poll (recency
@@ -1147,17 +1160,17 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
   // "events" count so it's view-scoped like "resources" — a lens sitting in a
   // recording gap reads "0 resources · 0 events", not "0 resources · N events".
   const eventsInWindow = useMemo(() => {
-    const { start, end } = visibleTimeRange
+    const { start, end } = visibleWindow
     return filteredEvents.filter((e) => {
       const t = new Date(e.timestamp).getTime()
       return t >= start && t <= end
     })
-  }, [filteredEvents, visibleTimeRange])
+  }, [filteredEvents, visibleWindow])
 
   // Recording gaps clipped to the visible window, for the hatched lane bands.
   const visibleGaps = useMemo(() => {
     if (!gaps || gaps.length === 0) return []
-    const { start, end } = visibleTimeRange
+    const { start, end } = visibleWindow
     const out: TimeWindow[] = []
     for (const g of gaps) {
       const fromMs = Math.max(g.fromMs, start)
@@ -1165,7 +1178,7 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
       if (toMs > fromMs) out.push({ fromMs, toMs })
     }
     return out
-  }, [gaps, visibleTimeRange])
+  }, [gaps, visibleWindow])
 
   // Pin MOVES a row: pinned lanes (and pinned children inside groups) leave
   // the regular list entirely — the pinned section is their only home.
@@ -1181,7 +1194,7 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
 
   // Filter out lanes with no events in the visible time window
   const visibleLanes = useMemo(() => {
-    const { start, end } = visibleTimeRange
+    const { start, end } = visibleWindow
     return unpinnedLanes.filter(lane => {
       const allLaneEvents = lane.allEventsSorted || []
       return allLaneEvents.some(e => {
@@ -1189,7 +1202,7 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
         return t >= start && t <= end
       })
     })
-  }, [unpinnedLanes, visibleTimeRange])
+  }, [unpinnedLanes, visibleWindow])
 
   // Pinned rows: resolved from the FULL lane list (pre-window-filter, any
   // grouping) so they stay put while the lens moves and even when they have no
@@ -1203,7 +1216,7 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
   // Honest counts while filtered to pins: only pinned rows' in-window events.
   const pinnedEventsInWindow = useMemo(() => {
     if (pinnedLaneRows.length === 0) return 0
-    const { start, end } = visibleTimeRange
+    const { start, end } = visibleWindow
     let n = 0
     for (const lane of pinnedLaneRows) {
       for (const e of lane.allEventsSorted || []) {
@@ -1212,7 +1225,7 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
       }
     }
     return n
-  }, [pinnedLaneRows, visibleTimeRange])
+  }, [pinnedLaneRows, visibleWindow])
 
   const pinnedIdSet = useMemo(() => new Set((pinnedLanes ?? []).map((p) => p.id)), [pinnedLanes])
   // A pin button for a lane, or null when the host wired no pin handler. A pinned
@@ -1236,7 +1249,7 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
 
   // Generate time axis ticks
   const axisTicks = useMemo(() => {
-    const { start, end } = visibleTimeRange
+    const { start, end } = visibleWindow
     const ticks: { time: number; label: string }[] = []
     const span = end - start
     if (span <= 0) return ticks
@@ -1262,18 +1275,18 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
     }
 
     return ticks
-  }, [visibleTimeRange])
+  }, [visibleWindow])
 
   // Convert timestamp to X position (0-100%)
   const timeToX = useCallback(
     (timestamp: number): number => {
-      const { start, windowMs } = visibleTimeRange
+      const { start, windowMs } = visibleWindow
       // A zero-width window (host bounds with fromMs === toMs) would divide by
       // zero and emit NaN into `left:` CSS — pin everything to the left edge.
       if (windowMs <= 0) return 0
       return ((timestamp - start) / windowMs) * 100
     },
-    [visibleTimeRange]
+    [visibleWindow]
   )
 
   // Vertical grid line positions (x-percent) shared by every lane backdrop.

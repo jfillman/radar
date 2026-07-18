@@ -12,10 +12,9 @@
 //
 // Both sources expose the same `useEvents(query)` hook shape so the timeline
 // wrappers stay source-agnostic: pick the source from context, call useEvents.
-import { useMemo } from 'react'
-import { useQuery, keepPreviousData } from '@tanstack/react-query'
-import { quantizeBaseWindow } from '@skyhook-io/k8s-ui'
-import { useChanges, apiFetch, ApiError, type UseChangesOptions } from './client'
+import { useEffect, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useChanges, apiFetch, mergeDeltaEvents, ApiError, type UseChangesOptions } from './client'
 import { apiUrl, getApiBase } from './config'
 import type { TimelineEvent, TimeRange } from '../types'
 
@@ -29,11 +28,6 @@ export type TimelineQuery = UseChangesOptions & {
   // [from,to] client-side.
   fromMs?: number
   toMs?: number
-  // LIVE mode: the [from,to] window slides every tick. Quantize the BASE fetch
-  // window to fixed steps so the react-query key only changes every few minutes;
-  // the precise sliding window is still applied by the client-side filter, and
-  // the trailing seam is covered by the live poll. Ignored by the local source.
-  sliding?: boolean
 }
 
 export interface TimelineSourceCapabilities {
@@ -101,11 +95,25 @@ export interface TimelineOverviewResult {
 export interface TimelineEventsResult {
   data: TimelineEvent[] | undefined
   isLoading: boolean
+  // Broad "is loading" signal: any fetch for the requested data is in flight,
+  // INCLUDING routine background polls (every ~10s on the retained source).
+  // Do not drive user-visible loaders from this — they would flicker on every
+  // poll; use isLoading (true only with no data at all) for loaders. Period
+  // changes re-window the loaded ring client-side in both sources, so they
+  // never fetch and never signal either flag.
   isFetching: boolean
   isError: boolean
+  // The failure behind isError, when one is available. Surfaced so the UI can
+  // show the server's actionable message (e.g. the retained row-cap "narrow the
+  // from/to range") instead of a generic "failed to load".
+  error?: Error | null
   refetch: () => void
   // Present only for sources that report coverage (retained).
   coverage?: TimelineCoverageRecord[]
+  // Retained only: the ring load was row-capped, so the OLDEST part of the
+  // retention window is not loaded. Hosts must surface this — rendering a
+  // truncated ring without a note reads as "nothing older happened".
+  truncated?: boolean
 }
 
 export interface TimelineSource {
@@ -143,7 +151,7 @@ function useLocalEvents(query: TimelineQuery): TimelineEventsResult {
   // query and the list's windowed one): SSE-driven refetches then transfer only
   // what arrived since the last full load. Dropdown-ranged (`since`) queries
   // stay plain — they're small and their range moves with the clock.
-  const { data, isLoading, isFetching, isError, refetch } = useChanges(
+  const { data, isLoading, isFetching, isError, error, refetch } = useChanges(
     windowed
       ? { ...query, timeRange: 'all', limit: LOCAL_RING_LIMIT, deltaSync: true }
       : { ...query, deltaSync: query.timeRange === 'all' },
@@ -166,7 +174,7 @@ function useLocalEvents(query: TimelineQuery): TimelineEventsResult {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [data, query.fromMs, query.toMs, query.limit, kindsKey, query.includeManaged],
   )
-  return { data: events, isLoading, isFetching, isError, refetch }
+  return { data: events, isLoading, isFetching, isError, error, refetch }
 }
 
 export const localSource: TimelineSource = {
@@ -252,53 +260,85 @@ const DAY_MS = 24 * HOUR_MS
 // Bound for the 'all' range when the host doesn't specify maxRangeDays.
 const DEFAULT_RETAINED_MAX_RANGE_DAYS = 7
 
-// Recent window the live poll re-fetches and merges over the loaded range. Wide
-// enough that a missed 10s tick can't open a gap. Exported so a unit test can pin
-// it against the base-window quantization step (quantization lag < poll window).
-export const LIVE_WINDOW_MS = 10 * 60 * 1000
-const LIVE_REFETCH_MS = 10_000
+// The retained source is the SAME accumulate model as the local source,
+// pointed at the hub: one ring load (the newest RETAINED_RING_LIMIT events
+// over the retention depth), then a poll for everything INGESTED since a
+// server-issued cursor. Ingestion order is what makes the poll complete —
+// a late-arriving or revised event has an old event time but a fresh
+// ingestion time, so it rides the same poll as brand-new events. Period
+// changes re-window the loaded ring client-side; no fetch.
 
-function rangeSpanMs(range: TimeRange | undefined, maxRangeDays?: number): number {
-  const cap = (maxRangeDays ?? DEFAULT_RETAINED_MAX_RANGE_DAYS) * DAY_MS
-  let span: number
+// Matches the hub's per-response row cap. A window holding more arrives as
+// the newest RETAINED_RING_LIMIT events with `truncated` set — ring
+// semantics, exactly like the local source's capped ring, never a silent cut.
+export const RETAINED_RING_LIMIT = 50_000
+
+// Depth ceiling of the initial ring load; the hub rejects wider windows.
+const RETAINED_MAX_DEPTH_DAYS = 31
+
+// Delta poll cadence. Same order as the local source's SSE-nudged refetches.
+const RETAINED_POLL_MS = 10_000
+
+// A row-capped delta page sets `more`; the fetch pages forward immediately,
+// bounded so a pathological feed can't spin a single poll forever.
+const RETAINED_DELTA_MAX_PAGES = 10
+
+// Anti-entropy: a periodic full ring reload, the retained twin of the local
+// source's FULL_RESYNC_MS. Catches what deltas structurally can't — server-
+// side deletions, coverage-gap updates, and a stale truncated flag. Hourly,
+// not the local 5 minutes: a full ring is a heavy transfer and the delta feed
+// carries revisions, so entropy accumulates far slower here.
+const RETAINED_FULL_RESYNC_MS = 60 * 60 * 1000
+
+// Client-vs-hub clock skew allowance, applied at both edges of the ring:
+// the initial window's recent edge extends past the client clock by this
+// slack (a clock BEHIND the hub would otherwise exclude already-ingested
+// events in (clientNow, hubNow] — and the delta cursor already covers them,
+// so no poll would ever deliver them; the window slides back by the same
+// slack to stay within the hub's maximum range), and the delta-merge prune
+// floor sits below the retention depth by the same slack (a clock AHEAD of
+// the hub would otherwise prune oldest events the hub still retains).
+export const RETAINED_CLOCK_SKEW_SLACK_MS = 5 * 60 * 1000
+
+// How often a preset-derived window's sliding lower bound refreshes on an
+// IDLE ring (the no-op cached return keeps ring identity stable, so the memo
+// otherwise never re-samples the clock and a "24h" label slowly overstays).
+const RETAINED_PRESET_TICK_MS = 5 * 60 * 1000
+
+// The client-side spans the `timeRange` presets resolve to when no explicit
+// [from,to] window rides the query — the retained twin of the local source's
+// server-side `since` resolution. Preset arms return their nominal span; only
+// 'all'/unset falls back to the ring depth — clamping a preset wider than a
+// shallow host is the CALLER's job (Math.min at the use site). Exported for
+// unit tests; not re-exported publicly.
+export function rangeSpanMs(range: TimeRange | undefined, capMs: number): number {
   switch (range) {
-    case '5m':
-      span = 5 * 60 * 1000
-      break
-    case '30m':
-      span = 30 * 60 * 1000
-      break
-    case '1h':
-      span = HOUR_MS
-      break
-    case '6h':
-      span = 6 * HOUR_MS
-      break
-    case '24h':
-      span = 24 * HOUR_MS
-      break
-    case '7d':
-      span = 7 * DAY_MS
-      break
-    case '30d':
-      span = 30 * DAY_MS
-      break
-    case 'all':
-    case undefined:
-      span = cap
-      break
-    default:
-      span = HOUR_MS
+    case '5m': return 5 * 60 * 1000
+    case '30m': return 30 * 60 * 1000
+    case '1h': return HOUR_MS
+    case '6h': return 6 * HOUR_MS
+    case '24h': return 24 * HOUR_MS
+    case '7d': return 7 * DAY_MS
+    case '30d': return 30 * DAY_MS
+    default: return capMs
   }
-  return Math.min(span, cap)
 }
 
 interface RetainedWindowResult {
   events: TimelineEvent[]
   coverage: TimelineCoverageRecord[]
+  // Next delta cursor (opaque, server-issued). Absent when talking to a hub
+  // that predates the delta feed.
+  cursor?: string
+  // Delta page was row-capped; poll again immediately from `cursor`.
+  more: boolean
+  // Ring load shipped only the newest slice of the window.
+  truncated: boolean
 }
 
-type TerminalRecord = { type: 'end' } | { type: 'error'; message?: string }
+type TerminalRecord =
+  | { type: 'end'; cursor?: string; more?: boolean; truncated?: boolean }
+  | { type: 'error'; message?: string }
 
 // De-dupe by id keeping the LAST occurrence — a later revision of an event
 // replaces the earlier one.
@@ -308,16 +348,9 @@ function dedupeById(events: TimelineEvent[]): TimelineEvent[] {
   return Array.from(byId.values())
 }
 
-// Exported for unit tests (the NDJSON stream parser); not re-exported publicly.
-export async function fetchRetainedWindow(
-  from: number,
-  to: number,
-  signal?: AbortSignal,
-): Promise<RetainedWindowResult> {
-  const res = await apiFetch(
-    apiUrl(`/timeline/events?from=${Math.round(from)}&to=${Math.round(to)}`),
-    signal ? { signal } : undefined,
-  )
+// Shared NDJSON stream reader for both events endpoints (window and delta).
+async function fetchRetainedStream(path: string, signal?: AbortSignal): Promise<RetainedWindowResult> {
+  const res = await apiFetch(apiUrl(path), signal ? { signal } : undefined)
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
     throw new ApiError(errorData.error || `HTTP ${res.status}`, res.status, errorData)
@@ -336,9 +369,9 @@ export async function fetchRetainedWindow(
   const handleLine = (line: string): void => {
     const trimmed = line.trim()
     if (!trimmed) return
-    const rec = JSON.parse(trimmed) as { type?: string; message?: string }
+    const rec = JSON.parse(trimmed) as { type?: string; message?: string; cursor?: string; more?: boolean; truncated?: boolean }
     if (rec.type === 'end') {
-      terminal = { type: 'end' }
+      terminal = { type: 'end', cursor: rec.cursor, more: rec.more, truncated: rec.truncated }
     } else if (rec.type === 'error') {
       terminal = { type: 'error', message: rec.message }
     } else if (rec.type === 'coverage') {
@@ -365,11 +398,38 @@ export async function fetchRetainedWindow(
   if (!terminal) {
     throw new Error('timeline stream truncated (missing terminal record)')
   }
-  if ((terminal as TerminalRecord).type === 'error') {
-    throw new Error((terminal as { message?: string }).message || 'timeline stream error')
+  const end = terminal as TerminalRecord
+  if (end.type === 'error') {
+    throw new Error(end.message || 'timeline stream error')
   }
+  return {
+    events: dedupeById(events),
+    coverage,
+    cursor: end.cursor,
+    more: end.more === true,
+    truncated: end.truncated === true,
+  }
+}
 
-  return { events: dedupeById(events), coverage }
+// The ring load: newest `limit` events overlapping [from, to], plus the delta
+// cursor to continue from. Exported for unit tests; not re-exported publicly.
+export async function fetchRetainedWindow(
+  from: number,
+  to: number,
+  signal?: AbortSignal,
+  limit?: number,
+): Promise<RetainedWindowResult> {
+  const limitParam = limit ? `&limit=${limit}` : ''
+  return fetchRetainedStream(
+    `/timeline/events?from=${Math.round(from)}&to=${Math.round(to)}${limitParam}`,
+    signal,
+  )
+}
+
+// The delta poll: everything ingested since the cursor, in ingestion order.
+// Exported for unit tests; not re-exported publicly.
+export async function fetchRetainedDelta(cursor: string, signal?: AbortSignal): Promise<RetainedWindowResult> {
+  return fetchRetainedStream(`/timeline/events?since=${encodeURIComponent(cursor)}`, signal)
 }
 
 // Mirrors the Go store's TimelineEvent.IsManaged (pkg/timeline/types.go):
@@ -424,14 +484,120 @@ export function applyClientFilters(events: TimelineEvent[], query: TimelineQuery
   return out
 }
 
-function mergeWindows(
-  base: RetainedWindowResult | undefined,
-  live: RetainedWindowResult | undefined,
-): RetainedWindowResult {
-  // live is newer, so it overwrites base for shared ids.
-  const events = dedupeById([...(base?.events ?? []), ...(live?.events ?? [])])
-  const coverage = [...(base?.coverage ?? []), ...(live?.coverage ?? [])]
-  return { events, coverage }
+// The retained ring: what the single query holds. Same shape idea as the
+// local source's cached page, plus retention extras (coverage, truncation).
+export interface RetainedRing {
+  events: TimelineEvent[]
+  coverage: TimelineCoverageRecord[]
+  truncated: boolean
+  // The delta cursor rides the SAME react-query commit as the events it
+  // describes: an aborted or discarded fetch discards both together, so the
+  // cursor can never advance past events that were thrown away. Absent = the
+  // hub predates the delta feed; polls become no-ops (manual refresh still
+  // resyncs) instead of hammering it with a full reload every tick.
+  cursor?: string
+  // When the last FULL ring load ran — the anti-entropy resync clock.
+  loadedAtMs: number
+}
+
+// Ring keys whose next fetch must be a full reload (manual refresh). A side
+// flag, not a side cursor: consuming it only switches the PATH of the next
+// fetch — all sync state that must stay consistent with the data lives inside
+// RetainedRing itself.
+const retainedForceResync = new Set<string>()
+
+// Ring-fetch orchestration, the retained twin of client.ts's
+// runDeltaSyncFetch: full ring load when there's no cached page (or a resync
+// is due), else delta pages merged in with replace-by-id. Extracted so the
+// full-load → delta-poll → cursor-reset contract is exercisable without a
+// React render; state (the cached page, the force flag) is passed in
+// explicitly.
+export async function runRetainedRingFetch(deps: {
+  ringKey: string
+  cached: RetainedRing | undefined
+  forceResync: Set<string>
+  capMs: number
+  now: number
+  signal?: AbortSignal
+}): Promise<RetainedRing> {
+  const { ringKey, cached, forceResync, capMs, now, signal } = deps
+  // Anti-entropy: past the resync window (or on manual refresh), fall through
+  // to a full reload regardless of cursor state — refreshing coverage,
+  // recomputing the truncated flag, and dropping anything deltas can't
+  // retract.
+  // A negative age (loadedAtMs in the future — backward clock step, suspend/
+  // resume) counts as due: the resync clock must fail toward refreshing, not
+  // toward silently suspending anti-entropy for hours.
+  const ringAge = cached != null ? now - cached.loadedAtMs : 0
+  const resyncDue = forceResync.has(ringKey) || (cached != null && (ringAge < 0 || ringAge > RETAINED_FULL_RESYNC_MS))
+  if (cached && !resyncDue) {
+    if (!cached.cursor) {
+      return cached
+    }
+    try {
+      let cursor = cached.cursor
+      let merged = cached.events
+      let changed = false
+      for (let page = 0; page < RETAINED_DELTA_MAX_PAGES; page++) {
+        const delta = await fetchRetainedDelta(cursor, signal)
+        if (delta.cursor) cursor = delta.cursor
+        if (delta.events.length) {
+          merged = mergeDeltaEvents(merged, delta.events, Number.POSITIVE_INFINITY)
+          changed = true
+        }
+        if (!delta.more) break
+      }
+      // Returning the cached reference on a no-op delta skips re-renders. An
+      // idle cluster's cursor is stable by construction — verified against the
+      // hub: EventsIngestedSince starts its frontier AT `since` and advances
+      // it only past emitted rows, and the read-side clamp can only lower a
+      // frontier that already rests at or below the visibility edge.
+      if (!changed && cursor === cached.cursor) return cached
+      // Two bounds keep an always-open tab from growing without limit: the
+      // retention floor (the server TTL-deletes past the same boundary,
+      // held below the depth by the skew slack so a client clock ahead of
+      // the hub cannot prune events the hub still retains) and the ring row
+      // cap — accumulation past it drops the OLDEST rows, the same
+      // semantics as the initial load and the local source's ring, and
+      // flips `truncated` so the UI says so.
+      const floor = now - capMs - RETAINED_CLOCK_SKEW_SLACK_MS
+      const pruned = merged.filter((e) => new Date(e.timestamp).getTime() >= floor)
+      const capped = pruned.length > RETAINED_RING_LIMIT
+      return {
+        events: capped ? pruned.slice(0, RETAINED_RING_LIMIT) : pruned,
+        coverage: cached.coverage,
+        truncated: cached.truncated || capped,
+        cursor,
+        loadedAtMs: cached.loadedAtMs,
+      }
+    } catch (err) {
+      // A rejected cursor (hub restarted onto an older build, operator wiped
+      // the store) is recoverable: fall through to a full reload. Anything
+      // else propagates — react-query keeps the cached ring visible.
+      if (!(err instanceof ApiError && err.status === 400)) {
+        throw err
+      }
+    }
+  }
+  // The recent edge extends past the client clock by the skew slack (a client
+  // clock behind the hub would otherwise leave a permanent hole: events in
+  // (clientNow, hubNow] are under the returned cursor, so no delta re-delivers
+  // them). The window slides back by the same slack to stay within the hub's
+  // maximum range.
+  const to = now + RETAINED_CLOCK_SKEW_SLACK_MS
+  const full = await fetchRetainedWindow(to - capMs, to, signal, RETAINED_RING_LIMIT)
+  // Consume the flag only while this fetch still owns the query. A resolved
+  // load can still be discarded — a manual refresh cancels the in-flight poll
+  // AFTER its network call finished — and deleting then would eat the flag
+  // that refresh just armed, turning it into a silent no-op delta poll.
+  if (!signal?.aborted) forceResync.delete(ringKey)
+  return {
+    events: full.events,
+    coverage: full.coverage,
+    truncated: full.truncated,
+    cursor: full.cursor,
+    loadedAtMs: now,
+  }
 }
 
 function createRetainedEventsHook(
@@ -439,73 +605,78 @@ function createRetainedEventsHook(
 ): (query: TimelineQuery) => TimelineEventsResult {
   return function useRetainedEvents(query: TimelineQuery): TimelineEventsResult {
     const enabled = query.enabled ?? true
+    const queryClient = useQueryClient()
 
-    // Pin the base window when the range (or cap) changes — not on every render —
-    // so the query key is stable and react-query can cache it. Recency is the
-    // live poll's job.
-    const window = useMemo<TimelineRange>(() => {
-      if (query.fromMs != null && query.toMs != null) {
-        // An explicit window (frozen brush, or a hand-entered ?from&to) must not
-        // reach further back than maxRangeDays — the same cap rangeSpanMs applies
-        // to the range-derived branch below. Anchor at the recent edge.
-        const capMs = (capabilities.maxRangeDays ?? DEFAULT_RETAINED_MAX_RANGE_DAYS) * DAY_MS
-        const from = Math.max(query.fromMs, query.toMs - capMs)
-        // Sliding: quantize so two ticks inside one step share a query key (no
-        // refetch). The precise [from,to] is still enforced by applyClientFilters.
-        if (query.sliding) {
-          const q = quantizeBaseWindow(from, query.toMs)
-          return { from: q.fromMs, to: q.toMs }
-        }
-        return { from, to: query.toMs }
-      }
-      const to = Date.now()
-      return { from: to - rangeSpanMs(query.timeRange, capabilities.maxRangeDays), to }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [query.fromMs, query.toMs, query.timeRange, query.sliding, capabilities.maxRangeDays])
-
-    const base = useQuery<RetainedWindowResult>({
-      // apiBase scopes the key: a host that swaps clusters (mutable module global)
-      // must not serve the previous cluster's cached window.
-      queryKey: ['timeline-retained', getApiBase(), 'base', window.from, window.to],
-      queryFn: ({ signal }) => fetchRetainedWindow(window.from, window.to, signal),
-      enabled,
-      staleTime: LIVE_REFETCH_MS,
-      // The base window quantizes to fixed steps, so its key rotates every few
-      // minutes even while live. Hold the previous window's events through the
-      // refetch instead of blanking the range on each rotation.
-      placeholderData: keepPreviousData,
-    })
-
-    // Fixed recent-window re-poll. Key is stable; queryFn reads the clock fresh
-    // each tick so the window slides without churning the cache key. Skipped for
-    // a purely historical brush (its right edge is older than the live window),
-    // where recency merging would only add events the time filter drops.
-    const liveEnabled = enabled && (query.toMs == null || query.toMs >= Date.now() - LIVE_WINDOW_MS)
-    const live = useQuery<RetainedWindowResult>({
-      queryKey: ['timeline-retained', getApiBase(), 'live'],
-      queryFn: ({ signal }) => {
-        const to = Date.now()
-        return fetchRetainedWindow(to - LIVE_WINDOW_MS, to, signal)
-      },
-      enabled: liveEnabled,
-      refetchInterval: LIVE_REFETCH_MS,
-    })
-
-    const merged = useMemo(
-      () => mergeWindows(base.data, live.data),
-      [base.data, live.data],
+    // The ring depth: the host's declared retention, ceilinged by what the hub
+    // serves per request. The key carries it (and the apiBase — a host that
+    // swaps clusters must not serve the previous cluster's ring), NOT the
+    // query's [from,to]: period changes re-window the loaded ring client-side
+    // in applyClientFilters, issuing no fetch — the same behavior as the local
+    // source, which is the point.
+    const capMs =
+      Math.min(capabilities.maxRangeDays ?? DEFAULT_RETAINED_MAX_RANGE_DAYS, RETAINED_MAX_DEPTH_DAYS) * DAY_MS
+    const apiBase = getApiBase()
+    const queryKey = useMemo(
+      () => ['timeline-retained', apiBase, 'ring', capMs],
+      [apiBase, capMs],
     )
 
+    const ring = useQuery<RetainedRing>({
+      queryKey,
+      queryFn: ({ signal }) =>
+        runRetainedRingFetch({
+          ringKey: JSON.stringify(queryKey),
+          cached: queryClient.getQueryData<RetainedRing>(queryKey),
+          forceResync: retainedForceResync,
+          capMs,
+          now: Date.now(),
+          signal,
+        }),
+      enabled,
+      refetchInterval: RETAINED_POLL_MS,
+      staleTime: 5000,
+    })
+
     const kindsKey = query.kinds?.join(',')
+    const namespacesKey = query.namespaces?.join(',')
+    // A preset-derived window slides with the clock; on an idle ring the memo
+    // would never re-sample it (the no-op cached return keeps ring identity
+    // stable), freezing a "24h" bound overnight. A coarse tick keeps the label
+    // honest without meaningful churn.
+    const derivedWindow =
+      query.fromMs == null && query.toMs == null && !!query.timeRange && query.timeRange !== 'all'
+    // Gated on `enabled` too: a disabled consumer (an unopened tab) must not
+    // pay a periodic re-filter of the shared ring. The bump on arming keeps
+    // the window fresh across a disable→enable gap (tab reopened hours later
+    // must not show the stale bound until the next tick).
+    const tickActive = derivedWindow && enabled
+    const [presetTick, setPresetTick] = useState(0)
+    useEffect(() => {
+      if (!tickActive) return
+      setPresetTick((t) => t + 1)
+      const id = setInterval(() => setPresetTick((t) => t + 1), RETAINED_PRESET_TICK_MS)
+      return () => clearInterval(id)
+    }, [tickActive])
     const data = useMemo(() => {
-      if (base.data === undefined && live.data === undefined) return undefined
-      return applyClientFilters(merged.events, query)
+      if (!ring.data) return undefined
+      // A `timeRange` preset without an explicit [from,to] window resolves to
+      // a client-side bound over the ring — the retained twin of the local
+      // source's server-side `since` resolution. Without this, a consumer
+      // like the Applications History tab picking "24h" would silently get
+      // the whole ring.
+      let effective = query
+      if (derivedWindow) {
+        effective = { ...query, fromMs: Date.now() - Math.min(rangeSpanMs(query.timeRange, capMs), capMs) }
+      }
+      return applyClientFilters(ring.data.events, effective)
+      // Every filter is client-side here (the ring key carries none of them),
+      // so each rides the memo: array-valued ones via join keys so identity
+      // churn from the host doesn't re-filter. The live tick advances
+      // query.toMs, re-windowing to the sliding edge with no refetch.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
-      merged,
-      base.data,
-      live.data,
-      query.namespaces,
+      ring.data,
+      namespacesKey,
       kindsKey,
       query.includeK8sEvents,
       query.includeDeleted,
@@ -513,20 +684,26 @@ function createRetainedEventsHook(
       query.limit,
       query.fromMs,
       query.toMs,
+      query.timeRange,
+      capMs,
+      derivedWindow,
+      presetTick,
     ])
 
     return {
       data,
-      isLoading: base.isLoading,
-      isFetching: base.isFetching || live.isFetching,
-      // Base failure is a real error; a failing live poll must not blank an
-      // already-loaded range.
-      isError: base.isError,
+      isLoading: ring.isLoading,
+      isFetching: ring.isFetching,
+      isError: ring.isError,
+      error: ring.error,
       refetch: () => {
-        base.refetch()
-        live.refetch()
+        // Manual refresh is the resync backstop: flag the ring so the next
+        // fetch reloads it whole instead of trusting accumulated state.
+        retainedForceResync.add(JSON.stringify(queryKey))
+        ring.refetch()
       },
-      coverage: merged.coverage,
+      coverage: ring.data?.coverage,
+      truncated: ring.data?.truncated,
     }
   }
 }

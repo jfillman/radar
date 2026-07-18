@@ -499,7 +499,11 @@ export function CapacityOverview({
           {visiblePools.length === 0 && (
             <InlineEmpty
               title="No NodePools"
-              detail="Karpenter is available, but no NodePools are visible to this user."
+              detail={
+                summary.poolCount === 0
+                  ? "Karpenter is installed, but no NodePools exist yet — the inventory fills in as soon as one is created."
+                  : "No NodePools on this page."
+              }
             />
           )}
           <div className="flex items-center gap-3 border-t border-theme-border-subtle px-4 py-2.5 text-xs text-theme-text-tertiary">

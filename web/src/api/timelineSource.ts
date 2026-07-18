@@ -14,7 +14,7 @@
 // wrappers stay source-agnostic: pick the source from context, call useEvents.
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useChanges, apiFetch, mergeDeltaEvents, ApiError, type UseChangesOptions } from './client'
+import { apiFetch, mergeDeltaEvents, ApiError, type UseChangesOptions } from './client'
 import { apiUrl, getApiBase } from './config'
 import type { TimelineEvent, TimeRange } from '../types'
 
@@ -130,57 +130,13 @@ export interface TimelineSourceConfig {
 }
 
 // ============================================================================
-// Local source — thin wrapper over the existing useChanges behavior. Zero
-// behavioral change for OSS standalone.
+// Local source — the same ring-and-delta hook as retained, pointed at the
+// Radar binary's own /timeline/events endpoint. One mechanism, two depths.
 // ============================================================================
 
-// Full ring size to pull when the host bounds the local list by the shared
-// scrubber selection — matches the swimlane's ring fetch so both views cover the
-// same window.
+// The local binary's per-request row ceiling (its /timeline/events pages at
+// 10k, matching the default in-process ring size).
 const LOCAL_RING_LIMIT = 10000
-
-function useLocalEvents(query: TimelineQuery): TimelineEventsResult {
-  // Without a window the dropdown-driven `since` fetch is untouched. When the
-  // host drives an explicit [from,to] window (the shared scrubber selection),
-  // the private range dropdown is bypassed: the local /changes endpoint is
-  // `since`-based and can't express a frozen past window, so load the whole ring
-  // and bound it to the selection client-side (applyClientFilters), exactly as
-  // the swimlane derives its view from the loaded ring.
-  const windowed = query.fromMs != null || query.toMs != null
-  // deltaSync on every full-ring pull (timeRange 'all' — the swimlane's direct
-  // query and the list's windowed one): SSE-driven refetches then transfer only
-  // what arrived since the last full load. Dropdown-ranged (`since`) queries
-  // stay plain — they're small and their range moves with the clock.
-  const { data, isLoading, isFetching, isError, error, refetch } = useChanges(
-    windowed
-      ? { ...query, timeRange: 'all', limit: LOCAL_RING_LIMIT, deltaSync: true }
-      : { ...query, deltaSync: query.timeRange === 'all' },
-  )
-  // applyClientFilters runs on BOTH paths: a multi-kind selection is a CLIENT-side
-  // filter (only a single kind rides the /changes server query key), so a 2+ kind
-  // pick is narrowed here whether or not a window is set. A non-windowed query has
-  // null from/to, so the [from,to] bounding inside is a no-op there; the windowed
-  // path additionally bounds the loaded ring. The memo watches kindsKey itself —
-  // `data` identity won't change when only the kind set does.
-  const kindsKey = query.kinds?.join(',')
-  const events = useMemo(
-    () => (data ? applyClientFilters(data, query) : data),
-    // `data` identity captures every server-side filter change (namespaces,
-    // k8s-events, deleted — all in the useChanges query key); the client-only
-    // window + cap + kind set are added here, plus includeManaged, which is
-    // client-enforced and must not depend on staying in the server key. The
-    // live tick advances query.toMs, re-filtering to the sliding edge with no
-    // refetch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data, query.fromMs, query.toMs, query.limit, kindsKey, query.includeManaged],
-  )
-  return { data: events, isLoading, isFetching, isError, error, refetch }
-}
-
-export const localSource: TimelineSource = {
-  capabilities: { mode: 'local' },
-  useEvents: useLocalEvents,
-}
 
 const LOCAL_HOUR_MS = 60 * 60 * 1000
 
@@ -519,8 +475,12 @@ export async function runRetainedRingFetch(deps: {
   capMs: number
   now: number
   signal?: AbortSignal
+  // Ring row cap: the server's per-request ceiling for this source (the hub
+  // serves up to 50k; the local binary pages at 10k). Also bounds delta
+  // accumulation client-side.
+  ringLimit?: number
 }): Promise<RetainedRing> {
-  const { ringKey, cached, forceResync, capMs, now, signal } = deps
+  const { ringKey, cached, forceResync, capMs, now, signal, ringLimit = RETAINED_RING_LIMIT } = deps
   // Anti-entropy: past the resync window (or on manual refresh), fall through
   // to a full reload regardless of cursor state — refreshing coverage,
   // recomputing the truncated flag, and dropping anything deltas can't
@@ -562,9 +522,9 @@ export async function runRetainedRingFetch(deps: {
       // flips `truncated` so the UI says so.
       const floor = now - capMs - RETAINED_CLOCK_SKEW_SLACK_MS
       const pruned = merged.filter((e) => new Date(e.timestamp).getTime() >= floor)
-      const capped = pruned.length > RETAINED_RING_LIMIT
+      const capped = pruned.length > ringLimit
       return {
-        events: capped ? pruned.slice(0, RETAINED_RING_LIMIT) : pruned,
+        events: capped ? pruned.slice(0, ringLimit) : pruned,
         coverage: cached.coverage,
         truncated: cached.truncated || capped,
         cursor,
@@ -585,7 +545,7 @@ export async function runRetainedRingFetch(deps: {
   // them). The window slides back by the same slack to stay within the hub's
   // maximum range.
   const to = now + RETAINED_CLOCK_SKEW_SLACK_MS
-  const full = await fetchRetainedWindow(to - capMs, to, signal, RETAINED_RING_LIMIT)
+  const full = await fetchRetainedWindow(to - capMs, to, signal, ringLimit)
   // Consume the flag only while this fetch still owns the query. A resolved
   // load can still be discarded — a manual refresh cancels the in-flight poll
   // AFTER its network call finished — and deleting then would eat the flag
@@ -600,25 +560,28 @@ export async function runRetainedRingFetch(deps: {
   }
 }
 
-function createRetainedEventsHook(
-  capabilities: TimelineSourceCapabilities,
-): (query: TimelineQuery) => TimelineEventsResult {
-  return function useRetainedEvents(query: TimelineQuery): TimelineEventsResult {
+// One events hook for every mode. Local and hub-backed timelines share the
+// whole cycle — ring load, cursor deltas, client-side re-windowing — and
+// differ only in depth (capMs) and the server's per-request row ceiling
+// (ringLimit). The endpoint path is identical (`{apiBase}/timeline/events`);
+// apiBase alone decides which server answers.
+function createRingEventsHook(opts: {
+  capMs: number
+  ringLimit: number
+}): (query: TimelineQuery) => TimelineEventsResult {
+  const { capMs, ringLimit } = opts
+  return function useRingEvents(query: TimelineQuery): TimelineEventsResult {
     const enabled = query.enabled ?? true
     const queryClient = useQueryClient()
 
-    // The ring depth: the host's declared retention, ceilinged by what the hub
-    // serves per request. The key carries it (and the apiBase — a host that
-    // swaps clusters must not serve the previous cluster's ring), NOT the
-    // query's [from,to]: period changes re-window the loaded ring client-side
-    // in applyClientFilters, issuing no fetch — the same behavior as the local
-    // source, which is the point.
-    const capMs =
-      Math.min(capabilities.maxRangeDays ?? DEFAULT_RETAINED_MAX_RANGE_DAYS, RETAINED_MAX_DEPTH_DAYS) * DAY_MS
+    // The key carries the depth (and the apiBase — a host that swaps clusters
+    // must not serve the previous cluster's ring), NOT the query's [from,to]:
+    // period changes re-window the loaded ring client-side in
+    // applyClientFilters, issuing no fetch.
     const apiBase = getApiBase()
     const queryKey = useMemo(
-      () => ['timeline-retained', apiBase, 'ring', capMs],
-      [apiBase, capMs],
+      () => ['timeline-ring', apiBase, capMs],
+      [apiBase],
     )
 
     const ring = useQuery<RetainedRing>({
@@ -631,6 +594,7 @@ function createRetainedEventsHook(
           capMs,
           now: Date.now(),
           signal,
+          ringLimit,
         }),
       enabled,
       refetchInterval: RETAINED_POLL_MS,
@@ -741,6 +705,17 @@ async function fetchRetainedOverview(range: TimelineRange): Promise<TimelineOver
   return { buckets, availableFromMs: env.availableFromMs }
 }
 
+export const localSource: TimelineSource = {
+  capabilities: { mode: 'local' },
+  useEvents: createRingEventsHook({
+    // Depth is nominally unbounded locally (the server's own ring and
+    // retention are the real limits); the ceiling only bounds client-side
+    // pruning and 'all'-range resolution.
+    capMs: RETAINED_MAX_DEPTH_DAYS * DAY_MS,
+    ringLimit: LOCAL_RING_LIMIT,
+  }),
+}
+
 export function createRetainedSource(config: TimelineSourceConfig): TimelineSource {
   const capabilities: TimelineSourceCapabilities = {
     mode: 'retained',
@@ -748,7 +723,11 @@ export function createRetainedSource(config: TimelineSourceConfig): TimelineSour
   }
   return {
     capabilities,
-    useEvents: createRetainedEventsHook(capabilities),
+    useEvents: createRingEventsHook({
+      capMs:
+        Math.min(capabilities.maxRangeDays ?? DEFAULT_RETAINED_MAX_RANGE_DAYS, RETAINED_MAX_DEPTH_DAYS) * DAY_MS,
+      ringLimit: RETAINED_RING_LIMIT,
+    }),
     fetchOverview: fetchRetainedOverview,
   }
 }

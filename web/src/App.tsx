@@ -967,6 +967,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     if (tl.timer === null) {
       tl.timer = window.setTimeout(() => {
         queryClient.invalidateQueries({ queryKey: ['changes'] })
+        // The ring-and-delta timeline path: an invalidation costs one ~KB
+        // cursor delta, so SSE keeps the timeline fresh within seconds and
+        // the hook's 10s poll remains the no-SSE fallback.
+        queryClient.invalidateQueries({ queryKey: ['timeline-ring'] })
         timelineInvalidationRef.current = { timer: null }
       }, 5000)
     }

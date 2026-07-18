@@ -444,6 +444,10 @@ func (s *Server) setupRoutes() {
 			r.Get("/events", s.handleEvents)
 			r.Get("/changes", s.handleChanges)
 			r.Get("/changes/{kind}/{namespace}/{name}/children", s.handleChangeChildren)
+			// The shared timeline wire contract (NDJSON + terminal record) —
+			// the same shape the hub serves; backs the web client's single
+			// ring-and-delta timeline path.
+			r.Get("/timeline/events", s.handleTimelineEvents)
 
 			// Pod logs (non-streaming)
 			r.Get("/pods/{namespace}/{name}/logs", s.handlePodLogs)

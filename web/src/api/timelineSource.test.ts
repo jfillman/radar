@@ -402,6 +402,30 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
     expect(out.truncated).toBe(true)
   })
 
+  // The local source shares this implementation with a smaller ceiling (its
+  // binary pages at 10k); the cap and the window-load limit must both follow
+  // the configured ringLimit, not the retained default.
+  it('honors a per-source ringLimit for the cap and the window-load limit', async () => {
+    const flags = new Set<string>()
+    const cached = ring([
+      ev({ id: 'old-1', timestamp: new Date(NOW - DAY - 1000).toISOString() }),
+      ev({ id: 'old-2', timestamp: new Date(NOW - DAY - 2000).toISOString() }),
+      ev({ id: 'old-3', timestamp: new Date(NOW - DAY - 3000).toISOString() }),
+    ])
+    mockApiFetch.mockResolvedValueOnce(
+      streamResponse([line(ev({ id: 'new-1', timestamp: new Date(NOW).toISOString() })), end({ cursor: '200' })]),
+    )
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW, ringLimit: 3 })
+    expect(out.events.map((e) => e.id)).toEqual(['new-1', 'old-1', 'old-2'])
+    expect(out.truncated).toBe(true)
+
+    // A full load sends the configured limit on the wire.
+    const flags2 = new Set<string>()
+    mockApiFetch.mockResolvedValueOnce(streamResponse([end({ cursor: '1' })]))
+    await runRetainedRingFetch({ ringKey: 'k2', cached: undefined, forceResync: flags2, capMs: CAP, now: NOW, ringLimit: 3 })
+    expect(mockApiFetch.mock.calls.at(-1)?.[0]).toContain('limit=3')
+  })
+
   it('a hub without a delta cursor turns polls into no-ops instead of full reloads', async () => {
     const flags = new Set<string>()
     // Full load whose end record has NO cursor (pre-delta hub).

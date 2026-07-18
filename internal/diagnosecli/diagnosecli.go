@@ -493,7 +493,7 @@ func streamRun(base, id string, out *renderer) (json.RawMessage, bool) {
 			return nil, false
 		}
 	}
-	fmt.Fprintln(os.Stderr, "stream ended unexpectedly — the run keeps going; watch it in the Radar UI")
+	fmt.Fprintf(os.Stderr, "stream ended unexpectedly — the run keeps going; watch it at %s/?ai-run=%s\n", base, id)
 	return nil, false
 }
 

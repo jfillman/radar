@@ -36,6 +36,9 @@ type hubTunnelResult struct {
 	lastConnectedAt *time.Time
 	detail          string
 	next            string
+	openURL         string
+	reinstall       bool
+	openClusters    bool
 }
 
 type agentStatusGetter interface {
@@ -411,6 +414,9 @@ func printHubTunnelStatusWithStyle(out io.Writer, target cloudinstall.RadarTarge
 	if result.detail != "" {
 		fmt.Fprintf(out, "%s %s\n", style.Dim("Details:"), result.detail)
 	}
+	if result.openURL != "" {
+		fmt.Fprintf(out, "%s %s\n", style.Bold("Open:"), result.openURL)
+	}
 	if result.next != "" {
 		fmt.Fprintf(out, "%s %s\n", style.Bold("Next:"), result.next)
 	}
@@ -460,7 +466,24 @@ func checkHubTunnelStatus(ctx context.Context, kc kubernetes.Interface, target c
 			next:    "correct the Hub URL, then run this command again.",
 		}
 	}
-	return checkHubTunnelStatusWithClient(ctx, kc, target, client)
+	result := checkHubTunnelStatusWithClient(ctx, kc, target, client)
+	if ctx.Err() == nil && (result.verdict == hubTunnelHealthy || result.openClusters) {
+		if frontendURL, ferr := client.GetFrontendURL(ctx); ferr == nil {
+			result = addHubFrontendLinks(result, frontendURL)
+		}
+	}
+	return result
+}
+
+func addHubFrontendLinks(result hubTunnelResult, frontendURL string) hubTunnelResult {
+	result.openURL = strings.TrimRight(frontendURL, "/") + "/clusters"
+	if result.verdict == hubTunnelHealthy && result.hubClusterID != "" {
+		result.openURL = cloudClusterURL(frontendURL, result.hubClusterID)
+	}
+	if result.reinstall {
+		result.next = "in the Clusters page above, choose the matching cluster, select Reinstall, ensure “Already running Radar” is selected, and run the generated command in this Kubernetes context. Then rerun this status command."
+	}
+	return result
 }
 
 func checkHubTunnelStatusWithClient(ctx context.Context, kc kubernetes.Interface, target cloudinstall.RadarTarget, client agentStatusGetter) hubTunnelResult {
@@ -477,15 +500,17 @@ func checkHubTunnelStatusWithClient(ctx context.Context, kc kubernetes.Interface
 		return hubTunnelResult{
 			summary: "not checked — Kubernetes denied access to the connection Secret",
 			detail:  fmt.Sprintf("Secret %q", secretRef),
-			next:    "run this command with an account that can read the Secret, or verify the connection in the Hub.",
+			next:    "run this command with an account that can read the Secret.",
 		}
 	}
 	if apierrors.IsNotFound(err) {
 		return hubTunnelResult{
-			verdict: hubTunnelUnhealthy,
-			summary: "failed — the connection Secret was not found",
-			detail:  fmt.Sprintf("Secret %q", secretRef),
-			next:    "restore the Secret or correct cloud.existingSecret, then run this command again.",
+			verdict:      hubTunnelUnhealthy,
+			summary:      "failed — the connection Secret was not found",
+			detail:       fmt.Sprintf("Secret %q", secretRef),
+			next:         "ask a Radar organization owner to generate a Reinstall command for this cluster, run it in this Kubernetes context, then rerun this status command.",
+			reinstall:    true,
+			openClusters: true,
 		}
 	}
 	if err != nil {
@@ -498,17 +523,21 @@ func checkHubTunnelStatusWithClient(ctx context.Context, kc kubernetes.Interface
 	token := string(secret.Data[runtime.CloudTokenSecretKey])
 	if token == "" {
 		return hubTunnelResult{
-			verdict: hubTunnelUnhealthy,
-			summary: "failed — the connection Secret has no usable token",
-			detail:  fmt.Sprintf("Secret %q, key %q", secretRef, runtime.CloudTokenSecretKey),
-			next:    "restore the token key, then restart the Radar agent.",
+			verdict:      hubTunnelUnhealthy,
+			summary:      "failed — the connection Secret has no usable token",
+			detail:       fmt.Sprintf("Secret %q, key %q", secretRef, runtime.CloudTokenSecretKey),
+			next:         "ask a Radar organization owner to generate a Reinstall command for this cluster, run it in this Kubernetes context, then rerun this status command.",
+			reinstall:    true,
+			openClusters: true,
 		}
 	}
 	status, err := client.Get(ctx, token)
 	result := evaluateHubTunnelStatus(status, err)
 	if errors.Is(err, cloud.ErrAgentStatusUnauthorized) {
 		result.detail = fmt.Sprintf("Kubernetes Secret %q, key %q", secretRef, runtime.CloudTokenSecretKey)
-		result.next = "generate a new cluster token in the Hub, update this Secret, then restart the Radar agent."
+		result.next = "ask a Radar organization owner to generate a Reinstall command for this cluster, run it in this Kubernetes context, then rerun this status command."
+		result.reinstall = true
+		result.openClusters = true
 	}
 	return result
 }
@@ -521,7 +550,7 @@ func evaluateHubTunnelStatus(status *cloud.AgentStatusResponse, err error) hubTu
 		return hubTunnelResult{
 			summary: "not checked — the Hub status endpoint was not found",
 			detail:  "GET /api/agent/status returned HTTP 404",
-			next:    "verify the connection in the Hub's cluster list; if this is a self-hosted Hub, upgrade it to a version that supports live connection status.",
+			next:    "if this is a self-hosted Hub, upgrade it to a version that supports live connection status.",
 		}
 	}
 	if err != nil {
@@ -539,12 +568,12 @@ func evaluateHubTunnelStatus(status *cloud.AgentStatusResponse, err error) hubTu
 	case "disconnected":
 		return hubTunnelResult{
 			verdict: hubTunnelUnhealthy, summary: "disconnected", hubClusterID: status.ClusterID, lastConnectedAt: status.LastConnectedAt,
-			next: "check the Radar agent state above and its Cloud connection logs.",
+			next: "check the Radar agent state above and its Cloud connection logs.", openClusters: true,
 		}
 	case "never_connected":
 		return hubTunnelResult{
 			verdict: hubTunnelUnhealthy, summary: hubTunnelNeverConnectedSummary, hubClusterID: status.ClusterID,
-			next: "check the Radar agent state above and its Cloud connection logs.",
+			next: "check the Radar agent state above and its Cloud connection logs.", openClusters: true,
 		}
 	default:
 		return hubTunnelResult{

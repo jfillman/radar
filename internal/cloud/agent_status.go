@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,10 @@ type AgentStatusResponse struct {
 	ClusterID       string     `json:"cluster_id"`
 	Status          string     `json:"status"`
 	LastConnectedAt *time.Time `json:"last_connected_at,omitempty"`
+}
+
+type hubPublicConfig struct {
+	FrontendURL string `json:"frontend_url"`
 }
 
 // AgentStatusClient reuses the Hub client's validation and no-redirect
@@ -83,4 +88,44 @@ func (c *AgentStatusClient) Get(ctx context.Context, token string) (*AgentStatus
 		return nil, errors.New("decode Hub agent status: cluster_id and status are required")
 	}
 	return &status, nil
+}
+
+// GetFrontendURL returns the Hub's canonical browser origin from its public
+// runtime configuration. It is intentionally independent of the cluster token
+// so status can still print an actionable link when that token was rejected.
+func (c *AgentStatusClient) GetFrontendURL(ctx context.Context) (string, error) {
+	if err := c.validateHubOrigin(); err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.HubBase+"/api/config", nil)
+	if err != nil {
+		return "", fmt.Errorf("build Hub config request: %w", err)
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return "", fmt.Errorf("query Hub config: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("query Hub config: Hub returned %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAgentStatusBodyBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read Hub config: %w", err)
+	}
+	if len(body) > maxAgentStatusBodyBytes {
+		return "", errors.New("read Hub config: response is too large")
+	}
+	var cfg hubPublicConfig
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		return "", fmt.Errorf("decode Hub config: %w", err)
+	}
+	cfg.FrontendURL = strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/")
+	if cfg.FrontendURL == "" {
+		return "", errors.New("decode Hub config: frontend_url is required")
+	}
+	if err := ValidateHubOrigin(cfg.FrontendURL); err != nil {
+		return "", fmt.Errorf("decode Hub config: invalid frontend_url: %w", err)
+	}
+	return cfg.FrontendURL, nil
 }

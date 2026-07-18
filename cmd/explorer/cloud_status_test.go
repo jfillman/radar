@@ -159,14 +159,15 @@ func TestCheckHubTunnelStatusFailsForBrokenSecretReference(t *testing.T) {
 func TestEvaluateHubTunnelStatusHealthContract(t *testing.T) {
 	connectedAt := time.Date(2026, time.July, 18, 7, 30, 0, 0, time.UTC)
 	for _, tc := range []struct {
-		name    string
-		status  *cloud.AgentStatusResponse
-		err     error
-		verdict hubTunnelVerdict
-		want    string
+		name         string
+		status       *cloud.AgentStatusResponse
+		err          error
+		verdict      hubTunnelVerdict
+		want         string
+		openClusters bool
 	}{
-		{name: "disconnected", status: &cloud.AgentStatusResponse{ClusterID: "clus_123", Status: "disconnected", LastConnectedAt: &connectedAt}, verdict: hubTunnelUnhealthy, want: "disconnected"},
-		{name: "never connected", status: &cloud.AgentStatusResponse{ClusterID: "clus_123", Status: "never_connected"}, verdict: hubTunnelUnhealthy, want: "never connected"},
+		{name: "disconnected", status: &cloud.AgentStatusResponse{ClusterID: "clus_123", Status: "disconnected", LastConnectedAt: &connectedAt}, verdict: hubTunnelUnhealthy, want: "disconnected", openClusters: true},
+		{name: "never connected", status: &cloud.AgentStatusResponse{ClusterID: "clus_123", Status: "never_connected"}, verdict: hubTunnelUnhealthy, want: "never connected", openClusters: true},
 		{name: "rejected", err: cloud.ErrAgentStatusUnauthorized, verdict: hubTunnelUnhealthy, want: "rejected the connection token"},
 		{name: "status endpoint not found", err: cloud.ErrAgentStatusEndpointNotFound, verdict: hubTunnelUnavailable, want: "status endpoint was not found"},
 		{name: "network unavailable", err: errors.New("dial timeout"), verdict: hubTunnelUnavailable, want: "Hub status request failed"},
@@ -176,6 +177,9 @@ func TestEvaluateHubTunnelStatusHealthContract(t *testing.T) {
 			actual := strings.Join([]string{got.summary, got.detail, got.next}, "\n")
 			if got.verdict != tc.verdict || !strings.Contains(actual, tc.want) {
 				t.Fatalf("result = %#v", got)
+			}
+			if got.openClusters != tc.openClusters {
+				t.Fatalf("openClusters = %v, want %v: %#v", got.openClusters, tc.openClusters, got)
 			}
 			if tc.name == "disconnected" && (got.lastConnectedAt == nil || !got.lastConnectedAt.Equal(connectedAt)) {
 				t.Fatalf("disconnected timestamp = %#v", got.lastConnectedAt)
@@ -334,8 +338,41 @@ func TestCheckHubTunnelStatusRejectedTokenNamesCredentialAndRecovery(t *testing.
 	got := checkHubTunnelStatusWithClient(context.Background(), kc, target, client)
 	if got.verdict != hubTunnelUnhealthy || !strings.Contains(got.summary, "rejected the connection token") ||
 		!strings.Contains(got.detail, `Kubernetes Secret "radar/radar-cloud-config", key "token"`) ||
-		!strings.Contains(got.next, "generate a new cluster token in the Hub") {
+		!strings.Contains(got.next, "organization owner") || !got.reinstall {
 		t.Fatalf("result = %#v", got)
+	}
+}
+
+func TestAddHubFrontendLinksUsesExactClusterAndRecoveryDestinations(t *testing.T) {
+	connected := addHubFrontendLinks(hubTunnelResult{verdict: hubTunnelHealthy, hubClusterID: "clus/a b"}, "https://app.radarhq.io/")
+	if connected.openURL != "https://app.radarhq.io/c/clus%2Fa%20b" {
+		t.Fatalf("connected open URL = %q", connected.openURL)
+	}
+
+	recovery := addHubFrontendLinks(hubTunnelResult{reinstall: true}, "https://app.radarhq.io/")
+	if recovery.openURL != "https://app.radarhq.io/clusters" ||
+		!strings.Contains(recovery.next, "select Reinstall") ||
+		!strings.Contains(recovery.next, "ensure “Already running Radar” is selected") {
+		t.Fatalf("recovery = %#v", recovery)
+	}
+
+	disconnected := addHubFrontendLinks(hubTunnelResult{verdict: hubTunnelUnhealthy, hubClusterID: "clus_123", openClusters: true}, "https://app.radarhq.io/")
+	if disconnected.openURL != "https://app.radarhq.io/clusters" {
+		t.Fatalf("disconnected open URL = %q", disconnected.openURL)
+	}
+}
+
+func TestPrintHubTunnelStatusPrintsActionableURL(t *testing.T) {
+	var out bytes.Buffer
+	printHubTunnelStatus(&out, cloudinstall.RadarTarget{}, hubTunnelResult{
+		verdict: hubTunnelUnhealthy,
+		summary: "failed — the Hub rejected the connection token",
+		openURL: "https://app.radarhq.io/clusters",
+		next:    "choose Reinstall.",
+	})
+	got := out.String()
+	if !strings.Contains(got, "Open: https://app.radarhq.io/clusters") || !strings.Contains(got, "Next: choose Reinstall.") {
+		t.Fatalf("output = %q", got)
 	}
 }
 

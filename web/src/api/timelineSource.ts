@@ -32,6 +32,10 @@ export type TimelineQuery = UseChangesOptions & {
 
 export interface TimelineSourceCapabilities {
   mode: 'local' | 'retained'
+  // The server's per-request row ceiling for this source — the number the
+  // truncation copy must cite (the local binary pages at 10k, a retained
+  // backend at 50k).
+  ringLimit: number
   // Only meaningful for 'retained': the maximum lookback the retained backend
   // serves. Clamps EVERY derived range (rangeSpanMs, not just 'all'), the
   // from-edge of an explicit [from,to] window, and the scrubber's selectable
@@ -374,18 +378,36 @@ export async function fetchRetainedWindow(
   to: number,
   signal?: AbortSignal,
   limit?: number,
+  namespaces?: string[],
 ): Promise<RetainedWindowResult> {
   const limitParam = limit ? `&limit=${limit}` : ''
   return fetchRetainedStream(
-    `/timeline/events?from=${Math.round(from)}&to=${Math.round(to)}${limitParam}`,
+    `/timeline/events?from=${Math.round(from)}&to=${Math.round(to)}${limitParam}${namespacesParam(namespaces)}`,
     signal,
   )
 }
 
+// A namespace-scoped consumer must scope the SERVER query, not just the
+// client filter: the ring is row-capped, so an all-namespace ring on a busy
+// cluster could spend its whole budget on other namespaces' events. A server
+// that scopes only by time ignores the parameter and the client filter still
+// applies.
+function namespacesParam(namespaces?: string[]): string {
+  if (!namespaces || namespaces.length === 0) return ''
+  return `&namespaces=${encodeURIComponent(namespaces.join(','))}`
+}
+
 // The delta poll: everything ingested since the cursor, in ingestion order.
 // Exported for unit tests; not re-exported publicly.
-export async function fetchRetainedDelta(cursor: string, signal?: AbortSignal): Promise<RetainedWindowResult> {
-  return fetchRetainedStream(`/timeline/events?since=${encodeURIComponent(cursor)}`, signal)
+export async function fetchRetainedDelta(
+  cursor: string,
+  signal?: AbortSignal,
+  namespaces?: string[],
+): Promise<RetainedWindowResult> {
+  return fetchRetainedStream(
+    `/timeline/events?since=${encodeURIComponent(cursor)}${namespacesParam(namespaces)}`,
+    signal,
+  )
 }
 
 // Mirrors the Go store's TimelineEvent.IsManaged (pkg/timeline/types.go):
@@ -479,8 +501,11 @@ export async function runRetainedRingFetch(deps: {
   // serves up to 50k; the local binary pages at 10k). Also bounds delta
   // accumulation client-side.
   ringLimit?: number
+  // Scope the server query when the consumer is namespace-scoped; see
+  // namespacesParam.
+  namespaces?: string[]
 }): Promise<RetainedRing> {
-  const { ringKey, cached, forceResync, capMs, now, signal, ringLimit = RETAINED_RING_LIMIT } = deps
+  const { ringKey, cached, forceResync, capMs, now, signal, ringLimit = RETAINED_RING_LIMIT, namespaces } = deps
   // Anti-entropy: past the resync window (or on manual refresh), fall through
   // to a full reload regardless of cursor state — refreshing coverage,
   // recomputing the truncated flag, and dropping anything deltas can't
@@ -499,7 +524,7 @@ export async function runRetainedRingFetch(deps: {
       let merged = cached.events
       let changed = false
       for (let page = 0; page < RETAINED_DELTA_MAX_PAGES; page++) {
-        const delta = await fetchRetainedDelta(cursor, signal)
+        const delta = await fetchRetainedDelta(cursor, signal, namespaces)
         if (delta.cursor) cursor = delta.cursor
         if (delta.events.length) {
           merged = mergeDeltaEvents(merged, delta.events, Number.POSITIVE_INFINITY)
@@ -545,7 +570,7 @@ export async function runRetainedRingFetch(deps: {
   // them). The window slides back by the same slack to stay within the hub's
   // maximum range.
   const to = now + RETAINED_CLOCK_SKEW_SLACK_MS
-  const full = await fetchRetainedWindow(to - capMs, to, signal, ringLimit)
+  const full = await fetchRetainedWindow(to - capMs, to, signal, ringLimit, namespaces)
   // Consume the flag only while this fetch still owns the query. A resolved
   // load can still be discarded — a manual refresh cancels the in-flight poll
   // AFTER its network call finished — and deleting then would eat the flag
@@ -574,14 +599,18 @@ function createRingEventsHook(opts: {
     const enabled = query.enabled ?? true
     const queryClient = useQueryClient()
 
-    // The key carries the depth (and the apiBase — a host that swaps clusters
-    // must not serve the previous cluster's ring), NOT the query's [from,to]:
-    // period changes re-window the loaded ring client-side in
-    // applyClientFilters, issuing no fetch.
+    // The key carries the depth, the apiBase (a host that swaps clusters must
+    // not serve the previous cluster's ring), and the namespace scope (the
+    // ring is row-capped, so the SERVER query must be scoped for a
+    // namespace-scoped consumer — an all-namespace ring could spend its whole
+    // budget elsewhere). It does NOT carry the query's [from,to]: period
+    // changes re-window the loaded ring client-side in applyClientFilters,
+    // issuing no fetch.
     const apiBase = getApiBase()
+    const ringNamespacesKey = query.namespaces?.length ? [...query.namespaces].sort().join(',') : ''
     const queryKey = useMemo(
-      () => ['timeline-ring', apiBase, capMs],
-      [apiBase],
+      () => ['timeline-ring', apiBase, capMs, ringNamespacesKey],
+      [apiBase, ringNamespacesKey],
     )
 
     const ring = useQuery<RetainedRing>({
@@ -595,6 +624,7 @@ function createRingEventsHook(opts: {
           now: Date.now(),
           signal,
           ringLimit,
+          namespaces: ringNamespacesKey ? ringNamespacesKey.split(',') : undefined,
         }),
       enabled,
       refetchInterval: RETAINED_POLL_MS,
@@ -706,7 +736,7 @@ async function fetchRetainedOverview(range: TimelineRange): Promise<TimelineOver
 }
 
 export const localSource: TimelineSource = {
-  capabilities: { mode: 'local' },
+  capabilities: { mode: 'local', ringLimit: LOCAL_RING_LIMIT },
   useEvents: createRingEventsHook({
     // Depth is nominally unbounded locally (the server's own ring and
     // retention are the real limits); the ceiling only bounds client-side
@@ -719,6 +749,7 @@ export const localSource: TimelineSource = {
 export function createRetainedSource(config: TimelineSourceConfig): TimelineSource {
   const capabilities: TimelineSourceCapabilities = {
     mode: 'retained',
+    ringLimit: RETAINED_RING_LIMIT,
     maxRangeDays: config.maxRangeDays,
   }
   return {

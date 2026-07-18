@@ -426,6 +426,27 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
     expect(mockApiFetch.mock.calls.at(-1)?.[0]).toContain('limit=3')
   })
 
+  // The ring is row-capped, so a namespace-scoped consumer must scope the
+  // server query itself — client-side filtering alone would let other
+  // namespaces' events consume the cap.
+  it('sends the namespace scope on window loads and delta polls', async () => {
+    const flags = new Set<string>()
+    mockApiFetch.mockResolvedValueOnce(streamResponse([end({ cursor: '5' })]))
+    const first = await runRetainedRingFetch({
+      ringKey: 'k', cached: undefined, forceResync: flags, capMs: CAP, now: NOW,
+      namespaces: ['team-a', 'team-b'],
+    })
+    expect(mockApiFetch.mock.calls.at(-1)?.[0]).toContain('namespaces=team-a%2Cteam-b')
+
+    mockApiFetch.mockResolvedValueOnce(streamResponse([end({ cursor: '6' })]))
+    await runRetainedRingFetch({
+      ringKey: 'k', cached: first, forceResync: flags, capMs: CAP, now: NOW,
+      namespaces: ['team-a', 'team-b'],
+    })
+    expect(mockApiFetch.mock.calls.at(-1)?.[0]).toContain('since=5')
+    expect(mockApiFetch.mock.calls.at(-1)?.[0]).toContain('namespaces=team-a%2Cteam-b')
+  })
+
   it('a hub without a delta cursor turns polls into no-ops instead of full reloads', async () => {
     const flags = new Set<string>()
     // Full load whose end record has NO cursor (pre-delta hub).

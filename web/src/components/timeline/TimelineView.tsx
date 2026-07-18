@@ -25,7 +25,6 @@ import { RetainedTimelineScrubber, extendSelection, type ScrubberDomainInfo } fr
 import { LocalTimelineScrubber } from './LocalTimelineScrubber'
 import { useTopology, useApplications } from '../../api/client'
 import { useTimelineSource } from '../../context/TimelineSource'
-import { RETAINED_RING_LIMIT } from '../../api/timelineSource'
 import type { Topology } from '../../types'
 import type { NavigateToResource } from '../../utils/navigation'
 import { LargeClusterNamespacePicker } from '../shared/LargeClusterNamespacePicker'
@@ -832,7 +831,7 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
         {ringTruncated && (
           <div className="flex items-center gap-1.5 border-b border-theme-border px-4 py-1.5 text-xs text-theme-text-tertiary">
             <AlertTriangle className={`h-3.5 w-3.5 shrink-0 ${SEVERITY_TEXT.warning}`} />
-            History is truncated: showing the newest {RETAINED_RING_LIMIT.toLocaleString()} events of the retention window — the oldest activity is not loaded.
+            History is truncated: showing the newest {timelineSource.capabilities.ringLimit.toLocaleString()} events of the retention window — the oldest activity is not loaded.
           </div>
         )}
         {/* Failing background polls with a loaded ring: keep the data, say

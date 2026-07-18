@@ -75,8 +75,18 @@ export function quantityToNumber(
   resource: string,
   value: string,
 ): number | null {
-  const parsed =
-    resource === "cpu" ? parseCPUToNanocores(value) : parseMemoryToBytes(value);
+  if (resource === "cpu") {
+    const parsed = parseCPUToNanocores(value);
+    if (Number.isFinite(parsed) && (parsed !== 0 || /^[0.]+\D*$/.test(value))) {
+      return parsed;
+    }
+    return null;
+  }
+  // Milli quantities before the byte parser — it ignores the `m` suffix and
+  // would read 3000m as 3000, a 1000× distortion.
+  const milli = /^(-?\d+(?:\.\d+)?)m$/.exec(value);
+  if (milli) return Number(milli[1]) / 1000;
+  const parsed = parseMemoryToBytes(value);
   if (Number.isFinite(parsed) && (parsed !== 0 || /^[0.]+\D*$/.test(value))) {
     return parsed;
   }

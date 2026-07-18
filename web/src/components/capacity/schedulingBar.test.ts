@@ -131,6 +131,9 @@ describe("quantityToNumber", () => {
     expect(quantityToNumber("memory", "1Gi")).toBe(1024 ** 3);
     expect(quantityToNumber("nvidia.com/gpu", "8")).toBe(8);
     expect(quantityToNumber("nvidia.com/gpu", "not-a-number")).toBeNull();
+    // Milli quantities must not read 1000× large through the byte parser.
+    expect(quantityToNumber("example.com/widget", "3000m")).toBe(3);
+    expect(quantityToNumber("cpu", "1500m")).toBe(1.5e9);
   });
 });
 

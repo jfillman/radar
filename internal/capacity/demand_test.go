@@ -1027,6 +1027,17 @@ func TestDemandInstanceShapeMissingResourceIsUnknownNotFit(t *testing.T) {
 		t.Fatalf("memory request vs memory-less shape = %q, want unknown (absent resource cannot prove the fit)", group.PoolEvaluations[0].Result)
 	}
 
+	// A claim-derived shape without pods (launching claims omit it) must not
+	// fail the fit — every request carries a synthetic pods=1, and pod slots
+	// are not an instance-shape dimension.
+	podlessShape := []corev1.ResourceList{resourceList(map[corev1.ResourceName]string{corev1.ResourceCPU: "48", corev1.ResourceMemory: "96Gi"})}
+	fits := demandTestPod("fits-podless", "8")
+	fits.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = resource.MustParse("4Gi")
+	group = BuildDemandGroups(DemandInput{GeneratedAt: capacityTestTime(), Pods: []*corev1.Pod{fits}, Pools: []DemandPoolInput{{NodePool: pool, ObservedMemberShapes: podlessShape}}})[0]
+	if group.PoolEvaluations[0].Result != capacityapi.PoolDeclaredCompatible {
+		t.Fatalf("podless claim shape = %q, want declared compatible", group.PoolEvaluations[0].Result)
+	}
+
 	// An explicit zero request for an absent resource still fits.
 	zero := demandTestPod("zero", "8")
 	zero.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = resource.MustParse("0")

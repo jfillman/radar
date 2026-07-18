@@ -295,6 +295,13 @@ func instanceShapeUnknowns(requests corev1.ResourceList, shapes []corev1.Resourc
 			if request.IsZero() {
 				continue
 			}
+			// Pod slots are not an instance-shape dimension: a single pod
+			// occupies exactly one slot on any real member, and launching
+			// claims often omit pods from status.capacity — failing on it
+			// would degrade every scale-from-zero pool to unknown.
+			if name == corev1.ResourcePods {
+				continue
+			}
 			// A resource absent from the shape (a GPU request against a
 			// GPU-less member) cannot prove the fit any more than an
 			// undersized one can.

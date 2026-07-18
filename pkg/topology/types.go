@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"encoding/json"
 	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -185,6 +186,23 @@ type Topology struct {
 	CRDDiscoveryStatus      string   `json:"crdDiscoveryStatus,omitempty"`      // CRD discovery status: idle, discovering, ready
 	EstimatedNodes          int      `json:"estimatedNodes,omitempty"`          // Pre-build node count estimate from the large-cluster optimizer; exposed so SSE / UI can tune debounce + render mode off the same signal
 	SummaryMode             bool     `json:"summaryMode,omitempty"`             // True when the pod tier was collapsed into per-workload/service counts (see SummaryModeThreshold)
+}
+
+// MarshalJSON guarantees the wire contract the frontend types promise:
+// nodes and edges are arrays, never null. Producers reintroduce nil slices
+// too easily (an append-based clone of an empty topology, a strip that
+// drops everything), so the contract is enforced at the marshal boundary
+// rather than per producer.
+func (t Topology) MarshalJSON() ([]byte, error) {
+	type wireTopology Topology
+	out := wireTopology(t)
+	if out.Nodes == nil {
+		out.Nodes = []Node{}
+	}
+	if out.Edges == nil {
+		out.Edges = []Edge{}
+	}
+	return json.Marshal(out)
 }
 
 // StripNodeKinds removes nodes whose Kind is in deny, plus every edge that

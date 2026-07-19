@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
+	"github.com/skyhook-io/radar/pkg/gitops/diagnose"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -43,6 +44,8 @@ var diffFunctions = map[string]kindDiffFunc{
 	"Pod":                            diffPod,
 	"Service":                        diffService,
 	"ConfigMap":                      diffConfigMap,
+	"Secret":                         diffSecret,
+	"SealedSecret":                   diffSealedSecret,
 	"Ingress":                        diffIngress,
 	"ReplicaSet":                     diffReplicaSet,
 	"DaemonSet":                      diffDaemonSet,
@@ -111,6 +114,8 @@ func diffInputForUnstructured(kind string, u *unstructured.Unstructured) any {
 		return typedOrUnstructured[corev1.Service](u)
 	case "ConfigMap":
 		return typedOrUnstructured[corev1.ConfigMap](u)
+	case "Secret":
+		return typedOrUnstructured[corev1.Secret](u)
 	case "Ingress":
 		return typedOrUnstructured[networkingv1.Ingress](u)
 	case "ReplicaSet":
@@ -1011,19 +1016,7 @@ func diffConfigMap(oldObj, newObj any) ([]FieldChange, []string) {
 		}
 	}
 
-	// binaryData (separate field for non-UTF-8 payloads). Same key-only semantic.
-	oldBinKeys := getBinaryMapKeys(oldCM.BinaryData)
-	newBinKeys := getBinaryMapKeys(newCM.BinaryData)
-	addedBin := diffStringSlices(newBinKeys, oldBinKeys)
-	removedBin := diffStringSlices(oldBinKeys, newBinKeys)
-	if len(addedBin) > 0 {
-		changes = append(changes, FieldChange{Path: "binaryData (added keys)", OldValue: nil, NewValue: addedBin})
-		summary = append(summary, fmt.Sprintf("added binaryData keys: %v", addedBin))
-	}
-	if len(removedBin) > 0 {
-		changes = append(changes, FieldChange{Path: "binaryData (removed keys)", OldValue: removedBin, NewValue: nil})
-		summary = append(summary, fmt.Sprintf("removed binaryData keys: %v", removedBin))
-	}
+	appendSensitiveMapChanges(&changes, &summary, "binaryData", oldCM.BinaryData, newCM.BinaryData)
 
 	// Immutable flag flips are user-meaningful (locks the CM until recreated).
 	oldImmut := oldCM.Immutable != nil && *oldCM.Immutable
@@ -1038,6 +1031,90 @@ func diffConfigMap(oldObj, newObj any) ([]FieldChange, []string) {
 	}
 
 	return changes, summary
+}
+
+func diffSecret(oldObj, newObj any) ([]FieldChange, []string) {
+	oldSecret, ok1 := oldObj.(*corev1.Secret)
+	newSecret, ok2 := newObj.(*corev1.Secret)
+	if !ok1 || !ok2 {
+		return nil, nil
+	}
+
+	var changes []FieldChange
+	var summary []string
+	appendSensitiveMapChanges(&changes, &summary, "data", oldSecret.Data, newSecret.Data)
+	appendSensitiveMapChanges(&changes, &summary, "stringData", oldSecret.StringData, newSecret.StringData)
+
+	if oldSecret.Type != newSecret.Type {
+		changes = append(changes, FieldChange{Path: "type", OldValue: oldSecret.Type, NewValue: newSecret.Type})
+		summary = append(summary, fmt.Sprintf("type changed from %s to %s", oldSecret.Type, newSecret.Type))
+	}
+	oldImmutable := oldSecret.Immutable != nil && *oldSecret.Immutable
+	newImmutable := newSecret.Immutable != nil && *newSecret.Immutable
+	if oldImmutable != newImmutable {
+		changes = append(changes, FieldChange{Path: "immutable", OldValue: oldImmutable, NewValue: newImmutable})
+		summary = append(summary, "immutable changed")
+	}
+
+	return changes, summary
+}
+
+func diffSealedSecret(oldObj, newObj any) ([]FieldChange, []string) {
+	oldSecret, newSecret, ok := unstructuredPair(oldObj, newObj)
+	if !ok {
+		return nil, nil
+	}
+
+	oldData, _, _ := unstructured.NestedMap(oldSecret.Object, "spec", "encryptedData")
+	newData, _, _ := unstructured.NestedMap(newSecret.Object, "spec", "encryptedData")
+	var changes []FieldChange
+	var summary []string
+	appendSensitiveMapChanges(&changes, &summary, "spec.encryptedData", oldData, newData)
+	if len(changes) == 0 {
+		oldGeneration, newGeneration := oldSecret.GetGeneration(), newSecret.GetGeneration()
+		if oldGeneration != newGeneration && oldGeneration > 0 && newGeneration > 0 {
+			changes = append(changes, FieldChange{Path: "spec", OldValue: "changed", NewValue: "changed"})
+			summary = append(summary, "sealed secret configuration changed")
+		}
+	}
+
+	for _, change := range genericConditionChanges(oldSecret, newSecret, "status", "conditions") {
+		changes = append(changes, change)
+		summary = append(summary, fmt.Sprintf("%s changed", change.Path))
+	}
+
+	return changes, summary
+}
+
+func appendSensitiveMapChanges[T any](changes *[]FieldChange, summary *[]string, field string, oldData, newData map[string]T) {
+	oldKeys := genericMapKeys(oldData)
+	newKeys := genericMapKeys(newData)
+	added := diffStringSlices(newKeys, oldKeys)
+	removed := diffStringSlices(oldKeys, newKeys)
+	var modified []string
+	for key, oldValue := range oldData {
+		if newValue, ok := newData[key]; ok && !reflect.DeepEqual(oldValue, newValue) {
+			modified = append(modified, key)
+		}
+	}
+	sort.Strings(modified)
+
+	if len(added) > 0 {
+		*changes = append(*changes, FieldChange{Path: field + " (added keys)", NewValue: added})
+		*summary = append(*summary, fmt.Sprintf("%s added keys: %v", field, added))
+	}
+	if len(removed) > 0 {
+		*changes = append(*changes, FieldChange{Path: field + " (removed keys)", OldValue: removed})
+		*summary = append(*summary, fmt.Sprintf("%s removed keys: %v", field, removed))
+	}
+	if len(modified) > 0 {
+		*changes = append(*changes, FieldChange{
+			Path:     field + " (modified keys)",
+			OldValue: modified,
+			NewValue: modified,
+		})
+		*summary = append(*summary, fmt.Sprintf("%s modified keys: %v", field, modified))
+	}
 }
 
 const (
@@ -2057,6 +2134,7 @@ func diffApplication(oldObj, newObj any) ([]FieldChange, []string) {
 			summary = append(summary, fmt.Sprintf("operation: %s", opPhase))
 		}
 		if opMessage != "" && opPhase == "Failed" {
+			opMessage = diagnose.CleanArgoControllerMessage(opMessage)
 			summary = append(summary, fmt.Sprintf("error: %s", truncateMessage(opMessage)))
 		}
 	}
@@ -2078,6 +2156,7 @@ func diffApplication(oldObj, newObj any) ([]FieldChange, []string) {
 				opMessage, _, _ := unstructured.NestedString(newOp, "message")
 				summary = append(summary, "sync failed")
 				if opMessage != "" {
+					opMessage = diagnose.CleanArgoControllerMessage(opMessage)
 					summary = append(summary, fmt.Sprintf("error: %s", truncateMessage(opMessage)))
 				}
 			case "Running":
@@ -3133,10 +3212,10 @@ func getMapKeys(m map[string]string) []string {
 	return keys
 }
 
-func getBinaryMapKeys(m map[string][]byte) []string {
+func genericMapKeys[T any](m map[string]T) []string {
 	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+	for key := range m {
+		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	return keys

@@ -54,11 +54,16 @@ var (
 	// destroyed clusters / removed contexts linger in the dropdown
 	// (they only error out when the user tries to switch to them).
 	// Same lifecycle / lock as perFileConfigs.
-	perFileMtimes          map[string]time.Time
-	contextName            string
-	clusterName            string
-	contextNamespace       string // Default namespace from kubeconfig context
-	fallbackNamespace      string // Explicit namespace from --namespace flag
+	perFileMtimes      map[string]time.Time
+	contextName        string
+	clusterName        string
+	contextNamespace   string   // Default namespace from kubeconfig context
+	fallbackNamespace  string   // Explicit namespace from --namespace flag
+	fallbackNamespaces []string // Explicit namespace candidates from --namespaces flag
+	// fallbackNamespacesExplicit distinguishes SetFallbackNamespaces (the
+	// plural --namespaces flag, which also seeds the per-user picker) from
+	// SetFallbackNamespace (--namespace, which only steers RBAC probing).
+	fallbackNamespacesExplicit bool
 	// fallbackNamespaceContext is the context that was active when --namespace was
 	// set at startup. --namespace is an *initial* value, so it only pins the cache
 	// scope for that context — after switching clusters, the scope target comes
@@ -66,7 +71,7 @@ var (
 	fallbackNamespaceContext string
 	namespaceScopeOverride   string // Runtime namespace selected by local --namespace-scope rescope
 	namespaceScopeResolver   func(contextName string) (string, bool)
-	contextUsesExec        bool // True when the current context uses an exec credential plugin
+	contextUsesExec          bool // True when the current context uses an exec credential plugin
 	// execPluginCommands is the set of unique exec-auth plugin command basenames
 	// referenced by any context in the merged kubeconfig. Populated from
 	// rawConfig.AuthInfos at load time and refreshed on SwitchContext. Stored
@@ -747,9 +752,84 @@ func SetFallbackNamespace(ns string) {
 	clientMu.Lock()
 	defer clientMu.Unlock()
 	fallbackNamespace = ns
+	fallbackNamespaces = dedupeNamespacesLocked([]string{ns})
+	fallbackNamespacesExplicit = false
 	// Record the context this --namespace applies to, so it only pins the cache
 	// scope while we're on that context (see GetNamespaceScopeTarget).
 	fallbackNamespaceContext = contextName
+}
+
+// SetFallbackNamespaces sets explicit namespace candidates from --namespaces.
+// The first namespace also becomes the legacy fallback namespace so older
+// single-namespace code paths have a deterministic default, but the full list
+// is preserved for RBAC probing and namespace discovery.
+func SetFallbackNamespaces(namespaces []string) {
+	clientMu.Lock()
+	defer clientMu.Unlock()
+	fallbackNamespaces = dedupeNamespacesLocked(namespaces)
+	fallbackNamespacesExplicit = len(fallbackNamespaces) > 0
+	if len(fallbackNamespaces) > 0 {
+		fallbackNamespace = fallbackNamespaces[0]
+	} else {
+		fallbackNamespace = ""
+	}
+	fallbackNamespaceContext = contextName
+}
+
+// ConfiguredNamespacesForCurrentContext returns the --namespaces list when
+// the current kubeconfig context is still the one the flag was configured
+// against. --namespaces is an *initial* value: after a context switch the
+// list references the previous cluster's namespaces and must not seed picks.
+func ConfiguredNamespacesForCurrentContext() []string {
+	clientMu.RLock()
+	defer clientMu.RUnlock()
+	if !fallbackNamespacesExplicit || fallbackNamespaceContext != contextName || len(fallbackNamespaces) == 0 {
+		return nil
+	}
+	return append([]string(nil), fallbackNamespaces...)
+}
+
+// ConfiguredNamespaceForCurrentContext returns the singular --namespace flag
+// value when the current context is still the one it was configured against.
+// Unlike the plural list, the singular flag mainly steers RBAC probing — as a
+// picker seed it only outranks the kubeconfig context namespace, covering
+// flows where the launch URL doesn't carry it (--no-browser, embedders).
+func ConfiguredNamespaceForCurrentContext() string {
+	clientMu.RLock()
+	defer clientMu.RUnlock()
+	if fallbackNamespacesExplicit || fallbackNamespaceContext != contextName {
+		return ""
+	}
+	return fallbackNamespace
+}
+
+func dedupeNamespacesLocked(namespaces []string) []string {
+	if len(namespaces) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(namespaces))
+	out := make([]string, 0, len(namespaces))
+	for _, ns := range namespaces {
+		ns = strings.TrimSpace(ns)
+		if ns == "" {
+			continue
+		}
+		if _, ok := seen[ns]; ok {
+			continue
+		}
+		seen[ns] = struct{}{}
+		out = append(out, ns)
+	}
+	return out
+}
+
+func fallbackNamespaceCandidatesLocked() []string {
+	candidates := make([]string, 0, len(fallbackNamespaces)+1)
+	candidates = append(candidates, fallbackNamespaces...)
+	if fallbackNamespace != "" {
+		candidates = append(candidates, fallbackNamespace)
+	}
+	return dedupeNamespacesLocked(candidates)
 }
 
 // SetNamespaceScopeOverride sets the runtime namespace used by local
@@ -854,7 +934,7 @@ func GetEffectiveNamespace() string {
 func HasNamespaceFallback() bool {
 	clientMu.RLock()
 	defer clientMu.RUnlock()
-	return contextNamespace != "" || fallbackNamespace != ""
+	return contextNamespace != "" || fallbackNamespace != "" || len(fallbackNamespaces) > 0
 }
 
 // GetAccessibleNamespaces returns the list of namespaces the user has
@@ -896,7 +976,8 @@ func GetAccessibleNamespaces(ctx context.Context) ([]string, bool) {
 	seen := map[string]bool{}
 	var fallback []string
 	clientMu.RLock()
-	for _, ns := range []string{contextNamespace, fallbackNamespace} {
+	candidates := append([]string{contextNamespace}, fallbackNamespaceCandidatesLocked()...)
+	for _, ns := range candidates {
 		if ns != "" && !seen[ns] {
 			seen[ns] = true
 			fallback = append(fallback, ns)

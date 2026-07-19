@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -160,14 +161,14 @@ func cmRefDiag(where, name, ns string) (reason, message, cause, action string) {
 	return "Missing ConfigMap",
 		fmt.Sprintf("%s references ConfigMap %q which does not exist", where, name),
 		fmt.Sprintf("ConfigMap %q, referenced by the pod's %s, doesn't exist — so the pod can't start.", name, where),
-		fmt.Sprintf("Create ConfigMap %q in namespace %q, mark the reference optional, or remove it.", name, ns)
+		fmt.Sprintf("Update the pod template (or recreate this Pod) to point the %s reference at an existing ConfigMap in namespace %q, mark the reference optional, remove it if obsolete, or create ConfigMap %q if the workload still requires it.", where, ns, name)
 }
 
 func secretRefDiag(where, name, ns string) (reason, message, cause, action string) {
 	return "Missing Secret",
 		fmt.Sprintf("%s references Secret %q which does not exist", where, name),
 		fmt.Sprintf("Secret %q, referenced by the pod's %s, doesn't exist — so the pod can't start.", name, where),
-		fmt.Sprintf("Create Secret %q in namespace %q, mark the reference optional, or remove it.", name, ns)
+		fmt.Sprintf("Update the pod template (or recreate this Pod) to point the %s reference at an existing Secret in namespace %q, mark the reference optional, remove it if obsolete, or create Secret %q if the workload still requires it.", where, ns, name)
 }
 
 // isTerminalPod reports whether a pod has terminally finished — Succeeded, or
@@ -237,7 +238,7 @@ func detectPodMissingRefs(cache *ResourceCache, namespace string, now time.Time)
 					emit("Missing PVC",
 						fmt.Sprintf("volume references PersistentVolumeClaim %q which does not exist", name),
 						fmt.Sprintf("PersistentVolumeClaim %q doesn't exist, so the pod can't be scheduled.", name),
-						fmt.Sprintf("Create PVC %q in namespace %q, or fix the volume's claimName.", name, p.Namespace))
+						fmt.Sprintf("Update the pod template (or recreate this Pod) so the volume's claimName points at an existing PVC in namespace %q, remove the volume/mount if obsolete, or create PVC %q if the pod still needs a new claim.", p.Namespace, name))
 				}
 
 			case v.ConfigMap != nil:
@@ -350,7 +351,7 @@ func detectPodMissingRefs(cache *ResourceCache, namespace string, now time.Time)
 					emit("Missing ServiceAccount",
 						fmt.Sprintf("references ServiceAccount %q which does not exist", sa),
 						fmt.Sprintf("ServiceAccount %q doesn't exist, so the pod can't start (or restart) with its expected identity/token.", sa),
-						fmt.Sprintf("Create ServiceAccount %q in namespace %q, or remove spec.serviceAccountName.", sa, p.Namespace))
+						fmt.Sprintf("Update the pod template (or recreate this Pod) so spec.serviceAccountName points at an existing ServiceAccount in namespace %q, remove it to use the default ServiceAccount, or create ServiceAccount %q if the pod needs that identity.", p.Namespace, sa))
 				}
 			}
 		}
@@ -374,7 +375,7 @@ func detectPodMissingRefs(cache *ResourceCache, namespace string, now time.Time)
 				emit("Missing imagePullSecret",
 					fmt.Sprintf("imagePullSecrets references Secret %q which does not exist", name),
 					fmt.Sprintf("Pull Secret %q doesn't exist, so private-registry image pulls fail (ImagePullBackOff).", name),
-					fmt.Sprintf("Create pull Secret %q in namespace %q, or point imagePullSecrets / the ServiceAccount at an existing one.", name, p.Namespace))
+					fmt.Sprintf("Update the pod template, recreate this Pod, or update the ServiceAccount to point at an existing pull Secret in namespace %q; remove the reference if images are public or obsolete, or create pull Secret %q if private-registry credentials are required.", p.Namespace, name))
 			}
 		}
 	}
@@ -409,7 +410,7 @@ func detectHPAMissingTarget(cache *ResourceCache, namespace string, now time.Tim
 			fmt.Sprintf("scaleTargetRef references %s %q which does not exist", ref.Kind, ref.Name),
 			age),
 			fmt.Sprintf("%s %q doesn't exist, so the autoscaler can't scale anything.", ref.Kind, ref.Name),
-			fmt.Sprintf("Create %s %q in namespace %q, or point scaleTargetRef at an existing workload.", ref.Kind, ref.Name, h.Namespace)))
+			fmt.Sprintf("Point scaleTargetRef at an existing workload in namespace %q, remove the HPA if the target is obsolete, or create %s %q if it should still exist.", h.Namespace, ref.Kind, ref.Name)))
 	}
 	return out
 }
@@ -493,7 +494,7 @@ func detectIngressMissingBackend(cache *ResourceCache, namespace string, now tim
 						fmt.Sprintf("%s references Service %q which does not exist", sourcePath, b.Name),
 						age),
 						fmt.Sprintf("Service %q doesn't exist, so this route serves nothing.", b.Name),
-						fmt.Sprintf("Create Service %q in namespace %q, or point the rule at an existing Service.", b.Name, ing.Namespace)))
+						fmt.Sprintf("Point the backend at an existing Service in namespace %q, remove the stale backend, or create Service %q if it should still receive traffic.", ing.Namespace, b.Name)))
 				}
 				return
 			}
@@ -522,7 +523,7 @@ func detectIngressMissingBackend(cache *ResourceCache, namespace string, now tim
 					fmt.Sprintf("%s targets Service %q port %q which the Service does not expose", sourcePath, b.Name, portDesc),
 					age),
 					fmt.Sprintf("Service %q does not expose port %q, so traffic to this route is dropped.", b.Name, portDesc),
-					fmt.Sprintf("Add port %q to Service %q's spec.ports in namespace %q, or reference a port it already exposes.", portDesc, b.Name, ing.Namespace)))
+					fmt.Sprintf("Point the backend at a port Service %q already exposes in namespace %q, or add port %q to the Service's spec.ports if it should expose it.", b.Name, ing.Namespace, portDesc)))
 			}
 		}
 
@@ -558,7 +559,7 @@ func detectIngressMissingBackend(cache *ResourceCache, namespace string, now tim
 					fmt.Sprintf("tls[].secretName references Secret %q which does not exist", tls.SecretName),
 					age),
 					fmt.Sprintf("TLS Secret %q doesn't exist, so the controller may serve its default/self-signed cert and HTTPS clients see warnings.", tls.SecretName),
-					fmt.Sprintf("Create TLS Secret %q (type kubernetes.io/tls) in namespace %q, or remove the tls entry.", tls.SecretName, ing.Namespace))
+					fmt.Sprintf("Point tls[].secretName at an existing kubernetes.io/tls Secret in namespace %q, remove the tls entry, or create TLS Secret %q if this host still needs TLS.", ing.Namespace, tls.SecretName))
 				p.Severity = "warning"
 				out = append(out, p)
 			}
@@ -614,7 +615,7 @@ func detectStatefulSetMissingService(cache *ResourceCache, namespace string, now
 			out = append(out, withFix(missingRefProblemSev("StatefulSet", "apps", sts.Namespace, sts.Name,
 				severity, "Missing headless Service", message, age),
 				cause,
-				fmt.Sprintf("Create headless Service %q in namespace %q (clusterIP: None) selecting the StatefulSet's pods, or fix spec.serviceName.", sts.Spec.ServiceName, sts.Namespace)))
+				fmt.Sprintf("Create headless Service %q (clusterIP: None) selecting the StatefulSet's pods in namespace %q, or recreate the StatefulSet with spec.serviceName pointing at an existing headless Service (serviceName is immutable).", sts.Spec.ServiceName, sts.Namespace)))
 		}
 	}
 	return out
@@ -663,14 +664,23 @@ func DetectMissingWebhookRefs(cache *ResourceCache, dynamicCache *DynamicResourc
 		return items
 	}
 
-	emit := func(kind, group, name, source, svcNS, svcName string, age time.Duration) Detection {
-		return withFix(missingRefProblem(kind, group, "", name,
-			"Missing webhook backend Service",
-			fmt.Sprintf("%s references Service %q in namespace %q which does not exist",
-				source, svcName, svcNS),
+	emit := func(kind, group, name, sourceRefPhrase, svcNS, svcName, severity, policySummary string, age time.Duration) Detection {
+		reason := "Missing webhook backend Service"
+		cause := fmt.Sprintf("Webhook backend Service %q in namespace %q doesn't exist.", svcName, svcNS)
+		if severity == "warning" {
+			cause += " One or more referencing webhooks use failurePolicy=Ignore, so admission proceeds but the webhook's validation or mutation is bypassed."
+		} else {
+			cause += " At least one referencing webhook uses failurePolicy=Fail (the Kubernetes default), so matching admission requests are blocked."
+		}
+		det := withFix(missingRefProblemSev(kind, group, "", name, severity,
+			reason,
+			fmt.Sprintf("%s Service %q in namespace %q which does not exist (%s)",
+				sourceRefPhrase, svcName, svcNS, policySummary),
 			age),
-			fmt.Sprintf("Webhook backend Service %q in namespace %q doesn't exist, so admission requests can't reach it — rules are bypassed (failurePolicy=Ignore) or admission is blocked (failurePolicy=Fail).", svcName, svcNS),
+			cause,
 			fmt.Sprintf("Restore Service %q and its endpoints in namespace %q, or fix clientConfig.service to point at the correct healthy Service.", svcName, svcNS))
+		det.Fingerprint = missingRefFingerprint(reason, "clientConfig.service:"+svcNS+"/"+svcName)
+		return det
 	}
 
 	checkWebhookList := func(items []*unstructured.Unstructured, ownerKind, ownerGroup, webhookPath string) []Detection {
@@ -681,7 +691,7 @@ func DetectMissingWebhookRefs(cache *ResourceCache, dynamicCache *DynamicResourc
 				continue
 			}
 			age := now.Sub(item.GetCreationTimestamp().Time)
-			seen := map[string]bool{}
+			missingByService := map[string]*webhookMissingBackend{}
 			for _, w := range webhooks {
 				wm, ok := w.(map[string]any)
 				if !ok {
@@ -696,19 +706,27 @@ func DetectMissingWebhookRefs(cache *ResourceCache, dynamicCache *DynamicResourc
 				if svcName == "" || svcNS == "" {
 					continue
 				}
-				key := svcNS + "/" + svcName
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
 				// clientConfig.service targets an arbitrary namespace, which a
 				// namespace-scoped Services informer frequently doesn't watch —
 				// only a covered-namespace NotFound is a real absence.
 				if _, err := svcLister.Services(svcNS).Get(svcName); refKnownMissing(cache, "services", svcNS, err) {
 					whName, _ := wm["name"].(string)
-					source := fmt.Sprintf("webhook %q clientConfig.service", whName)
-					problems = append(problems, emit(ownerKind, ownerGroup, item.GetName(), source, svcNS, svcName, age))
+					policy := webhookFailurePolicy(wm)
+					key := svcNS + "/" + svcName
+					missing := missingByService[key]
+					if missing == nil {
+						missing = &webhookMissingBackend{
+							serviceNamespace: svcNS,
+							serviceName:      svcName,
+						}
+						missingByService[key] = missing
+					}
+					missing.addWebhook(whName, policy)
 				}
+			}
+			for _, key := range sortedWebhookMissingBackendKeys(missingByService) {
+				missing := missingByService[key]
+				problems = append(problems, emit(ownerKind, ownerGroup, item.GetName(), missing.sourceReferencePhrase(), missing.serviceNamespace, missing.serviceName, missing.severity, missing.policySummary(), age))
 			}
 		}
 		return problems
@@ -724,6 +742,76 @@ func DetectMissingWebhookRefs(cache *ResourceCache, dynamicCache *DynamicResourc
 		"MutatingWebhookConfiguration", "admissionregistration.k8s.io", "webhooks",
 	)...)
 	return out
+}
+
+type webhookMissingBackend struct {
+	serviceNamespace string
+	serviceName      string
+	severity         string
+	webhooks         []string
+	policies         map[string]bool
+}
+
+func (m *webhookMissingBackend) addWebhook(name string, policy string) {
+	if name == "" {
+		name = "<unnamed>"
+	}
+	m.webhooks = append(m.webhooks, name)
+	if m.policies == nil {
+		m.policies = map[string]bool{}
+	}
+	m.policies[policy] = true
+	severity := webhookFailurePolicySeverity(policy)
+	if m.severity == "" || severity == "critical" {
+		m.severity = severity
+	}
+}
+
+func (m *webhookMissingBackend) sourceReferencePhrase() string {
+	names := append([]string(nil), m.webhooks...)
+	sort.Strings(names)
+	quoted := make([]string, 0, len(names))
+	for _, name := range names {
+		quoted = append(quoted, fmt.Sprintf("%q", name))
+	}
+	if len(quoted) == 1 {
+		return fmt.Sprintf("webhook %s clientConfig.service references", quoted[0])
+	}
+	return fmt.Sprintf("webhooks %s clientConfig.service reference", strings.Join(quoted, ", "))
+}
+
+func (m *webhookMissingBackend) policySummary() string {
+	if m.policies["Fail"] {
+		if m.policies["Ignore"] {
+			return "failurePolicy=Fail/Ignore"
+		}
+		return "failurePolicy=Fail"
+	}
+	return "failurePolicy=Ignore"
+}
+
+func webhookFailurePolicy(wm map[string]any) string {
+	policy, _, _ := unstructured.NestedString(wm, "failurePolicy")
+	if strings.EqualFold(policy, "Ignore") {
+		return "Ignore"
+	}
+	return "Fail"
+}
+
+func webhookFailurePolicySeverity(policy string) string {
+	if policy == "Ignore" {
+		return "warning"
+	}
+	return "critical"
+}
+
+func sortedWebhookMissingBackendKeys(in map[string]*webhookMissingBackend) []string {
+	keys := make([]string, 0, len(in))
+	for key := range in {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // DetectMissingGatewayRefs scans Gateway API Routes for backend Service refs
@@ -840,7 +928,7 @@ func detectGatewayRouteMissingBackends(cache *ResourceCache, svcLister corev1lis
 						fmt.Sprintf("%s references Service %q in namespace %q which does not exist", source, name, svcNS),
 						age),
 						fmt.Sprintf("Service %q in namespace %q doesn't exist, so this route's backend receives no traffic.", name, svcNS),
-						fmt.Sprintf("Create Service %q in namespace %q, or point the backendRef at an existing Service.", name, svcNS)))
+						fmt.Sprintf("Point the backendRef at an existing Service in namespace %q, remove the stale backendRef, or create Service %q if this route should still send traffic there.", svcNS, name)))
 				}
 				continue
 			}
@@ -859,7 +947,7 @@ func detectGatewayRouteMissingBackends(cache *ResourceCache, svcLister corev1lis
 					fmt.Sprintf("%s targets Service %q in namespace %q port %q which the Service does not expose", source, name, svcNS, port),
 					age),
 					fmt.Sprintf("Service %q does not expose port %q, so the route backend can't receive traffic.", name, port),
-					fmt.Sprintf("Add port %q to Service %q in namespace %q, or reference a port it exposes.", port, name, svcNS)))
+					fmt.Sprintf("Reference a port Service %q already exposes in namespace %q, or add port %q to the Service if it should expose it.", name, svcNS, port)))
 			}
 			if svcNS != route.GetNamespace() && getReferenceGrants != nil {
 				if grants, ok := getReferenceGrants(svcNS); ok && !gatewayReferenceGranted(grants, kind, route.GetNamespace(), name) {
@@ -993,7 +1081,7 @@ func detectPVCMissingStorageClass(cache *ResourceCache, namespace string, now ti
 				fmt.Sprintf("references StorageClass %q which does not exist", scName),
 				age),
 				fmt.Sprintf("StorageClass %q doesn't exist, so the PVC stays Pending and no volume is provisioned.", scName),
-				fmt.Sprintf("Create StorageClass %q, set spec.storageClassName to an existing class, or use the cluster default.", scName))
+				fmt.Sprintf("Recreate the PVC with spec.storageClassName set to an existing StorageClass or unset to use the cluster default (storageClassName is immutable), remove the stale claim if obsolete, or create StorageClass %q if that class should exist.", scName))
 			// Same invariant as the phase detector: a Pending PVC has never
 			// been bound, so the missing class has been breaking it since
 			// creation. Stamp timing here because this row wins the dedupe
@@ -1065,7 +1153,7 @@ func detectRoleBindingMissingRole(cache *ResourceCache, namespace string, now ti
 				fmt.Sprintf("roleRef points at %s %q which does not exist", rb.RoleRef.Kind, rb.RoleRef.Name),
 				age),
 				fmt.Sprintf("%s %q doesn't exist, so this RoleBinding grants no permissions.", rb.RoleRef.Kind, rb.RoleRef.Name),
-				fmt.Sprintf("Create %s %q, or recreate the binding pointing roleRef at an existing role (roleRef is immutable).", rb.RoleRef.Kind, rb.RoleRef.Name)))
+				fmt.Sprintf("Recreate the binding pointing roleRef at an existing role (roleRef is immutable), or create %s %q if that role should exist.", rb.RoleRef.Kind, rb.RoleRef.Name)))
 		}
 	}
 
@@ -1085,7 +1173,7 @@ func detectRoleBindingMissingRole(cache *ResourceCache, namespace string, now ti
 				fmt.Sprintf("roleRef points at %s %q which does not exist", crb.RoleRef.Kind, crb.RoleRef.Name),
 				age),
 				fmt.Sprintf("%s %q doesn't exist, so this ClusterRoleBinding grants no permissions.", crb.RoleRef.Kind, crb.RoleRef.Name),
-				fmt.Sprintf("Create %s %q, or recreate the binding pointing roleRef at an existing role (roleRef is immutable).", crb.RoleRef.Kind, crb.RoleRef.Name)))
+				fmt.Sprintf("Recreate the binding pointing roleRef at an existing role (roleRef is immutable), or create %s %q if that role should exist.", crb.RoleRef.Kind, crb.RoleRef.Name)))
 		}
 	}
 	return out

@@ -1,11 +1,13 @@
 import { useMemo, useState } from 'react'
 import { useIssues } from '../../api/client'
+import { useConnection } from '../../context/ConnectionContext'
 import type { SelectedResource } from '../../types'
 import {
   IssuesView,
   PaneLoader,
   PageHeader,
   SummaryTile,
+  FreshnessControl,
   ISSUE_SEVERITIES,
   ISSUE_SEVERITY_LABEL,
   type IssueResourceRef,
@@ -13,6 +15,7 @@ import {
   type SummaryTone,
 } from '@skyhook-io/k8s-ui'
 import { AlertTriangle } from 'lucide-react'
+import { IssueDiagnoseButton } from '../diagnose/LocalDiagnoseAction'
 
 const SEVERITY_TONE: Record<IssueSeverity, SummaryTone> = { critical: 'error', warning: 'warning' }
 
@@ -30,7 +33,8 @@ interface IssuesPaneProps {
 // the header status tiles (clickable → filter), matching the Applications /
 // GitOps header-tile pattern rather than Hub's fleet facet sidebar.
 export function IssuesPane({ namespaces, onNavigateToResource }: IssuesPaneProps) {
-  const { data, isLoading, error } = useIssues(namespaces)
+  const { data, isLoading, error, dataUpdatedAt, refetch } = useIssues(namespaces)
+  const { connection } = useConnection()
   const [severityFilter, setSeverityFilter] = useState<Set<IssueSeverity>>(new Set())
 
   const allIssues = useMemo(() => data?.issues ?? [], [data])
@@ -70,23 +74,31 @@ export function IssuesPane({ namespaces, onNavigateToResource }: IssuesPaneProps
         title="Issues"
         description="Live cluster problems — crashes, scheduling failures, bad references — grouped by the resource they affect."
         actions={
-          allIssues.length > 0 ? (
-            <>
-              <SummaryTile label={allIssues.length === 1 ? 'issue' : 'issues'} value={allIssues.length} />
-              {ISSUE_SEVERITIES.map((s) =>
-                totals[s] > 0 || severityFilter.has(s) ? (
-                  <SummaryTile
-                    key={s}
-                    label={ISSUE_SEVERITY_LABEL[s]}
-                    value={totals[s]}
-                    tone={SEVERITY_TONE[s]}
-                    active={severityFilter.has(s)}
-                    onClick={() => toggleSeverity(s)}
-                  />
-                ) : null,
-              )}
-            </>
-          ) : undefined
+          <>
+            <FreshnessControl
+              mode="auto"
+              dataUpdatedAt={dataUpdatedAt}
+              onRefresh={() => refetch()}
+              connectionState={connection.state}
+            />
+            {allIssues.length > 0 && (
+              <>
+                <SummaryTile label={allIssues.length === 1 ? 'issue' : 'issues'} value={allIssues.length} />
+                {ISSUE_SEVERITIES.map((s) =>
+                  totals[s] > 0 || severityFilter.has(s) ? (
+                    <SummaryTile
+                      key={s}
+                      label={ISSUE_SEVERITY_LABEL[s]}
+                      value={totals[s]}
+                      tone={SEVERITY_TONE[s]}
+                      active={severityFilter.has(s)}
+                      onClick={() => toggleSeverity(s)}
+                    />
+                  ) : null,
+                )}
+              </>
+            )}
+          </>
         }
       />
 
@@ -125,7 +137,14 @@ export function IssuesPane({ namespaces, onNavigateToResource }: IssuesPaneProps
       ) : (
         /* anyData = the query resolved, i.e. the cluster is reachable; an empty
            list then means "nothing broken" rather than "not connected". */
-        <IssuesView issues={shown} anyData={!!data} onResourceClick={onResourceClick} />
+        <IssuesView
+          issues={shown}
+          anyData={!!data}
+          onResourceClick={onResourceClick}
+          renderActions={({ issue }) => (
+            <IssueDiagnoseButton kind={issue.kind} namespace={issue.namespace ?? ''} name={issue.name} />
+          )}
+        />
       )}
     </div>
   )

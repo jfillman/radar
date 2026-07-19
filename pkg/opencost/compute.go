@@ -350,7 +350,7 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 	}
 
 	cpuResult, err := client.Query(ctx,
-		`sum by (namespace) (label_replace(avg_over_time(container_cpu_allocation{namespace!=""}[1h]), "namespace", "$1", "exported_namespace", "(.+)") * on(node) group_left() node_cpu_hourly_cost)`)
+		`sum by (namespace) (label_replace(avg_over_time(container_cpu_allocation{namespace!=""}[1h]), "namespace", "$1", "exported_namespace", "(.+)") * on(node) group_left() `+nodeCPUHourlyCostExpr+`)`)
 	if err != nil {
 		log.Printf("[opencost] CPU allocation query failed, trying opencost_container_cpu_cost_total: %v", err)
 		cpuResult, err = client.Query(ctx,
@@ -362,7 +362,7 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 	}
 
 	memResult, err := client.Query(ctx,
-		`sum by (namespace) (label_replace(avg_over_time(container_memory_allocation_bytes{namespace!=""}[1h]), "namespace", "$1", "exported_namespace", "(.+)") / 1073741824 * on(node) group_left() node_ram_hourly_cost)`)
+		`sum by (namespace) (label_replace(avg_over_time(container_memory_allocation_bytes{namespace!=""}[1h]), "namespace", "$1", "exported_namespace", "(.+)") / 1073741824 * on(node) group_left() `+nodeRAMHourlyCostExpr+`)`)
 	if err != nil {
 		log.Printf("[opencost] memory allocation query failed, trying opencost_container_memory_cost_total: %v", err)
 		memResult, err = client.Query(ctx,
@@ -381,21 +381,21 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 	// and zero out cleanly if the queries fail, but a silent failure here can
 	// look identical to a low-utilization workload — so log when it happens.
 	cpuUsageRes, cpuUsageErr := client.Query(ctx,
-		`sum by (namespace) (label_replace(rate(container_cpu_usage_seconds_total{container!="", namespace!=""}[1h]), "node", "$1", "instance", "(.+?)(?::\\d+)?$") * on(node) group_left() node_cpu_hourly_cost)`)
+		`sum by (namespace) (label_replace(rate(container_cpu_usage_seconds_total{container!="", namespace!=""}[1h]), "node", "$1", "instance", "(.+?)(?::\\d+)?$") * on(node) group_left() `+nodeCPUHourlyCostExpr+`)`)
 	if cpuUsageErr != nil {
 		log.Printf("[opencost] CPU usage query failed (efficiency will be 0 for affected rows): %v", cpuUsageErr)
 	}
 	cpuUsageMap := lastValuePerLabel(cpuUsageRes, cpuUsageErr, "namespace")
 
 	memUsageRes, memUsageErr := client.Query(ctx,
-		`sum by (namespace) (label_replace(container_memory_working_set_bytes{container!="", namespace!=""}, "node", "$1", "instance", "(.+?)(?::\\d+)?$") / 1073741824 * on(node) group_left() node_ram_hourly_cost)`)
+		`sum by (namespace) (label_replace(container_memory_working_set_bytes{container!="", namespace!=""}, "node", "$1", "instance", "(.+?)(?::\\d+)?$") / 1073741824 * on(node) group_left() `+nodeRAMHourlyCostExpr+`)`)
 	if memUsageErr != nil {
 		log.Printf("[opencost] memory usage query failed (efficiency will be 0 for affected rows): %v", memUsageErr)
 	}
 	memUsageMap := lastValuePerLabel(memUsageRes, memUsageErr, "namespace")
 
 	storageRes, storageErr := client.Query(ctx,
-		`sum by (namespace) (pv_hourly_cost * on(persistentvolume) group_left(namespace) kube_persistentvolume_claim_ref)`)
+		`sum by (namespace) (`+persistentVolumeHourlyCostExpr+` * on(persistentvolume) group_left(namespace) `+persistentVolumeClaimRef+`)`)
 	if storageErr != nil {
 		log.Printf("[opencost] storage cost query failed (storage costs will be 0): %v", storageErr)
 	}
@@ -425,7 +425,7 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 		namespaces = append(namespaces, *nc)
 	}
 
-	if nodeResult, err := client.Query(ctx, `sum(node_total_hourly_cost)`); err == nil && len(nodeResult.Series) > 0 && len(nodeResult.Series[0].DataPoints) > 0 {
+	if nodeResult, err := client.Query(ctx, `sum(`+nodeTotalHourlyCostExpr+`)`); err == nil && len(nodeResult.Series) > 0 && len(nodeResult.Series[0].DataPoints) > 0 {
 		if nodeCost := nodeResult.Series[0].DataPoints[0].Value; nodeCost > totalHourlyCost {
 			totalHourlyCost = nodeCost
 		}

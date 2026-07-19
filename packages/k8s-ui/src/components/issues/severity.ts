@@ -1,11 +1,29 @@
 import type { IssueSeverity } from './types';
 import { BADGE_SEVERITY_COLORS as sev } from '../ui/Badge';
+import { NEUTRAL_CHIP_CLASS } from '../ui/CardSection';
+import {
+  TONE_FILL_CLASS,
+  TONE_HEADER_BAND_CLASS,
+  TONE_RAIL_CLASS,
+  TONE_SOLID_CLASS,
+  TONE_TEXT_CLASS,
+  type SeverityTone,
+} from '../ui/severity-tone';
 
 // Visual language for the 2-tier Issues severity. critical = red, warning =
 // amber. Issues and Checks are different severity axes but must read as one
-// product — both pull from the canonical Badge severity tones
-// (BADGE_SEVERITY_COLORS), so their pills match each other and every status
-// badge elsewhere.
+// product, so the color strings are shared via the tone module; here we only map
+// each tier onto its tone. The pill still pulls from the canonical Badge tones
+// so it matches every status badge elsewhere.
+const ISSUE_SEVERITY_TONE: Record<IssueSeverity, SeverityTone> = {
+  critical: 'red',
+  warning: 'amber',
+};
+
+const byTone = <T,>(toneMap: Record<SeverityTone, T>): Record<IssueSeverity, T> => ({
+  critical: toneMap[ISSUE_SEVERITY_TONE.critical],
+  warning: toneMap[ISSUE_SEVERITY_TONE.warning],
+});
 
 export const ISSUE_SEVERITY_LABEL: Record<IssueSeverity, string> = {
   critical: 'Critical',
@@ -18,39 +36,18 @@ export const ISSUE_SEVERITY_BADGE_CLASS: Record<IssueSeverity, string> = {
   warning: sev.warning,
 };
 
-// Solid fill — dots + the proportional distribution bar segments.
-export const ISSUE_SEVERITY_FILL_CLASS: Record<IssueSeverity, string> = {
-  critical: 'bg-red-500',
-  warning: 'bg-amber-500',
-};
+export const ISSUE_SEVERITY_TEXT_CLASS = byTone(TONE_TEXT_CLASS);
+export const ISSUE_SEVERITY_FILL_CLASS = byTone(TONE_FILL_CLASS);
+export const ISSUE_SEVERITY_RAIL_CLASS = byTone(TONE_RAIL_CLASS);
+export const ISSUE_SEVERITY_SOLID_CLASS = byTone(TONE_SOLID_CLASS);
+export const ISSUE_SEVERITY_HEADER_BAND_CLASS = byTone(TONE_HEADER_BAND_CLASS);
 
-export const ISSUE_SEVERITY_TEXT_CLASS: Record<IssueSeverity, string> = {
-  critical: 'text-red-600 dark:text-red-400',
-  warning: 'text-amber-600 dark:text-amber-400',
-};
+const GROUP_CHIP_EMPHASIS_CLASS = 'inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold leading-tight bg-theme-elevated text-theme-text-primary ring-1 ring-theme-border-light';
 
-// Left accent rail on a queue row — the scan-down severity cue.
-export const ISSUE_SEVERITY_RAIL_CLASS: Record<IssueSeverity, string> = {
-  critical: 'border-l-red-500 hover:bg-red-50/40 dark:hover:bg-red-950/20',
-  warning: 'border-l-amber-500 hover:bg-amber-50/30 dark:hover:bg-amber-950/15',
-};
-
-// Category-group accent — the quiet classification tag (severity is the loud
-// one). One hue per group; unknown/unmapped falls back to a neutral theme tag.
-const GROUP_BADGE_CLASS: Record<string, string> = {
-  scheduling: 'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:ring-violet-900',
-  startup: 'bg-sky-50 text-sky-700 ring-1 ring-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:ring-sky-900',
-  runtime: 'bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:ring-rose-900',
-  configuration: 'bg-teal-50 text-teal-700 ring-1 ring-teal-200 dark:bg-teal-950/40 dark:text-teal-300 dark:ring-teal-900',
-  networking: 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:ring-indigo-900',
-  storage: 'bg-cyan-50 text-cyan-700 ring-1 ring-cyan-200 dark:bg-cyan-950/40 dark:text-cyan-300 dark:ring-cyan-900',
-  scaling: 'bg-fuchsia-50 text-fuchsia-700 ring-1 ring-fuchsia-200 dark:bg-fuchsia-950/40 dark:text-fuchsia-300 dark:ring-fuchsia-900',
-  security: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900',
-  control_plane: 'bg-slate-100 text-slate-600 ring-1 ring-slate-200 dark:bg-slate-800/60 dark:text-slate-300 dark:ring-slate-700',
-};
+const EMPHASIZED_GROUPS = new Set(['control_plane', 'unknown']);
 
 export function groupBadgeClass(group: string): string {
-  return GROUP_BADGE_CLASS[group] ?? 'bg-theme-elevated text-theme-text-secondary ring-1 ring-theme-border';
+  return EMPHASIZED_GROUPS.has(group) ? GROUP_CHIP_EMPHASIS_CLASS : NEUTRAL_CHIP_CLASS;
 }
 
 // Display labels. The server emits raw snake_case category/group enums (so a
@@ -104,6 +101,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   gitops_operation_failed: 'GitOps operation failed',
   gitops_out_of_sync: 'GitOps out of sync',
   gitops_health_degraded: 'GitOps health degraded',
+  gitops_stale: 'GitOps comparisons stale',
   helm_release_failed: 'Helm release failed',
   webhook_backend_down: 'Webhook backend down',
   control_plane_not_ready: 'Control plane not ready',

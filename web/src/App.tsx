@@ -6,9 +6,12 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useLocation, useSearchParams, useNavigationType, NavigationType } from 'react-router-dom'
 import { HomeView } from './components/home/HomeView'
 import { DebugOverlay } from './components/DebugOverlay'
-import { TopologyGraph, TopologySearch, TopologyFilterSidebar, TopologyControls, gitOpsRouteForKind, gitOpsRouteForResource } from '@skyhook-io/k8s-ui'
+import { GlobalDiagnoseButton } from './components/diagnose/LocalDiagnoseAction'
+import { useDiagnoseLayout } from './components/diagnose/DiagnoseContext'
+import { DiagnoseSurface } from './components/diagnose/DiagnoseSurface'
+import { TopologyGraph, TopologySearch, TopologyBreadcrumb, TopologyFilterSidebar, TopologyControls, FreshnessControl, gitOpsRouteForKind, gitOpsRouteForResource, ScopePill, PaneLoader } from '@skyhook-io/k8s-ui'
 import { initNavigationMap } from '@skyhook-io/k8s-ui/utils/navigation'
-import { useAPIResources } from './api/apiResources'
+import { useAPIResources, findAPIResourceForRoute } from './api/apiResources'
 import { TimelineView } from './components/timeline/TimelineView'
 import { ResourcesView } from './components/resources/ResourcesView'
 import { serializeColumnFilters } from './components/resources/resource-utils'
@@ -51,15 +54,15 @@ import { routePath, apiUrl, getAuthHeaders, getCredentialsMode } from './api/con
 import { KeyboardShortcutProvider, useRegisterShortcut, useRegisterShortcuts, useSuppressBaseShortcuts } from './hooks/useKeyboardShortcuts'
 import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
 import { useDocumentTitle } from './hooks/useDocumentTitle'
-import radarLoadingIcon from '@skyhook-io/k8s-ui/assets/radar/radar-icon-loading.svg'
-import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, SquareTerminal, ShieldCheck, GitBranch, HelpCircle } from 'lucide-react'
+import type { ClusterLoadState } from './types/clusterLoadState'
+import { useClusterLoadState } from './hooks/useClusterLoadState'
+import { Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, SquareTerminal, ShieldCheck, GitBranch, HelpCircle, Loader2, RefreshCw } from 'lucide-react'
 import { useTheme } from './context/ThemeContext'
 import { Tooltip } from './components/ui/Tooltip'
 import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
 import { SettingsDialog } from './components/settings/SettingsDialog'
-import { MyPermissionsDialog } from './components/settings/MyPermissionsDialog'
-import type { TopologyNode, GroupingMode, MainView, SelectedResource, SelectedHelmRelease, NodeKind, TopologyMode, Topology, K8sEvent } from './types'
-import { kindToPlural, pluralToKind, openExternal, apiVersionToGroup, buildWorkloadPath, searchHitToSelectedResource } from './utils/navigation'
+import type { APIResource, TopologyNode, GroupingMode, MainView, SelectedResource, SelectedHelmRelease, NodeKind, TopologyMode, Topology, K8sEvent } from './types'
+import { kindToPlural, pluralToKind, openExternal, apiVersionToGroup, relatedResourcePath, searchHitToSelectedResource } from './utils/navigation'
 import { type OmnibarHandle } from './components/ui/Omnibar'
 import { RadarOmnibar } from './components/ui/RadarOmnibar'
 import type { ContextSwitcherHandle } from './components/ContextSwitcher'
@@ -68,7 +71,7 @@ import type { ContextSwitcherHandle } from './components/ContextSwitcher'
 const ALL_NODE_KINDS: NodeKind[] = [
   'Internet', 'Ingress', 'Gateway', 'HTTPRoute', 'GRPCRoute', 'TCPRoute', 'TLSRoute',
   'Service', 'Deployment', 'Rollout', 'DaemonSet', 'StatefulSet',
-  'ReplicaSet', 'Pod', 'PodGroup', 'ConfigMap', 'Secret', 'HorizontalPodAutoscaler', 'Job', 'CronJob', 'PersistentVolumeClaim', 'Namespace',
+  'ReplicaSet', 'Pod', 'PodGroup', 'ConfigMap', 'Secret', 'ServiceAccount', 'SealedSecret', 'ServiceMonitor', 'PodMonitor', 'HorizontalPodAutoscaler', 'Job', 'CronJob', 'PersistentVolumeClaim', 'Namespace',
   'Application', 'Kustomization', 'HelmRelease', 'GitRepository',
   'KnativeService', 'KnativeConfiguration', 'KnativeRevision', 'KnativeRoute',
   'Broker', 'Trigger', 'PingSource', 'ApiServerSource', 'ContainerSource', 'SinkBinding', 'Channel',
@@ -85,6 +88,12 @@ const DEFAULT_VISIBLE_KINDS = ALL_NODE_KINDS.filter(k => k !== 'ReplicaSet')
 // CRD kinds hidden by default in the topology (infrastructure plumbing).
 // Users can re-enable via the filter sidebar.
 const CRD_HIDDEN_BY_DEFAULT = new Set(['GatewayClass', 'IngressClass', 'NodePool', 'NodeClaim', 'NodeClass'])
+
+// Top-bar height in px. The body frame's right-side surfaces (AI panel, resource +
+// Helm drawers) all inset their top by this so they sit BELOW the header. 0 in
+// chromeless embeds (the host owns the chrome, no Radar header). Keep in sync with
+// the <header> py/line-height; the drawers historically hardcoded the same 49.
+const APP_HEADER_HEIGHT = 49
 
 // CAPI kinds shown in Fleet topology mode (+ Node for Machine→Node edges)
 // Includes core CAPI kinds and all infrastructure provider kinds
@@ -127,11 +136,58 @@ function getViewFromPath(pathname: string): ExtendedMainView {
   return 'home'
 }
 
+// The namespace scope filter is meaningful only on namespaced surfaces. On
+// cluster-scoped views it does nothing, so we disable it with an explanation
+// rather than leaving a dead control that silently ignores the pick:
+//   - Cost is reported per-namespace across the whole cluster (the view IS the
+//     breakdown; a filter would only hide rows).
+//   - A GitOps detail tree spans namespaces — its controller lives in one
+//     namespace but manages workloads across many.
+//   - A cluster-scoped resource kind (Nodes, PVs, ClusterRoles…) has no
+//     namespace at all.
+// The pick itself is preserved so it re-applies when the user returns to a
+// namespaced view.
+function namespaceFilterDisabled(
+  view: ExtendedMainView,
+  pathname: string,
+  search = '',
+  apiResources?: APIResource[],
+): { disabled: boolean; tooltip?: string } {
+  if (
+    view === 'cost' &&
+    !pathname.startsWith('/cost/rightsizing')
+  ) {
+    return {
+      disabled: true,
+      tooltip: 'Cost is reported per namespace across the whole cluster — the namespace filter doesn’t apply here.',
+    }
+  }
+  const segments = pathname.replace(/^\//, '').split('/')
+  if (view === 'gitops' && segments[1] === 'detail') {
+    return {
+      disabled: true,
+      tooltip: 'This resource manages workloads across namespaces — the namespace filter doesn’t apply to its tree.',
+    }
+  }
+  if (view === 'resources') {
+    const kindSlug = segments[1]
+    const group = new URLSearchParams(search).get('apiGroup') || ''
+    const match = kindSlug ? findAPIResourceForRoute(apiResources, kindSlug, group) : undefined
+    if (match && !match.namespaced) {
+      return {
+        disabled: true,
+        tooltip: `${match.kind} is a cluster-scoped resource — namespaces don’t apply.`,
+      }
+    }
+  }
+  return { disabled: false }
+}
+
 // Browser tab label for every Radar view, derived from the route URL so it's
 // correct regardless of which component renders it. A detail drawer that opens
 // over a list (?resource=…) is deliberately NOT titled — it's the same page, so
 // it keeps the list's title.
-function radarPageTitle(pathname: string, search = '', apiResources?: { name: string; kind: string; group?: string }[]): string | null {
+function radarPageTitle(pathname: string, search = '', apiResources?: APIResource[]): string | null {
   const decode = (s: string) => {
     try {
       return decodeURIComponent(s)
@@ -142,7 +198,7 @@ function radarPageTitle(pathname: string, search = '', apiResources?: { name: st
   const capitalize = (text: string) =>
     text ? text.charAt(0).toUpperCase() + text.slice(1) : text
   const pluralKindTitle = (kind: string, resourceName: string) =>
-    kind.toLowerCase() === resourceName.toLowerCase() ? kind : englishPlural(kind)
+    kind.toLowerCase() === resourceName.toLowerCase() || /Metrics$/.test(kind) ? kind : englishPlural(kind)
   const pathSegments = pathname.replace(/^\//, '').split('/').filter(Boolean)
   const view = getViewFromPath(pathname)
 
@@ -153,7 +209,8 @@ function radarPageTitle(pathname: string, search = '', apiResources?: { name: st
   if (view === 'resources') {
     const resourceName = decode(pathSegments[1] ?? '')
     if (!resourceName) return 'Resources'
-    const match = apiResources?.find((r) => r.name === resourceName)
+    const group = new URLSearchParams(search).get('apiGroup') || ''
+    const match = findAPIResourceForRoute(apiResources, resourceName, group)
     return pluralKindTitle(match?.kind ?? pluralToKind(resourceName), resourceName)
   }
   // GitOps detail is /gitops/detail/<kind>/<ns>/<name> → the resource name;
@@ -184,27 +241,10 @@ function AuthBarrier({ authMode }: { authMode: string }) {
 
   if (authMode === 'oidc') {
     return (
-      <div className="flex-1 relative bg-theme-base">
-        <div className="absolute inset-0 pointer-events-none">
-          <img
-            src={radarLoadingIcon}
-            alt=""
-            aria-hidden
-            // Integer offset (50% − 22) — matches the Connecting/Opening splashes;
-            // avoids sub-pixel jitter from translate(-50%) on odd-width viewports.
-            className="absolute w-11 h-11"
-            style={{ left: 'calc(50% - 22px)', top: 'calc(50% - 22px)' }}
-          />
-          <div
-            className="absolute left-1/2 -translate-x-1/2 text-center"
-            style={{ top: 'calc(50% + 34px)' }}
-          >
-            <p className="whitespace-nowrap text-[17px] font-semibold tracking-tight text-theme-text-primary">
-              Redirecting to login…
-            </p>
-          </div>
-        </div>
-      </div>
+      <PaneLoader
+        label="Redirecting to login…"
+        className="flex-1 min-h-0 bg-theme-base"
+      />
     )
   }
 
@@ -237,7 +277,13 @@ function peekOwnerKey(pathname: string, search: string): string {
   return `${pathname}\n${new URLSearchParams(search).get('app') ?? ''}`
 }
 
-function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manageDocumentTitle?: boolean; documentTitleSuffix?: string }) {
+interface AppProps {
+  manageDocumentTitle?: boolean
+  documentTitleSuffix?: string
+  onClusterLoadStateChange?: (state: ClusterLoadState) => void
+}
+
+function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterLoadStateChange }: AppProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const navigationType = useNavigationType()
@@ -245,6 +291,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
   const capabilities = useCapabilitiesContext()
   const openLocalTerminal = useOpenLocalTerminal()
   const navCustomization = useNavCustomization()
+  // The AI panel is an absolute slot in the body frame (the column under the header):
+  // it reserves a right gutter on the CONTENT only, so the navbar + nav rail stay
+  // static. contentGutter is the docked panel width (0 when closed/overlay/maximized).
+  const { open: diagnoseOpen, contentGutter } = useDiagnoseLayout()
   // Hand off to a host-owned URL. The host's `onHostNavigate` (Radar Cloud's
   // cross-tree swap) navigates same-document so the chrome morphs instead of
   // cold-booting; without it we fall back to a hard `window.location` nav.
@@ -337,6 +387,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
   // resources view has run initNavigationMap().
   const { data: navApiResources } = useAPIResources()
   useEffect(() => { if (navApiResources) initNavigationMap(navApiResources) }, [navApiResources])
+
+  // View-aware namespace scope: disabled on cluster-scoped surfaces so the
+  // chip isn't a dead control next to the cluster switcher.
+  const namespaceFilter = namespaceFilterDisabled(mainView, location.pathname, location.search, navApiResources)
 
   // One URL-derived tab title for every view (see radarPageTitle). Driving it
   // from the URL — not the mounted component. Off unless the host opts in
@@ -433,6 +487,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
   const [filterSidebarCollapsed, setFilterSidebarCollapsed] = useState(false)
   // Topology node-search → canvas focus request (nonce lets the same node re-focus)
   const [topologyFocus, setTopologyFocus] = useState<{ id: string; nonce: number } | null>(null)
+  // The topology pane element — the search overlay portals into it so its
+  // backdrop dims only the pane (not the app) and stays clickable. Callback-ref
+  // state so it updates once the pane mounts.
+  const [topologyPane, setTopologyPane] = useState<HTMLDivElement | null>(null)
   // Track CRD kinds that have been auto-added to visibleKinds so we don't override user toggles
   const seededCRDKindsRef = useRef<Set<string>>(new Set())
 
@@ -449,7 +507,6 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
 
   // Settings dialog state
   const [showSettings, setShowSettings] = useState(false)
-  const [showMyPermissions, setShowMyPermissions] = useState(false)
 
   // Listen for "open-settings" DOM event (used by MCPSetupDialog etc.)
   useEffect(() => {
@@ -457,6 +514,18 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
     window.addEventListener('radar:open-settings', handler)
     return () => window.removeEventListener('radar:open-settings', handler)
   }, [])
+
+  // Listen for "open-local-terminal" DOM event — the AI surface is portaled above
+  // the DockProvider, so it can't call useOpenLocalTerminal directly; it dispatches
+  // this instead (mirrors the open-settings pattern).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { command, title } = (e as CustomEvent).detail ?? {}
+      openLocalTerminal({ initialCommand: command, title })
+    }
+    window.addEventListener('radar:open-local-terminal', handler)
+    return () => window.removeEventListener('radar:open-local-terminal', handler)
+  }, [openLocalTerminal])
 
   // Diagnostics overlay state
   const [showDiagnostics, setShowDiagnostics] = useState(false)
@@ -846,6 +915,18 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
   const contentReady = !isSwitching && !authMePending &&
     !(authMe?.authEnabled && !authMe?.username) && connection.state === 'connected'
 
+  const { clusterLoadState, showHomeClusterLoadFallback, clusterLoadInitial } = useClusterLoadState({
+    namespaces,
+    mainView,
+    chromeless,
+    contentReady,
+    onClusterLoadStateChange,
+  })
+  // Suppress the topbar warmup label during the initial dashboard fetch only on
+  // Home, where the center "Loading dashboard…" splash already covers it. Off
+  // Home there's no splash, so keep the label as the only text cue.
+  const showClusterWarmupLabel = clusterLoadState.loading && !(clusterLoadInitial && mainView === 'home')
+
   // Query client for cache invalidation
   const queryClient = useQueryClient()
 
@@ -874,8 +955,22 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
     updatedKinds: Set<string>    // update-only churn → throttled list + dashboard
     timer: number | null
   }>({ updatedKinds: new Set(), timer: null })
+  const timelineInvalidationRef = useRef<{ timer: number | null }>({ timer: null })
 
   const handleK8sEvent = useCallback((event: K8sEvent) => {
+    // The timeline consumes every frame — including the K8s Event kind the
+    // resource tiers skip below (warnings like BackOff are timeline content).
+    // Its own trailing throttle keeps the live view fresh within seconds
+    // while batching bursts into one refetch; the 60s poll on useChanges
+    // remains the no-SSE fallback.
+    const tl = timelineInvalidationRef.current
+    if (tl.timer === null) {
+      tl.timer = window.setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['changes'] })
+        timelineInvalidationRef.current = { timer: null }
+      }, 5000)
+    }
+
     // Skip K8s Event kind — informational, not resource mutations
     if (event.kind === 'Event') return
 
@@ -936,15 +1031,17 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
   useEffect(() => () => {
     if (fastInvalidationRef.current.timer !== null) clearTimeout(fastInvalidationRef.current.timer)
     if (slowInvalidationRef.current.timer !== null) clearTimeout(slowInvalidationRef.current.timer)
+    if (timelineInvalidationRef.current.timer !== null) clearTimeout(timelineInvalidationRef.current.timer)
     fastInvalidationRef.current = { changedKinds: new Set(), structuralKinds: new Set(), secretsChanged: false, timer: null }
     slowInvalidationRef.current = { updatedKinds: new Set(), timer: null }
+    timelineInvalidationRef.current = { timer: null }
   }, [])
 
   // SSE connection for real-time updates — no namespace filter for small/medium clusters (frontend filters).
   // forceNamespaceFilter is only set for large clusters that require server-side filtering.
   // Fleet mode uses 'resources' topology on the backend — filtering is client-side
   const sseMode = topologyMode === 'fleet' ? 'resources' : topologyMode
-  const { topology } = useEventSource(namespaces, sseMode as 'resources' | 'traffic', {
+  const { topology, connected: eventStreamConnected, connecting: eventStreamConnecting, reconnect: reconnectEventStream } = useEventSource(namespaces, sseMode as 'resources' | 'traffic', {
     onContextSwitchComplete: endSwitch,
     onContextSwitchProgress: updateProgress,
     onContextChanged: () => {
@@ -957,8 +1054,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
       // Cancel any pending SSE-driven invalidation — old cluster's events are irrelevant
       if (fastInvalidationRef.current.timer !== null) clearTimeout(fastInvalidationRef.current.timer)
       if (slowInvalidationRef.current.timer !== null) clearTimeout(slowInvalidationRef.current.timer)
+      if (timelineInvalidationRef.current.timer !== null) clearTimeout(timelineInvalidationRef.current.timer)
       fastInvalidationRef.current = { changedKinds: new Set(), structuralKinds: new Set(), secretsChanged: false, timer: null }
       slowInvalidationRef.current = { updatedKinds: new Set(), timer: null }
+      timelineInvalidationRef.current = { timer: null }
 
       // Close any open drawers/overlays — old cluster's resources don't exist on the new one
       // (?full=1 is cleared by the URL reset below).
@@ -981,8 +1080,6 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
     },
     onK8sEvent: handleK8sEvent,
   }, forceNamespaceFilter, showPolicyEffect)
-  const clusterConnected = connection.state === 'connected'
-
   // On large clusters (where the server requires namespace filtering), keep
   // SSE's server-side filter in lockstep with the user's namespace pick.
   // Without this, header switches and deep-link loads can leave SSE filtered
@@ -1027,6 +1124,28 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
   // Track CRD discovery status from topology (more direct than cluster-info)
   // When discovery completes, topology will auto-update via SSE with new CRD nodes
   const crdDiscoveryStatus = topology?.crdDiscoveryStatus
+  const clusterConnectionState = connection.state
+  const clusterConnected = clusterConnectionState === 'connected'
+  const liveUpdatesDisconnected = clusterConnected && !eventStreamConnected && !eventStreamConnecting
+  const headerConnectionLabel =
+    clusterConnectionState === 'disconnected' ? 'Disconnected' :
+    clusterConnectionState === 'connecting' ? 'Connecting' :
+    liveUpdatesDisconnected ? 'Live updates disconnected' :
+    clusterLoadState.loading ? `Connected — ${clusterLoadState.message}` :
+    crdDiscoveryStatus === 'discovering' ? 'Connected — discovering Custom Resources...' :
+    'Connected'
+  const headerConnectionDisplayLabel =
+    clusterConnectionState === 'disconnected' ? 'Disconnected' :
+    clusterConnectionState === 'connecting' ? 'Connecting' :
+    liveUpdatesDisconnected ? 'Live updates disconnected' :
+    showClusterWarmupLabel ? clusterLoadState.message :
+    crdDiscoveryStatus === 'discovering' ? 'Discovering Custom Resources…' :
+    ''
+  const showHeaderReconnect =
+    clusterConnectionState === 'disconnected' ||
+    liveUpdatesDisconnected
+  const headerReconnect = clusterConnectionState === 'disconnected' ? retryConnection : reconnectEventStream
+  const headerReconnectPending = clusterConnectionState === 'disconnected' ? isRetrying : false
 
   // Debug: log discovery status changes
   useEffect(() => {
@@ -1467,7 +1586,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
         content column (min-w-0, shrinkable) would fall below the old desktop
         floor at small windows. Embedded mode has no rail → plain 800. */}
     <div
-      className="relative flex h-screen bg-theme-base"
+      className={`relative flex bg-theme-base ${navCustomization.embedded ? 'h-full min-h-0' : 'h-screen'}`}
       style={{ minWidth: 800 + (showNavRail ? (navRailEffectivePinned ? 176 : 56) : 0) }}
     >
       {showNavRail && (
@@ -1486,60 +1605,93 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
           span the content area AFTER the rail rather than the full viewport
           under it. `fixed` splashes (connecting/switching) are unaffected. */}
       <div className="relative flex flex-col flex-1 min-w-0 h-full">
-      {/* Header — suppressed in chromeless embed; the host owns the chrome. */}
+      {/* Header — suppressed in chromeless embed; the host owns the chrome.
+          @container: the header's responsive layout keys off its OWN width (≈ viewport
+          − nav rail), not the viewport, so it collapses gracefully on narrow windows.
+          The AI panel docks BELOW the navbar and pushes only the content region, so the
+          navbar is never squeezed by it — these thresholds react to real window width. */}
       {!chromeless && (
-      <header className="relative z-50 flex items-center justify-between px-4 py-2 bg-theme-base/90 backdrop-blur-sm border-b border-theme-border/50">
-        {/* Left: Logo + Cluster info */}
-        <div className="flex items-center gap-4 shrink-0">
+      <header className="@container relative z-50 flex items-center justify-between px-4 py-2 bg-theme-base/90 backdrop-blur-sm border-b border-theme-border/50">
+        {/* Left: Logo + Cluster info. In the standalone (nav-rail) layout this
+            is a FIXED-WIDTH column so the omnibar after it is force-pinned: the
+            scope pill + status dot can change width (cluster/namespace value)
+            without ever shifting the search box. The pill's own name/value caps
+            keep it inside this width; the embedded/pill layout keeps auto width
+            (its center bar is absolutely positioned). */}
+        <div className={`flex items-center gap-4 shrink-0 ${showNavRail ? 'w-[492px]' : ''}`}>
           {/* Standalone rail owns the brand; only the embedded/pill layout
               shows it in the header (host may override via brandSlot). */}
           {navCustomization.brandSlot ?? (showNavRail ? null : <Logo />)}
 
-          <div className="flex items-center gap-2">
-            {navCustomization.contextSlot ?? <ContextSwitcher ref={contextSwitcherRef} />}
-            {/* Connection status - next to cluster name */}
-            <div className="flex items-center gap-1.5 ml-1">
+          <div className={`flex items-center gap-2 min-w-0 ${showNavRail ? 'flex-1' : ''}`}>
+            {navCustomization.contextSlot ? (
+              // Embedded host supplies its own cluster switcher — keep the two
+              // controls separate (the host owns the cluster chip's styling).
+              <>
+                {navCustomization.contextSlot}
+                <NamespaceSwitcher
+                  ref={namespaceSwitcherRef}
+                  disabled={namespaceFilter.disabled}
+                  disabledTooltip={namespaceFilter.tooltip}
+                />
+              </>
+            ) : (
+              // Standalone: cluster + namespace as one "scope" pill — two
+              // borderless segments split by a divider, reading as a single
+              // "what am I looking at" unit. The shared ScopePill shell is the
+              // same one Radar Hub's cluster top bar uses, so the two match.
+              <ScopePill>
+                <ContextSwitcher ref={contextSwitcherRef} variant="segment" />
+                <NamespaceSwitcher
+                  ref={namespaceSwitcherRef}
+                  variant="segment"
+                  disabled={namespaceFilter.disabled}
+                  disabledTooltip={namespaceFilter.tooltip}
+                />
+              </ScopePill>
+            )}
+            {/* Connection status — a fixed-size dot (state in the tooltip), an
+                optional reconnect button, and when the header is wide enough
+                (xl+), a label. The label is nowrap and unbounded: it overflows
+                the fixed left column into the empty gap before the centered
+                search box rather than shifting anything (the dot + pill are
+                shrink-0, so layout stays put — the search box never moves).
+                Where the gap is smaller than the label, its tail tucks under
+                the omnibar's solid background. Below xl it's the dot alone
+                unless reconnect is available. */}
+            <div className="ml-1 flex items-center gap-1.5 shrink-0">
               <Tooltip
-                content={
-                  !clusterConnected
-                    ? 'Cluster disconnected'
-                    : crdDiscoveryStatus === 'discovering'
-                      ? 'Connected — discovering Custom Resources...'
-                      : 'Connected'
-                }
+                content={headerConnectionLabel}
                 delay={100}
                 position="bottom"
               >
                 <span
-                  className={`w-2 h-2 rounded-full ${
-                    !clusterConnected
+                  className={`block w-2.5 h-2.5 shrink-0 rounded-full ${
+                    clusterConnectionState === 'disconnected' || liveUpdatesDisconnected
                       ? 'bg-red-500'
-                      : crdDiscoveryStatus === 'discovering'
+                      : clusterConnectionState === 'connecting' || crdDiscoveryStatus === 'discovering' || clusterLoadState.loading
                         ? 'bg-amber-400 animate-pulse'
                         : 'bg-green-500'
                   }`}
                 />
               </Tooltip>
-              {/* Inline label only for non-steady states where the user
-                  might need to act or wait. The healthy "Connected" case
-                  is the dot alone; the dot's tooltip discloses it. Keeping
-                  "Connected" text here would expand the left section and
-                  collide with the absolute-centered nav block at xl, which
-                  is the same breakpoint where nav labels appear. */}
-              {(!clusterConnected || crdDiscoveryStatus === 'discovering') && (
-                <span className="text-[11px] text-theme-text-tertiary hidden xl:inline">
-                  {!clusterConnected ? 'Disconnected' : 'Discovering Custom Resources...'}
+              {showNavRail && headerConnectionDisplayLabel && (
+                <span className="hidden xl:flex items-center gap-1.5 whitespace-nowrap text-[11px] text-theme-text-tertiary">
+                  {showClusterWarmupLabel && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {headerConnectionDisplayLabel}
                 </span>
               )}
-              {!clusterConnected && (
-                <Tooltip content="Reconnect">
-                <button
-                  onClick={retryConnection}
-                  disabled={isRetrying}
-                  className="p-1 text-theme-text-secondary hover:text-theme-text-primary disabled:opacity-50 disabled:pointer-events-none"
-                >
-                  <RefreshCw className={`w-3 h-3 ${isRetrying ? 'animate-spin' : ''}`} />
-                </button>
+              {showHeaderReconnect && (
+                <Tooltip content="Reconnect" delay={100} position="bottom">
+                  <button
+                    type="button"
+                    onClick={headerReconnect}
+                    disabled={headerReconnectPending}
+                    aria-label={clusterConnectionState === 'disconnected' ? 'Reconnect cluster' : 'Reconnect live updates'}
+                    className="p-1 text-theme-text-secondary hover:text-theme-text-primary disabled:opacity-50 disabled:pointer-events-none"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${headerReconnectPending ? 'animate-spin' : ''}`} />
+                  </button>
                 </Tooltip>
               )}
             </div>
@@ -1552,7 +1704,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
             navigates via the left rail (showNavRail), so the pill bar is
             suppressed there to avoid a duplicate primary nav. */}
         {!showNavRail && (
-        <div className="md:absolute md:left-1/2 md:-translate-x-1/2 flex items-center gap-0.5 bg-theme-elevated/50 rounded-full p-1 ml-2 md:ml-0">
+        <div className="@min-[920px]:absolute @min-[920px]:left-1/2 @min-[920px]:-translate-x-1/2 flex items-center gap-0.5 bg-theme-elevated/50 rounded-full p-1 ml-2 @min-[920px]:ml-0">
           {([
             { view: 'home' as const, icon: Home, label: 'Home' },
             { view: 'topology' as const, icon: Network, label: 'Topology' },
@@ -1599,7 +1751,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                     off-system breakpoint chosen by measurement at the time
                     of this PR — recompute if the cluster switcher cap or
                     other left-section chrome changes appreciably. */}
-                <span className="hidden min-[1440px]:inline">{label}</span>
+                <span className="hidden @min-[1264px]:inline">{label}</span>
               </button>
             </Tooltip>
           ))}
@@ -1607,9 +1759,14 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
         )}
 
         {/* Center: omnibar — standalone search + command surface (the ⌘K entry).
-            Fills the space the pill bar left; embedded keeps the pills + modal. */}
+            Its container is one of three EQUAL flex-1 columns (see the left/right
+            groups): equal side columns keep this middle column — and the search
+            box centered in it — pinned regardless of how wide the left-side
+            chrome gets (cluster name, namespace label, "Discovering…" /
+            "Disconnected" text). Overflowing side content truncates instead of
+            dragging the box. Same pattern as Radar Hub's ClusterTopBar. */}
         {showNavRail && (
-          <div className="hidden sm:flex flex-1 justify-center min-w-0 px-3">
+          <div className="hidden @min-[720px]:flex flex-1 justify-center min-w-0 px-3">
             <RadarOmnibar
               ref={omnibarRef}
               onNavigateView={(view) => setMainView(view)}
@@ -1633,16 +1790,12 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
 
         {/* Right: Controls */}
         <div className="flex items-center gap-3 shrink-0">
-          <NamespaceSwitcher
-            ref={namespaceSwitcherRef}
-          />
-
-
           {/* Command palette trigger — embedded only; standalone has the
               top-center omnibar (which is the ⌘K surface). */}
           {!showNavRail && (
           <button
             onClick={() => setShowCommandPalette(true)}
+            aria-label="Open command palette"
             className="hidden lg:flex items-center gap-2 h-7 px-2.5 rounded-md bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary transition-colors"
           >
             <Search className="w-3.5 h-3.5" />
@@ -1654,16 +1807,20 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
 
           {/* GitHub star — hidden in embedded mode (not OSS-distribution chrome). */}
           {!navCustomization.embedded && (
-            <div className="hidden lg:block">
+            <div className="hidden @min-[1100px]:block">
               <GitHubStarButton />
             </div>
           )}
+
+          {/* AI investigations (self-hides when no agent CLI is present) */}
+          <GlobalDiagnoseButton />
 
           {/* Local terminal */}
           {capabilities.localTerminal && (
             <Tooltip content="Open local terminal">
             <button
               onClick={() => openLocalTerminal()}
+              aria-label="Open local terminal"
               className="p-1.5 rounded-md bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary transition-colors"
             >
               <SquareTerminal className="w-4 h-4" />
@@ -1678,7 +1835,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
               to the host's cookie/backend) and the user would see the theme
               bounce on every navigation between host routes and /c/:id. */}
           {!navCustomization.embedded && (
-            <div className="hidden md:flex items-center">
+            <div className="hidden @min-[920px]:flex items-center">
               <ThemeToggle />
             </div>
           )}
@@ -1691,6 +1848,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
               <Tooltip content="Keyboard shortcuts (?)">
               <button
                 onClick={() => setShowHelp(true)}
+                aria-label="Show keyboard shortcuts"
                 className="p-1.5 rounded-md bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary transition-colors"
               >
                 <HelpCircle className="w-4 h-4" />
@@ -1699,6 +1857,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
               <Tooltip content="Report a bug / Diagnostics">
               <button
                 onClick={() => setShowDiagnostics(true)}
+                aria-label="Open diagnostics"
                 className="p-1.5 rounded-md bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary transition-colors"
               >
                 <Bug className="w-4 h-4" />
@@ -1716,6 +1875,11 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
         </div>
       </header>
       )}
+
+      {/* Body frame — every content state lives here and reflows left of the docked
+          AI panel (an absolute slot in this column). The header + nav rail are OUTSIDE
+          this wrapper, so they never move when the panel opens. */}
+      <div className="relative flex flex-1 flex-col min-h-0" style={{ paddingRight: contentGutter, transition: 'padding-right 0.2s ease' }}>
 
       {/* Auth barrier - show when auth is enabled but user is not authenticated */}
       {authMe?.authEnabled && !authMe?.username && authMe.authMode === 'proxy' && (
@@ -1738,95 +1902,60 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
           Icon is pane-anchored so its screen position matches the
           host hub splash across cross-document transitions. */}
       {!isSwitching && !(authMe?.authEnabled && !authMe?.username) && connection.state === 'connecting' && (
-        <div className="flex-1 relative bg-theme-base">
-          {/* Icon absolutely anchored to the pane center. The label block
-              sits at a fixed offset below — independent of label height
-              so multi-line messages (context + progress) don't shift the
-              icon's screen position. */}
-          <div className="absolute inset-0 pointer-events-none">
-            <img
-              src={radarLoadingIcon}
-              alt=""
-              aria-hidden
-              // Integer offset (50% − 22) — avoids sub-pixel jitter from
-              // `translate(-50%, -50%)` on odd-width viewports.
-              className="absolute w-11 h-11"
-              style={{ left: 'calc(50% - 22px)', top: 'calc(50% - 22px)' }}
-            />
-            <div
-              className="absolute left-1/2 -translate-x-1/2 text-center"
-              style={{ top: 'calc(50% + 34px)' }}
-            >
-              {/* 17px semibold matches the other splash surfaces so font
-                  weight doesn't visibly swap during hub → cluster
-                  transitions. Subtitles below stay smaller/dimmer. */}
-              <p className="whitespace-nowrap text-[17px] font-semibold tracking-tight text-theme-text-primary">
-                Connecting to cluster
-              </p>
-              {connection.context && (
-                <p className="text-sm text-theme-text-secondary mt-1">{connection.context}</p>
-              )}
-              {connection.progressMessage && (
-                <p className="text-xs text-theme-text-tertiary animate-pulse mt-3">
-                  {connection.progressMessage}
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
+        <PaneLoader
+          label="Connecting to cluster"
+          className="flex-1 min-h-0 bg-theme-base"
+        >
+          {connection.context && (
+            <span className="mt-1 block text-sm font-normal tracking-normal text-theme-text-secondary">
+              {connection.context}
+            </span>
+          )}
+          {connection.progressMessage && (
+            <span className="mt-3 block text-xs font-normal tracking-normal text-theme-text-tertiary animate-pulse">
+              {connection.progressMessage}
+            </span>
+          )}
+        </PaneLoader>
       )}
 
-      {/* Context switching overlay — icon pane-anchored, label below. */}
+      {/* Context switching overlay */}
       {isSwitching && (
-        <div className="flex-1 relative bg-theme-base">
-          <div className="absolute inset-0 pointer-events-none">
-            <img
-              src={radarLoadingIcon}
-              alt=""
-              aria-hidden
-              // Integer offset (50% − 22) — avoids sub-pixel jitter from
-              // `translate(-50%, -50%)` on odd-width viewports.
-              className="absolute w-11 h-11"
-              style={{ left: 'calc(50% - 22px)', top: 'calc(50% - 22px)' }}
-            />
-            <div
-              className="absolute left-1/2 -translate-x-1/2 text-center"
-              style={{ top: 'calc(50% + 34px)' }}
-            >
-              <div className="whitespace-nowrap text-[17px] font-semibold tracking-tight text-theme-text-primary">Switching context</div>
-              {targetContext && (
-                <div className="text-xs mt-2 text-theme-text-tertiary">
-                  {targetContext.provider ? (
-                    <span className="flex items-center justify-center gap-1.5">
-                      <span className="text-blue-400 font-medium">{targetContext.provider}</span>
-                      {targetContext.account && (
-                        <>
-                          <span className="text-theme-text-tertiary/50">•</span>
-                          <span>{targetContext.account}</span>
-                        </>
-                      )}
-                      {targetContext.region && (
-                        <>
-                          <span className="text-theme-text-tertiary/50">•</span>
-                          <span>{targetContext.region}</span>
-                        </>
-                      )}
+        <PaneLoader
+          label="Switching context"
+          className="flex-1 min-h-0 bg-theme-base"
+        >
+          {targetContext && (
+            <span className="mt-2 block text-xs font-normal tracking-normal text-theme-text-tertiary">
+              {targetContext.provider ? (
+                <span className="flex items-center justify-center gap-1.5">
+                  <span className="text-blue-400 font-medium">{targetContext.provider}</span>
+                  {targetContext.account && (
+                    <>
                       <span className="text-theme-text-tertiary/50">•</span>
-                      <span className="text-theme-text-secondary font-medium">{targetContext.clusterName}</span>
-                    </span>
-                  ) : (
-                    <span>{targetContext.raw}</span>
+                      <span>{targetContext.account}</span>
+                    </>
                   )}
-                </div>
+                  {targetContext.region && (
+                    <>
+                      <span className="text-theme-text-tertiary/50">•</span>
+                      <span>{targetContext.region}</span>
+                    </>
+                  )}
+                  <span className="text-theme-text-tertiary/50">•</span>
+                  <span className="text-theme-text-secondary font-medium">{targetContext.clusterName}</span>
+                </span>
+              ) : (
+                <span>{targetContext.raw}</span>
               )}
-              {progressMessage && (
-                <div className="text-xs mt-3 text-theme-text-tertiary animate-pulse">
-                  {progressMessage}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+            </span>
+          )}
+          {progressMessage && (
+            <span className="mt-3 block text-xs font-normal tracking-normal text-theme-text-tertiary animate-pulse">
+              {progressMessage}
+            </span>
+          )}
+        </PaneLoader>
       )}
 
       {/* Main content - only show when connected and authenticated */}
@@ -1840,6 +1969,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
           <HomeView
             namespaces={namespaces}
             topology={topology}
+            fallbackClusterLoadState={showHomeClusterLoadFallback ? clusterLoadState : undefined}
             onNavigateToView={setMainView}
             onNavigateToResourceKind={(kind, apiGroup, filters) => {
               // Navigate to resources view with kind in URL path
@@ -1932,7 +2062,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                   }}
                 />
 
-                <div className="flex-1 relative">
+                <div ref={setTopologyPane} className="flex-1 relative">
                   <TopologyGraph
                     topology={topologyWithAudit}
                     viewMode={topologyMode}
@@ -1943,41 +2073,55 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
                     paused={topologyPaused}
                     onTogglePause={handleTogglePause}
                     onMaximizeNamespace={(ns) => setActiveNamespace.mutate({ namespaces: [ns] })}
-                    namespaceBreadcrumb={namespaces.length === 1 ? namespaces[0] : undefined}
-                    onClearNamespace={namespaces.length >= 1 ? () => setActiveNamespace.mutate({ namespaces: [] }) : undefined}
                     namespacesKey={namespaces.join(',')}
                     focusNodeId={topologyFocus?.id}
                     focusNonce={topologyFocus?.nonce}
-                  />
-
-                  {/* Topology node search overlay - top left */}
-                  <TopologySearch
-                    nodes={filteredTopology?.nodes ?? []}
-                    allNodes={topology?.nodes}
-                    viewModeLabel={topologyMode === 'fleet' ? 'Fleet' : topologyMode === 'traffic' ? 'Network Flow' : 'Resources'}
-                    onNodeSelect={handleNodeClick}
-                    onZoomToNode={(id) => setTopologyFocus((prev) => ({ id, nonce: (prev?.nonce ?? 0) + 1 }))}
-                    // Stack below the namespace breadcrumb (shown only for a single
-                    // namespace) so the two don't overlap in the top-left corner.
-                    triggerClassName={namespaces.length === 1 ? 'top-12 left-3' : 'top-3 left-3'}
-                  />
-
-                  {/* Topology controls overlay - top right */}
-                  <TopologyControls
-                    viewMode={topologyMode}
-                    onViewModeChange={(mode) => {
-                      setTopologyMode(mode)
-                      // Fleet mode: namespace grouping for structure, but expanded (not collapsed chips)
-                      if (mode === 'fleet') setGroupingMode('namespace')
-                    }}
-                    groupingMode={groupingMode}
-                    onGroupingModeChange={setGroupingMode}
-                    showNoGrouping={hasNamespaceFilter}
-                    showPolicyEffect={showPolicyEffect}
-                    onShowPolicyEffectChange={setShowPolicyEffect}
-                    showFleetMode={displayedTopology?.nodes?.some(n => FLEET_MODE_KINDS.has(n.kind as NodeKind)) ?? false}
-                    onNavigateToTraffic={() => setMainView('traffic')}
-                  />
+                  >
+                    {/* Overlay row: left column (namespace breadcrumb over search)
+                        + controls. items-start pins the controls to the top even
+                        when the breadcrumb grows the left column; w-full so
+                        justify-between spans the canvas. */}
+                    <div className="flex w-full items-start justify-between gap-2">
+                      <div className="flex flex-col items-start gap-2">
+                        {namespaces.length === 1 && (
+                          <TopologyBreadcrumb
+                            namespace={namespaces[0]}
+                            onClear={() => setActiveNamespace.mutate({ namespaces: [] })}
+                          />
+                        )}
+                        <TopologySearch
+                          nodes={filteredTopology?.nodes ?? []}
+                          allNodes={topology?.nodes}
+                          viewModeLabel={topologyMode === 'fleet' ? 'Fleet' : topologyMode === 'traffic' ? 'Network Flow' : 'Resources'}
+                          onNodeSelect={handleNodeClick}
+                          onZoomToNode={(id) => setTopologyFocus((prev) => ({ id, nonce: (prev?.nonce ?? 0) + 1 }))}
+                          overlayContainer={topologyPane}
+                        />
+                      </div>
+                      <TopologyControls
+                        viewMode={topologyMode}
+                        onViewModeChange={(mode) => {
+                          setTopologyMode(mode)
+                          // Fleet mode: namespace grouping for structure, but expanded (not collapsed chips)
+                          if (mode === 'fleet') setGroupingMode('namespace')
+                        }}
+                        groupingMode={groupingMode}
+                        onGroupingModeChange={setGroupingMode}
+                        showNoGrouping={hasNamespaceFilter}
+                        showPolicyEffect={showPolicyEffect}
+                        onShowPolicyEffectChange={setShowPolicyEffect}
+                        showFleetMode={displayedTopology?.nodes?.some(n => FLEET_MODE_KINDS.has(n.kind as NodeKind)) ?? false}
+                        onNavigateToTraffic={() => setMainView('traffic')}
+                        leadingSlot={
+                          <FreshnessControl
+                            mode="auto"
+                            paused={topologyPaused}
+                            connectionState={connection.state}
+                          />
+                        }
+                      />
+                    </div>
+                  </TopologyGraph>
                 </div>
               </>
             )}
@@ -2001,7 +2145,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
           <TimelineView
             namespaces={namespaces}
             onResourceClick={(resource) => {
-              navigate(buildWorkloadPath(resource))
+              navigate(relatedResourcePath(resource))
             }}
             initialViewMode={(searchParams.get('view') as 'list' | 'swimlane') || undefined}
             initialFilter={(searchParams.get('filter') as 'all' | 'changes' | 'k8s_events' | 'warnings' | 'unhealthy') || undefined}
@@ -2039,6 +2183,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
               navigateToResource(resource)
             }}
             onClearNamespaces={clearAllNamespaces}
+            onOpenSettings={() => setShowSettings(true)}
           />
         )}
 
@@ -2052,9 +2197,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
               // detail panel) sits behind the peek. Search-only change keeps the
               // pathname — and thus the peek's owner-path — intact.
               const params = new URLSearchParams(window.location.search)
-              if (params.has('workload') || params.has('tab')) {
+              if (params.has('workload') || params.has('tab') || params.has('run')) {
                 params.delete('workload')
                 params.delete('tab')
+                params.delete('run')
                 navigate({ pathname: window.location.pathname, search: params.toString() }, { replace: true })
               }
               navigateToResource(resource)
@@ -2069,7 +2215,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
 
         {/* Cost detail view */}
         {mainView === 'cost' && (
-          <CostView onBack={() => setMainView('home')} />
+          <CostView namespaces={namespaces} onBack={() => setMainView('home')} onOpenResource={navigateToResource} />
         )}
 
         {/* Takeover splash. When the host claims the current view via
@@ -2078,27 +2224,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
             own fetches) while the cross-document nav lands. Covers checks /
             issues / gitops with one block since only one view is active. */}
         {viewTakeoverHref && (
-          <div className="flex-1 relative bg-theme-base">
-            {/* Viewport-anchored, 17px — identical to the "Connecting" splash so
-                the mark doesn't move or resize across the takeover hand-off. */}
-            <div className="absolute inset-0 pointer-events-none">
-              <img
-                src={radarLoadingIcon}
-                alt=""
-                aria-hidden
-                className="absolute w-11 h-11"
-                style={{ left: 'calc(50% - 22px)', top: 'calc(50% - 22px)' }}
-              />
-              <div
-                className="absolute left-1/2 -translate-x-1/2 text-center"
-                style={{ top: 'calc(50% + 34px)' }}
-              >
-                <p className="whitespace-nowrap text-[17px] font-semibold tracking-tight text-theme-text-primary">
-                  Opening…
-                </p>
-              </div>
-            </div>
-          </div>
+          <PaneLoader
+            label="Opening…"
+            className="flex-1 min-h-0 bg-theme-base"
+          />
         )}
 
         {/* Best practices detail view (inline only when the host hasn't taken
@@ -2128,7 +2257,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
         {mainView === 'workload' && (
           <WorkloadViewRoute
             onNavigateToResource={(resource) => {
-              navigate(buildWorkloadPath(resource))
+              navigate(relatedResourcePath(resource))
             }}
           />
         )}
@@ -2138,6 +2267,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
 
         </ErrorBoundary>
       </div>}
+      </div>{/* /body frame */}
 
       {/* Resource detail drawer — stays mounted, expands to full-screen WorkloadView.
           Gated on contentReady so it never renders over the connecting/switching
@@ -2149,6 +2279,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
           // No Radar header in chromeless embeds (Radar Hub) — anchor the drawer
           // to the top of the content area instead of leaving a 49px gap.
           headerHeight={chromeless ? 0 : undefined}
+          rightInset={contentGutter}
           isOpen={resourceDrawer.isOpen}
           expanded={drawerExpandedProp}
           onClose={closeDrawer}
@@ -2190,6 +2321,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
         <HelmReleaseDrawer
           release={drawerHelmRelease}
           isOpen={helmDrawer.isOpen}
+          rightInset={contentGutter}
           onClose={() => {
             setSelectedHelmRelease(null)
             const params = new URLSearchParams(window.location.search)
@@ -2208,6 +2340,12 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
           }}
         />
       )}
+
+      {/* AI investigation panel — an absolute slot in this column (the body frame),
+          below the header and right of the nav rail, sharing the frame with the
+          drawers above. Docked = right slot (pushes content via contentGutter);
+          maximized = fills the frame. */}
+      {diagnoseOpen && <DiagnoseSurface topInset={chromeless ? 0 : APP_HEADER_HEIGHT} />}
 
       {/* Port Forward floating panel (indicator lives in header) */}
       <PortForwardPanel />
@@ -2273,16 +2411,11 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manage
       {/* Diagnostics overlay */}
       {diagnosticsOverlay.shouldRender && <DiagnosticsOverlay isOpen={diagnosticsOverlay.isOpen} onClose={() => setShowDiagnostics(false)} />}
 
-      {/* Settings dialog */}
+      {/* Settings dialog — My permissions is rendered inline in its own section */}
       <SettingsDialog
         open={showSettings}
         onClose={() => setShowSettings(false)}
-        onShowMyPermissions={() => {
-          setShowSettings(false)
-          setShowMyPermissions(true)
-        }}
       />
-      <MyPermissionsDialog open={showMyPermissions} onClose={() => setShowMyPermissions(false)} />
 
       {/* Debug overlay — dev mode, standalone only. Embedded hosts (Radar Hub)
           own their own dev tooling; ours would collide with theirs bottom-right. */}
@@ -2321,12 +2454,12 @@ function FloatingButtons({ showHelp, showCommandPalette, showDiagnostics, onHelp
   return (
     <div className={`fixed ${bottom} right-4 z-40 flex items-center gap-1.5`}>
       <Tooltip content="Report bug / Diagnostics" position="top">
-        <button onClick={onBugReport} className={btnClass}>
+        <button onClick={onBugReport} aria-label="Open diagnostics" className={btnClass}>
           <Bug className="w-3.5 h-3.5" />
         </button>
       </Tooltip>
       <Tooltip content="Keyboard shortcuts (?)" position="top">
-        <button onClick={onHelp} className={btnClass}>
+        <button onClick={onHelp} aria-label="Show keyboard shortcuts" className={btnClass}>
           ?
         </button>
       </Tooltip>
@@ -2335,14 +2468,18 @@ function FloatingButtons({ showHelp, showCommandPalette, showDiagnostics, onHelp
 }
 
 // Main App component wrapped with providers
-function App({ manageDocumentTitle = false, documentTitleSuffix }: { manageDocumentTitle?: boolean; documentTitleSuffix?: string }) {
+function App({ manageDocumentTitle = false, documentTitleSuffix, onClusterLoadStateChange }: AppProps) {
   return (
     <ConnectionProvider>
       <CapabilitiesProvider>
         <ContextSwitchProvider>
           <DockProvider>
             <KeyboardShortcutProvider>
-              <AppInner manageDocumentTitle={manageDocumentTitle} documentTitleSuffix={documentTitleSuffix} />
+              <AppInner
+                manageDocumentTitle={manageDocumentTitle}
+                documentTitleSuffix={documentTitleSuffix}
+                onClusterLoadStateChange={onClusterLoadStateChange}
+              />
             </KeyboardShortcutProvider>
           </DockProvider>
         </ContextSwitchProvider>
@@ -2478,6 +2615,7 @@ function GitHubStarButton() {
         target="_blank"
         rel="noopener noreferrer"
         onClick={handleClick}
+        aria-label={starred ? 'Open Radar on GitHub' : 'Star Radar on GitHub'}
         className="flex items-center gap-1.5 h-7 px-2 rounded-md transition-colors bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary"
       >
         <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -2533,6 +2671,7 @@ function ThemeToggle() {
     <Tooltip content={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
     <button
       onClick={toggleTheme}
+      aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
       className="p-1.5 rounded-md bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary transition-colors"
     >
       {theme === 'dark' ? (

@@ -19,6 +19,10 @@ func RelatedIssues(p Provider, namespaces []string, group, kind, namespace, name
 	// what makes member #11..#N in a large fan-out resolve correctly.
 	flat := Compose(p, Filters{Namespaces: namespaces, Limit: NoLimit})
 	grouped := GroupIssues(flat)
+	// Run the grouped-mode enrichment (mirrors the cluster path) so the grouped
+	// issues get coverage-gated incident_parent pointers — GroupIssues alone only
+	// carries the representative's DiagnosticContext, never the reverse pointer.
+	grouped = enrichDiagnosticContext(grouped, flat, grouped, p)
 	return RelatedIssuesFrom(flat, grouped, group, kind, namespace, name)
 }
 
@@ -27,6 +31,8 @@ func RelatedIssues(p Provider, namespaces []string, group, kind, namespace, name
 // related issues for MANY resources in one request (e.g. the GitOps insights
 // resolver enriching every degraded managed resource) can Compose once and
 // match repeatedly, instead of running a full cluster Compose per resource.
+// It only matches — grouped-mode enrichment is the caller's responsibility, so
+// a bare GroupIssues pair yields rows without incident_parent.
 func RelatedIssuesFrom(flat, grouped []Issue, group, kind, namespace, name string) []Issue {
 	// Normalize the query group so a caller passing a raw API group — e.g. the
 	// GitOps L4 bridge forwarding Argo's status.resources[].group, which is ""
@@ -119,6 +125,7 @@ func foldGroup(members []Issue) Issue {
 		Name:                 subject.Name,
 		Reason:               rep.Reason,
 		Message:              rep.Message,
+		RawMessage:           rep.RawMessage,
 		RestartCount:         rep.RestartCount,
 		LastTerminatedReason: rep.LastTerminatedReason,
 		FirstSeen:            rep.FirstSeen,
@@ -188,11 +195,12 @@ func foldGroup(members []Issue) Issue {
 	g.IssueTimingBasis = groupBasis
 
 	// IncidentParent is deliberately NOT carried through foldGroup: members of one
-	// grouped symptom share an issue ID, so the per-resource regroup can't tell
-	// which members the root actually covers (the whole-row coverage check that the
-	// cluster-wide path does after grouping isn't reconstructable here). The reverse
-	// pointer therefore ships on the cluster Issues view + MCP only; the per-resource
-	// path leaves it unset rather than over-claim a mixed-cause row.
+	// grouped symptom share an issue ID, so carrying a member's pointer can't honor
+	// the whole-row coverage check. It is assigned AFTER grouping instead, in
+	// enrichDiagnosticContext's grouped mode — the cluster path inline, the
+	// per-resource RelatedIssues path via a second enrichment over its grouped set.
+	// Precomposed RelatedIssuesFrom callers that skip that enrichment (the GitOps
+	// insights resolver) get rows without the pointer.
 
 	// Count is the affected-resource fan-out — the non-subject members under
 	// this subject (the subject is shown separately as the header, not under
@@ -269,7 +277,7 @@ func affectedOf(refs []Ref) Affected {
 		switch r.Kind {
 		case "Pod":
 			a.Pods++
-		case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob":
+		case "Deployment", "Rollout", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob":
 			a.Workloads++
 		case "Service":
 			a.Services++

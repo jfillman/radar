@@ -52,7 +52,7 @@ interface BadgeProps {
 // ---------------------------------------------------------------------------
 const SEVERITY: Record<BadgeSeverity, string> = {
   success: 'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-400 dark:border-emerald-700/40',
-  warning: 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950/50 dark:text-amber-400 dark:border-amber-700/40',
+  warning: 'bg-amber-100 text-warning-text border-amber-300 dark:bg-amber-950/50 dark:border-amber-700/40',
   alert:   'bg-orange-100 text-orange-800 border-orange-300 dark:bg-orange-950/50 dark:text-orange-400 dark:border-orange-700/40',
   error:   'bg-red-100 text-red-700 border-red-300 dark:bg-red-950/50 dark:text-red-400 dark:border-red-700/40',
   info:    'bg-sky-100 text-sky-700 border-sky-300 dark:bg-sky-950/50 dark:text-sky-400 dark:border-sky-700/40',
@@ -91,6 +91,11 @@ const KIND: Record<string, string> = {
   // Jobs
   Job:           'bg-purple-100 text-purple-700 border-purple-300 dark:bg-purple-950/50 dark:text-purple-400 dark:border-purple-700/40',
   CronJob:       'bg-purple-100 text-purple-700 border-purple-300 dark:bg-purple-950/50 dark:text-purple-400 dark:border-purple-700/40',
+  Workflow:      'bg-purple-100 text-purple-700 border-purple-300 dark:bg-purple-950/50 dark:text-purple-400 dark:border-purple-700/40',
+  CronWorkflow:  'bg-purple-100 text-purple-700 border-purple-300 dark:bg-purple-950/50 dark:text-purple-400 dark:border-purple-700/40',
+  WorkflowTemplate: 'bg-purple-100 text-purple-700 border-purple-300 dark:bg-purple-950/50 dark:text-purple-400 dark:border-purple-700/40',
+  ClusterWorkflowTemplate: 'bg-purple-100 text-purple-700 border-purple-300 dark:bg-purple-950/50 dark:text-purple-400 dark:border-purple-700/40',
+  ScaledJob: 'bg-pink-100 text-pink-700 border-pink-300 dark:bg-pink-950/50 dark:text-pink-400 dark:border-pink-700/40',
 
   // Scaling & Storage
   HorizontalPodAutoscaler: 'bg-pink-100 text-pink-800 border-pink-300 dark:bg-pink-950/50 dark:text-pink-300 dark:border-pink-700/40',

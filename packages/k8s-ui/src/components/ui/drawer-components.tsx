@@ -1,4 +1,4 @@
-import { useState, createContext, useContext } from 'react'
+import { createContext, useContext, useState } from 'react'
 import { ChevronRight, Copy, Check, Tag, AlertTriangle, CheckCircle, ExternalLink, Layers, X, Minus } from 'lucide-react'
 import { clsx } from 'clsx'
 import { formatAge, formatDuration, formatResources } from '../resources/resource-utils'
@@ -410,7 +410,7 @@ export function AlertBanner({ variant, icon, title, message, items, children }: 
         {hasBody ? (
           <div className="flex-1 min-w-0">
             <div className={clsx('text-sm font-medium', colors.title, items && 'mb-1')}>{title}</div>
-            {message && <div className={clsx('text-xs mt-1 break-all', colors.message)}>{message}</div>}
+            {message && <div className={clsx('text-xs mt-1 break-words', colors.message)}>{message}</div>}
             {items && items.length > 0 && (
               <ul className={clsx('text-xs space-y-1', colors.list)}>
                 {items.map((item, i) => (
@@ -446,11 +446,14 @@ export interface Problem {
 }
 
 /** Displays a list of problem alerts (warnings and errors) */
-// True when the resource detail is already rendering a dedicated, authoritative
-// "Operational Issues" section (the Issues pipeline — richer cause/action). Only
-// renderers whose problems the pipeline COMPREHENSIVELY covers read this and drop
-// their own problem array so the same failure isn't shown twice — today that's
-// PodRenderer and WorkloadRenderer (workload + pod runtime). It is deliberately
+// True when the resource detail is rendering (or still fetching) a dedicated,
+// authoritative "Operational Issues" section (the Issues pipeline — richer
+// cause/action). Renderers whose problems the pipeline COMPREHENSIVELY covers read
+// this and drop their own condition banner so the same failure isn't shown twice.
+// It stays true WHILE the live-issues fetch is pending: a banner the pipeline will
+// cover would otherwise flash on first paint before the issues arrive and hide it;
+// once the fetch settles with no issues (e.g. a CRD the pipeline doesn't watch),
+// it flips false and the renderer's banner appears cleanly. It is deliberately
 // NOT wired into ProblemAlerts: that component is used only by GitOps renderers
 // (Argo/Flux), whose Degraded/OutOfSync/revision-mismatch banners the pipeline
 // does not fully emit (e.g. OutOfSync only for automated Argo apps) — suppressing
@@ -532,9 +535,11 @@ function ContainerResourcesLine({ resources }: { resources: any }) {
   const effective = getEffectiveResources(resources)
   if (Object.keys(effective).length === 0) return null
   return (
-    <div className="text-xs text-theme-text-tertiary mt-1" title="Effective requests (requests, falling back to limits)">
-      Resources: {formatResources(effective)}
-    </div>
+    <Tooltip content="Effective requests (requests, falling back to limits)" delay={150}>
+      <div className="text-xs text-theme-text-tertiary mt-1">
+        Resources: {formatResources(effective)}
+      </div>
+    </Tooltip>
   )
 }
 
@@ -551,11 +556,15 @@ export function PodTemplateSection({ template }: { template: any }) {
           {initContainers.map((c: any) => (
             <div key={c.name} className="card-inner text-sm border-l-2 border-yellow-500/40">
               <div className="font-medium text-theme-text-primary">{c.name}</div>
-              <div className="text-xs text-theme-text-secondary truncate" title={c.image}>{c.image}</div>
+              <Tooltip content={c.image} delay={300} wrapperClassName="block min-w-0">
+                <div className="text-xs text-theme-text-secondary truncate">{c.image}</div>
+              </Tooltip>
               {(c.command || c.args) && (
-                <div className="text-xs text-theme-text-tertiary font-mono mt-1 truncate" title={[...(c.command || []), ...(c.args || [])].join(' ')}>
-                  $ {[...(c.command || []), ...(c.args || [])].join(' ')}
-                </div>
+                <Tooltip content={[...(c.command || []), ...(c.args || [])].join(' ')} delay={300} wrapperClassName="block min-w-0">
+                  <div className="text-xs text-theme-text-tertiary font-mono mt-1 truncate">
+                    $ {[...(c.command || []), ...(c.args || [])].join(' ')}
+                  </div>
+                </Tooltip>
               )}
               <ContainerResourcesLine resources={c.resources} />
             </div>
@@ -566,7 +575,9 @@ export function PodTemplateSection({ template }: { template: any }) {
       {containers.map((c: any) => (
         <div key={c.name} className="card-inner text-sm">
           <div className="font-medium text-theme-text-primary">{c.name}</div>
-          <div className="text-xs text-theme-text-secondary truncate" title={c.image}>{c.image}</div>
+          <Tooltip content={c.image} delay={300} wrapperClassName="block min-w-0">
+            <div className="text-xs text-theme-text-secondary truncate">{c.image}</div>
+          </Tooltip>
           {c.ports && (
             <div className="text-xs text-theme-text-tertiary mt-1">
               Ports: {c.ports.map((p: any) => `${p.name ? `${p.name}: ` : ''}${p.containerPort}/${p.protocol || 'TCP'}`).join(', ')}
@@ -786,6 +797,7 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
     (relationships.configRefs && relationships.configRefs.length > 0) ||
     (relationships.consumers && relationships.consumers.length > 0) ||
     (relationships.scalers && relationships.scalers.length > 0) ||
+    (relationships.storageRefs && relationships.storageRefs.length > 0) ||
     (relationships.pdbs && relationships.pdbs.length > 0) ||
     (relationships.networkPolicies && relationships.networkPolicies.length > 0) ||
     (relationships.resourceClaims && relationships.resourceClaims.length > 0) ||
@@ -828,6 +840,9 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
         )}
         {relationships.scalers && relationships.scalers.length > 0 && (
           <RelationshipGroup label="Autoscaler" refs={dedupeRefs(relationships.scalers)} onNavigate={onNavigate} />
+        )}
+        {relationships.storageRefs && relationships.storageRefs.length > 0 && (
+          <RelationshipGroup label="Storage" refs={dedupeRefs(relationships.storageRefs)} onNavigate={onNavigate} />
         )}
         {relationships.pdbs && relationships.pdbs.length > 0 && (
           <RelationshipGroup label="Disruption Budget" refs={dedupeRefs(relationships.pdbs)} onNavigate={onNavigate} />
@@ -905,30 +920,31 @@ export function ResourceRefBadge({ resourceRef, onClick, wrapAtSeparator }: Reso
   const layoutClass = wrapAtSeparator
     ? 'badge max-w-full min-w-0 flex-wrap items-center whitespace-normal text-left leading-tight'
     : 'badge'
+  const tooltip = `${resourceRef.kind}: ${resourceRef.namespace}/${resourceRef.name}`
 
   if (onClick) {
     return (
-      <button
-        onClick={() => onClick(resourceRef)}
-        className={clsx(
-          layoutClass,
-          'hover:brightness-[0.92] dark:hover:brightness-125 transition-[filter]',
-          kindClass
-        )}
-        title={`${resourceRef.kind}: ${resourceRef.namespace}/${resourceRef.name}`}
-      >
-        {content}
-      </button>
+      <Tooltip content={tooltip} delay={150}>
+        <button
+          onClick={() => onClick(resourceRef)}
+          className={clsx(
+            layoutClass,
+            'hover:brightness-[0.92] dark:hover:brightness-125 transition-[filter]',
+            kindClass
+          )}
+        >
+          {content}
+        </button>
+      </Tooltip>
     )
   }
 
   return (
-    <span
-      className={clsx(layoutClass, kindClass)}
-      title={`${resourceRef.kind}: ${resourceRef.namespace}/${resourceRef.name}`}
-    >
-      {content}
-    </span>
+    <Tooltip content={tooltip} delay={300}>
+      <span className={clsx(layoutClass, kindClass)}>
+        {content}
+      </span>
+    </Tooltip>
   )
 }
 

@@ -1,6 +1,10 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
+import { createElement } from 'react'
+import { renderToString } from 'react-dom/server'
 import { compareIssues, subjectRef, memberRef, normalizeImagePullMessage, issueMessageParts, type Issue } from './types'
-import { categoryLabel, groupLabel, groupBadgeClass } from './severity'
+import { categoryLabel, groupBadgeClass, groupLabel } from './severity'
+import { IssueRow } from './IssuesView'
+import { issueTiming } from './issue-timing'
 
 const base: Issue = {
   id: 'id-0',
@@ -14,6 +18,10 @@ const base: Issue = {
   reason: 'CrashLoopBackOff',
 }
 const mk = (o: Partial<Issue>): Issue => ({ ...base, ...o })
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('compareIssues', () => {
   it('orders critical before warning regardless of observed age', () => {
@@ -59,8 +67,145 @@ describe('category/group label fallbacks', () => {
     expect(groupLabel('runtime')).toBe('Runtime')
     expect(groupLabel('some_future_group')).toBe('Some future group')
   })
-  it('groupBadgeClass falls back to a non-empty neutral class for an unknown group', () => {
-    expect(groupBadgeClass('totally_unknown_group')).toBeTruthy()
+  it('keeps ordinary group chips neutral and emphasizes control-plane/unknown groups', () => {
+    expect(groupBadgeClass('runtime')).toContain('text-theme-text-secondary')
+    expect(groupBadgeClass('runtime')).not.toContain('ring-theme-border-light')
+    expect(groupBadgeClass('control_plane')).toContain('text-theme-text-primary')
+    expect(groupBadgeClass('control_plane')).toContain('ring-theme-border-light')
+    expect(groupBadgeClass('unknown')).toContain('ring-theme-border-light')
+    expect(groupBadgeClass('some_future_group')).toContain('text-theme-text-secondary')
+    expect(groupBadgeClass('some_future_group')).not.toContain('ring-theme-border-light')
+  })
+})
+
+describe('IssueRow', () => {
+  it('keeps relative age visible and adds deployment timing as a secondary tag', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-30T12:00:00Z'))
+
+    const html = renderToString(createElement(IssueRow, {
+      issue: mk({
+        id: 'baseline',
+        first_seen: '2026-06-28T12:00:00Z',
+        issue_timing: 'started_at_resource_creation',
+      }),
+      open: false,
+      onToggle: () => undefined,
+    }))
+
+    expect(html).toContain('2d')
+    expect(html).toContain('since deploy')
+  })
+
+  it('promotes after-healthy timing in the collapsed row', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-30T12:00:00Z'))
+
+    const html = renderToString(createElement(IssueRow, {
+      issue: mk({
+        id: 'regression',
+        first_seen: '2026-06-30T10:00:00Z',
+        issue_timing: 'started_after_resource_was_healthy',
+        issue_timing_basis: 'condition',
+      }),
+      open: false,
+      onToggle: () => undefined,
+    }))
+
+    expect(html).toContain('2h')
+    expect(html).toContain('after healthy')
+  })
+
+  it('uses the category-group chip class in the queue row', () => {
+    const html = renderToString(createElement(IssueRow, {
+      issue: mk({ category_group: 'control_plane' }),
+      open: false,
+      onToggle: () => undefined,
+    }))
+
+    expect(html).toContain('Control plane')
+    expect(html).toContain(groupBadgeClass('control_plane'))
+  })
+})
+
+describe('issueTiming', () => {
+  it('keeps deployment wording for deployment-like creation failures', () => {
+    expect(issueTiming(mk({
+      kind: 'Deployment',
+      group: 'apps',
+      issue_timing: 'started_at_resource_creation',
+      issue_timing_basis: 'condition',
+    }))).toMatchObject({
+      kind: 'creation',
+      chip: 'since deploy',
+      meta: 'present since deployment or first reconciliation',
+    })
+
+    expect(issueTiming(mk({
+      kind: 'Rollout',
+      group: 'argoproj.io',
+      issue_timing: 'started_at_resource_creation',
+      issue_timing_basis: 'condition',
+    }))).toMatchObject({
+      kind: 'creation',
+      chip: 'since deploy',
+      meta: 'present since deployment or first reconciliation',
+    })
+  })
+
+  it('uses deployment wording for pod issues only when workload timing evidence is present', () => {
+    expect(issueTiming(mk({
+      kind: 'Pod',
+      issue_timing: 'started_at_resource_creation',
+      issue_timing_basis: 'pod_creation',
+    }))).toMatchObject({
+      kind: 'creation',
+      chip: 'since deploy',
+    })
+
+    expect(issueTiming(mk({
+      kind: 'Pod',
+      issue_timing: 'started_at_resource_creation',
+      issue_timing_basis: 'phase',
+    }))).toMatchObject({
+      kind: 'creation',
+      chip: 'since creation',
+    })
+  })
+
+  it('uses resource creation wording for non-deployment creation failures', () => {
+    expect(issueTiming(mk({
+      kind: 'PersistentVolumeClaim',
+      issue_timing: 'started_at_resource_creation',
+      issue_timing_basis: 'phase',
+    }))).toMatchObject({
+      kind: 'creation',
+      chip: 'since creation',
+      meta: 'present since creation or first reconciliation',
+    })
+  })
+
+  it('describes after-healthy timing without implying root cause or safety', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-30T12:00:00Z'))
+
+    const display = issueTiming(mk({
+      first_seen: '2026-06-30T10:00:00Z',
+      issue_timing: 'started_after_resource_was_healthy',
+      issue_timing_basis: 'condition',
+    }))
+
+    expect(display).toMatchObject({
+      kind: 'regression',
+      chip: 'after healthy',
+      meta: 'started 2h ago after being healthy',
+      tooltip: 'Previously healthy before this failing signal.',
+    })
+    expect(`${display?.chip} ${display?.meta} ${display?.tooltip}`).not.toMatch(/baseline|safe|ignore/i)
+  })
+
+  it('returns null when there is no confident timing signal', () => {
+    expect(issueTiming(mk({ issue_timing: undefined, issue_timing_basis: undefined }))).toBeNull()
   })
 })
 
@@ -103,5 +248,23 @@ describe('image-pull message normalization', () => {
     const parts = issueMessageParts(mk({ category: 'missing_config_ref', reason: 'Missing Secret', message: 'secret "project-infra" not found' }))
     expect(parts.headline).toBe('secret "project-infra" not found')
     expect(parts.detail).toBe('')
+  })
+})
+
+describe('IssueRow diagnosis raw messages', () => {
+  it('shows raw_message when cleaned issue copy has no parsed cause', () => {
+    const issue = mk({
+      category: 'gitops_operation_failed',
+      category_group: 'configuration',
+      severity: 'critical',
+      reason: 'OperationFailed',
+      message: 'app path does not exist',
+      raw_message: 'rpc error: code = Unknown desc = app path does not exist',
+    })
+
+    const html = renderToString(createElement(IssueRow, { issue, open: true, onToggle: () => undefined, as: 'div' }))
+
+    expect(html).toContain('app path does not exist')
+    expect(html).toContain('rpc error: code = Unknown desc = app path does not exist')
   })
 })

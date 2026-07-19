@@ -1,10 +1,11 @@
 import { useState, useCallback } from 'react'
 import { useAudit, useAuditSettings, useUpdateAuditSettings, useCloudRole } from '../../api/client'
 import type { SelectedResource } from '../../types'
-import { ChecksView, PaneLoader, PageHeader, type CheckResourceRef } from '@skyhook-io/k8s-ui'
+import { ChecksView, PaneLoader, PageHeader, FreshnessControl, type CheckResourceRef } from '@skyhook-io/k8s-ui'
 import { ShieldCheck, Settings } from 'lucide-react'
 import { AuditSettingsDialog } from './AuditSettingsDialog'
 import { Tooltip } from '../ui/Tooltip'
+import { useConnection } from '../../context/ConnectionContext'
 
 interface AuditViewProps {
   namespaces: string[]
@@ -18,7 +19,7 @@ interface AuditViewProps {
 // ~/.radar settings are this cluster's "policy" and the row hide-menu writes to
 // them.
 export function AuditView({ namespaces, onNavigateToResource }: AuditViewProps) {
-  const { data, isLoading, error } = useAudit(namespaces)
+  const { data, isLoading, error, dataUpdatedAt, refetch } = useAudit(namespaces)
   const { data: auditSettings } = useAuditSettings()
   const updateSettings = useUpdateAuditSettings()
   // Audit policy is owner-gated (enforced server-side). Withhold the inline
@@ -29,6 +30,8 @@ export function AuditView({ namespaces, onNavigateToResource }: AuditViewProps) 
   const [showSettings, setShowSettings] = useState(false)
 
   const ignoredCount = auditSettings?.ignoredNamespaces?.length ?? 0
+
+  const { connection } = useConnection()
 
   // Inline hide actions — persist to local settings immediately.
   const hideCheck = useCallback((checkID: string) => {
@@ -80,6 +83,12 @@ export function AuditView({ namespaces, onNavigateToResource }: AuditViewProps) 
         description="Security, reliability, and efficiency best practices (NSA/CISA, CIS, Polaris, Kubescape), grouped into a remediation queue."
         actions={
           <>
+            <FreshnessControl
+              mode="auto"
+              dataUpdatedAt={dataUpdatedAt}
+              onRefresh={() => refetch()}
+              connectionState={connection.state}
+            />
             {ignoredCount > 0 && (
               <button onClick={() => setShowSettings(true)} className="text-xs text-theme-text-tertiary hover:text-theme-text-secondary transition-colors">{ignoredCount} {ignoredCount === 1 ? 'namespace' : 'namespaces'} hidden</button>
             )}

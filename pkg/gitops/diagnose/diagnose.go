@@ -68,6 +68,8 @@ var argoAffectedRefRE = regexp.MustCompile(`([A-Z][A-Za-z0-9]+)(?:\.[A-Za-z0-9.\
 // "(retried N times)" suffix Argo appends when its retry policy has fired.
 var argoRetryRE = regexp.MustCompile(`\(retried (\d+) times?\)`)
 
+var argoGRPCEnvelopeRE = regexp.MustCompile(`(?i)rpc error:\s*code\s*=\s*[^\s]+\s+desc\s*=\s*`)
+
 // `namespaces "<name>" not found` — fires when the Application targets a
 // namespace that doesn't exist and CreateNamespace=false. The most common
 // "why won't this sync" case for new environments. Captured separately so
@@ -149,6 +151,30 @@ func ParseArgoOperationError(msg string) ParsedFailure {
 		logUnrecognizedOpError(msg)
 	}
 	return out
+}
+
+// CleanArgoControllerMessage strips transport envelopes from Argo controller
+// messages while preserving the original text when no meaningful tail remains.
+func CleanArgoControllerMessage(msg string) string {
+	original := strings.TrimSpace(msg)
+	if original == "" {
+		return ""
+	}
+	cleaned := argoGRPCEnvelopeRE.ReplaceAllString(original, "")
+	cleaned = strings.TrimLeft(strings.TrimSpace(cleaned), " :")
+	if cleaned == "" {
+		return original
+	}
+	return cleaned
+}
+
+func CleanArgoControllerMessageWithRaw(msg string) (cleaned, raw string) {
+	original := strings.TrimSpace(msg)
+	cleaned = CleanArgoControllerMessage(original)
+	if original != "" && cleaned != original {
+		raw = original
+	}
+	return cleaned, raw
 }
 
 var unrecognizedOpErrorLogged sync.Map

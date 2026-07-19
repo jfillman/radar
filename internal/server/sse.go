@@ -594,8 +594,6 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 		return
 	}
 
-	log.Printf("Broadcasting topology update to %d clients", len(clients))
-
 	// One broadcast cycle = one debounce fire that reaches clients. Counted
 	// here (not in the per-group loop below) so the metric reflects cycles,
 	// not the number of distinct namespace/view/policy groups.
@@ -774,6 +772,7 @@ func (b *SSEBroadcaster) Broadcast(event SSEEvent) {
 //   - cluster-scoped kinds outside the topology set (ClusterRole, webhooks,
 //     cluster-scoped CRDs) aren't in DeniedKinds, and kind-string matching misses
 //     CRD variants (EC2NodeClass vs synthesized NodeClass).
+//
 // The complete fix carries the exact GVR on ResourceChange and authorizes each
 // client via the cached per-user canRead — tracked separately.
 func (b *SSEBroadcaster) broadcastResourceChange(event SSEEvent, namespace, kind string) {

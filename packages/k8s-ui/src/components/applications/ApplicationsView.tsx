@@ -5,7 +5,9 @@ import { clsx } from 'clsx'
 import { StatusDot, mapHealthToTone } from '../ui/status-tone'
 import { Tooltip } from '../ui/Tooltip'
 import { EmptyState } from '../ui/EmptyState'
+import { BoardTableSkeleton, BoardRailSkeleton } from '../ui/BoardSkeleton'
 import { SearchBox } from '../ui/SearchBox'
+import { useFilterState, defineFilterSchema } from '../../filter-state'
 import { PageHeader } from '../ui/PageHeader'
 import { SummaryTile, type SummaryTone } from '../ui/SummaryTile'
 import { Facet, type FacetTone } from '../ui/Facet'
@@ -15,6 +17,7 @@ import { useRegisterShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { pluralize } from '../../utils/pluralize'
 import {
   type AppEntry,
+  type AppRow,
   type AppHealth,
   type AppWorkloadClass,
   type AppSource,
@@ -34,11 +37,33 @@ import {
   isSystemNamespace,
   searchTextForEntry,
   foldAppGroups,
+  batchSignalForApp,
+  batchRuntimeForApp,
   type FoldedRow,
 } from '../../utils/applications'
 import { ReadyBar } from './ReadyBar'
-import { ProvenanceBadge, ClassBadge, CategoryChip, VersionInfo } from './AppChips'
+import { ProvenanceBadge, ClassBadge, CategoryChip, VersionInfo, BatchSignalChip } from './AppChips'
 import { AppIdentityTooltip, EnvHint } from './AppTooltips'
+
+function ApplicationRuntimeCell({ apps, workloadClass, ready, desired }: { apps: AppRow[]; workloadClass: AppWorkloadClass; ready: number; desired: number }) {
+  if (workloadClass !== 'job') return <ReadyBar ready={ready} desired={desired} />
+  const runtimes = apps.map(batchRuntimeForApp)
+  const worst = runtimes.reduce((current, runtime) => (HEALTH_RANK[runtime.health] ?? 0) > (HEALTH_RANK[current.health] ?? 0) ? runtime : current, runtimes[0])
+  if (!worst) return <span className="text-xs text-theme-text-tertiary">Idle</span>
+  const same = runtimes.every((runtime) => runtime.label === worst.label)
+  const label = same ? worst.label : `${runtimes.length} states`
+  return (
+    <Tooltip content={runtimes.map((runtime, index) => `${apps[index]?.name ?? 'app'}: ${runtime.label} — ${runtime.detail}`).join('\n')} delay={150}>
+      <span className="inline-flex items-center gap-1.5 text-xs text-theme-text-secondary"><StatusDot tone={mapHealthToTone(worst.health)} />{label}</span>
+    </Tooltip>
+  )
+}
+
+function applicationRuntimeLabel(apps: AppRow[], workloadClass: AppWorkloadClass, health: AppHealth): string {
+  if (workloadClass !== 'job') return HEALTH_META[health].label
+  const labels = Array.from(new Set(apps.map((app) => batchRuntimeForApp(app).label)))
+  return labels.length === 1 ? labels[0] : 'Multiple batch states'
+}
 
 // ApplicationsView — the shared, variant-agnostic core behind the Applications
 // surface. It owns the entire list chassis: a health hero header (PageHeader +
@@ -50,7 +75,7 @@ import { AppIdentityTooltip, EnvHint } from './AppTooltips'
 // the per-instance row. Styling mirrors the Resources table so the surfaces
 // read as one design.
 
-// Availability is the one status facet — map app health onto the shared facet
+// Status is the one health facet — map app health onto the shared facet
 // tone so its dots read red/amber/green/grey like the GitOps sync+health facets.
 const HEALTH_TONE: Record<AppHealth, FacetTone> = {
   unhealthy: 'error',
@@ -70,7 +95,7 @@ function compareEntries(a: AppEntry, b: AppEntry, key: SortKey): number {
     case 'name':
       return a.row.name.localeCompare(b.row.name)
     case 'ready':
-      return a.readyRatio - b.readyRatio
+      return runtimeSortValue(a) - runtimeSortValue(b)
     case 'version': {
       // Sort by distinct-version count first (skewed apps cluster), then the
       // first tag for a stable, human-meaningful order.
@@ -79,6 +104,10 @@ function compareEntries(a: AppEntry, b: AppEntry, key: SortKey): number {
       return (a.versions[0] ?? '').localeCompare(b.versions[0] ?? '')
     }
   }
+}
+
+function runtimeSortValue(entry: AppEntry): number {
+  return entry.workloadClass === 'job' ? (HEALTH_RANK[entry.health] ?? 0) : entry.readyRatio
 }
 
 // The env token an entry filters under. Single entries carry one env; fleet
@@ -97,16 +126,36 @@ export interface ApplicationsViewProps {
   /** Rendered instead of the built-in EmptyState when there are zero entries
    *  pre-filter (the fleet host injects a coverage/offline-aware empty). */
   emptySlot?: ReactNode
+  /** Leading element in the header actions cluster (e.g. a freshness control). */
+  headerActions?: ReactNode
+  /** First fetch in flight — render the shape-stable skeleton (pulsing tiles,
+   *  rail stubs, table rows) instead of collapsing the chassis. */
+  loading?: boolean
 }
 
-export function ApplicationsView({ entries: allEntries, variant, onSelect, title = 'Applications', description, emptySlot }: ApplicationsViewProps) {
-  const [textFilter, setTextFilter] = useState('')
-  const [fHealth, setFHealth] = useState<Set<AppHealth>>(new Set())
-  const [fEnv, setFEnv] = useState<Set<string>>(new Set())
-  const [fSource, setFSource] = useState<Set<AppSource>>(new Set())
-  const [fClass, setFClass] = useState<Set<AppWorkloadClass>>(new Set())
-  const [fType, setFType] = useState<Set<AppCategory>>(new Set())
-  const [showSystem, setShowSystem] = useState(false)
+const APPS_FILTER_SCHEMA = defineFilterSchema({
+  health: { param: 'health', type: 'set' },
+  class: { param: 'class', type: 'set' },
+  type: { param: 'type', type: 'set' },
+  env: { param: 'env', type: 'set' },
+  source: { param: 'source', type: 'set' },
+  q: { param: 'q', type: 'text' },
+  system: { param: 'system', type: 'boolean' },
+})
+
+export function ApplicationsView({ entries: allEntries, variant, onSelect, title = 'Applications', description, emptySlot, headerActions, loading }: ApplicationsViewProps) {
+  // Facets + search + show-system live in the URL (shareable, bookmarkable) via
+  // the shared filter-state contract. Sort stays local: it's a compound
+  // {key, dir} view-preference, not a result-narrowing filter, so it isn't
+  // forced into the filter vocabulary.
+  const filters = useFilterState(APPS_FILTER_SCHEMA)
+  const textFilter = filters.values.q
+  const fHealth = filters.values.health as Set<AppHealth>
+  const fEnv = filters.values.env
+  const fSource = filters.values.source as Set<AppSource>
+  const fClass = filters.values.class as Set<AppWorkloadClass>
+  const fType = filters.values.type as Set<AppCategory>
+  const showSystem = filters.values.system
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null)
 
   // The Show-system toggle keys off per-entry workload namespaces, which only
@@ -242,12 +291,6 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
     return { health, env, source, workloadClass, category }
   }, [all])
 
-  const toggle = <T,>(set: Set<T>, setter: (s: Set<T>) => void, v: T) => {
-    const next = new Set(set)
-    next.has(v) ? next.delete(v) : next.add(v)
-    setter(next)
-  }
-
   // asc → desc → off (null = default health-worst-first sort).
   const onSort = (key: SortKey) => {
     setSort((prev) => {
@@ -262,23 +305,24 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
     .sort((a, b) => (envRank(b[0] === 'none' ? undefined : b[0]) ?? -1) - (envRank(a[0] === 'none' ? undefined : a[0]) ?? -1))
     .map(([env, count]) => ({ value: env, label: env === 'none' ? 'unlabeled' : env, count }))
 
+  // First fetch, nothing to show yet: drive the shape-stable skeleton. The
+  // loaded state hides zero-count health tiles, so without this the header
+  // (tiles + distribution bar), rail, and table would all pop in at once.
+  const initialLoading = Boolean(loading) && allEntries.length === 0
+
   // Clickable status tile wired to the health facet — tap to filter to that tier.
   const healthTile = (h: AppHealth, tone: SummaryTone) =>
-    counts.health[h] ? (
-      <SummaryTile key={h} label={HEALTH_META[h].label} value={counts.health[h]} tone={tone} active={fHealth.has(h)} onClick={() => toggle(fHealth, setFHealth, h)} />
+    initialLoading && (h === 'healthy' || h === 'degraded' || h === 'unhealthy') ? (
+      <SummaryTile key={h} label={HEALTH_META[h].label} value={0} tone={tone} loading />
+    ) : counts.health[h] ? (
+      <SummaryTile key={h} label={HEALTH_META[h].label} value={counts.health[h]} tone={tone} active={fHealth.has(h)} onClick={() => filters.toggle('health', h)} />
     ) : null
 
   // showSystem lives in the Filters rail, so Clear resets it too (and its
   // non-default ON state counts as an active filter that surfaces the button).
-  const anyFilterActive = !!(textFilter || fHealth.size || fClass.size || fType.size || fSource.size || fEnv.size || showSystem)
+  const anyFilterActive = filters.isActive
   const clearAllFilters = () => {
-    setTextFilter('')
-    setFHealth(new Set())
-    setFClass(new Set())
-    setFType(new Set())
-    setFSource(new Set())
-    setFEnv(new Set())
-    setShowSystem(false)
+    filters.clearAll()
   }
 
   return (
@@ -294,7 +338,8 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
           description={description}
           actions={
             <>
-              <SummaryTile label={total === 1 ? 'application' : 'applications'} value={total} />
+              {headerActions}
+              <SummaryTile label={total === 1 ? 'application' : 'applications'} value={total} loading={initialLoading} />
               {healthTile('unhealthy', 'error')}
               {healthTile('degraded', 'warning')}
               {healthTile('healthy', 'success')}
@@ -303,11 +348,15 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
             </>
           }
         />
-        <DistributionBar
-          className="mt-3"
-          ariaLabel="Health distribution"
-          segments={HEALTH_ORDER.map((h) => ({ key: h, count: counts.health[h] ?? 0, fillClass: HEALTH_META[h].bar }))}
-        />
+        {initialLoading ? (
+          <div className="mt-3 h-1.5 w-full animate-pulse rounded-full bg-theme-hover" aria-hidden />
+        ) : (
+          <DistributionBar
+            className="mt-3"
+            ariaLabel="Health distribution"
+            segments={HEALTH_ORDER.map((h) => ({ key: h, count: counts.health[h] ?? 0, fillClass: HEALTH_META[h].bar }))}
+          />
+        )}
       </div>
 
       {/* Body: filter sidebar | content (toolbar + table). */}
@@ -323,17 +372,31 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
             )}
           </div>
           <div className="flex-1 overflow-y-auto">
-            <Facet icon={HeartPulse} title="Availability" options={HEALTH_ORDER.map((h) => ({ value: h, label: HEALTH_META[h].label, count: counts.health[h] ?? 0, tone: HEALTH_TONE[h] }))} selected={fHealth} onToggle={(v) => toggle(fHealth, setFHealth, v)} />
-            <Facet icon={Layers} title="Class" options={CLASS_ORDER.map((c) => ({ value: c, label: CLASS_META[c].label, count: counts.workloadClass[c] ?? 0 }))} selected={fClass} onToggle={(v) => toggle(fClass, setFClass, v)} />
-            <Facet icon={Shapes} title="Type" options={CATEGORY_ORDER.map((c) => ({ value: c, label: CATEGORY_META[c].label, count: counts.category[c] ?? 0, tooltip: CATEGORY_META[c].tooltip }))} selected={fType} onToggle={(v) => toggle(fType, setFType, v)} />
-            <Facet icon={Globe} title="Environment" info={<EnvHint />} options={envOptions} selected={fEnv} onToggle={(v) => toggle(fEnv, setFEnv, v)} />
-            <Facet icon={Tag} title="Source" options={SOURCE_ORDER.map((s) => ({ value: s, label: SOURCE_META[s].label, count: counts.source[s] ?? 0 }))} selected={fSource} onToggle={(v) => toggle(fSource, setFSource, v)} />
+            {initialLoading ? (
+              <BoardRailSkeleton
+                sections={[
+                  ['Status', 5],
+                  ['Class', 3],
+                  ['Type', 4],
+                  ['Environment', 3],
+                  ['Source', 3],
+                ]}
+              />
+            ) : (
+              <>
+            <Facet icon={HeartPulse} title="Status" options={HEALTH_ORDER.map((h) => ({ value: h, label: HEALTH_META[h].label, count: counts.health[h] ?? 0, tone: HEALTH_TONE[h] }))} selected={fHealth} onToggle={(v) => filters.toggle('health', v)} />
+            <Facet icon={Layers} title="Class" options={CLASS_ORDER.map((c) => ({ value: c, label: CLASS_META[c].label, count: counts.workloadClass[c] ?? 0 }))} selected={fClass} onToggle={(v) => filters.toggle('class', v)} />
+            <Facet icon={Shapes} title="Type" options={CATEGORY_ORDER.map((c) => ({ value: c, label: CATEGORY_META[c].label, count: counts.category[c] ?? 0, tooltip: CATEGORY_META[c].tooltip }))} selected={fType} onToggle={(v) => filters.toggle('type', v)} />
+            <Facet icon={Globe} title="Environment" info={<EnvHint />} options={envOptions} selected={fEnv} onToggle={(v) => filters.toggle('env', v)} />
+            <Facet icon={Tag} title="Source" options={SOURCE_ORDER.map((s) => ({ value: s, label: SOURCE_META[s].label, count: counts.source[s] ?? 0 }))} selected={fSource} onToggle={(v) => filters.toggle('source', v)} />
             {systemCount > 0 && (
               <label className="flex cursor-pointer items-center gap-2 border-b border-theme-border px-3 py-2 text-[11px] text-theme-text-secondary hover:bg-theme-hover">
-                <input type="checkbox" checked={showSystem} onChange={(e) => setShowSystem(e.target.checked)} className="accent-skyhook-500" />
+                <input type="checkbox" checked={showSystem} onChange={(e) => filters.setBoolean('system', e.target.checked)} className="accent-skyhook-500" />
                 <span>Show system namespaces</span>
                 <span className="ml-auto tabular-nums text-theme-text-tertiary">{systemCount}</span>
               </label>
+            )}
+              </>
             )}
           </div>
         </aside>
@@ -343,7 +406,7 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
           <div className="flex shrink-0 items-center gap-3 border-b border-theme-border px-4 py-3">
             <SearchBox
               value={textFilter}
-              onChange={setTextFilter}
+              onChange={(v) => filters.setString('q', v)}
               scope="applications"
               shortcutId="applications-search"
               className="max-w-md flex-1"
@@ -362,7 +425,9 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
           </div>
 
           <div className="min-w-0 flex-1 overflow-auto bg-theme-base">
-          {entries.length === 0 ? (
+          {initialLoading ? (
+            <BoardTableSkeleton />
+          ) : entries.length === 0 ? (
             emptySlot && allEntries.length === 0 ? (
               emptySlot
             ) : (
@@ -392,7 +457,7 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
                       </>
                     )}
                     <th className={TH_CLASS}>Class</th>
-                    <SortableTh label="Ready" sortKey="ready" activeKey={sort?.key ?? null} direction={sort?.dir ?? 'asc'} onSort={onSort} />
+                    <SortableTh label="Runtime" sortKey="ready" activeKey={sort?.key ?? null} direction={sort?.dir ?? 'asc'} onSort={onSort} />
                     <SortableTh label="Version" sortKey="version" activeKey={sort?.key ?? null} direction={sort?.dir ?? 'asc'} onSort={onSort} />
                     <th className={TH_CLASS}>Workloads</th>
                     <th className={clsx(TH_CLASS, 'w-8')} />
@@ -414,11 +479,12 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
                         <span className="flex items-center gap-2">
                           {/* Left status stripe (worst-child health) — the row status
                               gutter shared with the GitOps table. */}
-                          <Tooltip content={HEALTH_META[r.health].label} delay={150}>
+                          <Tooltip content={applicationRuntimeLabel(r.members.map((member) => member.row), r.workloadClass, r.health)} delay={150}>
                             <span className={clsx('h-8 w-1 shrink-0 rounded-full', HEALTH_META[r.health].bar)} />
                           </Tooltip>
                           <ChevronRight className={clsx('h-3.5 w-3.5 shrink-0 text-theme-text-tertiary transition-transform', r.expanded && 'rotate-90')} aria-hidden />
                           <span className="truncate font-semibold text-theme-text-primary">{r.label}</span>
+                          {r.workloadClass !== 'job' && <BatchSignalChip signal={firstBatchSignal(r.members.map((m) => m.row))} />}
                           <Tooltip
                             content={<AppIdentityTooltip identityKey={r.label} source={r.members[0]?.row.identity?.source} portable={r.members[0]?.row.identity?.portable} fleet={variant === 'fleet'} members={r.members.map((m) => ({ name: m.row.name, env: m.row.identity!.env, confidence: m.row.identity!.confidence, evidence: m.row.identity!.evidence }))} />}
                             delay={150}
@@ -466,7 +532,7 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
                         </span>
                       </td>
                       <td className="px-2 py-2.5"><ClassBadge workloadClass={r.workloadClass} composition={r.classComposition} /></td>
-                      <td className="px-2 py-2.5"><ReadyBar ready={r.ready} desired={r.desired} /></td>
+                      <td className="px-2 py-2.5"><ApplicationRuntimeCell apps={r.members.map((member) => member.row)} workloadClass={r.workloadClass} ready={r.ready} desired={r.desired} /></td>
                       <td className="px-2 py-2.5">
                         {r.lag ? (
                           <Tooltip content={`Promotion lag: ${r.lag} (${r.cells.filter((c) => c.version).map((c) => `${c.env}=${c.version}`).join(', ')})`} delay={150}>
@@ -493,10 +559,11 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
                     >
                       <td className={clsx('py-2.5 pr-2', r.child ? 'pl-10' : 'pl-3')}>
                         <span className="flex items-center gap-2">
-                          <Tooltip content={HEALTH_META[e.health].label} delay={150}>
+                          <Tooltip content={applicationRuntimeLabel([e.row], e.workloadClass, e.health)} delay={150}>
                             <span className={clsx('h-8 w-1 shrink-0 rounded-full', HEALTH_META[e.health].bar)} />
                           </Tooltip>
                           <span className="truncate font-medium text-theme-text-primary">{e.row.name}</span>
+                          {e.workloadClass !== 'job' && <BatchSignalChip signal={batchSignalForApp(e.row)} />}
                           <ProvenanceBadge tier={e.row.tier} appKey={e.row.key} confidence={e.row.confidence} />
                           <CategoryChip category={e.category} addonReason={e.row.addonReason} />
                         </span>
@@ -563,7 +630,7 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
                         </>
                       )}
                       <td className="px-2 py-2.5"><ClassBadge workloadClass={e.workloadClass} composition={e.classComposition} /></td>
-                      <td className="px-2 py-2.5"><ReadyBar ready={e.ready} desired={e.desired} /></td>
+                      <td className="px-2 py-2.5"><ApplicationRuntimeCell apps={[e.row]} workloadClass={e.workloadClass} ready={e.ready} desired={e.desired} /></td>
                       <td className="px-2 py-2.5">
                         {e.variant === 'fleet' ? (
                           e.versionSkew ? (
@@ -601,4 +668,27 @@ export function ApplicationsView({ entries: allEntries, variant, onSelect, title
       </div>
     </div>
   )
+}
+
+function firstBatchSignal(rows: AppRow[]) {
+  let best = null as ReturnType<typeof batchSignalForApp>
+  const rank = (tone: string | undefined) => {
+    switch (tone) {
+      case 'rose':
+        return 5
+      case 'amber':
+        return 4
+      case 'sky':
+        return 3
+      case 'emerald':
+        return 2
+      default:
+        return 0
+    }
+  }
+  for (const row of rows) {
+    const signal = batchSignalForApp(row)
+    if (signal && rank(signal.tone) > rank(best?.tone)) best = signal
+  }
+  return best
 }

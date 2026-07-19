@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -27,11 +28,14 @@ import (
 	versionpkg "github.com/skyhook-io/radar/internal/version"
 )
 
+var clusterConnectionProbe = k8s.TestClusterConnection
+
 // AppConfig holds all parsed configuration for the Radar application.
 type AppConfig struct {
 	Kubeconfig               string
 	KubeconfigDirs           []string
 	Namespace                string
+	Namespaces               []string
 	Port                     int
 	NoBrowser                bool
 	Browser                  string
@@ -56,6 +60,8 @@ type AppConfig struct {
 	PrometheusHeadersFromEnv map[string]string
 	Version                  string
 	MCPEnabled               bool
+	AIHistory                bool   // persist AI investigations across restarts
+	AIHistoryDBPath          string // "" = ~/.radar/ai-runs.db
 	AuthConfig               auth.Config
 }
 
@@ -73,6 +79,22 @@ func SetGlobals(cfg AppConfig) {
 	versionpkg.SetCurrent(cfg.Version)
 }
 
+// validateNamespaceFanout rejects a --namespaces list that cannot fully fit
+// in the probe candidate cap. The kubeconfig context namespace is prepended
+// to the candidates, so a distinct one occupies a cap slot the flag-time
+// length check could not account for (kubeconfig wasn't parsed yet). Failing
+// here beats silently dropping the last configured namespace from probing.
+func validateNamespaceFanout(namespaces []string, ctxNs string, maxCandidates int) error {
+	slots := len(namespaces)
+	if ctxNs != "" && !slices.Contains(namespaces, ctxNs) {
+		slots++
+	}
+	if slots > maxCandidates {
+		return fmt.Errorf("--namespaces lists %d namespaces and the kubeconfig context namespace %q adds one more probe candidate, exceeding the fanout cap of %d; raise --max-scope-candidates or include the context namespace in the list", len(namespaces), ctxNs, maxCandidates)
+	}
+	return nil
+}
+
 // InitializeK8s creates and configures the Kubernetes client.
 func InitializeK8s(cfg AppConfig) error {
 	err := k8s.Initialize(k8s.InitOptions{
@@ -83,7 +105,12 @@ func InitializeK8s(cfg AppConfig) error {
 		return fmt.Errorf("failed to initialize K8s client: %w", err)
 	}
 
-	if cfg.Namespace != "" {
+	if len(cfg.Namespaces) > 0 {
+		k8s.SetFallbackNamespaces(cfg.Namespaces)
+		if err := validateNamespaceFanout(cfg.Namespaces, k8s.GetContextNamespace(), k8s.MaxScopeCandidates); err != nil {
+			return err
+		}
+	} else if cfg.Namespace != "" {
 		k8s.SetFallbackNamespace(cfg.Namespace)
 	}
 	configureNamespaceScopePreferenceResolver(cfg)
@@ -230,6 +257,7 @@ func CreateServer(cfg AppConfig) *server.Server {
 		Kubeconfig:               cfg.Kubeconfig,
 		KubeconfigDirs:           cfg.KubeconfigDirs,
 		Namespace:                cfg.Namespace,
+		Namespaces:               cfg.Namespaces,
 		Port:                     cfg.Port,
 		NoBrowser:                cfg.NoBrowser,
 		Browser:                  cfg.Browser,
@@ -265,8 +293,21 @@ func CreateServer(cfg AppConfig) *server.Server {
 		AuthConfig: cfg.AuthConfig,
 	}
 
+	// AI-history DB path: resolved here (like the timeline DB) so the server
+	// only sees a ready-to-open path. Only meaningful where the AI engine can
+	// actually enable (no-auth + MCP mounted) — the server checks that gate.
+	if cfg.AIHistory {
+		dbPath := cfg.AIHistoryDBPath
+		if dbPath == "" {
+			homeDir, _ := os.UserHomeDir()
+			dbPath = filepath.Join(homeDir, ".radar", "ai-runs.db")
+		}
+		serverCfg.AIHistoryDB = dbPath
+	}
+
 	if cfg.MCPEnabled {
 		serverCfg.MCPHandler = mcppkg.NewHandler()
+		serverCfg.MCPReadOnlyHandler = mcppkg.NewReadOnlyHandler()
 		if cfg.Port != 0 {
 			log.Printf("MCP server enabled at http://localhost:%d/mcp", cfg.Port)
 		} else {
@@ -348,13 +389,14 @@ func InitializeCluster() {
 		// Update status IMMEDIATELY so the UI shows the error page.
 		// Don't wait for subsystem drain — exec credential plugins serialize
 		// API calls, so draining 20+ RBAC checks can take 30+ seconds.
+		errorType := k8s.ClassifyError(err)
 		k8s.SetConnectionStatus(k8s.ConnectionStatus{
 			State:     k8s.StateDisconnected,
 			Context:   k8s.GetContextName(),
 			Error:     err.Error(),
-			ErrorType: k8s.ClassifyError(err),
+			ErrorType: errorType,
 		})
-		log.Printf("[ops] InitializeCluster FAILED: %v (errorType=%s, %v elapsed)", err, k8s.ClassifyError(err), time.Since(clusterStart))
+		log.Printf("[ops] InitializeCluster FAILED: %v (errorType=%s, %v elapsed)", err, errorType, time.Since(clusterStart))
 
 		// Drain subsystem goroutine in background to prevent goroutine leak.
 		// Cleanup is handled by the next context switch or retry.
@@ -409,11 +451,19 @@ func InitializeCluster() {
 	}()
 }
 
+// mcpPortFileDisabled suppresses port-file writes AND removals — an ephemeral
+// instance (radar diagnose --standalone) must never clobber or delete the slot
+// a real long-running Radar owns.
+var mcpPortFileDisabled bool
+
+// DisableMCPPortFile makes Write/RemoveMCPPortFile no-ops for this process.
+func DisableMCPPortFile() { mcpPortFileDisabled = true }
+
 // WriteMCPPortFile writes the actual server port to ~/.radar/mcp-port so MCP
 // clients can discover the running instance without hardcoding a port.
 func WriteMCPPortFile(port int) {
 	path := mcpPortFilePath()
-	if path == "" {
+	if path == "" || mcpPortFileDisabled {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -430,7 +480,7 @@ func WriteMCPPortFile(port int) {
 // RemoveMCPPortFile removes the port discovery file on shutdown.
 func RemoveMCPPortFile() {
 	path := mcpPortFilePath()
-	if path == "" {
+	if path == "" || mcpPortFileDisabled {
 		return
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -461,16 +511,12 @@ func Shutdown(srv *server.Server) {
 // EKS) is still blocking.
 //
 // Retries once after a 2-second pause to handle transient timeouts.
-// Deterministic errors (auth, RBAC, network) skip the retry — retrying
-// expired credentials or unreachable hosts won't help. Exception: exec auth
-// timeouts ARE retried because the first call triggers a token refresh
-// (e.g., AWS SSO), and the cached token is available on the next attempt.
+// Deterministic errors (config, auth, RBAC, network, TLS) skip the retry —
+// retrying missing config, bad credentials, denied permissions, bad certs, or
+// unreachable hosts won't help. Timeout-shaped exec-auth failures are still
+// retryable because the first call may trigger a token refresh, with the cached
+// token ready by retry.
 func CheckClusterAccess(ctx context.Context) error {
-	clientset := k8s.GetClient()
-	if clientset == nil {
-		return fmt.Errorf("kubernetes client not initialized")
-	}
-
 	execAuth := k8s.UsesExecAuth()
 
 	// Exec credential plugins (EKS aws, GKE gcloud) may need 7-10s on first
@@ -487,10 +533,7 @@ func CheckClusterAccess(ctx context.Context) error {
 			// Exception: exec auth timeouts are retryable — the first call
 			// triggers a token refresh, and the cached token is ready by retry.
 			errType := k8s.ClassifyError(lastErr)
-			if errType == "rbac" || errType == "network" {
-				break
-			}
-			if errType == "auth" && !execAuth {
+			if errType == "config" || errType == "auth" || errType == "rbac" || errType == "network" || errType == "tls" {
 				break
 			}
 			// Don't retry if the parent context is already done
@@ -512,33 +555,20 @@ func CheckClusterAccess(ctx context.Context) error {
 			}
 		}
 
-		t := time.Now()
 		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
-
-		// Run the API call in a goroutine so we can select on the parent
-		// context. This guarantees we return when the deadline hits even
-		// if the exec credential plugin blocks beyond the HTTP timeout.
-		resultCh := make(chan error, 1)
-		go func() {
-			_, err := clientset.Discovery().RESTClient().Get().AbsPath("/version").Do(attemptCtx).Raw()
-			resultCh <- err
-		}()
-
-		var err error
-		select {
-		case err = <-resultCh:
-		case <-ctx.Done():
-			cancel()
-			if lastErr != nil {
-				return fmt.Errorf("failed to connect to cluster: %w", lastErr)
-			}
-			return fmt.Errorf("failed to connect to cluster: %w", ctx.Err())
-		}
+		t := time.Now()
+		err := clusterConnectionProbe(attemptCtx)
 		cancel()
 
 		if err == nil {
 			k8s.LogTiming("   Cluster /version check (attempt %d): %v", attempt+1, time.Since(t))
 			return nil
+		}
+		if ctx.Err() != nil {
+			if lastErr != nil {
+				return fmt.Errorf("failed to connect to cluster: %w", lastErr)
+			}
+			return fmt.Errorf("failed to connect to cluster: %w", err)
 		}
 		log.Printf("Cluster connectivity check failed (attempt %d/2): %v (%v)", attempt+1, err, time.Since(t))
 		lastErr = err
@@ -560,4 +590,45 @@ func ParseKubeconfigDirs(dirs string) []string {
 		}
 	}
 	return result
+}
+
+// ParseNamespaces splits a comma-separated namespace string into a de-duplicated
+// slice. Empty items are ignored so flags like "--namespaces a,,b" behave like
+// kubectl's comma-separated lists instead of creating an empty namespace pick.
+func ParseNamespaces(namespaces string) []string {
+	if namespaces == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var result []string
+	for ns := range strings.SplitSeq(namespaces, ",") {
+		ns = strings.TrimSpace(ns)
+		if ns == "" {
+			continue
+		}
+		if _, ok := seen[ns]; ok {
+			continue
+		}
+		seen[ns] = struct{}{}
+		result = append(result, ns)
+	}
+	return result
+}
+
+// ResolveNamespaceSelection applies CLI/config precedence for --namespace and
+// --namespaces. Explicit flags win over config defaults; setting both flags
+// explicitly is ambiguous and returns an error.
+func ResolveNamespaceSelection(namespace, namespaces string, namespaceSet, namespacesSet bool) (string, []string, error) {
+	namespace = strings.TrimSpace(namespace)
+	parsedNamespaces := ParseNamespaces(namespaces)
+	if namespaceSet && namespacesSet && namespace != "" && len(parsedNamespaces) > 0 {
+		return "", nil, fmt.Errorf("--namespace and --namespaces are mutually exclusive")
+	}
+	if len(parsedNamespaces) > 0 && (namespacesSet || !namespaceSet) {
+		return "", parsedNamespaces, nil
+	}
+	if namespace == "" {
+		return "", nil, nil
+	}
+	return namespace, nil, nil
 }

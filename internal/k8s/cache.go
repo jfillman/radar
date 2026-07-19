@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/skyhook-io/radar/internal/timeline"
@@ -111,6 +112,10 @@ type ResourceChange = k8score.ResourceChange
 type ResourceCache struct {
 	*k8score.ResourceCache
 	secretsEnabled bool // Whether secrets informer is running (requires RBAC)
+	// argoDrift tracks how long each manual-sync ArgoCD Application has been
+	// continuously OutOfSync. Lives here so its lifecycle is the cache's:
+	// recreated per cluster, dropped on a kubeconfig context switch.
+	argoDrift *argoDriftTracker
 }
 
 var (
@@ -118,6 +123,16 @@ var (
 	cacheOnce     = new(sync.Once)
 	cacheMu       sync.Mutex
 )
+
+// tombstones retains recently-seen resource enrichment (owner/labels/createdAt)
+// for a short window after objects leave the informer cache, so delete-time and
+// late K8s events (the "Killing" class, processed after the involved object is
+// already gone from cache) carry owner/labels/createdAt as fact instead of
+// shipping anonymous. Fed from informer add/update/delete callbacks (an
+// already-seen relist add returns before recording, so it skips the feed);
+// consulted after the live cache during event enrichment. Bounded + TTL'd so
+// it cannot grow without limit; misses are silent (null enrichment).
+var tombstones = timeline.NewTombstoneCache(15*time.Minute, 4000)
 
 // InitResourceCache initializes the resource cache with timeline-wired callbacks.
 func InitResourceCache(ctx context.Context) error {
@@ -151,18 +166,28 @@ func InitResourceCache(ctx context.Context) error {
 			scopes = map[string]k8score.ResourceScope{}
 		}
 
+		// Captured ONCE at wiring time and closed over by the callbacks below.
+		// Informer shutdown on context switch is asynchronous (up to 5s, then
+		// abandoned), so a late callback reading ActiveClusterContext() at
+		// delivery time would stamp the OLD cluster's event with the NEW
+		// cluster's name — permanently, under SQLite storage. Closing over the
+		// wiring-time value keeps late events truthfully attributed to the
+		// cluster they came from.
+		recordClusterContext := ActiveClusterContext()
+
 		cfg := k8score.CacheConfig{
-			Client:              k8sClient,
-			ResourceScopes:      scopes,
-			DeferredTypes:       deferredResources,
-			DebugEvents:         DebugEvents,
-			TimingLogger:        logTiming,
-			PatienceWindow:      firstPaintPatience,
-			MinimalSet:          minimalFirstPaintSet,
-			SyncTimeout:         FirstPaintBackstop,
-			SyncProgress:        emitSyncProgress,
-			DeferredSyncTimeout: 3 * time.Minute,
-			ListPageSize:        ListPageSize,
+			Client:                  k8sClient,
+			ResourceScopes:          scopes,
+			ResourceScopeNamespaces: permResult.ScopeNamespaces,
+			DeferredTypes:           deferredResources,
+			DebugEvents:             DebugEvents,
+			TimingLogger:            logTiming,
+			PatienceWindow:          firstPaintPatience,
+			MinimalSet:              minimalFirstPaintSet,
+			SyncTimeout:             FirstPaintBackstop,
+			SyncProgress:            emitSyncProgress,
+			DeferredSyncTimeout:     3 * time.Minute,
+			ListPageSize:            ListPageSize,
 
 			OnReceived: func(kind string) {
 				timeline.IncrementReceived(kind)
@@ -175,7 +200,7 @@ func InitResourceCache(ctx context.Context) error {
 				}
 
 				// Record to timeline store
-				recordToTimelineStore(change.Kind, change.Namespace, change.Name, change.UID, change.Operation, oldObj, obj, change.Diff, true)
+				recordToTimelineStore(recordClusterContext, change.Kind, change.Namespace, change.Name, change.UID, change.Operation, oldObj, obj, change.Diff, true)
 			},
 
 			OnEventChange: func(obj any, op string) {
@@ -184,7 +209,7 @@ func InitResourceCache(ctx context.Context) error {
 				if op == "delete" {
 					return
 				}
-				recordK8sEventToTimeline(obj)
+				recordK8sEventToTimeline(recordClusterContext, obj)
 			},
 
 			OnDrop: func(kind, ns, name, reason, op string) {
@@ -212,6 +237,7 @@ func InitResourceCache(ctx context.Context) error {
 		resourceCache = &ResourceCache{
 			ResourceCache:  core,
 			secretsEnabled: scopes["secrets"].Enabled,
+			argoDrift:      newArgoDriftTracker(),
 		}
 	})
 	return initErr
@@ -235,10 +261,18 @@ func ResetResourceCache() {
 	cacheOnce = new(sync.Once)
 	initialSyncComplete = false
 	resetRecreateStash()
+	// Tombstone keys are UID-first, falling back to an apiVersion|kind|ns|name
+	// composite (no cluster context) when a source lacks a UID; a leftover
+	// UID-less entry could mis-enrich a same-named resource on the next cluster.
+	// Drop them all in place (not a var reassignment) so concurrent informer
+	// readers of the stable pointer don't race with the reset.
+	tombstones.Clear()
 }
 
-// recordK8sEventToTimeline records a K8s Event to the timeline store
-func recordK8sEventToTimeline(obj any) {
+// recordK8sEventToTimeline records a K8s Event to the timeline store.
+// clusterContext is the wiring-time capture (see InitResourceCache), not the
+// live active context — a late callback must stamp the cluster it came from.
+func recordK8sEventToTimeline(clusterContext string, obj any) {
 	event, ok := obj.(*corev1.Event)
 	if !ok {
 		return
@@ -253,32 +287,12 @@ func recordK8sEventToTimeline(obj any) {
 		timeline.IncrementReceived("K8sEvent:" + event.InvolvedObject.Kind)
 	}
 
-	var owner *timeline.OwnerInfo
-	cache := GetResourceCache()
-	if cache != nil {
-		if event.InvolvedObject.Kind == "Pod" && cache.Pods() != nil {
-			if pod, err := cache.Pods().Pods(event.Namespace).Get(event.InvolvedObject.Name); err == nil && pod != nil {
-				for _, ref := range pod.OwnerReferences {
-					if ref.Controller != nil && *ref.Controller {
-						owner = &timeline.OwnerInfo{Kind: ref.Kind, Name: ref.Name}
-						break
-					}
-				}
-			}
-		} else if event.InvolvedObject.Kind == "ReplicaSet" && cache.ReplicaSets() != nil {
-			if rs, err := cache.ReplicaSets().ReplicaSets(event.Namespace).Get(event.InvolvedObject.Name); err == nil && rs != nil {
-				for _, ref := range rs.OwnerReferences {
-					if ref.Controller != nil && *ref.Controller {
-						owner = &timeline.OwnerInfo{Kind: ref.Kind, Name: ref.Name}
-						break
-					}
-				}
-			}
-		}
-	}
+	owner, labels, createdAt := enrichInvolvedObject(event)
 
 	timelineEvent := timeline.NewK8sEventTimelineEvent(event, owner)
-	timelineEvent.ClusterContext = ActiveClusterContext()
+	timelineEvent.Labels = labels
+	timelineEvent.CreatedAt = createdAt
+	timelineEvent.ClusterContext = clusterContext
 
 	ctx := context.Background()
 	if err := timeline.RecordEventWithBroadcast(ctx, timelineEvent); err != nil {
@@ -286,6 +300,80 @@ func recordK8sEventToTimeline(obj any) {
 	} else if DebugEvents {
 		timeline.IncrementRecorded("K8sEvent:" + event.InvolvedObject.Kind)
 	}
+}
+
+// enrichInvolvedObject resolves the K8s Event's involved object to its
+// controller owner, grouping labels, and creation time. The live informer cache
+// is consulted first (freshest); the tombstone second, which is what carries the
+// answer for delete-time and late events (e.g. "Killing") whose involved object
+// has already left the cache. A total miss returns nils — the event ships with
+// whatever the event itself provides, exactly as before.
+func enrichInvolvedObject(event *corev1.Event) (owner *timeline.OwnerInfo, labels map[string]string, createdAt *time.Time) {
+	inv := event.InvolvedObject
+	if o, l, c, ok := liveInvolvedObject(string(inv.UID), inv.Kind, event.Namespace, inv.Name); ok {
+		return o, l, c
+	}
+	if entry, ok := tombstones.Get(string(inv.UID), inv.APIVersion, inv.Kind, event.Namespace, inv.Name); ok {
+		return entry.Owner, entry.Labels, entry.CreatedAt
+	}
+	return nil, nil, nil
+}
+
+// liveInvolvedObject reads the involved object straight from the typed informer
+// cache when it is still present. ok=false means the object is not (or no longer)
+// cached, so the caller should fall back to the tombstone.
+func liveInvolvedObject(uid, kind, namespace, name string) (owner *timeline.OwnerInfo, labels map[string]string, createdAt *time.Time, ok bool) {
+	cache := GetResourceCache()
+	if cache == nil {
+		return nil, nil, nil, false
+	}
+	// The typed lister lookup is by kind/ns/name; when the event names a UID,
+	// verify it so a same-named different object (a CRD kind collision, or a
+	// recreated object) can't lend its enrichment. A mismatch falls through to
+	// the tombstone, which is keyed by UID.
+	uidMatches := func(obj metav1.Object) bool {
+		return uid == "" || string(obj.GetUID()) == uid
+	}
+	switch kind {
+	case "Pod":
+		if cache.Pods() == nil {
+			return nil, nil, nil, false
+		}
+		pod, err := cache.Pods().Pods(namespace).Get(name)
+		if err != nil || pod == nil || !uidMatches(pod) {
+			return nil, nil, nil, false
+		}
+		return controllerOwner(pod.OwnerReferences), timeline.ExtractLabels(pod), creationPtr(pod), true
+	case "ReplicaSet":
+		if cache.ReplicaSets() == nil {
+			return nil, nil, nil, false
+		}
+		rs, err := cache.ReplicaSets().ReplicaSets(namespace).Get(name)
+		if err != nil || rs == nil || !uidMatches(rs) {
+			return nil, nil, nil, false
+		}
+		return controllerOwner(rs.OwnerReferences), timeline.ExtractLabels(rs), creationPtr(rs), true
+	}
+	return nil, nil, nil, false
+}
+
+// controllerOwner returns the controller owner reference as OwnerInfo, or nil
+// when the object has no controller (e.g. a bare pod).
+func controllerOwner(refs []metav1.OwnerReference) *timeline.OwnerInfo {
+	for _, ref := range refs {
+		if ref.Controller != nil && *ref.Controller {
+			return &timeline.OwnerInfo{Kind: ref.Kind, Name: ref.Name}
+		}
+	}
+	return nil
+}
+
+func creationPtr(obj metav1.Object) *time.Time {
+	ct := obj.GetCreationTimestamp().Time
+	if ct.IsZero() {
+		return nil
+	}
+	return &ct
 }
 
 // emitSyncProgress is the SyncProgress callback wired into the resource
@@ -368,20 +456,22 @@ func getGeneration(obj any) int64 {
 	return m.GetGeneration()
 }
 
-// recordToTimelineStore records a resource change to the timeline. When the
-// caller has already computed the update diff (the cache layer does, before
-// firing OnChange), it passes it via precomputedDiff + diffPrecomputed=true so
-// we don't recompute the identical diff on the hottest per-update path. Callers
-// without a precomputed diff (tests, non-cache paths) pass nil + false and the
-// diff is computed here as before.
-func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj any, precomputedDiff *DiffInfo, diffPrecomputed bool) {
+// recordToTimelineStore records a resource change to the timeline.
+// clusterContext is the wiring-time capture (see InitResourceCache), not the
+// live active context — a late callback must stamp the cluster it came from.
+// When the caller has already computed the update diff (the cache layer does,
+// before firing OnChange), it passes it via precomputedDiff +
+// diffPrecomputed=true so we don't recompute the identical diff on the hottest
+// per-update path; callers without one (tests, non-cache paths) pass nil +
+// false and the diff is computed here.
+func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string, oldObj, newObj any, precomputedDiff *DiffInfo, diffPrecomputed bool) {
 	store := timeline.GetStore()
 	if store == nil {
 		return
 	}
 
 	if op == "add" {
-		if store.IsResourceSeen(kind, namespace, name) {
+		if store.IsResourceSeen(clusterContext, kind, namespace, name) {
 			timeline.RecordDrop(kind, namespace, name, timeline.DropReasonAlreadySeen, op)
 			if DebugEvents {
 				log.Printf("[DEBUG] Already seen, skipping: %s/%s/%s", kind, namespace, name)
@@ -389,7 +479,7 @@ func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj
 			return
 		}
 	} else if op == "delete" {
-		store.ClearResourceSeen(kind, namespace, name)
+		store.ClearResourceSeen(clusterContext, kind, namespace, name)
 	}
 
 	obj := newObj
@@ -397,23 +487,35 @@ func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj
 		obj = oldObj
 	}
 
+	resourceVersion := ""
+	if obj != nil {
+		if meta, ok := obj.(metav1.Object); ok {
+			resourceVersion = meta.GetResourceVersion()
+		}
+	}
+
 	if op == "delete" {
 		stashDeletedForRecreate(kind, namespace, name, uid, obj)
 	}
 
-	owner := timeline.ExtractOwner(obj)
-	labels := timeline.ExtractLabels(obj)
+	// One extraction of owner/labels/createdAt, reused for both the event and
+	// the tombstone. ExtractTombstoneEntry unwraps DeletedFinalStateUnknown, so
+	// a delete whose payload is that wrapper still yields the final object.
+	entry, extracted := timeline.ExtractTombstoneEntry(obj)
+	owner := entry.Owner
+	labels := entry.Labels
+	createdAt := entry.CreatedAt
 	healthState := classifyTimelineHealth(kind, obj, time.Now())
 	apiVersion := extractAPIVersion(obj)
 
-	var createdAt *time.Time
-	if obj != nil {
-		if meta, ok := obj.(metav1.Object); ok {
-			ct := meta.GetCreationTimestamp().Time
-			if !ct.IsZero() {
-				createdAt = &ct
-			}
-		}
+	// Feed the tombstone on every add/update/delete. While the object is live
+	// this mirrors its enrichment; once it is gone (delete, or a late K8s event
+	// after eviction) the retained copy is the only source of owner/labels.
+	// Only when the object actually unwrapped — an extract failure yields an
+	// empty entry, and storing it would clobber the enrichment a prior good
+	// entry was preserving.
+	if name != "" && extracted {
+		tombstones.Put(uid, apiVersion, kind, namespace, name, entry)
 	}
 
 	var diff *timeline.DiffInfo
@@ -497,7 +599,7 @@ func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj
 	}
 
 	event := timeline.NewInformerEvent(
-		kind, apiVersion, namespace, name, uid,
+		kind, apiVersion, namespace, name, uid, resourceVersion,
 		timeline.OperationToEventType(op),
 		healthState,
 		diff,
@@ -505,14 +607,14 @@ func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj
 		labels,
 		createdAt,
 	)
-	event.ClusterContext = ActiveClusterContext()
+	event.ClusterContext = clusterContext
 	if recreated {
 		event.Reason = timeline.ReasonRecreated
 	}
 
 	var events []timeline.TimelineEvent
 	if op == "add" && newObj != nil {
-		historicalEvents := extractTimelineHistoricalEvents(kind, apiVersion, namespace, name, newObj, owner, labels)
+		historicalEvents := extractTimelineHistoricalEvents(clusterContext, kind, apiVersion, namespace, name, newObj, owner, labels)
 		for i := range historicalEvents {
 			historicalEvents[i].ClusterContext = event.ClusterContext
 		}
@@ -551,7 +653,7 @@ func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj
 					return
 				}
 			}
-			store.MarkResourceSeen(kind, namespace, name)
+			store.MarkResourceSeen(clusterContext, kind, namespace, name)
 			return
 		}
 	}
@@ -568,7 +670,7 @@ func recordToTimelineStore(kind, namespace, name, uid, op string, oldObj, newObj
 	timeline.IncrementRecorded(kind)
 
 	if op == "add" {
-		store.MarkResourceSeen(kind, namespace, name)
+		store.MarkResourceSeen(clusterContext, kind, namespace, name)
 	}
 }
 
@@ -590,18 +692,18 @@ func extractAPIVersion(obj any) string {
 }
 
 // extractTimelineHistoricalEvents extracts historical events from resource metadata/status
-func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, obj any, owner *timeline.OwnerInfo, labels map[string]string) []timeline.TimelineEvent {
+func extractTimelineHistoricalEvents(clusterContext, kind, apiVersion, namespace, name string, obj any, owner *timeline.OwnerInfo, labels map[string]string) []timeline.TimelineEvent {
 	var events []timeline.TimelineEvent
 
 	switch kind {
 	case "Pod":
 		if pod, ok := obj.(*corev1.Pod); ok {
 			if !pod.CreationTimestamp.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					pod.CreationTimestamp.Time, "created", "", timeline.HealthUnknown, owner, labels))
 			}
 			if pod.Status.StartTime != nil && !pod.Status.StartTime.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					pod.Status.StartTime.Time, "started", "", timeline.HealthDegraded, owner, labels))
 			}
 			for _, cond := range pod.Status.Conditions {
@@ -614,7 +716,7 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 				} else if cond.Status == corev1.ConditionFalse {
 					health = timeline.HealthDegraded
 				}
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					cond.LastTransitionTime.Time, string(cond.Type), cond.Message, health, owner, labels))
 			}
 		}
@@ -622,7 +724,7 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 	case "Deployment":
 		if deploy, ok := obj.(*appsv1.Deployment); ok {
 			if !deploy.CreationTimestamp.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					deploy.CreationTimestamp.Time, "created", "", timeline.HealthUnknown, owner, labels))
 			}
 			for _, cond := range deploy.Status.Conditions {
@@ -635,7 +737,7 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 				} else if cond.Status == corev1.ConditionFalse {
 					health = timeline.HealthDegraded
 				}
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					cond.LastTransitionTime.Time, string(cond.Type), cond.Message, health, owner, labels))
 			}
 		}
@@ -647,7 +749,7 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 				if rs.Status.ReadyReplicas > 0 && rs.Status.ReadyReplicas == rs.Status.Replicas {
 					health = timeline.HealthHealthy
 				}
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					rs.CreationTimestamp.Time, "created", "", health, owner, labels))
 			}
 		}
@@ -655,7 +757,7 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 	case "StatefulSet":
 		if sts, ok := obj.(*appsv1.StatefulSet); ok {
 			if !sts.CreationTimestamp.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					sts.CreationTimestamp.Time, "created", "", timeline.HealthUnknown, owner, labels))
 			}
 		}
@@ -663,7 +765,7 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 	case "DaemonSet":
 		if ds, ok := obj.(*appsv1.DaemonSet); ok {
 			if !ds.CreationTimestamp.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					ds.CreationTimestamp.Time, "created", "", timeline.HealthUnknown, owner, labels))
 			}
 		}
@@ -671,7 +773,7 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 	case "Service":
 		if svc, ok := obj.(*corev1.Service); ok {
 			if !svc.CreationTimestamp.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					svc.CreationTimestamp.Time, "created", "", timeline.HealthHealthy, owner, labels))
 			}
 		}
@@ -679,7 +781,7 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 	case "Ingress":
 		if ing, ok := obj.(*networkingv1.Ingress); ok {
 			if !ing.CreationTimestamp.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					ing.CreationTimestamp.Time, "created", "", timeline.HealthHealthy, owner, labels))
 			}
 		}
@@ -687,7 +789,7 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 	case "CronJob":
 		if cj, ok := obj.(*batchv1.CronJob); ok {
 			if !cj.CreationTimestamp.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					cj.CreationTimestamp.Time, "created", "", timeline.HealthHealthy, owner, labels))
 			}
 		}
@@ -695,7 +797,7 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 	case "HorizontalPodAutoscaler":
 		if hpa, ok := obj.(*autoscalingv2.HorizontalPodAutoscaler); ok {
 			if !hpa.CreationTimestamp.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					hpa.CreationTimestamp.Time, "created", "", timeline.HealthHealthy, owner, labels))
 			}
 		}
@@ -703,25 +805,25 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 	case "Job":
 		if job, ok := obj.(*batchv1.Job); ok {
 			if !job.CreationTimestamp.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					job.CreationTimestamp.Time, "created", "", timeline.HealthUnknown, owner, labels))
 			}
 			if job.Status.StartTime != nil && !job.Status.StartTime.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					job.Status.StartTime.Time, "started", "", timeline.HealthDegraded, owner, labels))
 			}
 			if job.Status.CompletionTime != nil && !job.Status.CompletionTime.IsZero() {
 				// CompletionTime is set only on SUCCESS — a completed Job is
 				// neutral/idle (done by design), even if earlier attempts failed
 				// (Status.Failed > 0 counts retries, not a terminal failure).
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					job.Status.CompletionTime.Time, "completed", "", timeline.HealthNeutral, owner, labels))
 			} else {
 				// Terminal failure (backoffLimit exceeded) has no CompletionTime —
 				// surface the JobFailed condition as unhealthy at its transition time.
 				for _, cond := range job.Status.Conditions {
 					if cond.Type == batchv1.JobFailed && cond.Status == corev1.ConditionTrue {
-						events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+						events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 							cond.LastTransitionTime.Time, "failed", cond.Message, timeline.HealthUnhealthy, owner, labels))
 						break
 					}
@@ -733,7 +835,7 @@ func extractTimelineHistoricalEvents(kind, apiVersion, namespace, name string, o
 		if u, ok := obj.(*unstructured.Unstructured); ok {
 			ct := u.GetCreationTimestamp()
 			if !ct.IsZero() {
-				events = append(events, timeline.NewHistoricalEvent(kind, apiVersion, namespace, name,
+				events = append(events, timeline.NewHistoricalEvent(clusterContext, kind, apiVersion, namespace, name,
 					ct.Time, "created", "", timeline.HealthUnknown, owner, labels))
 			}
 		}
@@ -780,8 +882,152 @@ func (c *ResourceCache) ListDynamic(ctx context.Context, kind string, namespace 
 	return c.ListDynamicWithGroup(ctx, kind, namespace, "")
 }
 
+// typedRouteGVR reports whether a dynamic-cache read for (kind, group) must
+// be served by the typed cache instead of spinning up a dynamic informer
+// that would duplicate a typed one (cluster-wide Secrets/ConfigMaps twice is
+// a real memory cost, and the serial informer startups were the dominant
+// cold-path cost of the GitOps tree). Dispatch mirrors the REST/MCP
+// handlers' convention exactly: an explicit group must be owned by the
+// built-in (CRDs whose kind shadows a built-in, e.g. Knative Service, keep
+// their dynamic route); an empty group means "the built-in if this name is
+// built-in".
+func typedRouteGVR(kind, group string) (schema.GroupVersionResource, bool) {
+	if group != "" && !TypedKindOwnsGroup(kind, group) {
+		return schema.GroupVersionResource{}, false
+	}
+	return lookupTypedBuiltinGVR(kind)
+}
+
+// typedObjectToUnstructured converts a typed lister object to unstructured
+// and stamps apiVersion/kind (informer objects carry no TypeMeta). The
+// conversion allocates fresh maps, so the shared informer object is never
+// mutated — which also makes the in-place strip below safe.
+func typedObjectToUnstructured(obj runtime.Object, gvr schema.GroupVersionResource) (*unstructured.Unstructured, error) {
+	m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+	u := &unstructured.Unstructured{Object: m}
+	// Match the dynamic path's outward contract (StripUnstructuredFields):
+	// no managedFields, no kubectl last-applied. The typed informer
+	// transform (DropManagedFields) covers only its explicit kind list —
+	// RBAC kinds among others fall through with last-applied intact, and
+	// exposing it here would leak a full JSON copy of the object into every
+	// tree/list payload. Stripped in place: the converted map is fresh.
+	unstructured.RemoveNestedField(u.Object, "metadata", "managedFields")
+	if annotations := u.GetAnnotations(); annotations != nil {
+		if _, ok := annotations["kubectl.kubernetes.io/last-applied-configuration"]; ok {
+			delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+			if len(annotations) == 0 {
+				u.SetAnnotations(nil)
+			} else {
+				u.SetAnnotations(annotations)
+			}
+		}
+	}
+	if u.GetAPIVersion() == "" || u.GetKind() == "" {
+		apiVersion := gvr.Version
+		if gvr.Group != "" {
+			apiVersion = gvr.Group + "/" + gvr.Version
+		}
+		u.SetAPIVersion(apiVersion)
+		if kindName, ok := builtinKindForResource(gvr.Resource); ok {
+			u.SetKind(kindName)
+		}
+	}
+	return u, nil
+}
+
+// getTypedAsUnstructured serves a single-object read for a typed built-in
+// kind from the typed cache. Tri-state: a kind whose deferred informer
+// hasn't synced yet falls back to a one-off direct GET — never to starting
+// a dynamic informer; a kind the RBAC probe disabled stays forbidden.
+// handled=false means the typed path can't answer and the caller should fall
+// through to the dynamic cache.
+//
+// The deferred check runs BEFORE the lister read: several deferred kinds
+// (ServiceAccounts, ReplicaSets, HPAs, LimitRanges, ResourceQuotas) expose
+// a non-nil lister as soon as they're enabled, so during the warmup window
+// they'd otherwise serve empty stores as confident NotFound/empty results.
+// After it, a nil-lister "forbidden" error can only mean the RBAC probe
+// disabled the kind — returned as-is.
+func (c *ResourceCache) getTypedAsUnstructured(ctx context.Context, gvr schema.GroupVersionResource, kind, namespace, name string) (*unstructured.Unstructured, bool, error) {
+	if c.IsDeferredPending(gvr.Resource) {
+		return c.typedDirectGet(ctx, gvr, namespace, name)
+	}
+	obj, err := FetchResource(c, kind, namespace, name)
+	if err != nil {
+		if errors.Is(err, ErrUnknownKind) {
+			return nil, false, nil
+		}
+		return nil, true, err
+	}
+	u, cerr := typedObjectToUnstructured(obj, gvr)
+	return u, true, cerr
+}
+
+func (c *ResourceCache) typedDirectGet(ctx context.Context, gvr schema.GroupVersionResource, namespace, name string) (*unstructured.Unstructured, bool, error) {
+	dynamicCache := GetDynamicResourceCache()
+	if dynamicCache == nil {
+		return nil, true, fmt.Errorf("dynamic resource cache not initialized")
+	}
+	u, err := dynamicCache.GetDirect(ctx, gvr, namespace, name)
+	return u, true, err
+}
+
+func (c *ResourceCache) typedDirectList(ctx context.Context, gvr schema.GroupVersionResource, namespace string) ([]*unstructured.Unstructured, bool, error) {
+	dynamicCache := GetDynamicResourceCache()
+	if dynamicCache == nil {
+		return nil, true, fmt.Errorf("dynamic resource cache not initialized")
+	}
+	us, err := dynamicCache.ListDirect(ctx, gvr, namespace)
+	return us, true, err
+}
+
+// listTypedAsUnstructured is the list counterpart of getTypedAsUnstructured,
+// with the same tri-state semantics (see there for why the deferred check
+// precedes the lister read). A namespace filter on a cluster-only kind
+// returns empty to match the dynamic cache's namespace-index behavior
+// (FetchResourceList would ignore the filter and return everything).
+func (c *ResourceCache) listTypedAsUnstructured(ctx context.Context, gvr schema.GroupVersionResource, kind, namespace string) ([]*unstructured.Unstructured, bool, error) {
+	if namespace != "" {
+		if _, _, clusterOnly := ClusterOnlyKindGVR(kind); clusterOnly {
+			return []*unstructured.Unstructured{}, true, nil
+		}
+	}
+	if c.IsDeferredPending(gvr.Resource) {
+		return c.typedDirectList(ctx, gvr, namespace)
+	}
+	var namespaces []string
+	if namespace != "" {
+		namespaces = []string{namespace}
+	}
+	objs, err := FetchResourceList(c, kind, namespaces)
+	if err != nil {
+		if errors.Is(err, ErrUnknownKind) {
+			return nil, false, nil
+		}
+		return nil, true, err
+	}
+	out := make([]*unstructured.Unstructured, 0, len(objs))
+	for _, obj := range objs {
+		u, cerr := typedObjectToUnstructured(obj, gvr)
+		if cerr != nil {
+			return nil, true, cerr
+		}
+		out = append(out, u)
+	}
+	return out, true, nil
+}
+
 // ListDynamicWithGroup returns resources, using the group to disambiguate
 func (c *ResourceCache) ListDynamicWithGroup(ctx context.Context, kind string, namespace string, group string) ([]*unstructured.Unstructured, error) {
+	if gvr, ok := typedRouteGVR(kind, group); ok {
+		if out, handled, err := c.listTypedAsUnstructured(ctx, gvr, kind, namespace); handled {
+			return out, err
+		}
+	}
+
 	discovery := GetResourceDiscovery()
 	if discovery == nil {
 		return nil, fmt.Errorf("%w: resource discovery", ErrDynamicNotReady)
@@ -812,7 +1058,7 @@ func (c *ResourceCache) ListDynamicWithGroup(ctx context.Context, kind string, n
 		return nil, fmt.Errorf("%w: dynamic cache", ErrDynamicNotReady)
 	}
 
-	if gvr.Group == "discovery.k8s.io" && gvr.Resource == "endpointslices" {
+	if shouldBypassDynamicInformer(gvr) {
 		return dynamicCache.ListDirect(ctx, gvr, namespace)
 	}
 
@@ -828,6 +1074,12 @@ func (c *ResourceCache) ListDynamicWithGroup(ctx context.Context, kind string, n
 // when discovery is incomplete.
 func builtinGVRFallback(kind, group string) (schema.GroupVersionResource, bool) {
 	return BuiltinGVR(kind, group)
+}
+
+func shouldBypassDynamicInformer(gvr schema.GroupVersionResource) bool {
+	return (gvr.Group == "discovery.k8s.io" && gvr.Resource == "endpointslices") ||
+		(gvr.Group == "coordination.k8s.io" && gvr.Resource == "leases") ||
+		(gvr.Group == "" && gvr.Resource == "endpoints")
 }
 
 // ErrUnknownDynamicKind is returned by ListDynamic / GetDynamicWithGroup when
@@ -861,6 +1113,17 @@ func (c *ResourceCache) GetDynamicWithGroupPreserveLastApplied(ctx context.Conte
 }
 
 func (c *ResourceCache) getDynamicWithGroup(ctx context.Context, kind string, namespace string, name string, group string, preserveLastApplied bool) (*unstructured.Unstructured, error) {
+	// preserveLastApplied must never take the typed route: the typed cache
+	// strips kubectl last-applied at ingestion, so serving drift reads from it
+	// would silently return "no drift" for every built-in kind.
+	if !preserveLastApplied {
+		if gvr, ok := typedRouteGVR(kind, group); ok {
+			if u, handled, err := c.getTypedAsUnstructured(ctx, gvr, kind, namespace, name); handled {
+				return u, err
+			}
+		}
+	}
+
 	discovery := GetResourceDiscovery()
 	if discovery == nil {
 		return nil, fmt.Errorf("%w: resource discovery", ErrDynamicNotReady)
@@ -904,12 +1167,14 @@ func (c *ResourceCache) getDynamicWithGroup(ctx context.Context, kind string, na
 	// cluster-wide just to power a per-page-load drift diff.
 	var u *unstructured.Unstructured
 	var err error
-	if gvr.Group == "discovery.k8s.io" && gvr.Resource == "endpointslices" {
+	if preserveLastApplied {
+		u, err = dynamicCache.GetDirectPreserveLastApplied(ctx, gvr, namespace, name)
+	} else if shouldBypassDynamicInformer(gvr) {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
 	} else if gvr.Group == "apiextensions.k8s.io" && gvr.Resource == "customresourcedefinitions" {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
-	} else if preserveLastApplied {
-		u, err = dynamicCache.GetDirectPreserveLastApplied(ctx, gvr, namespace, name)
+	} else if gvr.Group == "apiregistration.k8s.io" && gvr.Resource == "apiservices" {
+		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
 	} else {
 		u, err = dynamicCache.Get(gvr, namespace, name)
 	}

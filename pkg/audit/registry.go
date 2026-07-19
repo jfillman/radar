@@ -42,6 +42,9 @@ var (
 	refTraefikCRD      = Reference{Label: "Traefik: Kubernetes IngressRoute", URL: "https://doc.traefik.io/traefik/routing/providers/kubernetes-crd/"}
 	refFinalizers      = Reference{Label: "K8s: Finalizers", URL: "https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/"}
 	refCrossplane      = Reference{Label: "Crossplane: Managed Resources", URL: "https://docs.crossplane.io/latest/concepts/managed-resources/"}
+	refOpenGitOps      = Reference{Label: "OpenGitOps: Principles", URL: "https://opengitops.dev/"}
+	refArgoCD          = Reference{Label: "Argo CD: Declarative GitOps", URL: "https://argo-cd.readthedocs.io/en/stable/"}
+	refHelm            = Reference{Label: "Helm: Charts", URL: "https://helm.sh/docs/topics/charts/"}
 )
 
 // CheckRegistry maps checkID → metadata for all built-in checks.
@@ -274,20 +277,12 @@ var CheckRegistry = map[string]CheckMeta{
 		Frameworks:  []string{FrameworkCIS},
 		References:  []Reference{refResources},
 	},
-	"resourceUtilization": {
-		ID:          "resourceUtilization",
-		Title:       "Resource utilization mismatch",
-		Category:    CategoryEfficiency,
-		Description: "Pod resource usage is significantly different from its requests — either wasting resources (<10% used) or at risk of throttling/OOM (>90% used).",
-		Remediation: "Adjust resources.requests to match actual usage. Use metrics or VPA recommendations to right-size.",
-		References:  []Reference{refResources},
-	},
 	"orphanConfigMapSecret": {
 		ID:          "orphanConfigMapSecret",
 		Title:       "Unused ConfigMap or Secret",
 		Category:    CategoryEfficiency,
-		Description: "This ConfigMap or Secret is not referenced by any pod (env vars, volumes, or imagePullSecrets). It may be orphaned and safe to remove.",
-		Remediation: "Verify this resource is no longer needed and delete it, or add a reference from a pod spec if it should be in use.",
+		Description: "This ConfigMap or Secret is not referenced by any workload, Ingress, or supported controller configuration. It may be orphaned and safe to remove.",
+		Remediation: "Verify this resource is no longer needed and delete it, or add a reference from the workload, Ingress, or controller configuration that should use it.",
 		References:  []Reference{refConfigMaps, refSecrets},
 	},
 
@@ -361,7 +356,7 @@ var CheckRegistry = map[string]CheckMeta{
 		// pipeline (pkg/health renders the node degraded) and the "Terminating" chip
 		// in the resource-list name cell — a badge here would be a third redundant
 		// signal. It stays in the Checks/Audit views with its deletion-age ramp.
-		Title: "Stuck terminating resource",
+		Title:       "Stuck terminating resource",
 		Category:    CategoryReliability,
 		Description: "This resource has metadata.deletionTimestamp set but is still alive past the cleanup window. Most controllers finish cleanup within seconds; minutes-long delays usually mean a finalizer's owning controller is unhealthy or unable to reach a dependent service. Common causes: the controller pod is CrashLoopBackOff, DNS resolution is broken, the finalizer logic depends on a webhook or external API that's unavailable.",
 		Remediation: "Check the controller responsible for each finalizer key (kubectl describe will show finalizers under metadata). For Argo CD, look at argocd-application-controller in the argocd namespace. For Flux, look at the matching controller (kustomize-controller, helm-controller, source-controller) in flux-system. Once the controller is healthy, deletion will resume automatically. If you must remove a stuck resource and accept the orphaned cleanup, manually clear the finalizers field — but only as a last resort.",
@@ -375,6 +370,28 @@ var CheckRegistry = map[string]CheckMeta{
 		Description: "A Crossplane Managed Resource, Composite Resource, or Claim has been reporting Ready=False or Synced=False past the reconciliation window. Synced=False usually means a configuration error (bad ProviderConfig, malformed forProvider spec, missing IAM permissions, quota exceeded, schema mismatch). Ready=False usually means the provider accepted the spec but can't reach a desired state (target cloud API rejected, dependency missing, eventual-consistency lag past the threshold).",
 		Remediation: "Open the resource and read the latest condition's message — Crossplane providers almost always include the upstream cloud error verbatim. Common fixes: (1) check the linked Provider's Healthy condition; the package controller crashlooping starves every MR it manages. (2) verify the ProviderConfig credentials Secret still exists and is current (rotated keys, expired tokens). (3) check IAM/RBAC at the target cloud — Synced=False with auth errors needs a credentials fix, not a Crossplane fix. (4) look at quota/limit errors in the cloud provider console. (5) for paused resources (crossplane.io/paused annotation), this finding is intentionally suppressed — remove the annotation to resume reconciliation.",
 		References:  []Reference{refCrossplane},
+	},
+
+	// ── GitOps coverage (emit under Reliability) ───────────────────────
+	// Only evaluated when a GitOps controller is installed (see CheckInput.
+	// GitOpsToolsPresent). Posture, not breakage — graded like the other
+	// coverage checks (singleReplica, missingPDB): warning findings, Medium
+	// default severity, not BadgeWorthy.
+	checkGitOpsUnmanaged: {
+		ID:          checkGitOpsUnmanaged,
+		Title:       "Workload not managed by GitOps",
+		Category:    CategoryReliability,
+		Description: "This cluster runs GitOps, but this workload carries no GitOps (Argo CD / Flux) or Helm management signal — it was likely applied imperatively (kubectl apply / edit). Its desired state has no Git source of truth, so there is no review trail, no drift detection, and no declarative rollback.",
+		Remediation: "Bring the workload under a GitOps controller: commit its manifests to the repository Argo CD or Flux reconciles, or adopt it into an existing Application/Kustomization. If you deploy with Helm, drive the release through the GitOps controller rather than the Helm CLI.",
+		References:  []Reference{refOpenGitOps, refArgoCD},
+	},
+	checkGitOpsHelmOnly: {
+		ID:          checkGitOpsHelmOnly,
+		Title:       "Workload managed by Helm but not GitOps",
+		Category:    CategoryReliability,
+		Description: "This workload was installed by Helm directly (helm install/upgrade) rather than through a GitOps controller. A Helm release is its source of truth, but helm-CLI upgrades run outside Git — they skip pull-request review and the cluster's declarative rollback path.",
+		Remediation: "Reconcile the Helm release through a GitOps controller — a Flux HelmRelease or an Argo CD Application pointing at the chart — so upgrades go through Git review and rollback.",
+		References:  []Reference{refOpenGitOps, refHelm},
 	},
 }
 

@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef, useContext, useId } from 'react'
 import { TableVirtuoso, type TableVirtuosoHandle } from 'react-virtuoso'
-import { useRefreshAnimation } from '../../hooks/useRefreshAnimation'
 import { PaneLoader } from '../ui/PaneLoader'
 import { RestrictedState } from '../ui/RestrictedState'
+import { Input } from '../ui/Input'
 import type { TopPodMetrics, TopNodeMetrics } from '../../types'
 import {
   Search,
@@ -13,7 +13,6 @@ import {
   ChevronDown,
   ChevronUp,
   ArrowUpDown,
-  Clock,
   ListFilter,
   X,
   Columns3,
@@ -34,7 +33,7 @@ import { ResourceBar } from '../ui/ResourceBar'
 import type { SelectedResource, APIResource } from '../../types'
 import { isForbiddenError } from '../../types/fetch-error'
 import type { NavigateToResource } from '../../utils/navigation'
-import { categorizeResources, CORE_RESOURCES } from '../../utils/api-resources'
+import { categorizeResources, CORE_RESOURCES, findAPIResourceForRoute } from '../../utils/api-resources'
 import {
   getPodStatus,
   getPodRestarts,
@@ -86,6 +85,10 @@ import {
   getWorkflowDuration,
   getWorkflowProgress,
   getWorkflowTemplate,
+  getCronWorkflowStatus,
+  getCronWorkflowSchedule,
+  getCronWorkflowLastRun,
+  getCronWorkflowTemplate,
   getPVStatus,
   getPVAccessModes,
   getPVClaim,
@@ -133,6 +136,7 @@ import { SEVERITY_BADGE, EVENT_TYPE_COLORS, SEVERITY_TEXT } from '../../utils/ba
 import { pluralize } from '../../utils/pluralize'
 import { getPodGpuCount, getNodeGpuCount } from '../../utils/extended-resources'
 import { type CustomColumnDef, type CustomColumnSource, customColumnKey, readCustomColumnValue, sanitizeCustomColumnDefs } from '../../utils/custom-columns'
+import { FreshnessControl, type FreshnessConnection } from '../ui/FreshnessControl'
 import { Tooltip } from '../ui/Tooltip'
 import { AuditBadgeTooltip, type AuditBadgeMessage } from '../audit/AuditBadgeTooltip'
 // CRD-specific cell components (extracted)
@@ -461,6 +465,15 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
     { key: 'template', label: 'Template', width: 'w-40', hideOnMobile: true },
     { key: 'age', label: 'Age', width: 'w-24' },
   ],
+  cronworkflows: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-48' },
+    { key: 'schedule', label: 'Schedule', width: 'w-40' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'lastRun', label: 'Last Run', width: 'w-28', hideOnMobile: true },
+    { key: 'template', label: 'Template', width: 'w-40', hideOnMobile: true },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
   certificates: [
     { key: 'name', label: 'Name' },
     { key: 'namespace', label: 'Namespace', width: 'w-48' },
@@ -759,6 +772,12 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
   workflowtemplates: [
     { key: 'name', label: 'Name' },
     { key: 'namespace', label: 'Namespace', width: 'w-48' },
+    { key: 'entrypoint', label: 'Entrypoint', width: 'w-36' },
+    { key: 'templates', label: 'Templates', width: 'w-24' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  clusterworkflowtemplates: [
+    { key: 'name', label: 'Name' },
     { key: 'entrypoint', label: 'Entrypoint', width: 'w-36' },
     { key: 'templates', label: 'Templates', width: 'w-24' },
     { key: 'age', label: 'Age', width: 'w-24' },
@@ -1710,8 +1729,16 @@ function isLikelyCrossplaneMRGroup(kind: string, group: string): boolean {
   if (k === 'providerconfig' || k === 'providerconfigs') return false
   if (group.endsWith('.upbound.io')) return true
   if (group === 'kubernetes.crossplane.io' || group === 'helm.crossplane.io') return true
-  // Reserved Crossplane core groups — never MRs.
-  if (group === 'crossplane.io' || group === 'pkg.crossplane.io' || group === 'apiextensions.crossplane.io') {
+  // Reserved Crossplane core groups — never MRs. protection.crossplane.io
+  // (Usage/ClusterUsage) and ops.crossplane.io (Operations) are Crossplane v2's
+  // new core groups: lifecycle/orchestration objects, not provider resources.
+  if (
+    group === 'crossplane.io' ||
+    group === 'pkg.crossplane.io' ||
+    group === 'apiextensions.crossplane.io' ||
+    group === 'protection.crossplane.io' ||
+    group === 'ops.crossplane.io'
+  ) {
     return false
   }
   // Any other *.crossplane.io subgroup is presumed to be a provider's MR group.
@@ -1811,6 +1838,8 @@ interface ResourcesViewData {
 export const ResourcesViewDataContext = React.createContext<ResourcesViewData>({})
 
 export interface ResourceQueryResult {
+  resourceName?: string
+  group?: string
   data?: any[]
   isLoading: boolean
   error?: any
@@ -1843,7 +1872,7 @@ interface ResourcesViewProps {
   /** @deprecated Use resourceCounts + resourceForbidden + selectedKindQuery instead */
   resourceQueries?: ResourceQueryResult[]
   // Lightweight counts for sidebar badges (from /api/resource-counts)
-  resourceCounts?: Record<string, number>
+  resourceCounts?: Record<string, number | null>
   resourceForbidden?: string[]
   /** Per-kind reason a forbidden kind is hidden ("rbac_denied" | "unavailable"),
    *  keyed by the same count key as resourceForbidden. Drives RestrictedState copy. */
@@ -1851,6 +1880,9 @@ interface ResourcesViewProps {
   resourceUnavailable?: string[]
   // Single query for the currently selected kind's full data
   selectedKindQuery?: ResourceQueryResult
+  // Cluster/SSE connection health — the list is SSE-invalidated ("Auto-updating"),
+  // so it must degrade to "Reconnecting…" when the stream drops.
+  connectionState?: FreshnessConnection
   largeListGuard?: LargeListGuardState | null
   topPodMetrics?: TopPodMetrics[]
   topNodeMetrics?: TopNodeMetrics[]
@@ -1948,6 +1980,26 @@ interface ResourcesViewProps {
 
 // Default selected kind
 const DEFAULT_KIND_INFO: SelectedKindInfo = { name: 'pods', kind: 'Pod', group: '' }
+export const LOADED_RESOURCE_COUNT_TTL_MS = 5 * 60 * 1000
+
+interface LoadedResourceCount {
+  count: number
+  expiresAt: number
+}
+
+type LoadedResourceCountCache = Record<string, LoadedResourceCount>
+
+function resourceCountKey(resource: Pick<APIResource, 'group' | 'kind'>): string {
+  return resource.group ? `${resource.group}/${resource.kind}` : resource.kind
+}
+
+export function resourceQueryMatchesSelectedKind(
+  query: Pick<ResourceQueryResult, 'resourceName' | 'group'> | undefined,
+  selectedKind: SelectedKindInfo,
+): boolean {
+  if (!query?.resourceName) return true
+  return query.resourceName === selectedKind.name && (query.group ?? '') === selectedKind.group
+}
 
 // Read initial state from URL — kind is in the path: {basePath}/{kind}
 //
@@ -1984,17 +2036,60 @@ function getInitialKindFromURL(
   }
   const group = new URLSearchParams(search).get('apiGroup') || ''
   if (kind) {
-    // Find matching resource from CORE_RESOURCES or use as-is
-    // Only match core resources when no apiGroup is specified (avoids collisions like KNative Service)
-    if (!group) {
-      const coreMatch = CORE_RESOURCES.find(r => r.kind === kind || r.name === kind)
-      if (coreMatch) {
-        return { name: coreMatch.name, kind: coreMatch.kind, group: coreMatch.group }
-      }
+    const coreMatch = findAPIResourceForRoute(undefined, kind, group)
+    if (coreMatch) {
+      return { name: coreMatch.name, kind: coreMatch.kind, group: coreMatch.group }
     }
     return { name: kind, kind: kind, group }
   }
   return defaultKind
+}
+
+export function canonicalizeSelectedKind(
+  selectedKind: SelectedKindInfo,
+  resourcesToCount: Array<Pick<APIResource, 'name' | 'kind' | 'group'>>,
+  apiResources?: APIResource[],
+): SelectedKindInfo | null {
+  const nameMatch = resourcesToCount.find(r =>
+    r.name === selectedKind.name && r.group === selectedKind.group
+  )
+  if (nameMatch) {
+    return selectedKind.kind === nameMatch.kind
+      ? null
+      : { name: nameMatch.name, kind: nameMatch.kind, group: nameMatch.group }
+  }
+
+  const match = apiResources?.find(r =>
+    r.kind === selectedKind.kind && r.group === selectedKind.group
+  )
+  return match ? { name: match.name, kind: match.kind, group: match.group } : null
+}
+
+export function deriveSidebarResourceCounts(
+  resourcesToCount: Array<Pick<APIResource, 'kind' | 'group'>>,
+  resourceCounts: Record<string, number | null> | undefined,
+  resourceUnavailable: string[] | undefined,
+  loadedCountCache: LoadedResourceCountCache,
+  now: number = Date.now(),
+): Record<string, number | null> {
+  const unavailableKinds = new Set(resourceUnavailable ?? [])
+  const results: Record<string, number | null> = {}
+
+  for (const resource of resourcesToCount) {
+    const key = resourceCountKey(resource)
+    const cached = loadedCountCache[key]
+    if (resourceCounts && key in resourceCounts) {
+      results[key] = resourceCounts[key] ?? null
+    } else if (cached && cached.expiresAt > now) {
+      results[key] = cached.count
+    } else if (unavailableKinds.has(key)) {
+      results[key] = null
+    } else {
+      results[key] = null
+    }
+  }
+
+  return results
 }
 
 // Get initial filters from URL
@@ -2004,6 +2099,7 @@ function getInitialFiltersFromURL() {
   const columnFilters = parseColumnFilters(params.get('filters'))
   const result = {
     search: params.get('search') || '',
+    regex: params.get('regex') === 'true',
     columnFilters,
     problemFilters: params.get('problems')?.split(',').filter(Boolean) || [],
     showInactive: params.get('showInactive') === 'true',
@@ -2017,51 +2113,6 @@ function getInitialFiltersFromURL() {
 // Sort state type
 type SortDirection = 'asc' | 'desc' | null
 
-// Coarse "just now / Xm / Xh / Xd" buckets — finer-grained updates
-// add motion in the periphery without aiding any user decision.
-function formatLastUpdatedBucket(elapsedMs: number): string {
-  const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000))
-  if (elapsedSec < 60) return 'just now'
-  const minutes = Math.floor(elapsedSec / 60)
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.floor(hours / 24)}d`
-}
-
-// ms until the displayed bucket would change.
-function msToNextBucket(elapsedMs: number): number {
-  const elapsed = Math.max(0, elapsedMs)
-  if (elapsed < 60_000) return 60_000 - elapsed
-  if (elapsed < 3_600_000) return 60_000 - (elapsed % 60_000)
-  if (elapsed < 86_400_000) return 3_600_000 - (elapsed % 3_600_000)
-  return 86_400_000 - (elapsed % 86_400_000)
-}
-
-// Isolated subtree so re-renders don't cascade into the parent's
-// virtualized table.
-function LastUpdatedLabel({ lastUpdated }: { lastUpdated: Date }) {
-  const [, force] = useState(0)
-  useEffect(() => {
-    let id: ReturnType<typeof setTimeout>
-    function schedule() {
-      const delay = Math.max(1000, msToNextBucket(Date.now() - lastUpdated.getTime()))
-      id = setTimeout(() => {
-        force(t => t + 1)
-        schedule()
-      }, delay)
-    }
-    schedule()
-    return () => clearTimeout(id)
-  }, [lastUpdated])
-  return (
-    <div className="flex items-center gap-1.5 text-xs text-theme-text-tertiary">
-      <Clock className="w-3.5 h-3.5" />
-      <span>Updated {formatLastUpdatedBucket(Date.now() - lastUpdated.getTime())}</span>
-    </div>
-  )
-}
-
 export function ResourcesView({
   namespaces, selectedResource, onResourceClick, onResourceClickYaml, onKindChange,
   apiResources: apiResourcesProp,
@@ -2071,6 +2122,7 @@ export function ResourcesView({
   resourceReasons,
   resourceUnavailable: resourceUnavailableProp,
   selectedKindQuery: selectedKindQueryProp,
+  connectionState,
   largeListGuard,
   topPodMetrics,
   topNodeMetrics,
@@ -2127,10 +2179,9 @@ export function ResourcesView({
     setBulkForceDelete(false)
   }, [selectedKind.name, selectedKind.group]) // eslint-disable-line react-hooks/exhaustive-deps
   const [searchTerm, setSearchTerm] = useState(initialFilters.search)
-  const [regexMode, setRegexMode] = useState(false)
+  const [regexMode, setRegexMode] = useState(initialFilters.regex)
   const [sortColumn, setSortColumn] = useState<string | null>(null)
   const [sortDirection, setSortDirection] = useState<SortDirection>(null)
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   // Filter state
   const [columnFilters, setColumnFilters] = useState<Record<string, string[]>>(initialFilters.columnFilters)
   const [problemFilters, setProblemFilters] = useState<string[]>(initialFilters.problemFilters)
@@ -2722,11 +2773,11 @@ export function ResourcesView({
           if (containers.length > 0) {
             openLogs?.({ namespace: ns, podName: name, containers })
           }
-        } else if (['deployments', 'statefulsets', 'daemonsets', 'replicasets', 'jobs'].includes(kindLower)) {
+        } else if (['deployments', 'statefulsets', 'daemonsets', 'replicasets', 'jobs', 'workflows', 'cronjobs', 'cronworkflows', 'workflowtemplates', 'clusterworkflowtemplates', 'scaledjobs'].includes(kindLower)) {
           openWorkloadLogs?.({ namespace: ns, workloadKind: selectedKind.kind, workloadName: name })
         }
       },
-      enabled: highlightedIndex >= 0 && !compareMode && ['pods', 'deployments', 'statefulsets', 'daemonsets', 'replicasets', 'jobs'].includes(selectedKind.name.toLowerCase()),
+      enabled: highlightedIndex >= 0 && !compareMode && ['pods', 'deployments', 'statefulsets', 'daemonsets', 'replicasets', 'jobs', 'workflows', 'cronjobs', 'cronworkflows', 'workflowtemplates', 'clusterworkflowtemplates', 'scaledjobs'].includes(selectedKind.name.toLowerCase()),
     },
     {
       id: 'resources-sort-name',
@@ -2877,6 +2928,11 @@ export function ResourcesView({
       setSearchTerm(newFilters.search)
     }
 
+    // Update regex mode if it changed
+    if (newFilters.regex !== regexMode) {
+      setRegexMode(newFilters.regex)
+    }
+
     // Update column filters if changed
     const newFiltersStr = serializeColumnFilters(newFilters.columnFilters)
     const currentFiltersStr = serializeColumnFilters(columnFilters)
@@ -2907,6 +2963,7 @@ export function ResourcesView({
   const updateURL = useCallback((
     kindInfo: SelectedKindInfo,
     search: string,
+    regex: boolean,
     colFilters: Record<string, string[]>,
     problems: string[],
     showInactive: boolean,
@@ -2928,6 +2985,11 @@ export function ResourcesView({
       params.set('search', search)
     } else {
       params.delete('search')
+    }
+    if (regex) {
+      params.set('regex', 'true')
+    } else {
+      params.delete('regex')
     }
     // Write column filters as `filters` param; remove legacy `status` param
     const filtersStr = serializeColumnFilters(colFilters)
@@ -2990,6 +3052,7 @@ export function ResourcesView({
 
   const clearAllFilters = useCallback(() => {
     setSearchTerm('')
+    setRegexMode(false)
     setColumnFilters({})
     setProblemFilters([])
     setLabelSelector('')
@@ -3000,7 +3063,7 @@ export function ResourcesView({
     // params are out of scope here; the host's onClearNamespaces (and its
     // own state→URL sync) owns namespace cleanup.
     const params = new URLSearchParams(window.location.search)
-    for (const key of ['search', 'filters', 'problems', 'labels', 'ownerKind', 'ownerName', 'showInactive']) {
+    for (const key of ['search', 'regex', 'filters', 'problems', 'labels', 'ownerKind', 'ownerName', 'showInactive']) {
       params.delete(key)
     }
     navigate({ pathname: window.location.pathname, search: params.toString() }, { replace: true })
@@ -3057,8 +3120,8 @@ export function ResourcesView({
     shouldPushHistory.current = false
     prevSelectedResourceRef.current = current
 
-    updateURL(selectedKind, searchTerm, columnFilters, problemFilters, showInactiveReplicaSets, selectedResource?.namespace, selectedResource?.name, pushHistory)
-  }, [selectedKind, searchTerm, columnFilters, problemFilters, showInactiveReplicaSets, selectedResource, updateURL, basePath, locationPathname])
+    updateURL(selectedKind, searchTerm, regexMode, columnFilters, problemFilters, showInactiveReplicaSets, selectedResource?.namespace, selectedResource?.name, pushHistory)
+  }, [selectedKind, searchTerm, regexMode, columnFilters, problemFilters, showInactiveReplicaSets, selectedResource, updateURL, basePath, locationPathname])
 
   // Handle resource click from URL on mount
   useEffect(() => {
@@ -3179,24 +3242,15 @@ export function ResourcesView({
   // getInitialKindFromURL can't look up CRDs, so name may be wrong (e.g., 'HTTPRoute' instead of 'httproutes')
   useEffect(() => {
     if (!apiResources) return
-    // Check if current selectedKind already matches a discovered resource
-    const alreadyResolved = resourcesToCount.some(r =>
-      r.name === selectedKind.name && r.group === selectedKind.group
-    )
-    if (alreadyResolved) return
-
-    // Try to match by kind name (URL stores kind=HTTPRoute, API has name=httproutes)
-    const match = apiResources.find(r =>
-      r.kind === selectedKind.kind && r.group === selectedKind.group
-    )
-    if (match) {
-      setSelectedKind({ name: match.name, kind: match.kind, group: match.group })
+    const canonicalKind = canonicalizeSelectedKind(selectedKind, resourcesToCount, apiResources)
+    if (canonicalKind) {
+      setSelectedKind(canonicalKind)
     }
   }, [apiResources, resourcesToCount, selectedKind.name, selectedKind.kind, selectedKind.group])
 
   // Resource data — prefer new lightweight props over legacy resourceQueries array
   const resourceQueries = resourceQueriesProp ?? []
-  const useNewCountsMode = !!resourceCountsProp
+  const useNewCountsMode = resourceCountsProp !== undefined || selectedKindQueryProp !== undefined
 
   // Find the selected kind's query
   const selectedQueryIndex = useMemo(() => {
@@ -3206,7 +3260,8 @@ export function ResourcesView({
   }, [resourcesToCount, selectedKind.name, selectedKind.group])
 
   const selectedQuery = selectedKindQueryProp ?? resourceQueries[selectedQueryIndex]
-  const resources = selectedQuery?.data
+  const selectedQueryMatchesKind = resourceQueryMatchesSelectedKind(selectedQuery, selectedKind)
+  const resources = selectedQueryMatchesKind ? selectedQuery?.data : undefined
 
   // Auto-surface the GPU column the first time GPU-bearing rows load for a kind
   // the user has never customized — a static default can't know whether the
@@ -3247,41 +3302,63 @@ export function ResourcesView({
       annotation: Array.from(annotations).sort(),
     }
   }, [resources])
-  const isLoading = selectedQuery?.isLoading ?? true
-  const selectedQueryError = selectedQuery?.error
-  const refetchFn = selectedQuery?.refetch
-  const dataUpdatedAt = selectedQuery?.dataUpdatedAt
+  const isLoading = selectedQueryMatchesKind ? (selectedQuery?.isLoading ?? true) : true
+  const selectedQueryError = selectedQueryMatchesKind ? selectedQuery?.error : undefined
+  const selectedKindCountKey = selectedKind.group
+    ? `${selectedKind.group}/${selectedKind.kind}`
+    : selectedKind.kind
+  const selectedQueryHasLoadedCount = Array.isArray(resources) && !isLoading && !selectedQueryError && !largeListGuard
+  const selectedLoadedResourceCount = Array.isArray(resources) ? resources.length : undefined
+  const [loadedCountCache, setLoadedCountCache] = useState<LoadedResourceCountCache>({})
+  const namespaceScopeKey = useMemo(
+    () => namespaces.length === 0 ? '' : [...namespaces].sort().join('\0'),
+    [namespaces],
+  )
+  const loadedCountScopeRef = useRef(namespaceScopeKey)
 
-  const [refetch, isRefreshAnimating, refreshPhase] = useRefreshAnimation(() => refetchFn?.())
-
-  // React Query bumps dataUpdatedAt on no-op refetches (window focus,
-  // mount, sibling subscribers); structural sharing returns the same
-  // resources reference when data is byte-identical. Skip the timer
-  // reset in that case — otherwise opening a filter drawer looks like
-  // it triggered a real fetch.
-  const lastDataRef = useRef<unknown>(undefined)
   useEffect(() => {
-    if (!dataUpdatedAt) return
-    if (resources === lastDataRef.current) return
-    lastDataRef.current = resources
-    setLastUpdated(new Date(dataUpdatedAt))
-  }, [dataUpdatedAt, resources])
+    if (loadedCountScopeRef.current === namespaceScopeKey) return
+    loadedCountScopeRef.current = namespaceScopeKey
+    setLoadedCountCache({})
+  }, [namespaceScopeKey])
+
+  useEffect(() => {
+    if (!selectedQueryHasLoadedCount || selectedLoadedResourceCount == null) return
+    const now = Date.now()
+    const loadedAt = selectedQuery?.dataUpdatedAt && selectedQuery.dataUpdatedAt > 0
+      ? selectedQuery.dataUpdatedAt
+      : now
+    const expiresAt = loadedAt + LOADED_RESOURCE_COUNT_TTL_MS
+
+    setLoadedCountCache(prev => {
+      const next: LoadedResourceCountCache = {}
+      let changed = false
+      for (const [key, cached] of Object.entries(prev)) {
+        if (cached.expiresAt > now || key === selectedKindCountKey) {
+          next[key] = cached
+        } else {
+          changed = true
+        }
+      }
+
+      const existing = next[selectedKindCountKey]
+      if (existing?.count === selectedLoadedResourceCount && existing.expiresAt === expiresAt) {
+        return changed ? next : prev
+      }
+
+      return {
+        ...next,
+        [selectedKindCountKey]: { count: selectedLoadedResourceCount, expiresAt },
+      }
+    })
+  }, [selectedQueryHasLoadedCount, selectedLoadedResourceCount, selectedKindCountKey, selectedQuery?.dataUpdatedAt])
 
   // Derive counts — prefer lightweight resourceCounts prop over full query data
   const counts = useMemo(() => {
     if (useNewCountsMode) {
-      // resourceCountsProp uses "group/Kind" keys for CRDs, "Kind" for core — same format as sidebar
-      const unavailableKinds = new Set(resourceUnavailableProp ?? [])
-      const results: Record<string, number | null> = {}
-      for (const resource of resourcesToCount) {
-        const key = resource.group ? `${resource.group}/${resource.kind}` : resource.kind
-        if (unavailableKinds.has(key)) {
-          results[key] = null
-        } else if (key in resourceCountsProp!) {
-          results[key] = resourceCountsProp![key]
-        } else {
-          results[key] = 0
-        }
+      const results = deriveSidebarResourceCounts(resourcesToCount, resourceCountsProp, resourceUnavailableProp, loadedCountCache)
+      if (selectedQueryHasLoadedCount && selectedLoadedResourceCount != null) {
+        results[selectedKindCountKey] = selectedLoadedResourceCount
       }
       return results
     }
@@ -3293,7 +3370,14 @@ export function ResourcesView({
       results[key] = Array.isArray(data) ? data.length : 0
     })
     return results
-  }, [useNewCountsMode, resourcesToCount, resourceCountsProp, resourceUnavailableProp, resourceQueries])
+  }, [useNewCountsMode, resourcesToCount, resourceCountsProp, resourceUnavailableProp, loadedCountCache, selectedQueryHasLoadedCount, selectedLoadedResourceCount, selectedKindCountKey, resourceQueries])
+
+  const sidebarResourceUnavailable = useMemo(() => {
+    if (!resourceUnavailableProp?.length) {
+      return resourceUnavailableProp
+    }
+    return resourceUnavailableProp.filter(key => counts[key] == null)
+  }, [resourceUnavailableProp, counts])
 
   // Track which resource kinds returned 403 Forbidden
   const forbiddenKinds = useMemo(() => {
@@ -3314,9 +3398,6 @@ export function ResourcesView({
   // denials) OR the selected kind is in the counts `forbidden` set. Denied
   // cluster-scoped kinds return 200 with `[]` from the list endpoint, so the
   // 403 signal alone misses them — they'd fall through to "No <kind> found".
-  const selectedKindCountKey = selectedKind.group
-    ? `${selectedKind.group}/${selectedKind.kind}`
-    : selectedKind.kind
   // Actual rows win over a stale counts `forbidden` entry: a kind can be marked
   // forbidden/unavailable in counts (e.g. an informer not yet synced at counts
   // time) while the list query has since returned data — show the table, not
@@ -3978,6 +4059,7 @@ export function ResourcesView({
   // a no-op for that case.
   const hasAnyFilter =
     !!searchTerm ||
+    regexMode ||
     !!labelSelector ||
     hasOwnerFilter ||
     problemFilters.length > 0 ||
@@ -4046,7 +4128,7 @@ export function ResourcesView({
           apiResources={apiResourcesProp}
           resourceCounts={counts}
           resourceForbidden={Array.from(forbiddenKinds)}
-          resourceUnavailable={resourceUnavailableProp}
+          resourceUnavailable={sidebarResourceUnavailable}
           pinned={pinned}
           togglePin={togglePin}
           isPinned={isPinned}
@@ -4065,9 +4147,8 @@ export function ResourcesView({
           <div className="flex-1 min-w-0">
             <div className="relative max-w-md">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-theme-text-tertiary" />
-              <input
+              <Input
                 ref={searchInputRef}
-                type="text"
                 placeholder={regexMode ? 'Search by regex... (press /)' : 'Search... (press /)'}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -4094,7 +4175,8 @@ export function ResourcesView({
                   }
                 }}
                 className={clsx(
-                  'w-full pl-10 pr-10 py-2 bg-theme-elevated border rounded-lg text-sm text-theme-text-primary placeholder-theme-text-disabled focus:outline-none focus:ring-2',
+                  'w-full pl-10 py-2 bg-theme-elevated border rounded-lg text-sm text-theme-text-primary placeholder-theme-text-disabled focus:outline-none focus:ring-2',
+                  searchTerm ? 'pr-16' : 'pr-10',
                   searchRegex.error
                     ? 'border-red-500/60 focus:ring-red-500'
                     : 'border-theme-border-light focus:ring-skyhook-500'
@@ -4107,7 +4189,8 @@ export function ResourcesView({
                 aria-label={regexMode ? 'Disable regex search' : 'Enable regex search'}
                 title={regexMode ? 'Regex search enabled — click to disable' : 'Enable regex search'}
                 className={clsx(
-                  'absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded transition-colors',
+                  'absolute top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded transition-colors',
+                  searchTerm ? 'right-9' : 'right-2',
                   regexMode
                     ? 'bg-skyhook-500/20 text-skyhook-400'
                     : 'text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-hover'
@@ -4115,6 +4198,19 @@ export function ResourcesView({
               >
                 <Regex className="w-3.5 h-3.5" />
               </button>
+              {searchTerm && (
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  onClick={() => {
+                    setSearchTerm('')
+                    searchInputRef.current?.focus()
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-hover transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
               {searchRegex.error && (
                 <div
                   title={searchRegex.error}
@@ -4206,8 +4302,7 @@ export function ResourcesView({
                     <div className="flex items-center gap-2 p-2 border-b border-theme-border">
                       <div className="relative flex-1">
                         <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-theme-text-tertiary" />
-                        <input
-                          type="text"
+                        <Input
                           placeholder="Search labels..."
                           value={labelSearch}
                           onChange={(e) => setLabelSearch(e.target.value)}
@@ -4293,19 +4388,19 @@ export function ResourcesView({
             </Tooltip>
           )}
 
-          {lastUpdated && <LastUpdatedLabel lastUpdated={lastUpdated} />}
           {/* Column picker */}
           <div className="relative" ref={columnPickerRef}>
+            <Tooltip content="Configure columns">
             <button
               onClick={() => setShowColumnPicker(prev => !prev)}
               className={clsx(
                 'p-2 text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded-lg',
                 showColumnPicker && 'bg-theme-elevated text-theme-text-primary'
               )}
-              title="Configure columns"
             >
               <Columns3 className="w-4 h-4" />
             </button>
+            </Tooltip>
             {showColumnPicker && (
               <div className="absolute right-0 top-full mt-1 z-50 bg-theme-surface border border-theme-border rounded-lg shadow-lg py-1 min-w-[200px] max-h-[400px] flex flex-col">
                 <div className="shrink-0 px-3 py-2 border-b border-theme-border flex items-center justify-between">
@@ -4385,8 +4480,7 @@ export function ResourcesView({
                       setCustomColumnDraft(d => ({ ...d, path: '' }))
                     }}
                   >
-                    <input
-                      type="text"
+                    <Input
                       list={customColKeysListId}
                       value={customColumnDraft.path}
                       onChange={e => setCustomColumnDraft(d => ({ ...d, path: e.target.value }))}
@@ -4411,20 +4505,6 @@ export function ResourcesView({
               </div>
             )}
           </div>
-          <button
-            onClick={refetch}
-            disabled={isRefreshAnimating}
-            className={clsx(
-              'p-2 hover:bg-theme-elevated rounded-lg disabled:opacity-50 transition-colors duration-500',
-              refreshPhase === 'success' ? 'text-emerald-400' : 'text-theme-text-secondary hover:text-theme-text-primary'
-            )}
-            title="Refresh"
-          >
-            {refreshPhase === 'success'
-              ? <Check className="w-4 h-4 stroke-[2.5]" />
-              : <RefreshCw className={clsx('w-4 h-4', refreshPhase === 'spinning' && 'animate-spin')} />
-            }
-          </button>
           {onCreateResource && (
             <Tooltip content={`Create ${selectedKind.kind || 'resource'}`}>
               <button
@@ -4475,6 +4555,14 @@ export function ResourcesView({
               </button>
             </Tooltip>
           )}
+          {/* Freshness/liveness status — trailing and divided off from the action
+              buttons so it reads as a status, not another control. Resources has
+              no PageHeader, so this toolbar is its home. */}
+          <div className="mx-1 h-5 w-px bg-theme-border/60" />
+          {/* The list is SSE-invalidated (near-real-time), so it reads
+              "Auto-updating" with no refresh button — the stream keeps it
+              current, so a manual refresh would only undercut the claim. */}
+          <FreshnessControl mode="auto" connectionState={connectionState} />
         </div>
 
         {/* Bulk actions bar */}
@@ -4577,7 +4665,10 @@ export function ResourcesView({
               <p>No {selectedKind.kind} found</p>
               {searchTerm && (
                 <button
-                  onClick={() => setSearchTerm('')}
+                  onClick={() => {
+                    setSearchTerm('')
+                    setRegexMode(false)
+                  }}
                   className="flex items-center gap-1.5 text-sm mt-2 px-3 py-1.5 rounded-md bg-theme-elevated hover:bg-theme-border text-theme-text-secondary hover:text-theme-text-primary transition-colors"
                 >
                   No results for "{searchTerm}"
@@ -4774,8 +4865,7 @@ export function ResourcesView({
                                 <div className="flex items-center gap-2 p-2 border-b border-theme-border">
                                   <div className="relative flex-1">
                                     <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-theme-text-tertiary" />
-                                    <input
-                                      type="text"
+                                    <Input
                                       placeholder="Search..."
                                       value={columnFilterSearch}
                                       onChange={(e) => setColumnFilterSearch(e.target.value)}
@@ -5276,6 +5366,8 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
       return <RolloutCell resource={resource} column={column} />
     case 'workflows':
       return <WorkflowCell resource={resource} column={column} />
+    case 'cronworkflows':
+      return <CronWorkflowCell resource={resource} column={column} />
     case 'certificates':
       return <CertificateCell resource={resource} column={column} />
     case 'persistentvolumes':
@@ -5308,6 +5400,7 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
     case 'sealedsecrets':
       return <SealedSecretCell resource={resource} column={column} />
     case 'workflowtemplates':
+    case 'clusterworkflowtemplates':
       return <WorkflowTemplateCell resource={resource} column={column} />
     case 'networkpolicies':
       return <NetworkPolicyCell resource={resource} column={column} />
@@ -6634,6 +6727,33 @@ function WorkflowCell({ resource, column }: { resource: any; column: string }) {
       return (
         <Tooltip content={template}>
           <span className="text-sm text-theme-text-secondary truncate block">{template || '-'}</span>
+        </Tooltip>
+      )
+    }
+    default:
+      return <span className="text-sm text-theme-text-tertiary">-</span>
+  }
+}
+
+function CronWorkflowCell({ resource, column }: { resource: any; column: string }) {
+  switch (column) {
+    case 'status': {
+      const status = getCronWorkflowStatus(resource)
+      return (
+        <span className={clsx('badge', status.color)}>
+          {status.text}
+        </span>
+      )
+    }
+    case 'schedule':
+      return <span className="font-mono text-xs text-theme-text-secondary">{getCronWorkflowSchedule(resource)}</span>
+    case 'lastRun':
+      return <span className="text-sm text-theme-text-secondary">{getCronWorkflowLastRun(resource)}</span>
+    case 'template': {
+      const template = getCronWorkflowTemplate(resource)
+      return (
+        <Tooltip content={template}>
+          <span className="block truncate text-sm text-theme-text-secondary">{template}</span>
         </Tooltip>
       )
     }

@@ -2,6 +2,7 @@ package prometheus
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -137,5 +138,61 @@ func TestHeadersNoneWhenUnset(t *testing.T) {
 	}
 	if sawAuth.Load() {
 		t.Error("Authorization header sent when none configured")
+	}
+}
+
+func TestEnsureConnectedReturnsRecentDiscoveryError(t *testing.T) {
+	wantErr := errors.New("cached discovery failure")
+	c := &Client{
+		httpClient:      &http.Client{Timeout: 5 * time.Second},
+		lastDiscoverErr: wantErr,
+		lastDiscoverAt:  time.Now(),
+	}
+
+	_, _, gotErr := c.EnsureConnected(context.Background())
+	if !errors.Is(gotErr, wantErr) {
+		t.Fatalf("EnsureConnected error = %v, want cached error %v", gotErr, wantErr)
+	}
+}
+
+func TestEnsureConnectedIgnoresExpiredDiscoveryError(t *testing.T) {
+	wantErr := errors.New("cached discovery failure")
+	c := &Client{
+		httpClient:      &http.Client{Timeout: 5 * time.Second},
+		lastDiscoverErr: wantErr,
+		lastDiscoverAt:  time.Now().Add(-failedDiscoveryCacheTTL - time.Second),
+	}
+
+	_, _, gotErr := c.EnsureConnected(context.Background())
+	if errors.Is(gotErr, wantErr) {
+		t.Fatalf("EnsureConnected returned expired cached error: %v", gotErr)
+	}
+	if gotErr == nil || gotErr.Error() != "no Kubernetes client available for discovery" {
+		t.Fatalf("EnsureConnected error = %v, want fresh discovery error", gotErr)
+	}
+}
+
+func TestEnsureConnectedDoesNotClearCachedConnectionOnCanceledProbe(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		baseURL:    srv.URL,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, gotErr := c.EnsureConnected(ctx)
+	if !errors.Is(gotErr, context.Canceled) {
+		t.Fatalf("EnsureConnected error = %v, want context.Canceled", gotErr)
+	}
+	c.mu.RLock()
+	gotBase := c.baseURL
+	c.mu.RUnlock()
+	if gotBase != srv.URL {
+		t.Fatalf("baseURL = %q, want cached connection preserved %q", gotBase, srv.URL)
 	}
 }

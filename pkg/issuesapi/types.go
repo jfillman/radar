@@ -87,6 +87,7 @@ const (
 	CategoryGitOpsOperationFailed Category = "gitops_operation_failed" // sync apply failed (operationState / Flux install/upgrade)
 	CategoryGitOpsOutOfSync       Category = "gitops_out_of_sync"      // live state drifted from desired
 	CategoryGitOpsHealthDegraded  Category = "gitops_health_degraded"  // managed resources unhealthy/missing
+	CategoryGitOpsStale           Category = "gitops_stale"            // sync/drift verdict frozen (controller down or re-compare backlog)
 	CategoryHelmReleaseFailed     Category = "helm_release_failed"
 	CategoryWebhookBackendDown    Category = "webhook_backend_down"
 	CategoryControlPlaneNotReady  Category = "control_plane_not_ready"
@@ -156,6 +157,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryGitOpsOperationFailed:    GroupControlPlane,
 	CategoryGitOpsOutOfSync:          GroupControlPlane,
 	CategoryGitOpsHealthDegraded:     GroupControlPlane,
+	CategoryGitOpsStale:              GroupControlPlane,
 	CategoryHelmReleaseFailed:        GroupControlPlane,
 	CategoryWebhookBackendDown:       GroupControlPlane,
 	CategoryControlPlaneNotReady:     GroupControlPlane,
@@ -245,8 +247,8 @@ const (
 // not part of this contract. Assigned only when unambiguous: a single best root
 // by confidence tier; distinct roots at the same tier leave it unset.
 type IncidentParent struct {
-	ID         string     `json:"id"`                  // parent grouped-issue ID (within-cluster)
-	Ref        Ref        `json:"ref"`                 // parent subject, for display + deep-link
+	ID         string     `json:"id"`  // parent grouped-issue ID (within-cluster)
+	Ref        Ref        `json:"ref"` // parent subject, for display + deep-link
 	Category   Category   `json:"category,omitempty"`
 	Confidence Confidence `json:"confidence,omitempty"`
 	FactType   string     `json:"fact_type,omitempty"` // node_blast_radius | pvc_blast_radius | apiservice_hpa | secret_not_ready
@@ -340,6 +342,7 @@ type Issue struct {
 	Name          string        `json:"name"`
 	Reason        string        `json:"reason"`
 	Message       string        `json:"message,omitempty"`
+	RawMessage    string        `json:"raw_message,omitempty"`
 	// Cause / Action / Remediation* carry parsed domain diagnosis. They give the
 	// Issues page + MCP a plain-English cause + next step when a detector has
 	// enough evidence. All optional — empty for issues without a parser.
@@ -404,12 +407,14 @@ type Issue struct {
 	// Deterministic evidence, not a causal claim — the consumer weighs
 	// whether the change explains the issue.
 	CorrelatedChanges []RecentChange `json:"correlated_changes,omitempty"`
-	// NoRecentChanges states the lookback window contained no non-status
-	// changes for this issue's subject — evidence the issue is NOT
-	// change-driven within that window. Omitted when correlation was not
-	// attempted (cap reached, lookup failed) or when the candidate fetch
-	// saturated and may have missed changes; absence must never be read as
-	// "no changes".
+	// NoRecentChanges states the lookback window contained no TRACKED
+	// non-status changes for this issue's subject (and, for workloads, its
+	// directly referenced ConfigMaps). It is scoped evidence, not proof the
+	// incident is chronic — untracked dependencies (Secret values, resources
+	// outside the tracked kind set, external systems) can still have changed.
+	// Omitted when correlation was not attempted (cap reached, lookup failed)
+	// or when the candidate fetch saturated and may have missed changes;
+	// absence must never be read as "no changes".
 	NoRecentChanges *NoRecentChangesMarker `json:"no_recent_changes,omitempty"`
 }
 
@@ -432,8 +437,9 @@ type Response struct {
 	RecentChanges       []RecentChange  `json:"recent_changes,omitempty"`
 	RecentChangesReason string          `json:"recent_changes_reason,omitempty"`
 	// CorrelationTruncated is set when per-issue change correlation skipped
-	// some critical issues (cap reached). Under truncation, an issue without
-	// correlation markers means "not checked", not "no changes".
+	// some critical or warning issues (shared cap reached; criticals are
+	// checked first). Under truncation, an issue without correlation markers
+	// means "not checked", not "no changes".
 	CorrelationTruncated bool `json:"correlation_truncated,omitempty"`
 }
 

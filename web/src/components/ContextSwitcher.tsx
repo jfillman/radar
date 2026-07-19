@@ -14,6 +14,9 @@ import { parseContextName, type ParsedContextName } from '../utils/context-name'
 
 interface ContextSwitcherProps {
   className?: string
+  variant?: 'chip' | 'segment'
+  label?: string
+  triggerName?: string
 }
 
 export interface ContextSwitcherHandle {
@@ -24,7 +27,12 @@ interface ParsedContext extends ParsedContextName {
   context: ContextInfo
 }
 
-export const ContextSwitcher = forwardRef<ContextSwitcherHandle, ContextSwitcherProps>(({ className = '' }, ref) => {
+function shouldSuppressSwitchErrorToast(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : ''
+  return message.includes('cluster connection failed:')
+}
+
+export const ContextSwitcher = forwardRef<ContextSwitcherHandle, ContextSwitcherProps>(({ className = '', variant, label, triggerName }, ref) => {
   const [showConfirm, setShowConfirm] = useState(false)
   const [pendingSwitch, setPendingSwitch] = useState<ParsedContext | null>(null)
   const [sessionCounts, setSessionCounts] = useState<SessionCounts | null>(null)
@@ -115,8 +123,10 @@ export const ContextSwitcher = forwardRef<ContextSwitcherHandle, ContextSwitcher
       endSwitch()
       // Backend may not transition to StateDisconnected on client-side errors
       // (network, timeout) — without this toast the user gets no feedback.
-      const message = error instanceof Error ? error.message : 'Unknown error'
-      showError('Failed to switch context', message)
+      if (!shouldSuppressSwitchErrorToast(error)) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        showError('Failed to switch context', message)
+      }
     }
   }
 
@@ -183,14 +193,16 @@ export const ContextSwitcher = forwardRef<ContextSwitcherHandle, ContextSwitcher
   // Fall back to clusterInfo.context for the very-early window before
   // /api/contexts has resolved.
   const currentParsed = currentId ? parsedById.get(currentId) : undefined
-  const currentRaw = currentParsed?.raw || clusterInfo?.context || currentCtx?.name || 'Unknown'
-  const currentSourceLabel = hasMultipleSources ? currentCtx?.source || undefined : undefined
+  const currentRaw = triggerName || currentParsed?.raw || clusterInfo?.context || currentCtx?.name || 'Unknown'
+  const currentSourceLabel = triggerName ? undefined : hasMultipleSources ? currentCtx?.source || undefined : undefined
 
   return (
     <>
       <ClusterSwitcher
         ref={ref}
         className={className}
+        variant={variant}
+        label={label}
         currentId={currentId}
         currentName={currentRaw}
         currentSourceLabel={currentSourceLabel}

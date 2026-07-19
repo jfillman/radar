@@ -58,6 +58,7 @@ type Operation struct {
 	Source             Source          `json:"source"`
 	Confidence         Confidence      `json:"confidence"`
 	Message            string          `json:"message"`
+	RawMessage         string          `json:"rawMessage,omitempty"`
 	Evidence           string          `json:"evidence,omitempty"`
 	FailureDescription string          `json:"failureDescription,omitempty"`
 	Revision           int             `json:"revision,omitempty"`
@@ -114,7 +115,7 @@ func Analyze(releaseName string, currentRevision int, revisions []Revision, opts
 					}
 				}
 			}
-			ops = append(ops, failedOperation(rev, SourceHistory))
+			ops = append(ops, failedOperation(releaseName, rev, SourceHistory))
 			continue
 		}
 		if isCompletedRevisionStatus(status) {
@@ -133,7 +134,7 @@ func Analyze(releaseName string, currentRevision int, revisions []Revision, opts
 	if hasCurrent {
 		switch status := normalizeStatus(current.Status); {
 		case status == "failed":
-			op := failedOperation(current, SourceStatus)
+			op := failedOperation(releaseName, current, SourceStatus)
 			live = &op
 		case isPending(status) && !current.Updated.IsZero() && now.Sub(current.Updated) >= pendingStuckAfter:
 			op := pendingOperation(current, now.Sub(current.Updated))
@@ -183,7 +184,7 @@ func rolledBackOperation(failed, rollback Revision, target int) Operation {
 	}
 }
 
-func failedOperation(rev Revision, source Source) Operation {
+func failedOperation(releaseName string, rev Revision, source Source) Operation {
 	kind := KindReleaseFailed
 	message := fmt.Sprintf("Release failed at rev %d.", rev.Revision)
 	if isUpgradeFailureDescription(rev.Description) {
@@ -192,6 +193,11 @@ func failedOperation(rev Revision, source Source) Operation {
 	}
 	if rev.Description != "" {
 		message = message + " " + rev.Description
+	}
+	rawMessage := ""
+	if IsReadinessTimeoutMessage(message) {
+		rawMessage = strings.TrimSpace(rev.Description)
+		message = readinessTimeoutMessage(releaseName)
 	}
 	evidence := "Helm history revision status is failed"
 	if source == SourceStatus {
@@ -203,10 +209,27 @@ func failedOperation(rev Revision, source Source) Operation {
 		Source:     source,
 		Confidence: ConfidenceHigh,
 		Message:    message,
+		RawMessage: rawMessage,
 		Evidence:   evidence,
 		Revision:   rev.Revision,
 		Updated:    rev.Updated,
 	}
+}
+
+func IsReadinessTimeoutMessage(msg string) bool {
+	lower := strings.ToLower(msg)
+	if !strings.Contains(lower, "context deadline exceeded") || !strings.Contains(lower, "status: inprogress") {
+		return false
+	}
+	return strings.Contains(lower, "not ready") || strings.Contains(lower, "available: 0/")
+}
+
+func readinessTimeoutMessage(releaseName string) string {
+	name := strings.TrimSpace(releaseName)
+	if name == "" {
+		return "Helm release did not become ready before Helm timed out."
+	}
+	return fmt.Sprintf("Helm release %q did not become ready before Helm timed out.", name)
 }
 
 func rollbackOperation(rev Revision, target int) Operation {

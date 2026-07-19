@@ -11,6 +11,7 @@ import {
   getPVCStatus,
   getRolloutStatus,
   getWorkflowStatus,
+  getCronWorkflowStatus,
   getCertificateStatus,
   getPVStatus,
   getClusterIssuerStatus,
@@ -82,6 +83,7 @@ import {
   SecretRenderer,
   JobRenderer,
   CronJobRenderer,
+  CronWorkflowRenderer,
   HPARenderer,
   NodeRenderer,
   PVCRenderer,
@@ -316,12 +318,12 @@ export interface RendererOverrides {
 // Known resource types with specific renderers (module-level to avoid re-allocation)
 const KNOWN_KINDS = new Set([
   'pods', 'deployments', 'statefulsets', 'daemonsets', 'replicasets',
-  'services', 'endpointslices', 'ingresses', 'configmaps', 'secrets', 'jobs', 'cronjobs',
+  'services', 'endpointslices', 'ingresses', 'configmaps', 'secrets', 'jobs', 'cronjobs', 'cronworkflows',
   'hpas', 'horizontalpodautoscalers', 'nodes', 'persistentvolumeclaims',
   'rollouts', 'certificates', 'workflows', 'persistentvolumes',
   'storageclasses', 'certificaterequests', 'clusterissuers', 'issuers',
   'orders', 'challenges',
-  'gateways', 'gatewayclasses', 'httproutes', 'grpcroutes', 'tcproutes', 'tlsroutes', 'sealedsecrets', 'workflowtemplates',
+  'gateways', 'gatewayclasses', 'httproutes', 'grpcroutes', 'tcproutes', 'tlsroutes', 'sealedsecrets', 'workflowtemplates', 'clusterworkflowtemplates',
   'networkpolicies', 'networkpolicy',
   'ciliumnetworkpolicies', 'ciliumnetworkpolicy', 'ciliumclusterwidenetworkpolicies', 'ciliumclusterwidenetworkpolicy',
   'clusternetworkpolicies', 'clusternetworkpolicy',
@@ -406,6 +408,8 @@ interface ResourceRendererDispatchProps {
   eventsHint?: React.ReactNode
   /** When provided, sidebar sections (related resources, events, labels, annotations, metadata) are passed to this render prop instead of being rendered inline */
   renderSidebar?: (sections: React.ReactNode) => React.ReactNode
+  /** Additional overview content that belongs in the main content column after the resource renderer sections. */
+  mainFooter?: React.ReactNode
   /** K8s events for the focused resource — always shown (no toggle hides them)
    *  so resource history can't go missing. */
   events?: TimelineEvent[]
@@ -440,6 +444,7 @@ export function ResourceRendererDispatch({
   onOpenLogs,
   eventsHint,
   renderSidebar,
+  mainFooter,
   events,
   eventsLoading,
   updates,
@@ -527,12 +532,13 @@ export function ResourceRendererDispatch({
         {kind === 'secrets' && <SecretRenderer data={data} certificateInfo={certificateInfo} resourceData={data} onSaveSecretValue={onSaveSecretValue} isSaving={isSavingSecret} />}
         {kind === 'jobs' && <JobRenderer data={data} />}
         {kind === 'cronjobs' && <CronJobRenderer data={data} onNavigate={onNavigate} />}
+        {kind === 'cronworkflows' && <CronWorkflowRenderer data={data} onNavigate={onNavigate} />}
         {(kind === 'hpas' || kind === 'horizontalpodautoscalers') && <HPAComp data={data} onNavigate={onNavigate} hpaDiagnosis={hpaDiagnosis} />}
         {kind === 'nodes' && <NodeComp data={data} relationships={relationships} />}
         {kind === 'persistentvolumeclaims' && <PVCComp data={data} onNavigate={onNavigate} />}
         {kind === 'rollouts' && <RolloutRenderer data={data} />}
         {kind === 'certificates' && !data?.apiVersion?.includes('networking.internal.knative.dev') && <CertificateRenderer data={data} />}
-        {kind === 'workflows' && <WorkflowRenderer data={data} />}
+        {kind === 'workflows' && <WorkflowRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'persistentvolumes' && <PersistentVolumeRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'storageclasses' && <StorageClassRenderer data={data} />}
         {kind === 'certificaterequests' && <CertificateRequestRenderer data={data} />}
@@ -547,7 +553,7 @@ export function ResourceRendererDispatch({
         {kind === 'tcproutes' && <SimpleRouteRenderer data={data} kind="TCPRoute" onNavigate={onNavigate} />}
         {kind === 'tlsroutes' && <SimpleRouteRenderer data={data} kind="TLSRoute" onNavigate={onNavigate} />}
         {kind === 'sealedsecrets' && <SealedSecretRenderer data={data} onNavigate={onNavigate} />}
-        {kind === 'workflowtemplates' && <WorkflowTemplateRenderer data={data} />}
+        {(kind === 'workflowtemplates' || kind === 'clusterworkflowtemplates') && <WorkflowTemplateRenderer data={data} />}
         {(kind === 'networkpolicies' || kind === 'networkpolicy') && <NetworkPolicyRenderer data={data} />}
         {(kind === 'ciliumnetworkpolicies' || kind === 'ciliumnetworkpolicy' || kind === 'ciliumclusterwidenetworkpolicies' || kind === 'ciliumclusterwidenetworkpolicy') && <CiliumNetworkPolicyRenderer data={data} />}
         {(kind === 'clusternetworkpolicies' || kind === 'clusternetworkpolicy') && <ClusterNetworkPolicyRenderer data={data} />}
@@ -712,6 +718,7 @@ export function ResourceRendererDispatch({
             {!renderSidebar && sidebarContent}
           </>
         )}
+        {mainFooter}
       </div>
       {renderSidebar && sidebarContent && renderSidebar(sidebarContent)}
     </div>
@@ -721,6 +728,27 @@ export function ResourceRendererDispatch({
 // ============================================================================
 // RESOURCE STATUS HELPER
 // ============================================================================
+
+// Coarse health hint for the per-resource Diagnose entry point: should the action
+// read as an urgent "Diagnose" (resource has a live problem) or a quiet "ask AI"?
+// Derived from the same status the detail badge shows, so the button matches what
+// the user sees. We key off the StatusBadge `level` (the workload/pod status fns
+// return it) — NOT the color string, which varies by helper. 'unknown' for kinds
+// without a level (we don't assert "Diagnose" when we can't tell → quiet variant).
+export type DiagnoseHealthHint = 'problem' | 'healthy' | 'unknown'
+export function diagnoseHealthHint(kind: string, data: any): DiagnoseHealthHint {
+  const st = getResourceStatus(kind, data) as { level?: string } | null
+  switch (st?.level) {
+    case 'unhealthy':
+    case 'degraded':
+    case 'alert':
+      return 'problem'
+    case 'healthy':
+      return 'healthy'
+    default:
+      return 'unknown'
+  }
+}
 
 export function getResourceStatus(kind: string, data: any): { text: string; color: string } | null {
   if (!data) return null
@@ -752,6 +780,7 @@ export function getResourceStatus(kind: string, data: any): { text: string; colo
   if (k === 'persistentvolumeclaims') return getPVCStatus(data)
   if (k === 'rollouts') return getRolloutStatus(data)
   if (k === 'workflows') return getWorkflowStatus(data)
+  if (k === 'cronworkflows') return getCronWorkflowStatus(data)
   if (k === 'certificates') {
     if (data.apiVersion?.includes('networking.internal.knative.dev')) {
       const status = getKnativeConditionStatus(data)

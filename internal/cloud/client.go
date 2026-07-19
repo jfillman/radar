@@ -14,9 +14,9 @@ package cloud
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -55,6 +55,13 @@ type Config struct {
 	// is empty.
 	APIServerURL string
 
+	// SelfUpgradeAvailable reports whether this installation has the
+	// chart-provided namespace/deployment configuration and RBAC needed by
+	// Radar's in-cluster self-upgrade endpoint. It is advertised explicitly on
+	// every Cloud tunnel handshake so the Hub never has to infer capability
+	// from the Radar version.
+	SelfUpgradeAvailable bool
+
 	// Handler is the HTTP handler to serve over tunneled streams — typically
 	// Radar's Server.Handler() (chi router).
 	Handler http.Handler
@@ -64,8 +71,8 @@ func (c Config) validate() error {
 	if c.URL == "" {
 		return errors.New("cloud: URL is required")
 	}
-	if !strings.HasPrefix(c.URL, "ws://") && !strings.HasPrefix(c.URL, "wss://") {
-		return errors.New("cloud: URL must start with ws:// or wss://")
+	if err := ValidateWebSocketURL(c.URL); err != nil {
+		return fmt.Errorf("cloud: %w", err)
 	}
 	if c.Token == "" {
 		return errors.New("cloud: Token is required")

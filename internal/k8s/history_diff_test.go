@@ -210,6 +210,51 @@ func TestDiffPodTemplateConfig_PortsSAandScheduling(t *testing.T) {
 	}
 }
 
+func TestDiffApplicationCleansFailedOperationMessage(t *testing.T) {
+	rawMessage := `rpc error: code = Unknown desc = app path does not exist`
+	tests := []struct {
+		name string
+		old  *unstructured.Unstructured
+		new  *unstructured.Unstructured
+	}{
+		{
+			name: "failed operation appeared",
+			old:  applicationWithOperation("", ""),
+			new:  applicationWithOperation("Failed", rawMessage),
+		},
+		{
+			name: "running operation failed",
+			old:  applicationWithOperation("Running", ""),
+			new:  applicationWithOperation("Failed", rawMessage),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, summary := diffApplication(tt.old, tt.new)
+			joined := strings.Join(summary, "; ")
+			if strings.Contains(joined, "rpc error") {
+				t.Fatalf("summary leaked controller envelope: %q", joined)
+			}
+			if !strings.Contains(joined, "error: app path does not exist") {
+				t.Fatalf("summary missing cleaned operation error: %q", joined)
+			}
+		})
+	}
+}
+
+func applicationWithOperation(phase, message string) *unstructured.Unstructured {
+	status := map[string]any{}
+	if phase != "" {
+		op := map[string]any{"phase": phase}
+		if message != "" {
+			op["message"] = message
+		}
+		status["operationState"] = op
+	}
+	return &unstructured.Unstructured{Object: map[string]any{"status": status}}
+}
+
 func TestDiffPodTemplateConfig_SecurityContextAndAffinityBooleanLevel(t *testing.T) {
 	runAsNonRoot := true
 	oldSpec := corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "app:v1"}}}

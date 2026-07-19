@@ -152,6 +152,39 @@ func hasAllProblemTypes(problems []Detection) bool {
 	return seen["Deployment"] && seen["StatefulSet"] && seen["DaemonSet"] && seen["HorizontalPodAutoscaler"] && seen["Job"]
 }
 
+func TestDetectProblems_HPACannotScaleIncludesDiagnosis(t *testing.T) {
+	defer ResetTestState()
+
+	client := fake.NewClientset(&autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "prod"},
+		Spec:       autoscalingv2.HorizontalPodAutoscalerSpec{MaxReplicas: 10},
+		Status: autoscalingv2.HorizontalPodAutoscalerStatus{
+			CurrentReplicas: 3,
+			DesiredReplicas: 3,
+			Conditions: []autoscalingv2.HorizontalPodAutoscalerCondition{
+				{Type: autoscalingv2.ScalingActive, Status: corev1.ConditionFalse, Reason: "FailedGetResourceMetric", Message: "failed to get cpu utilization: missing request for cpu"},
+			},
+		},
+	})
+	if err := InitTestResourceCache(client); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+
+	p := waitForProblem(t, "prod", "cannot-scale")
+	if p.Kind != "HorizontalPodAutoscaler" || p.Name != "web" {
+		t.Fatalf("problem subject = %s/%s/%s, want HPA/prod/web: %+v", p.Kind, p.Namespace, p.Name, p)
+	}
+	if !strings.Contains(p.Message, "FailedGetResourceMetric") {
+		t.Fatalf("raw controller evidence was not preserved in Message: %+v", p)
+	}
+	if !strings.Contains(p.Cause, "CPU resource requests") {
+		t.Fatalf("HPA cause = %q, want missing CPU requests diagnosis", p.Cause)
+	}
+	if !strings.Contains(p.Action, "Add CPU resource requests") {
+		t.Fatalf("HPA action = %q, want request-setting next step", p.Action)
+	}
+}
+
 func TestDetectProblems_ConfigSignals(t *testing.T) {
 	t.Run("coredns service nxdomain override", func(t *testing.T) {
 		defer ResetTestState()
@@ -386,6 +419,51 @@ func TestDetectProblems_ConfigSignals(t *testing.T) {
 		p := waitForProblem(t, "prod", "Missing referenced Service")
 		if p.Kind != "Deployment" || p.Name != "frontend" || p.Severity != "warning" || !strings.Contains(p.Message, "Service/ad does not exist") {
 			t.Fatalf("missing env Service problem = %+v", p)
+		}
+	})
+
+	t.Run("node address endpoint is not treated as missing service", func(t *testing.T) {
+		defer ResetTestState()
+
+		client := fake.NewClientset(
+			&corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "kind-node-1"},
+				Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+					{Type: corev1.NodeHostName, Address: "kind-node-1"},
+					{Type: corev1.NodeInternalDNS, Address: "radar-gitops-demo-control-plane"},
+				}},
+			},
+			&appsv1.DaemonSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "kindnet", Namespace: "kube-system", CreationTimestamp: metav1.NewTime(time.Now().Add(-5 * time.Minute))},
+				Spec: appsv1.DaemonSetSpec{
+					Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+						Name: "kindnet",
+						Env: []corev1.EnvVar{{
+							Name:  "CONTROL_PLANE_ENDPOINT",
+							Value: "radar-gitops-demo-control-plane:6443",
+						}},
+					}}}},
+				},
+				Status: appsv1.DaemonSetStatus{
+					DesiredNumberScheduled: 1,
+					NumberUnavailable:      1,
+				},
+			},
+		)
+		if err := InitTestResourceCache(client); err != nil {
+			t.Fatalf("InitTestResourceCache: %v", err)
+		}
+
+		time.Sleep(200 * time.Millisecond)
+		for _, c := range FindEnvServiceRefChecks(GetResourceCache(), "kube-system") {
+			if c.Status == "missing_service" {
+				t.Fatalf("node address endpoint should not emit missing_service check: %+v", c)
+			}
+		}
+		for _, p := range DetectProblems(GetResourceCache(), "kube-system") {
+			if p.Reason == "Missing referenced Service" {
+				t.Fatalf("node address endpoint should not promote to Issue: %+v", p)
+			}
 		}
 	})
 
@@ -1300,6 +1378,64 @@ func TestDetectProblems_DaemonSetSchedulingStatus(t *testing.T) {
 	defer ResetTestState()
 
 	old := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	controller := true
+	dsOwner := func(name string) []metav1.OwnerReference {
+		return []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "DaemonSet", Name: name, Controller: &controller}}
+	}
+	daemonSetTargetAffinity := func(nodeName string) *corev1.Affinity {
+		if nodeName == "" {
+			return nil
+		}
+		return &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+					MatchFields: []corev1.NodeSelectorRequirement{{
+						Key:      "metadata.name",
+						Operator: corev1.NodeSelectorOpIn,
+						Values:   []string{nodeName},
+					}},
+				}},
+			},
+		}}
+	}
+	unschedulableDSPod := func(dsName, podName, targetNode, message string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: "prod", CreationTimestamp: old, OwnerReferences: dsOwner(dsName)},
+			Spec:       corev1.PodSpec{Affinity: daemonSetTargetAffinity(targetNode)},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodPending,
+				Conditions: []corev1.PodCondition{{
+					Type:    corev1.PodScheduled,
+					Status:  corev1.ConditionFalse,
+					Reason:  corev1.PodReasonUnschedulable,
+					Message: message,
+				}},
+			},
+		}
+	}
+	assignedUnreadyDSPod := func(dsName, podName, nodeName string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: "prod", CreationTimestamp: old, OwnerReferences: dsOwner(dsName)},
+			Spec: corev1.PodSpec{
+				NodeName:   nodeName,
+				Containers: []corev1.Container{{Name: "main", Image: "nginx"}},
+			},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{
+					{Type: corev1.ContainersReady, Status: corev1.ConditionFalse},
+					{Type: corev1.PodReady, Status: corev1.ConditionFalse},
+				},
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name:  "main",
+					Ready: false,
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+					},
+				}},
+			},
+		}
+	}
 	client := fake.NewClientset(
 		&appsv1.DaemonSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "missing", Namespace: "prod", CreationTimestamp: old},
@@ -1318,6 +1454,99 @@ func TestDetectProblems_DaemonSetSchedulingStatus(t *testing.T) {
 				NumberUnavailable:      1,
 			},
 		},
+		&appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "design-taint", Namespace: "prod", CreationTimestamp: old},
+			Status: appsv1.DaemonSetStatus{
+				DesiredNumberScheduled: 4,
+				CurrentNumberScheduled: 4,
+				NumberUnavailable:      1,
+			},
+		},
+		&appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "design-affinity", Namespace: "prod", CreationTimestamp: old},
+			Status: appsv1.DaemonSetStatus{
+				DesiredNumberScheduled: 4,
+				CurrentNumberScheduled: 4,
+				NumberUnavailable:      1,
+			},
+		},
+		&appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "capacity", Namespace: "prod", CreationTimestamp: old},
+			Status: appsv1.DaemonSetStatus{
+				DesiredNumberScheduled: 4,
+				CurrentNumberScheduled: 4,
+				NumberUnavailable:      1,
+			},
+		},
+		&appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "host-port", Namespace: "prod", CreationTimestamp: old},
+			Status: appsv1.DaemonSetStatus{
+				DesiredNumberScheduled: 4,
+				CurrentNumberScheduled: 4,
+				NumberUnavailable:      1,
+			},
+		},
+		&appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "lifecycle-taint", Namespace: "prod", CreationTimestamp: old},
+			Status: appsv1.DaemonSetStatus{
+				DesiredNumberScheduled: 4,
+				CurrentNumberScheduled: 4,
+				NumberUnavailable:      1,
+			},
+		},
+		&appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "unparsed", Namespace: "prod", CreationTimestamp: old},
+			Status: appsv1.DaemonSetStatus{
+				DesiredNumberScheduled: 4,
+				CurrentNumberScheduled: 4,
+				NumberUnavailable:      1,
+			},
+		},
+		&appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "not-scheduled-design", Namespace: "prod", CreationTimestamp: old},
+			Status: appsv1.DaemonSetStatus{
+				DesiredNumberScheduled: 4,
+				CurrentNumberScheduled: 3,
+				NumberUnavailable:      1,
+			},
+		},
+		&appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "partial-duplicate", Namespace: "prod", CreationTimestamp: old},
+			Status: appsv1.DaemonSetStatus{
+				DesiredNumberScheduled: 4,
+				CurrentNumberScheduled: 4,
+				NumberUnavailable:      2,
+			},
+		},
+		&appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "extra-unknown-target", Namespace: "prod", CreationTimestamp: old},
+			Status: appsv1.DaemonSetStatus{
+				DesiredNumberScheduled: 4,
+				CurrentNumberScheduled: 4,
+				NumberUnavailable:      1,
+			},
+		},
+		&appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "mixed-unready", Namespace: "prod", CreationTimestamp: old},
+			Status: appsv1.DaemonSetStatus{
+				DesiredNumberScheduled: 4,
+				CurrentNumberScheduled: 4,
+				NumberUnavailable:      1,
+			},
+		},
+		unschedulableDSPod("design-taint", "design-taint-pod", "node-a", "0/4 nodes are available: 4 node(s) had untolerated taint {dedicated: infra}."),
+		unschedulableDSPod("design-affinity", "design-affinity-pod", "node-b", "0/4 nodes are available: 4 node(s) didn't match Pod's node affinity/selector."),
+		unschedulableDSPod("capacity", "capacity-pod", "node-c", "0/4 nodes are available: 4 Insufficient cpu."),
+		unschedulableDSPod("host-port", "host-port-pod", "node-d", "0/4 nodes are available: 4 node(s) didn't have free ports for the requested pod ports."),
+		unschedulableDSPod("lifecycle-taint", "lifecycle-taint-pod", "node-l", "0/4 nodes are available: 4 node(s) had untolerated taint {node.kubernetes.io/not-ready: }."),
+		unschedulableDSPod("unparsed", "unparsed-pod", "node-u", "0/4 nodes are available: 4 future scheduler predicate we do not parse yet."),
+		unschedulableDSPod("not-scheduled-design", "not-scheduled-design-pod", "node-e", "0/4 nodes are available: 4 node(s) had untolerated taint {dedicated: infra}."),
+		unschedulableDSPod("partial-duplicate", "partial-duplicate-pod-a", "node-f", "0/4 nodes are available: 4 node(s) had untolerated taint {dedicated: infra}."),
+		unschedulableDSPod("partial-duplicate", "partial-duplicate-pod-b", "node-f", "0/4 nodes are available: 4 node(s) didn't match Pod's node affinity/selector."),
+		unschedulableDSPod("extra-unknown-target", "extra-unknown-target-known", "node-g", "0/4 nodes are available: 4 node(s) had untolerated taint {dedicated: infra}."),
+		unschedulableDSPod("extra-unknown-target", "extra-unknown-target-empty", "", "0/4 nodes are available: 4 node(s) didn't match Pod's node affinity/selector."),
+		unschedulableDSPod("mixed-unready", "mixed-unready-placement-pod", "node-h", "0/4 nodes are available: 4 node(s) had untolerated taint {dedicated: infra}."),
+		assignedUnreadyDSPod("mixed-unready", "mixed-unready-crashing-pod", "node-i"),
 	)
 
 	if err := InitTestResourceCache(client); err != nil {
@@ -1334,7 +1563,17 @@ func TestDetectProblems_DaemonSetSchedulingStatus(t *testing.T) {
 		problems = DetectProblems(cache, "prod")
 		if hasProblem(problems, "DaemonSet", "missing", "2 not scheduled") &&
 			hasProblem(problems, "DaemonSet", "wrong-node", "1 misscheduled") &&
-			hasProblem(problems, "DaemonSet", "wrong-node", "1 unavailable") {
+			hasProblem(problems, "DaemonSet", "wrong-node", "1 unavailable") &&
+			hasProblem(problems, "DaemonSet", "design-taint", "1 unavailable") &&
+			hasProblem(problems, "DaemonSet", "design-affinity", "1 unavailable") &&
+			hasProblem(problems, "DaemonSet", "capacity", "1 unavailable") &&
+			hasProblem(problems, "DaemonSet", "host-port", "1 unavailable") &&
+			hasProblem(problems, "DaemonSet", "lifecycle-taint", "1 unavailable") &&
+			hasProblem(problems, "DaemonSet", "unparsed", "1 unavailable") &&
+			hasProblem(problems, "DaemonSet", "not-scheduled-design", "1 not scheduled") &&
+			hasProblem(problems, "DaemonSet", "partial-duplicate", "2 unavailable") &&
+			hasProblem(problems, "DaemonSet", "extra-unknown-target", "1 unavailable") &&
+			hasProblem(problems, "DaemonSet", "mixed-unready", "1 unavailable") {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -1343,6 +1582,16 @@ func TestDetectProblems_DaemonSetSchedulingStatus(t *testing.T) {
 	assertProblem(t, problems, "DaemonSet", "missing", "2 not scheduled", "critical")
 	assertProblem(t, problems, "DaemonSet", "wrong-node", "1 misscheduled", "high")
 	assertProblem(t, problems, "DaemonSet", "wrong-node", "1 unavailable", "critical")
+	assertProblem(t, problems, "DaemonSet", "design-taint", "1 unavailable", "high")
+	assertProblem(t, problems, "DaemonSet", "design-affinity", "1 unavailable", "high")
+	assertProblem(t, problems, "DaemonSet", "capacity", "1 unavailable", "critical")
+	assertProblem(t, problems, "DaemonSet", "host-port", "1 unavailable", "critical")
+	assertProblem(t, problems, "DaemonSet", "lifecycle-taint", "1 unavailable", "critical")
+	assertProblem(t, problems, "DaemonSet", "unparsed", "1 unavailable", "critical")
+	assertProblem(t, problems, "DaemonSet", "not-scheduled-design", "1 not scheduled", "critical")
+	assertProblem(t, problems, "DaemonSet", "partial-duplicate", "2 unavailable", "critical")
+	assertProblem(t, problems, "DaemonSet", "extra-unknown-target", "1 unavailable", "high")
+	assertProblem(t, problems, "DaemonSet", "mixed-unready", "1 unavailable", "critical")
 }
 
 func TestDetectProblems_DeploymentReplicaFailure(t *testing.T) {
@@ -1833,20 +2082,25 @@ func TestDetectProblems_SharedRWOVolume(t *testing.T) {
 			},
 		}
 	}
-	mkPVC := func(name string, mode corev1.PersistentVolumeAccessMode) *corev1.PersistentVolumeClaim {
+	mkPVCPhase := func(name string, phase corev1.PersistentVolumeClaimPhase, mode corev1.PersistentVolumeAccessMode) *corev1.PersistentVolumeClaim {
 		return &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "prod"},
 			Spec:       corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{mode}},
-			Status:     corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound, AccessModes: []corev1.PersistentVolumeAccessMode{mode}},
+			Status:     corev1.PersistentVolumeClaimStatus{Phase: phase, AccessModes: []corev1.PersistentVolumeAccessMode{mode}},
 		}
+	}
+	mkPVC := func(name string, mode corev1.PersistentVolumeAccessMode) *corev1.PersistentVolumeClaim {
+		return mkPVCPhase(name, corev1.ClaimBound, mode)
 	}
 
 	client := fake.NewClientset(
 		mkDeploy("conflict", &two, "rwo-pvc"), // 2 replicas + RWO → flagged
 		mkDeploy("single", &one, "rwo-pvc"),   // 1 replica + RWO → fine
 		mkDeploy("rwx", &three, "rwx-pvc"),    // 3 replicas + RWX → fine
+		mkDeploy("pending", &two, "pending-pvc"),
 		mkPVC("rwo-pvc", corev1.ReadWriteOnce),
 		mkPVC("rwx-pvc", corev1.ReadWriteMany),
+		mkPVCPhase("pending-pvc", corev1.ClaimPending, corev1.ReadWriteOnce),
 	)
 	if err := InitTestResourceCache(client); err != nil {
 		t.Fatalf("InitTestResourceCache: %v", err)
@@ -1869,6 +2123,9 @@ func TestDetectProblems_SharedRWOVolume(t *testing.T) {
 	}
 	if hasProblem(problems, "Deployment", "rwx", reason) {
 		t.Errorf("multi-replica RWX mount should not be flagged: %+v", problems)
+	}
+	if hasProblem(problems, "Deployment", "pending", reason) {
+		t.Errorf("Pending RWO PVC should surface as a binding issue, not a replica access conflict: %+v", problems)
 	}
 }
 

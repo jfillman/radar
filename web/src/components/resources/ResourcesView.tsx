@@ -6,6 +6,7 @@ import { isBadgeWorthy } from '../../utils/auditBadges'
 import type { AuditBadgeMessage } from '@skyhook-io/k8s-ui'
 import { apiUrl, getAuthHeaders, getCredentialsMode, getBasename } from '../../api/config'
 import { useAPIResources } from '../../api/apiResources'
+import { useConnection } from '../../context/ConnectionContext'
 import { initNavigationMap } from '@skyhook-io/k8s-ui'
 import { usePinnedKinds } from '../../hooks/useFavorites'
 import { useOpenLogs, useOpenWorkloadLogs } from '../dock'
@@ -40,6 +41,7 @@ interface ResourcesViewProps {
 
 type SelectedKindInfo = { name: string; kind: string; group: string } | null
 
+const EMPTY_RESOURCE_COUNTS: Record<string, number> = {}
 const LARGE_RESOURCE_LIST_LIMIT = 25000
 const LARGE_RESOURCE_LIST_GUARD_KEYS = new Set([
   'Pod',
@@ -59,9 +61,14 @@ function resourceCountKey(kind: NonNullable<SelectedKindInfo>): string {
   return kind.group ? `${kind.group}/${kind.kind}` : kind.kind
 }
 
+function hasResourceCount(counts: Record<string, number> | undefined, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(counts ?? {}, key)
+}
+
 export function ResourcesView({ namespaces, selectedResource, onResourceClick, onResourceClickYaml, onKindChange, onClearNamespaces }: ResourcesViewProps) {
   const location = useLocation()
   const navigate = useNavigate()
+  const { connection } = useConnection()
 
   const { data: capabilities } = useCapabilities()
   const namespaceForCapabilities = namespaces.length === 1 ? namespaces[0] : undefined
@@ -179,14 +186,16 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
 
   const selectedCountKey = selectedKind ? resourceCountKey(selectedKind) : ''
   const selectedCount = selectedCountKey ? countsData?.counts[selectedCountKey] : undefined
+  const selectedCountKnown = selectedCountKey ? hasResourceCount(countsData?.counts, selectedCountKey) : false
   const selectedCountUnavailable = selectedCountKey ? countsData?.unavailable?.includes(selectedCountKey) ?? false : false
   const isSelectedKindGuarded = selectedCountKey !== '' && LARGE_RESOURCE_LIST_GUARD_KEYS.has(selectedCountKey)
   const waitingForGuardCount = isSelectedKindGuarded && !countsData && !countsIsError
-  const largeListBlocked = isSelectedKindGuarded && countsData != null && (selectedCountUnavailable || (selectedCount ?? 0) > LARGE_RESOURCE_LIST_LIMIT)
+  const largeListBlocked = isSelectedKindGuarded && countsData != null && (selectedCountUnavailable || (selectedCountKnown && (selectedCount ?? 0) > LARGE_RESOURCE_LIST_LIMIT))
   const selectedKindQueryBlocked = waitingForGuardCount || largeListBlocked
   const podCount = countsData?.counts.Pod
+  const podCountKnown = hasResourceCount(countsData?.counts, 'Pod')
   const podCountUnavailable = countsData?.unavailable?.includes('Pod') ?? false
-  const podCountAllowsBulkMetrics = countsData != null && !podCountUnavailable && (podCount ?? 0) <= LARGE_RESOURCE_LIST_LIMIT
+  const podCountAllowsBulkMetrics = countsData != null && podCountKnown && !podCountUnavailable && (podCount ?? 0) <= LARGE_RESOURCE_LIST_LIMIT
   const selectedKindName = selectedKind?.name.toLowerCase() ?? ''
   const topPodMetricsEnabled = selectedKindName === 'pods' && podCountAllowsBulkMetrics
   const topNodeMetricsEnabled = selectedKindName === 'nodes' && namespaces.length === 0 && podCountAllowsBulkMetrics
@@ -246,6 +255,8 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   const selectedKindQueryResult: ResourceQueryResult | undefined = useMemo(() => {
     if (!selectedKind) return undefined
     return {
+      resourceName: selectedKind.name,
+      group: selectedKind.group,
       data: selectedKindQueryBlocked ? [] : selectedKindQuery.data as any[] | undefined,
       isLoading: waitingForGuardCount || selectedKindQuery.isLoading,
       error: selectedKindQueryBlocked ? undefined : selectedKindQuery.error,
@@ -313,7 +324,7 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   return (
     <>
     <BaseResourcesView
-      key={location.pathname}
+      key={connection.context || 'default'}
       namespaces={namespaces}
       selectedResource={selectedResource}
       onResourceClick={onResourceClick}
@@ -323,11 +334,12 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       // Injected data
       apiResources={apiResources}
       // Lightweight counts for sidebar (replaces 233 parallel queries)
-      resourceCounts={countsData?.counts}
+      resourceCounts={countsData?.counts ?? EMPTY_RESOURCE_COUNTS}
       resourceForbidden={countsData?.forbidden}
       resourceReasons={countsData?.reasons}
       resourceUnavailable={countsData?.unavailable}
       selectedKindQuery={selectedKindQueryResult}
+      connectionState={connection.state}
       largeListGuard={largeListGuard}
       onSelectedKindChange={setSelectedKind}
       topPodMetrics={topPodMetrics}

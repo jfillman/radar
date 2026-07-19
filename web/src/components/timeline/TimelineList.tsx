@@ -1,12 +1,26 @@
-import { useState, useCallback } from 'react'
-import { TimelineList as TimelineListUI, type ActivityTypeFilter } from '@skyhook-io/k8s-ui'
-import type { TimeRange } from '@skyhook-io/k8s-ui'
-import { useChanges } from '../../api/client'
+import { useState, useCallback, useMemo } from 'react'
+import {
+  TimelineList as TimelineListUI,
+  eventsForApplication,
+  type ActivityTypeFilter,
+  type ActivityFilterKey,
+  type AppMembershipIndex,
+  type TimeRange,
+  type Topology,
+} from '@skyhook-io/k8s-ui'
+import { useTimelineSource } from '../../context/TimelineSource'
 import { useHasLimitedAccess } from '../../contexts/CapabilitiesContext'
 import type { NavigateToResource } from '../../utils/navigation'
 import { AlertTriangle, RefreshCw } from 'lucide-react'
 
-export type { ActivityTypeFilter }
+export type { ActivityTypeFilter, ActivityFilterKey }
+
+// Server-side cap on the list fetch. Generous so a busy query window isn't
+// silently truncated — the list is already bounded to the selection range, so
+// this only caps pathological bursts. Surfaced to the list as `truncatedAt` so a
+// window that does hit it shows an end-of-list note instead of dropping silently.
+const LIST_FETCH_LIMIT = 2000
+const APP_SCOPED_FETCH_LIMIT = 10000
 
 interface TimelineListProps {
   namespaces: string[]
@@ -17,26 +31,67 @@ interface TimelineListProps {
   initialTimeRange?: TimeRange
   showDeleted: boolean
   onShowDeletedChange: (showDeleted: boolean) => void
+  // Shared filter state lifted to TimelineView so it survives the view switch.
+  search: string
+  onSearchChange: (value: string) => void
+  activityFilter: ActivityFilterKey[]
+  onActivityFilterChange: (keys: ActivityFilterKey[]) => void
+  kindFilter: string[]
+  onKindFilterChange: (kinds: string[]) => void
+  // The shared scrubber selection [from,to]. When set (retained mode always;
+  // local mode once the scrubber owns the range), it drives the fetch window and
+  // hides the built-in range dropdown so the list can't drift from the
+  // swimlane/URL. Retained scopes server-side; local loads the ring and bounds it
+  // client-side (see useLocalEvents).
+  selectionWindow?: { fromMs: number; toMs: number }
+  // LIVE mode: quantize the base fetch so the sliding window doesn't churn the
+  // query key every tick.
+  sliding?: boolean
+  // Time span of the rows visible in the list's scrollport — the host renders
+  // it as the scrubber lens so scrolling the list moves the lens.
+  onVisibleWindowChange?: (window: { fromMs: number; toMs: number } | null) => void
+  // Carries the swimlane's view window into the list on view switch (scroll target).
+  scrollToMs?: number
+  focusedAppIndex?: AppMembershipIndex
+  appScoped?: boolean
+  topology?: Topology
+  appScopeLoading?: boolean
 }
 
-export function TimelineList({ namespaces, onViewChange, currentView, onResourceClick, initialFilter, initialTimeRange, showDeleted, onShowDeletedChange }: TimelineListProps) {
+export function TimelineList({ namespaces, onViewChange, currentView, onResourceClick, initialFilter, initialTimeRange, showDeleted, onShowDeletedChange, search, onSearchChange, activityFilter, onActivityFilterChange, kindFilter, onKindFilterChange, selectionWindow, sliding, onVisibleWindowChange, scrollToMs, focusedAppIndex, appScoped = false, topology, appScopeLoading = false }: TimelineListProps) {
   const hasLimitedAccess = useHasLimitedAccess()
-  const [queryParams, setQueryParams] = useState<{ timeRange: TimeRange; kind?: string }>({
+  const timelineSource = useTimelineSource()
+  const [queryParams, setQueryParams] = useState<{ timeRange: TimeRange; kinds: string[] }>({
     timeRange: initialTimeRange ?? '1h',
+    kinds: [],
   })
 
-  const handleQueryChange = useCallback((params: { timeRange: TimeRange; kind?: string }) => {
+  const handleQueryChange = useCallback((params: { timeRange: TimeRange; kinds: string[] }) => {
     setQueryParams(params)
   }, [])
 
-  const { data: events = [], isLoading, isError, refetch } = useChanges({
+  const fetchLimit = appScoped ? APP_SCOPED_FETCH_LIMIT : LIST_FETCH_LIMIT
+  const { data: unscopedEvents = [], isLoading, isError, refetch } = timelineSource.useEvents({
     namespaces,
-    kind: queryParams.kind,
+    kinds: queryParams.kinds,
     timeRange: queryParams.timeRange,
     includeK8sEvents: true,
+    includeManaged: appScoped,
     includeDeleted: showDeleted,
-    limit: 500,
+    limit: fetchLimit,
+    fromMs: selectionWindow?.fromMs,
+    toMs: selectionWindow?.toMs,
+    sliding,
   })
+  const events = useMemo(
+    () => appScoped
+      ? focusedAppIndex
+        ? eventsForApplication(unscopedEvents, topology, focusedAppIndex)
+        : []
+      : unscopedEvents,
+    [appScoped, focusedAppIndex, topology, unscopedEvents],
+  )
+  const sourceTruncated = unscopedEvents.length >= fetchLimit
 
   if (isError) {
     return (
@@ -57,8 +112,7 @@ export function TimelineList({ namespaces, onViewChange, currentView, onResource
   return (
     <TimelineListUI
       events={events}
-      isLoading={isLoading}
-      onRefresh={refetch}
+      isLoading={isLoading || appScopeLoading}
       onQueryChange={handleQueryChange}
       hasLimitedAccess={hasLimitedAccess}
       namespaces={namespaces}
@@ -67,8 +121,22 @@ export function TimelineList({ namespaces, onViewChange, currentView, onResource
       onResourceClick={onResourceClick}
       initialFilter={initialFilter}
       initialTimeRange={initialTimeRange}
+      hideRangeSelector={!!selectionWindow}
       showDeleted={showDeleted}
       onShowDeletedChange={onShowDeletedChange}
+      search={search}
+      onSearchChange={onSearchChange}
+      activityFilter={activityFilter}
+      onActivityFilterChange={onActivityFilterChange}
+      kindFilter={kindFilter}
+      onKindFilterChange={onKindFilterChange}
+      onVisibleWindowChange={onVisibleWindowChange}
+      scrollToMs={scrollToMs}
+      truncatedAt={fetchLimit}
+      isTruncated={sourceTruncated}
+      truncationMessage={appScoped && sourceTruncated
+        ? `Showing application activity found in the newest ${fetchLimit.toLocaleString()} events in this range — narrow the query to see older activity`
+        : undefined}
     />
   )
 }

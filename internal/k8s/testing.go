@@ -44,6 +44,9 @@ func InitTestResourceCache(client kubernetes.Interface) error {
 		"rolebindings":             true,
 		"clusterrolebindings":      true,
 		"serviceaccounts":          true,
+		"ingressclasses":           true,
+		"networkpolicies":          true,
+		"limitranges":              true,
 	}
 
 	cfg := k8score.CacheConfig{
@@ -130,6 +133,27 @@ func SetTestContextName(name string) string {
 	clientMu.Lock()
 	prev := contextName
 	contextName = name
+	clientMu.Unlock()
+	return prev
+}
+
+// SetTestContextNamespace is a test-only helper that overrides the package-level
+// kubeconfig context namespace. Returns the previous value so callers can
+// restore it on cleanup.
+func SetTestContextNamespace(ns string) string {
+	clientMu.Lock()
+	prev := contextNamespace
+	contextNamespace = ns
+	clientMu.Unlock()
+	return prev
+}
+
+// SetTestContextUsesExec overrides whether the current context uses exec auth
+// and returns the previous value so callers can restore it on cleanup.
+func SetTestContextUsesExec(enabled bool) bool {
+	clientMu.Lock()
+	prev := contextUsesExec
+	contextUsesExec = enabled
 	clientMu.Unlock()
 	return prev
 }

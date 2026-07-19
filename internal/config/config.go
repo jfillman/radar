@@ -17,6 +17,7 @@ type Config struct {
 	Kubeconfig        string   `json:"kubeconfig,omitempty"`
 	KubeconfigDirs    []string `json:"kubeconfigDirs,omitempty"`
 	Namespace         string   `json:"namespace,omitempty"`
+	Namespaces        []string `json:"namespaces,omitempty"`
 	Port              int      `json:"port,omitempty"`
 	NoBrowser         bool     `json:"noBrowser,omitempty"`
 	Browser           string   `json:"browser,omitempty"`
@@ -41,6 +42,67 @@ type Config struct {
 	// (`radar probe`). Empty falls back to RADAR_IMAGE, then the version-matched
 	// published Radar image; set it to a reachable mirror for air-gapped clusters.
 	ReachabilityImage string `json:"reachabilityImage,omitempty"`
+	// ArgoCDURL is the Argo CD API server URL. Empty enables auto-discovery.
+	ArgoCDURL string `json:"argoCdUrl,omitempty"`
+	// ArgoCDToken is the Argo CD API bearer token. Stored in plain text in
+	// ~/.radar/config.json — Save enforces 0600 on the file.
+	ArgoCDToken string `json:"argoCdToken,omitempty"`
+	// ArgoCDInsecureTLS disables TLS certificate verification for the Argo CD
+	// API client only.
+	ArgoCDInsecureTLS bool `json:"argoCdInsecureTls,omitempty"`
+	// ArgoCDTokenContext is the kubeconfig context an auto-discovery (empty-URL)
+	// token was bound to. Persisted so a restart can restore the binding instead
+	// of losing it — without it the token can never reconnect after a restart,
+	// and restoring it to the *current* context would defeat the cross-cluster
+	// guard. Empty for explicit-URL tokens (the origin guard governs those).
+	ArgoCDTokenContext string `json:"argoCdTokenContext,omitempty"`
+	// AIHistory persists AI investigations (transcripts + verdicts) to a local
+	// SQLite file so they survive restarts. nil = default (true), false = off.
+	AIHistory *bool `json:"aiHistory,omitempty"`
+	// AIHistoryDBPath overrides the history DB location (default ~/.radar/ai-runs.db).
+	AIHistoryDBPath string `json:"aiHistoryDbPath,omitempty"`
+	// AIConsent records the acknowledged AI-diagnosis disclosure version per
+	// surface ("standard", "cursor"). Machine-scoped on purpose: consent gates a
+	// machine-scoped action (spawn this machine's agent CLI, persist transcripts
+	// to this machine's disk), so one acknowledgment covers the web panel and
+	// the `radar diagnose` CLI alike.
+	AIConsent map[string]string `json:"aiConsent,omitempty"`
+}
+
+// AI-diagnosis consent disclosure versions, per surface. THE single source of
+// truth for the server endpoint and the CLI's standalone path alike — bump when
+// the consent copy's claims change materially, and prior acknowledgments stop
+// counting everywhere at once. (standard v3: transcripts persist to local
+// history; cursor v2: same disclosure on Cursor's distinct trust model.)
+var aiConsentVersions = map[string]string{
+	"standard": "v3",
+	"cursor":   "v2",
+}
+
+// AIConsentVersion returns the current disclosure version for a surface
+// ("" for an unknown surface).
+func AIConsentVersion(surface string) string { return aiConsentVersions[surface] }
+
+// AIConsentGiven reports whether the CURRENT disclosure version for the surface
+// has been acknowledged on this machine.
+func AIConsentGiven(surface string) bool {
+	v := aiConsentVersions[surface]
+	return v != "" && Load().AIConsent[surface] == v
+}
+
+// RecordAIConsent acknowledges the current disclosure version for a surface.
+func RecordAIConsent(surface string) error {
+	v := aiConsentVersions[surface]
+	if v == "" {
+		return os.ErrInvalid
+	}
+	_, err := Update(func(c *Config) {
+		if c.AIConsent == nil {
+			c.AIConsent = map[string]string{}
+		}
+		c.AIConsent[surface] = v
+	})
+	return err
 }
 
 // mu serializes Load-mutate-Save cycles to prevent concurrent writes
@@ -93,12 +155,17 @@ func Save(c Config) error {
 	}
 	data = append(data, '\n')
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// 0600: the config can carry credentials (Prometheus headers, Argo CD token).
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp) // best-effort cleanup
 		return err
+	}
+	// Tighten pre-existing files written before the 0600 policy.
+	if err := os.Chmod(path, 0o600); err != nil {
+		log.Printf("[config] Failed to chmod %s to 0600: %v", path, err)
 	}
 	return nil
 }
@@ -132,6 +199,14 @@ func (c Config) HistoryLimitOr(def int) int {
 func (c Config) MCPEnabledOr(def bool) bool {
 	if c.MCP != nil {
 		return *c.MCP
+	}
+	return def
+}
+
+// AIHistoryOr returns *c.AIHistory if non-nil, otherwise the provided default.
+func (c Config) AIHistoryOr(def bool) bool {
+	if c.AIHistory != nil {
+		return *c.AIHistory
 	}
 	return def
 }
@@ -216,4 +291,10 @@ func ParseByteSize(raw string) (int64, error) {
 // suitable for use as a flag default value.
 func (c Config) KubeconfigDirsFlag() string {
 	return strings.Join(c.KubeconfigDirs, ",")
+}
+
+// NamespacesFlag returns Namespaces joined as a comma-separated string
+// suitable for use as a flag default value.
+func (c Config) NamespacesFlag() string {
+	return strings.Join(c.Namespaces, ",")
 }

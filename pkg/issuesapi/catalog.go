@@ -75,6 +75,7 @@ var catalogOrder = []Category{
 	CategoryNodeProvisioningFail, CategoryCrossplaneReconcile, CategoryOperatorConditionFail,
 	CategoryGitOpsSyncFailed, CategoryGitOpsRenderFailed, CategoryGitOpsSpecInvalid,
 	CategoryGitOpsOperationFailed, CategoryGitOpsOutOfSync, CategoryGitOpsHealthDegraded,
+	CategoryGitOpsStale,
 	CategoryHelmReleaseFailed, CategoryWebhookBackendDown, CategoryControlPlaneNotReady, CategoryMachineNotReady,
 }
 
@@ -125,7 +126,7 @@ var categoryDescription = map[Category]string{
 	CategoryVolumeMountFailed:        "A pod can't mount a volume — attach/mount failed (wrong node, missing CSI driver, or permissions).",
 	CategoryVolumeAccessModeConflict: "A volume's access mode conflicts with how it's mounted (e.g. an RWO volume claimed by pods on different nodes).",
 	// Scaling
-	CategoryRolloutStalled:     "A Deployment or StatefulSet rollout is stuck — the new revision isn't progressing (progressDeadlineExceeded).",
+	CategoryRolloutStalled:     "A workload rollout is stuck — the new revision isn't progressing (progressDeadlineExceeded).",
 	CategoryHPALimitedOrFailed: "A HorizontalPodAutoscaler can't scale — missing metrics, pinned at max replicas, or scaling errors.",
 	// Security
 	CategoryRBACForbidden:        "A workload can't create its pods — its controller's ServiceAccount is denied pod creation by RBAC.",
@@ -144,6 +145,7 @@ var categoryDescription = map[Category]string{
 	CategoryGitOpsOperationFailed: "A GitOps sync ran but failed — a resource apply, install, or upgrade errored.",
 	CategoryGitOpsOutOfSync:       "Live state has drifted from Git — the GitOps app is OutOfSync.",
 	CategoryGitOpsHealthDegraded:  "A GitOps app's managed resources are unhealthy or missing.",
+	CategoryGitOpsStale:           "A GitOps app's sync/drift verdict is frozen — the application-controller is down or backed up re-comparing.",
 	CategoryHelmReleaseFailed:     "A native Helm release is failed or stuck pending — its latest install, upgrade, or rollback did not complete cleanly.",
 	CategoryWebhookBackendDown:    "An admission webhook points at a backend Service that doesn't exist — matching requests are blocked (failurePolicy=Fail) or silently bypassed (Ignore).",
 	CategoryControlPlaneNotReady:  "A managed control plane (Cluster API) isn't ready — the cluster's control plane is unhealthy or still provisioning.",

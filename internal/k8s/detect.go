@@ -1982,6 +1982,30 @@ const (
 // the honest severity depends on whether the gap is about to close (transient
 // - the next poll reads the synced cache) or never will (RBAC denies listing
 // Rollouts on every poll).
+// nestedNumberInt64 reads an integer field from an unstructured object, accepting
+// both the int64 shape (k8s typed decode) and the float64 shape (plain JSON
+// decode) that dynamic-informer objects can carry. A fractional float64 is not a
+// valid integer and reports not-found.
+func nestedNumberInt64(obj map[string]any, fields ...string) (int64, bool) {
+	v, found, err := unstructured.NestedFieldNoCopy(obj, fields...)
+	if err != nil || !found {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int32:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	case float64:
+		if n == float64(int64(n)) {
+			return int64(n), true
+		}
+	}
+	return 0, false
+}
+
 func scaledToZeroBackingWorkload(cache *ResourceCache, svc *corev1.Service) (scaledZero bool, outcome rolloutLookupOutcome) {
 	if cache == nil || len(svc.Spec.Selector) == 0 {
 		return false, rolloutLookupConclusive
@@ -2041,7 +2065,12 @@ func scaledToZeroBackingWorkload(cache *ResourceCache, svc *corev1.Service) (sca
 		return false, nonMatch(rolloutLookupTransient)
 	}
 	for _, r := range rollouts {
-		replicas, found, _ := unstructured.NestedInt64(r.Object, "spec", "replicas")
+		// spec.replicas can arrive as int64 (k8s typed decode) OR float64 (plain
+		// JSON decode) depending on how the object entered the cache, so read it
+		// tolerantly - unstructured.NestedInt64 alone would miss the float64 shape
+		// and never recognize a scaled-to-zero Rollout, condemning dormancy as an
+		// outage.
+		replicas, found := nestedNumberInt64(r.Object, "spec", "replicas")
 		if !found || replicas != 0 {
 			continue
 		}

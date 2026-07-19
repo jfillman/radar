@@ -30,7 +30,9 @@ func argoRolloutScaled(name, ns string, replicas int64, tmplLabels map[string]st
 		"kind":       "Rollout",
 		"metadata":   map[string]any{"name": name, "namespace": ns},
 		"spec": map[string]any{
-			"replicas": replicas,
+			// float64 is the shape a JSON-decoded dynamic-informer object carries in
+			// production; seed it here so the tests exercise the real decode path.
+			"replicas": float64(replicas),
 			"template": map[string]any{"metadata": map[string]any{"labels": lbls}},
 		},
 	}}
@@ -501,5 +503,33 @@ func TestPublishNotReadyDoesNotSuppressUnresolvedTargetPort(t *testing.T) {
 	}
 	if targetPortRow.Severity != "high" || !strings.Contains(targetPortRow.Reason, "wep") {
 		t.Errorf("unresolved-targetport row must stay high severity and name the port, got severity=%q reason=%q", targetPortRow.Severity, targetPortRow.Reason)
+	}
+}
+
+func TestNestedNumberInt64(t *testing.T) {
+	obj := func(v any) map[string]any { return map[string]any{"spec": map[string]any{"replicas": v}} }
+	cases := []struct {
+		name    string
+		in      any
+		want    int64
+		wantOK  bool
+	}{
+		{"int64", int64(0), 0, true},
+		{"int64 nonzero", int64(3), 3, true},
+		{"float64 integral (production shape)", float64(0), 0, true},
+		{"float64 integral nonzero", float64(3), 3, true},
+		{"int32", int32(2), 2, true},
+		{"int", int(5), 5, true},
+		{"float64 fractional", float64(1.5), 0, false},
+		{"string", "3", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := nestedNumberInt64(obj(c.in), "spec", "replicas")
+		if got != c.want || ok != c.wantOK {
+			t.Errorf("%s: nestedNumberInt64 = (%d,%v), want (%d,%v)", c.name, got, ok, c.want, c.wantOK)
+		}
+	}
+	if _, ok := nestedNumberInt64(map[string]any{"spec": map[string]any{}}, "spec", "replicas"); ok {
+		t.Error("missing field must report not-found")
 	}
 }

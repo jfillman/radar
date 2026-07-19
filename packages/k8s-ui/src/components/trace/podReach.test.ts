@@ -46,4 +46,26 @@ describe('podReach', () => {
     expect(r.tone).toBe('degraded')
     expect(r.text).toBe('HTTP 503')
   })
+
+  it('a reached 404 (ok, tone "reached") is NOT green - neutral, matching the honest headline', () => {
+    const r = podReach([p({ layer: 'http', ok: true, tone: 'reached', detail: 'HTTP 404' })])
+    expect(r.tone).toBe('neutral')
+    expect(r.text).toBe('HTTP 404')
+  })
+
+  it('a TCP-only success is "port reachable", not verified - neutral, not green', () => {
+    const r = podReach([p({ layer: 'tcp', ok: true, detail: 'connected' })])
+    expect(r.tone).toBe('neutral')
+  })
+
+  it('a TLS-only success (no HTTP 2xx) is neutral, not green', () => {
+    const r = podReach([p({ layer: 'tcp', ok: true }), p({ layer: 'tls', ok: true, detail: 'valid' })])
+    expect(r.tone).toBe('neutral')
+  })
+
+  it('a real HTTP 2xx stays green (verified path unchanged)', () => {
+    const r = podReach([p({ layer: 'tcp', ok: true }), p({ layer: 'http', ok: true, tone: 'healthy', detail: 'HTTP 200' })])
+    expect(r.tone).toBe('healthy')
+    expect(r.text).toBe('HTTP 200')
+  })
 })

@@ -48,11 +48,33 @@ export interface FindingChip {
   tone?: 'accent' | ''
 }
 
+/** Known hop.meta keys stamped by the Go tracer (buildPodsHop et al. in
+ *  internal/trace). The wire is an open map - property names must match the Go
+ *  meta keys exactly; unknown keys pass through the index signature. */
+export interface HopMeta {
+  /** Count of endpoints the dataplane actually routes to. For a
+   *  publishNotReadyAddresses Service this is the PUBLISHED endpoint count
+   *  (every selected pod, readiness not required) - NOT the kubelet-ready
+   *  count, so it must never render as "N/M ready" there. */
+  ready?: number
+  /** Pods matched by the Service selector. */
+  selected?: number
+  /** Set when the Service publishes endpoints regardless of pod readiness
+   *  (spec.publishNotReadyAddresses) - the signal that meta.ready is a
+   *  published count, not a readiness count. */
+  publishNotReadyAddresses?: boolean
+  /** 'pod-readiness' when endpoints were judged from pod state; 'unknown' when
+   *  the pod lister failed and the count can't be trusted. */
+  endpointSource?: string
+  selectorless?: boolean
+  [key: string]: unknown
+}
+
 export interface Hop {
   resource: ResourceRef
   edge: string
   findings: Finding[]
-  meta?: Record<string, unknown>
+  meta?: HopMeta
   config?: HopConfig
   probes?: ProbeResult[]
 }

@@ -161,6 +161,17 @@ function entryControllerProblem(trace: Trace): string | undefined {
 // the parts that ARE confirmed (the Service is wired to its workload), and point
 // at the backend. Scaled-to-0 (selected === 0) is excluded - it's deliberate
 // dormancy with its own benign read, not a backend that failed.
+//
+// meta.ready counts endpoints the DATAPLANE routes to. For a
+// publishNotReadyAddresses Service that is the PUBLISHED count
+// (publishedEndpointCount, entries.go) - every selected pod that has an IP and
+// isn't Succeeded/Failed; PNR waives the READINESS condition only, not those
+// rules. So when pods are Running, ready === selected and neither this gate nor
+// the "N of M pods ready" wording misfires on readiness alone. But an all-Pending
+// (or IP-less) PNR Service publishes nothing: ready === 0 < selected, so this gate
+// CAN fire - and honestly, because zero published endpoints means no routable
+// backend ("0 of N pods ready" is truthful). Per-pod kubelet state stays visible
+// in the pod grid regardless.
 function backendDown(trace: Trace): { reason: string; raw?: string; cause?: string; pod?: ResourceRef; ready: number; selected: number; transitional: boolean } | undefined {
   const hops = trace.downstream ?? []
   // If any backend can't be judged from pod readiness, we can't claim "no healthy

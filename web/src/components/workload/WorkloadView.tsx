@@ -37,8 +37,8 @@ import { PrometheusCharts, isPrometheusSupported } from '../resource/PrometheusC
 import { PrometheusChartsGrid } from '../resource/PrometheusChartsGrid'
 import { RestartEventLane } from '../resource/RestartChart'
 import { RightsizingStrip } from '../resource/RightsizingStrip'
-import { useResourceAudit, useResourceIssues, useResources, useTrace, fetchTraceWithProbes, fetchInClusterCapability, runInCluster, runInClusterMerged } from '../../api/client'
-import { AuditAlerts, ResourceIssuesSection, ReachabilityView, TraceSummary, InClusterConsentDialog, type Trace as NetworkTrace, type InClusterRunner, type InClusterCapability, inClusterConsentGiven } from '@skyhook-io/k8s-ui'
+import { useResourceAudit, useResourceIssues, useResources, useTrace, fetchTraceWithProbes, fetchInClusterCapability, runInClusterMerged } from '../../api/client'
+import { AuditAlerts, ResourceIssuesSection, ReachabilityView, TraceSummary, InClusterConsentDialog, traceFingerprint, staticPollUnreliable, summarizeInClusterTests, type Trace as NetworkTrace, type InClusterCapability, inClusterConsentGiven } from '@skyhook-io/k8s-ui'
 import { WorkloadLogsViewer } from '../logs/WorkloadLogsViewer'
 import { LogsViewer } from '../logs/LogsViewer'
 import { useCanUpdateSecrets, useCanNodeWrite, useNamespacedCapabilities, useIsLocalDeployment } from '../../contexts/CapabilitiesContext'
@@ -960,10 +960,12 @@ function DiagnoseFromWorkloadHint({ kind, namespace, name, onNavigate }: { kind:
   )
 }
 
-// DiagnoseTabContent binds the static-trace polling hook + the one-shot
-// probe fetch to the presentational TracePanel. Probe results are held in
-// local state so the panel keeps showing them until the resource changes;
-// the static trace remains the source of truth.
+// DiagnoseTabContent binds the static-trace polling hook + the one-shot probe
+// fetch to the presentational ReachabilityView. Probe results are held in local
+// state and keep showing until the resource or the tested path changes - or
+// until a static poll reports that the underlying cluster state changed since
+// the test ran, at which point the staleness mask below drops them (with a
+// notice) so a frozen snapshot is never presented as current truth.
 // useProbeRun owns the one-shot reachability-probe state for a focused
 // resource. A per-resource token guards every async resolution: navigating to
 // a different resource (props change) does NOT unmount this component, so an
@@ -1013,13 +1015,6 @@ function useProbeRun(kind: string, namespace: string, name: string) {
   return { probeTrace, probeError, running, runProbes, resetProbe }
 }
 
-function useInClusterRunner(kind: string, namespace: string, name: string): InClusterRunner {
-  return useMemo(() => ({
-    capability: () => fetchInClusterCapability(kind, namespace, name),
-    run: (req) => runInCluster(kind, namespace, name, req),
-  }), [kind, namespace, name])
-}
-
 // useInClusterTest runs the WHOLE-subject in-cluster test in one click. The server
 // runs every route's live probe and folds them in via the canonical
 // trace.ApplyInClusterResults, returning the FINALIZED trace - so this hook just
@@ -1027,25 +1022,28 @@ function useInClusterRunner(kind: string, namespace: string, name: string): InCl
 // sibling route or leave stale diagnosis/netpol beside a live-verified route. The
 // result resets whenever the base trace changes (a fresh proxy run), so stale
 // in-cluster data never lingers.
-function useInClusterTest(runner: InClusterRunner, base: NetworkTrace | undefined, kind: string, namespace: string, name: string) {
+function useInClusterTest(base: NetworkTrace | undefined, kind: string, namespace: string, name: string) {
   const [running, setRunning] = useState(false)
   const [allowed, setAllowed] = useState(false)
   const [cap, setCap] = useState<InClusterCapability | undefined>(undefined)
   const [merged, setMerged] = useState<NetworkTrace | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
   const [fallback, setFallback] = useState<string | undefined>(undefined)
+  const [partial, setPartial] = useState(false)
+  const [evidenceOnly, setEvidenceOnly] = useState(false)
+  const [evidence, setEvidence] = useState<string | undefined>(undefined)
   // Per-resource token: bumped whenever the base trace changes (navigation / fresh
   // proxy run) and on unmount, so an in-flight run that resolves AFTER the operator
   // navigated to another resource never paints resource A's verdict onto resource B.
   const tokenRef = useRef(0)
   useEffect(() => {
     let alive = true
-    runner.capability().then((c) => { if (alive) { setAllowed(!!c.allowed); setCap(c) } }).catch(() => { if (alive) setAllowed(false) })
+    fetchInClusterCapability(kind, namespace, name).then((c) => { if (alive) { setAllowed(!!c.allowed); setCap(c) } }).catch(() => { if (alive) setAllowed(false) })
     return () => { alive = false }
-  }, [runner])
+  }, [kind, namespace, name])
   useEffect(() => {
     tokenRef.current++
-    setMerged(undefined); setError(undefined); setFallback(undefined); setRunning(false)
+    setMerged(undefined); setError(undefined); setFallback(undefined); setPartial(false); setEvidenceOnly(false); setEvidence(undefined); setRunning(false)
   }, [base])
   // Invalidate an in-flight run on unmount. Kept as a separate []-effect: bumping
   // the ref in a deps-driven cleanup trips react-hooks/exhaustive-deps (the ref
@@ -1064,28 +1062,90 @@ function useInClusterTest(runner: InClusterRunner, base: NetworkTrace | undefine
       setMerged(trace)
       // A per-route in-cluster failure (Job couldn't start, timed out, RBAC) comes
       // back as HTTP 200 with an error status + a fallback command inside
-      // inClusterTests. Surface it - otherwise the failure vanishes as if nothing ran.
-      const failed = (inClusterTests ?? []).find((t) => !!t.fallbackCommand)
-      setError(failed ? failed.status || 'the in-cluster test could not run' : undefined)
-      setFallback(failed?.fallbackCommand)
+      // inClusterTests. A row can also carry a message with NO fallback command -
+      // nothing eligible to test (e.g. a Gateway subject), the per-call pod cap,
+      // or an exhausted request time budget. Surface both - otherwise the run
+      // vanishes as if nothing happened - and mark whether OTHER rows still
+      // produced results, so the banner can say "partially completed" instead of
+      // the false "couldn't run" over a merged trace that folded live results.
+      const summary = summarizeInClusterTests(inClusterTests)
+      setError(summary.error)
+      setFallback(summary.fallback)
+      setPartial(summary.partial)
+      setEvidenceOnly(summary.evidenceOnly)
+      setEvidence(summary.evidence)
     } catch (e: unknown) {
       if (tokenRef.current !== token) return
       setError(e instanceof Error ? e.message : String(e))
       setFallback(undefined)
+      setPartial(false)
+      setEvidenceOnly(false)
+      setEvidence(undefined)
     } finally {
       if (tokenRef.current === token) setRunning(false)
     }
   }, [base, running, kind, namespace, name])
-  return { run, running, allowed, cap, merged, error, fallback }
+  return { run, running, allowed, cap, merged, error, fallback, partial, evidenceOnly, evidence }
 }
 
 function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: string; namespace: string; name: string; onNavigate?: NavigateToResource }) {
   const { data: staticTrace, isLoading, error, refetch } = useTrace(kind, namespace, name)
   const { probeTrace, probeError, running, runProbes, resetProbe } = useProbeRun(kind, namespace, name)
-  const inClusterRunner = useInClusterRunner(kind, namespace, name)
   const baseTrace = probeTrace ?? staticTrace
-  const { run: runInClusterTest, running: inClusterRunning, allowed: inClusterAllowed, cap: inClusterCap, merged: inClusterTrace, error: inClusterError, fallback: inClusterFallback } = useInClusterTest(inClusterRunner, baseTrace, kind, namespace, name)
-  const displayTrace = inClusterTrace ?? baseTrace
+  const { run: runInClusterTest, running: inClusterRunning, allowed: inClusterAllowed, cap: inClusterCap, merged: inClusterTrace, error: inClusterError, fallback: inClusterFallback, partial: inClusterPartial, evidenceOnly: inClusterEvidenceOnly, evidence: inClusterEvidenceNote } = useInClusterTest(baseTrace, kind, namespace, name)
+  // Gate the merged in-cluster trace on a live probe trace: when the staleness
+  // mask below clears probeTrace, useInClusterTest resets `merged` one effect
+  // pass later - without the gate that pass would still paint the stale
+  // in-cluster verdict for a frame.
+  const displayTrace = (probeTrace !== undefined ? inClusterTrace : undefined) ?? baseTrace
+  // Staleness mask for the probe snapshot: probe/in-cluster results are a
+  // snapshot of the moment they ran, while the static trace keeps polling
+  // underneath. The baseline is the fingerprint of THE RESULT TRACE ITSELF:
+  // a ?probe=true response (and the in-cluster merged trace) embeds the same
+  // static-derived content the probes actually ran against, and
+  // traceFingerprint covers only probe-invariant fields - so it exists at the
+  // instant of adoption (no race with the separate static query: a probe that
+  // beats the static fetch, or a cluster change mid-run, can't baseline on
+  // post-change state). When a later static poll fingerprints DIFFERENTLY,
+  // drop the snapshot (the view falls back to the live static trace) and say
+  // why - keeping the old verdict up would present stale evidence as current
+  // truth. An adopted in-cluster merged trace re-baselines: it reflects the
+  // (possibly newer) state its run observed.
+  const staticFp = useMemo(() => (staticTrace ? traceFingerprint(staticTrace) : undefined), [staticTrace])
+  // Only a FULLY-BUILT, healthy static poll is trustworthy staleness evidence. A
+  // budget-timeout partial (fewer hops) or a transient pod-lister failure
+  // (endpointSource=unknown) still returns HTTP 200 but fingerprints DIFFERENTLY -
+  // comparing against it would drop a good snapshot and cry "cluster changed" though
+  // nothing did. Skip the comparison for such polls; a poll we couldn't fully build
+  // is not evidence of change.
+  const staticPollDegraded = useMemo(() => (staticTrace ? staticPollUnreliable(staticTrace) : false), [staticTrace])
+  const resultsTrace = inClusterTrace ?? probeTrace
+  const snapshotFp = useRef<string | undefined>(undefined)
+  const snapshotOf = useRef<NetworkTrace | undefined>(undefined)
+  const [clusterChanged, setClusterChanged] = useState(false)
+  useEffect(() => { setClusterChanged(false) }, [kind, namespace, name])
+  useEffect(() => {
+    if (resultsTrace === undefined) {
+      snapshotOf.current = undefined
+      snapshotFp.current = undefined
+      return
+    }
+    if (resultsTrace !== snapshotOf.current) {
+      // A run just adopted results: baseline on the state embedded in the
+      // result itself.
+      snapshotOf.current = resultsTrace
+      snapshotFp.current = traceFingerprint(resultsTrace)
+      setClusterChanged(false)
+      return
+    }
+    if (staticFp !== undefined && staticFp !== snapshotFp.current) {
+      // A partial/degraded poll fingerprints differently for reasons that aren't a
+      // real cluster change - keep the snapshot rather than fire a false banner.
+      if (staticPollDegraded) return
+      resetProbe()
+      setClusterChanged(true)
+    }
+  }, [resultsTrace, staticFp, staticPollDegraded, resetProbe])
   // Consent gate for the mutating in-cluster test: it spawns a Job/pod, so the first
   // run per cluster asks the operator to confirm - naming the cluster it lands in -
   // unless they chose "don't ask again" for that cluster. Permission is already
@@ -1118,8 +1178,27 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
   }, [probePath, runProbes, resetProbe])
   // Bump a nonce every time a run produces a new result object (proxy or in-cluster),
   // so the view can flash "updated just now" even when the values are unchanged.
+  // testedAt dates the displayed results ("tested HH:MM:SS") so even a kept
+  // snapshot is honestly dated; it clears when the results do.
   const [runNonce, setRunNonce] = useState(0)
-  useEffect(() => { if (probeTrace || inClusterTrace) setRunNonce((n) => n + 1) }, [probeTrace, inClusterTrace])
+  const [testedAt, setTestedAt] = useState<Date | undefined>(undefined)
+  // Bump ONLY when a NEW result is adopted (a fresh object reference), never when a
+  // result is DROPPED. Without this, a mask-driven resetProbe() clears probeTrace
+  // while inClusterTrace is still (transiently) truthy, so `probeTrace||inClusterTrace`
+  // stays true and the effect would re-date testedAt + flash "updated just now" at the
+  // exact moment results are being thrown away, beside "Cluster state changed".
+  const prevResultsRef = useRef<{ probe?: NetworkTrace; inCluster?: NetworkTrace }>({})
+  useEffect(() => {
+    const prev = prevResultsRef.current
+    const adopted = (probeTrace !== undefined && probeTrace !== prev.probe) || (inClusterTrace !== undefined && inClusterTrace !== prev.inCluster)
+    prevResultsRef.current = { probe: probeTrace, inCluster: inClusterTrace }
+    if (adopted) {
+      setRunNonce((n) => n + 1)
+      setTestedAt(new Date())
+    } else if (!probeTrace && !inClusterTrace) {
+      setTestedAt(undefined)
+    }
+  }, [probeTrace, inClusterTrace])
   // Auto-run the (proxy) reachability test once per resource when the tab loads - the
   // operator opened Reachability to SEE results, not a static page they must click Run
   // on. Only the proxy test auto-runs; the in-cluster test (which spawns a Job) stays a
@@ -1151,15 +1230,19 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
         probeRequested={running}
         probed={probeTrace !== undefined || inClusterTrace !== undefined}
         onRunProbes={() => runProbes(probePath)}
-        inClusterRunner={inClusterRunner}
         onRunInCluster={() => requestInClusterRun(probePath)}
         inClusterRunning={inClusterRunning}
         inClusterAllowed={inClusterAllowed && (probeTrace !== undefined)}
         inClusterError={inClusterError}
+        inClusterPartial={inClusterPartial}
         inClusterFallback={inClusterFallback}
+        inClusterEvidenceOnly={inClusterEvidenceOnly}
+        inClusterEvidenceNote={inClusterEvidenceNote}
         probePath={probePath}
         onApplyProbePath={applyProbePath}
         runNonce={runNonce}
+        testedAt={testedAt}
+        clusterChangedSinceTest={clusterChanged}
         onNavigateToResource={onNavigate ? (ref) => onNavigate({ kind: kindToPlural(ref.kind), namespace: ref.namespace ?? '', name: ref.name, group: ref.group ?? '' }) : undefined}
       />
       <InClusterConsentDialog

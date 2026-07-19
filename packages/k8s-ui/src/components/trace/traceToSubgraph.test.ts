@@ -359,6 +359,70 @@ describe('traceToSubgraph - cycle 5 honesty fixes', () => {
   })
 })
 
+describe('traceToSubgraph - failed apiserver-proxy probes are indirect evidence, never red', () => {
+  it('a node whose ONLY live evidence is a failed proxy probe stays unknown, not unhealthy', () => {
+    const t = baseTrace({
+      verdict: 'unknown',
+      downstream: [
+        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [], probes: [
+          { layer: 'http', target: 'echo:80', vantage: 'local', path: 'apiserver', ok: false, tone: 'unhealthy' },
+        ] },
+      ],
+      routes: [{ route: 'echo', target: 'echo:80', outcome: 'unreachable', confidence: 'indirect' }],
+    })
+    const svc = traceToSubgraph(t).nodes.find((n) => n.kind === 'Service')
+    expect(svc?.status).not.toBe('unhealthy')
+    expect(svc?.status).toBe('unknown')
+  })
+
+  it('a successful proxy probe still counts as positive evidence beside a failed one', () => {
+    const t = baseTrace({
+      verdict: 'unknown',
+      downstream: [
+        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [] },
+        { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [], probes: [
+          { layer: 'http', target: 'pod-a port 80', vantage: 'local', path: 'apiserver', ok: true, tone: 'healthy' },
+          { layer: 'http', target: 'pod-b port 80', vantage: 'local', path: 'apiserver', ok: false, tone: 'unhealthy' },
+        ] },
+      ],
+      routes: [{ route: 'echo', target: 'echo:80', outcome: 'reached', confidence: 'indirect' }],
+    })
+    const pods = traceToSubgraph(t).nodes.find((n) => n.kind === 'Pods')
+    // The failed proxy knock is dropped (indirect); the passing one keeps the
+    // node green - it answered.
+    expect(pods?.status).toBe('healthy')
+  })
+
+  it('a REAL (non-proxy) failure still paints the node red', () => {
+    const t = baseTrace({
+      verdict: 'broken',
+      downstream: [
+        { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [], probes: [
+          { layer: 'http', target: '10.0.0.1:80', vantage: 'in-cluster', path: 'data', ok: false, tone: 'unhealthy' },
+        ] },
+      ],
+      routes: [],
+    })
+    expect(traceToSubgraph(t).nodes.find((n) => n.kind === 'Pods')?.status).toBe('unhealthy')
+  })
+
+  it('a no-route edge whose failures are ALL proxy-vantage reads not-tested, never unreachable/blocked', () => {
+    const t = baseTrace({
+      verdict: 'unknown',
+      downstream: [
+        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [] },
+        { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [], probes: [
+          { layer: 'http', target: 'pod port 80', vantage: 'local', path: 'apiserver', ok: false, tone: 'unhealthy' },
+        ] },
+      ],
+      routes: [{ route: 'echo', target: 'echo:80', outcome: 'unreachable', confidence: 'indirect' }],
+    })
+    const topo = traceToSubgraph(t)
+    const podsId = topo.nodes.find((n) => n.kind === 'Pods')!.id
+    expect(topo.edges.find((e) => e.target === podsId)?.reachOutcome).toBe('not-tested')
+  })
+})
+
 describe('traceToSubgraph - cycle 11 honesty fixes', () => {
   // Defect 3: routeMatchesRef's namespace guard only fired when targetNamespace was
   // SET. A same-ns route (no targetNamespace) could match a cross-ns same-named
@@ -420,5 +484,112 @@ describe('traceToSubgraph - overridden test path echoes on the route edge', () =
     const e = traceToSubgraph(ingressTrace(), '/').edges.find((e) => e.label === '/web')
     expect(e).toBeTruthy()
     expect(e?.labelTitle).toBeUndefined()
+  })
+})
+
+describe('traceToSubgraph - DNS success is not transport evidence', () => {
+  // An ExternalName whose name resolves but whose every port fails is DOWN. The
+  // DNS-ok row must not soften the node to "partially healthy" amber or keep
+  // the edge green - resolving a name reaches nothing.
+  it('dns-ok + every port failed → node unhealthy (not degraded), edge unreachable', () => {
+    const t = baseTrace({
+      verdict: 'broken',
+      downstream: [
+        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [] },
+        { resource: { kind: 'ExternalName', namespace: 'prod', name: 'db.example.com' }, edge: 'Service->ExternalName', findings: [], probes: [
+          { layer: 'dns', target: 'db.example.com', vantage: 'local', ok: true },
+          { layer: 'tcp', target: 'db.example.com:5432', vantage: 'local', ok: false, tone: 'unhealthy' },
+          { layer: 'http', target: 'db.example.com:80', vantage: 'local', ok: false, tone: 'unhealthy' },
+        ] },
+      ],
+      routes: [],
+    })
+    const topo = traceToSubgraph(t)
+    const ext = topo.nodes.find((n) => n.kind === 'ExternalName')
+    expect(ext?.status).toBe('unhealthy')
+    expect(topo.edges.find((e) => e.target === ext?.id)?.reachOutcome).toBe('unreachable')
+  })
+
+  it('dns-ok only (transport skipped) → node unknown, edge not-tested', () => {
+    const t = baseTrace({
+      verdict: 'unknown',
+      downstream: [
+        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [] },
+        { resource: { kind: 'ExternalName', namespace: 'prod', name: 'db.example.com' }, edge: 'Service->ExternalName', findings: [], probes: [
+          { layer: 'dns', target: 'db.example.com', vantage: 'local', ok: true },
+          { layer: 'tcp', target: 'db.example.com:5432', vantage: 'local', ok: false, skipped: true, reason: 'not reachable from your machine' },
+        ] },
+      ],
+      routes: [],
+    })
+    const topo = traceToSubgraph(t)
+    const ext = topo.nodes.find((n) => n.kind === 'ExternalName')
+    expect(ext?.status).toBe('unknown')
+    expect(topo.edges.find((e) => e.target === ext?.id)?.reachOutcome).toBe('not-tested')
+  })
+
+  it('dns FAILURE is still a real break - node unhealthy, edge unreachable', () => {
+    const t = baseTrace({
+      verdict: 'broken',
+      downstream: [
+        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [] },
+        { resource: { kind: 'ExternalName', namespace: 'prod', name: 'ghost.example.com' }, edge: 'Service->ExternalName', findings: [], probes: [
+          { layer: 'dns', target: 'ghost.example.com', vantage: 'local', ok: false, error: 'NXDOMAIN' },
+        ] },
+      ],
+      routes: [],
+    })
+    const topo = traceToSubgraph(t)
+    const ext = topo.nodes.find((n) => n.kind === 'ExternalName')
+    expect(ext?.status).toBe('unhealthy')
+    expect(topo.edges.find((e) => e.target === ext?.id)?.reachOutcome).toBe('unreachable')
+  })
+
+  it('a real port success still reads reached/healthy beside the dns row', () => {
+    const t = baseTrace({
+      downstream: [
+        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [] },
+        { resource: { kind: 'ExternalName', namespace: 'prod', name: 'db.example.com' }, edge: 'Service->ExternalName', findings: [], probes: [
+          { layer: 'dns', target: 'db.example.com', vantage: 'local', ok: true },
+          { layer: 'http', target: 'db.example.com:80', vantage: 'local', ok: true, tone: 'healthy' },
+        ] },
+      ],
+      routes: [],
+    })
+    const topo = traceToSubgraph(t)
+    const ext = topo.nodes.find((n) => n.kind === 'ExternalName')
+    expect(ext?.status).toBe('healthy')
+    expect(topo.edges.find((e) => e.target === ext?.id)?.reachOutcome).toBe('reached')
+  })
+})
+
+describe('traceToSubgraph - publishNotReadyAddresses subtitle honesty', () => {
+  // meta.ready counts PUBLISHED endpoints for a publishNotReadyAddresses
+  // Service (the Go side stamps ready = selected there) - "3/3 ready" over
+  // crashlooping pods is a lie; say what the count actually is.
+  it('renders a published count, not "N/M ready", when publishNotReadyAddresses is set', () => {
+    const t = baseTrace({
+      downstream: [
+        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [] },
+        { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [], meta: { ready: 3, selected: 3, publishNotReadyAddresses: true } },
+      ],
+      routes: [],
+    })
+    const pods = traceToSubgraph(t).nodes.find((n) => n.kind === 'Pods')
+    const sub = (pods?.data as { subtitleOverride?: string })?.subtitleOverride
+    expect(sub).toBe('3 published (readiness not required)')
+    expect(sub).not.toContain('3/3')
+  })
+
+  it('an ordinary Service keeps the "N/M ready" subtitle', () => {
+    const t = baseTrace({
+      downstream: [
+        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [] },
+        { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [], meta: { ready: 2, selected: 3 } },
+      ],
+      routes: [],
+    })
+    const pods = traceToSubgraph(t).nodes.find((n) => n.kind === 'Pods')
+    expect((pods?.data as { subtitleOverride?: string })?.subtitleOverride).toBe('2/3 ready')
   })
 })

@@ -403,7 +403,7 @@ export function useResourceIssues(kind: string, group: string | undefined, names
   })
 }
 
-import type { Trace as NetworkTrace, InClusterCapability, InClusterRunResult } from '@skyhook-io/k8s-ui'
+import type { Trace as NetworkTrace, InClusterCapability } from '@skyhook-io/k8s-ui'
 
 // useTrace polls the static path-shaped diagnosis for one network entry
 // kind. 5s refetch + 15s staleTime keeps the drawer feeling live without
@@ -437,18 +437,6 @@ export function fetchInClusterCapability(kind: string, namespace: string, name: 
   return fetchJSON(`/trace/${kind}/${namespace}/${name}/probe-in-cluster/capability`)
 }
 
-// runInCluster triggers the real-dataplane probe Job. The endpoint returns a
-// JSON body on success AND on denial (with a fallbackCommand), so don't treat a
-// 4xx as a thrown error - parse the body either way.
-export async function runInCluster(kind: string, namespace: string, name: string, req: { target: string; host?: string; scheme?: string; path?: string; layers?: string }): Promise<InClusterRunResult> {
-  const response = await apiFetch(`${getApiBase()}/trace/${kind}/${namespace}/${name}/probe-in-cluster`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  })
-  return response.json()
-}
-
 // InClusterMergedResult is the WHOLE-subject in-cluster test: the server runs every
 // route's live probe, folds them in via the canonical trace.ApplyInClusterResults,
 // and returns the FINALIZED trace - so the frontend displays it directly instead of
@@ -461,6 +449,10 @@ export interface InClusterTestOutcome {
   target?: string
   status?: string
   fallbackCommand?: string
+  // Raw probe results when the run produced any. A status WITH results is
+  // informational context; a status WITHOUT results means the route (or the
+  // whole subject) was not tested and the status must be surfaced.
+  results?: unknown[]
 }
 
 export interface InClusterMergedResult {
@@ -469,8 +461,8 @@ export interface InClusterMergedResult {
 }
 
 // runInClusterMerged triggers the whole-subject in-cluster test and returns the
-// server-finalized trace. Like runInCluster the endpoint returns a JSON body on
-// denial too, so parse the body either way and surface the error field.
+// server-finalized trace. The endpoint returns a JSON body on denial too, so
+// parse the body either way and surface the error field.
 export async function runInClusterMerged(kind: string, namespace: string, name: string, path?: string): Promise<InClusterMergedResult> {
   const response = await apiFetch(`${getApiBase()}/trace/${kind}/${namespace}/${name}/in-cluster`, {
     method: 'POST',

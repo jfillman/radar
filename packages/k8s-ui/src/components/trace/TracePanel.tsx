@@ -36,10 +36,6 @@ export interface TracePanelProps {
    *  the Pods fan-out) stay non-clickable. Without this prop, hop rows are
    *  inert text and the only interaction is the expand chevron. */
   onNavigateToResource?: (ref: ResourceRef) => void
-  /** When provided, routes that could only be reached indirectly (via the API
-   *  proxy) or that failed gain a "Test from inside the cluster" affordance that
-   *  runs a real-dataplane probe Job. The host wires these to the backend. */
-  inClusterRunner?: InClusterRunner
   /** One-click "test every path from inside the cluster" - runs the in-cluster
    *  probe for the whole subject and merges the real-traffic results back into the
    *  trace, filling the matrix's "Real in-cluster traffic" column + upgrading the
@@ -50,9 +46,21 @@ export interface TracePanelProps {
   /** Set when the in-cluster test couldn't produce a result (e.g. a cold-start
    *  timeout) - surfaced so the click is never a silent no-op. */
   inClusterError?: string
+  /** True when the run that set inClusterError still produced results for OTHER
+   *  routes (folded into the merged trace) - e.g. trailing routes hit the
+   *  per-call pod cap or the request time budget. The banner then reads
+   *  "partially completed" instead of the false "couldn't run". */
+  inClusterPartial?: boolean
   /** The copyable kubectl command to run the probe by hand when the in-cluster
    *  Job couldn't run - paired with inClusterError. */
   inClusterFallback?: string
+  /** True when the in-cluster run produced results but folded NONE of them into
+   *  the merged trace (every route was override-mismatch / throwaway-denied /
+   *  guessed path) - route outcomes are unchanged. Surfaced as an informational
+   *  note so the run isn't a silent no-op. Mutually exclusive with inClusterError. */
+  inClusterEvidenceOnly?: boolean
+  /** The evidence row's honest status message, paired with inClusterEvidenceOnly. */
+  inClusterEvidenceNote?: string
   /** The HTTP path the probes request (default "/"); shown as the tested-request
    *  indicator. onApplyProbePath sets a new path and re-runs. */
   probePath?: string
@@ -60,6 +68,13 @@ export interface TracePanelProps {
   /** Bumped by the host every time a test run COMPLETES - drives the transient
    *  "updated just now" confirmation so an identical-looking result still reads as fresh. */
   runNonce?: number
+  /** Wall-clock time the displayed probe/in-cluster results were produced.
+   *  Rendered as "tested HH:MM:SS" so even a kept snapshot is honestly dated. */
+  testedAt?: Date
+  /** True when the polled cluster state changed under a shown probe snapshot and
+   *  the host dropped it - the panel shows a notice explaining the fallback to
+   *  live state and inviting a re-run. */
+  clusterChangedSinceTest?: boolean
 }
 
 /** Whether an in-cluster reachability test can run for this caller, and the
@@ -69,17 +84,6 @@ export interface InClusterCapability {
   reason?: string
   cluster?: string
   namespace: string
-}
-/** Result of running the in-cluster probe: real-dataplane probe results, or a
- *  copyable fallback command when it couldn't run. */
-export interface InClusterRunResult {
-  results?: ProbeResult[]
-  fallbackCommand?: string
-  error?: string
-}
-export interface InClusterRunner {
-  capability: () => Promise<InClusterCapability>
-  run: (req: { target: string; host?: string; scheme?: string; path?: string; layers?: string }) => Promise<InClusterRunResult>
 }
 
 type AlertTone = 'success' | 'warning' | 'error' | 'info'
@@ -195,11 +199,12 @@ export function VerdictCaveat({ caveat, detail }: { caveat?: string; detail?: st
   )
 }
 
-// RequestIndicator names the exact HTTP request the probes made - shown in the
-// verdict bar (always visible after a run) so the operator knows what was tested. A
-// pencil toggles an inline editor so the path is changeable in place (no digging
+// RequestIndicator names the exact HTTP request the probes made and WHEN - shown
+// in the verdict bar (always visible after a run) so the operator knows what was
+// tested and that the result is a dated snapshot, not a live read. A pencil
+// toggles an inline editor so the path is changeable in place (no digging
 // through the ⋯ menu); Enter or blur applies + re-runs, Escape cancels. Default GET /.
-export function RequestIndicator({ path, onApplyProbePath }: { path?: string; onApplyProbePath?: (p: string) => void }) {
+export function RequestIndicator({ path, onApplyProbePath, testedAt }: { path?: string; onApplyProbePath?: (p: string) => void; testedAt?: Date }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(path ?? '/')
   useEffect(() => { setDraft(path ?? '/') }, [path])
@@ -227,7 +232,9 @@ export function RequestIndicator({ path, onApplyProbePath }: { path?: string; on
   }
   return (
     <div className="mt-1 flex items-center gap-1 text-[11px] text-theme-text-tertiary">
-      <span>tested with <span className="font-mono text-theme-text-secondary">GET {path || '/'}</span></span>
+      <span>
+        tested{testedAt ? ` ${testedAt.toLocaleTimeString(undefined, { hour12: false })}` : ''} with <span className="font-mono text-theme-text-secondary">GET {path || '/'}</span>
+      </span>
       {onApplyProbePath && (
         <button
           type="button"
@@ -447,7 +454,7 @@ export function FindingRow({ finding, onNavigate }: { finding: Finding; onNaviga
           <button
             type="button"
             onClick={() => onNavigate(culprit)}
-            className="mt-1 inline-flex items-center gap-1 text-[11px] text-theme-accent hover:underline"
+            className="mt-1 inline-flex items-center gap-1 text-[11px] text-accent-text hover:underline"
           >
             Open {culprit.kind} {culprit.name} ↗
           </button>

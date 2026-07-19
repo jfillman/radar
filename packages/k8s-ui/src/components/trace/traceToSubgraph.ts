@@ -114,19 +114,32 @@ function nodeOwnStatus(hop: Hop): HealthStatus {
   if (finding) return finding
   const live = (hop.probes ?? []).filter((p) => !p.skipped)
   if (live.length === 0) return 'unknown'
-  const bad = live.filter((p) => !p.ok || p.tone === 'unhealthy')
-  const good = live.filter((p) => p.ok && p.tone !== 'unhealthy')
+  // A FAILED apiserver-proxy probe is indirect evidence: the proxy path itself may
+  // be what failed, and the real network path was never tested - so it must never
+  // paint the node red (mirrors the route-level isIndirectUnreach guard: a proxy
+  // 2xx is positive evidence the resource answered, a proxy failure is only a
+  // localization hint). Drop failed proxy probes before judging own health; if
+  // they were the ONLY live evidence, own health is untested → unknown.
+  const considered = live.filter((p) => !(p.path === 'apiserver' && (!p.ok || p.tone === 'unhealthy')))
+  if (considered.length === 0) return 'unknown'
+  const bad = considered.filter((p) => !p.ok || p.tone === 'unhealthy')
+  // A DNS success only proves the NAME resolves - it is not transport evidence
+  // that the resource answered, so it must never soften a real break: an
+  // ExternalName whose every port failed is unhealthy, not "partially healthy"
+  // off its DNS row. DNS FAILURES stay in `bad` - a name that doesn't resolve
+  // is a real reachability break.
+  const good = considered.filter((p) => p.ok && p.tone !== 'unhealthy' && p.layer !== 'dns')
   // Partial own-health: a multi-port Service where one port answered and another
   // didn't is DEGRADED (amber), not fully dead (red) - red over-claims "nothing
   // works" when port 80 served HTTP 200.
   if (bad.length > 0 && good.length > 0) return 'degraded'
   if (bad.length > 0) return 'unhealthy'
-  if (live.some((p) => p.tone === 'degraded')) return 'degraded' // app answered 5xx - a real own-health problem, not a vantage caveat
+  if (considered.some((p) => p.tone === 'degraded')) return 'degraded' // app answered 5xx - a real own-health problem, not a vantage caveat
   // DNS resolving a name to an IP is not own-health/reachability. When the only
   // live probe is a DNS success (transport/HTTP skipped - ExternalName host, or a
   // non-HTTP backend port), there's no evidence the resource was actually reached:
   // fail toward silence (unknown), never paint it green 'healthy'.
-  if (!live.some((p) => p.layer !== 'dns')) return 'unknown'
+  if (!considered.some((p) => p.layer !== 'dns')) return 'unknown'
   return 'healthy'
 }
 
@@ -155,13 +168,27 @@ function edgeReach(hop: Hop, route?: RouteResult): TopologyEdge['reachOutcome'] 
     }
   }
   // No route on this hop (e.g. the Service→Pods edge): the edge answers "did any
-  // traffic get through". If ANY non-skipped probe reached, the edge reached - a
-  // multi-port pod where port 80 served 200 but 9090 refused is REACHED (the per-port
-  // failure shows in the node detail), never a hard-blocked red edge.
+  // traffic get through". If ANY non-skipped TRANSPORT probe reached, the edge
+  // reached - a multi-port pod where port 80 served 200 but 9090 refused is
+  // REACHED (the per-port failure shows in the node detail), never a hard-blocked
+  // red edge. A DNS success is NOT traffic-flow evidence (resolving a name
+  // reaches nothing), so it can neither mark the edge reached nor mask every
+  // transport port failing; a DNS failure IS a real break (the name doesn't
+  // resolve, no traffic can flow).
   const live = (hop.probes ?? []).filter((p) => !p.skipped)
   if (live.length === 0) return 'not-tested'
-  if (live.some((p) => p.ok)) return 'reached'
-  return 'unreachable'
+  const transport = live.filter((p) => p.layer !== 'dns')
+  if (transport.length === 0) {
+    // DNS-only evidence: a failed resolve is a real break; a resolve alone
+    // proves nothing about traffic - not-tested, mirroring nodeOwnStatus's
+    // DNS-only unknown.
+    return live.some((p) => !p.ok) ? 'unreachable' : 'not-tested'
+  }
+  if (transport.some((p) => p.ok)) return 'reached'
+  // Every transport failure came through the apiserver proxy - the real path was
+  // never tested (mirrors the indirect-unreachable route rule above): not-tested,
+  // never a red edge that would also cascade-block everything downstream.
+  return transport.every((p) => p.path === 'apiserver') ? 'not-tested' : 'unreachable'
 }
 
 // nodeSubtitle builds the diagram node's functional one-liner from the hop's
@@ -183,7 +210,16 @@ function nodeSubtitle(hop: Hop | undefined, fallback: string): string {
   }
   const ready = hop?.meta?.['ready']
   const selected = hop?.meta?.['selected']
-  if (typeof ready === 'number' && typeof selected === 'number') parts.push(`${ready}/${selected} ready`)
+  if (typeof ready === 'number' && typeof selected === 'number') {
+    // For a publishNotReadyAddresses Service, meta.ready counts PUBLISHED
+    // endpoints (every selected pod, readiness not required) - "N/M ready"
+    // would claim crashlooping pods are ready. Say what the count actually is.
+    parts.push(
+      hop?.meta?.publishNotReadyAddresses
+        ? `${ready} published (readiness not required)`
+        : `${ready}/${selected} ready`,
+    )
+  }
   return parts.length ? parts.join(' · ') : fallback
 }
 

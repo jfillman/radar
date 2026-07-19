@@ -160,6 +160,9 @@ function cellTone(p?: ProbeResult): StatusTone {
   if (!p.ok || p.tone === 'unhealthy') return 'unhealthy'
   if (p.tone === 'degraded') return 'degraded'
   if (p.tone === 'reached') return 'neutral'
+  // A TCP/TLS/DNS success proves the port accepts a connection, not that it serves
+  // HTTP 2xx - "port reachable", not "verified". Only a real HTTP-layer 2xx is green.
+  if (p.layer !== 'http') return 'neutral'
   return 'healthy'
 }
 
@@ -212,7 +215,7 @@ function plainReason(p: ProbeResult): string | undefined {
 // elevated surface so a not-tested cell never needs explaining.
 export type ReachPillState = { label: string; tone: StatusTone; code?: string; reason?: string; pulse?: boolean; muted?: boolean }
 
-function pillState(p: ProbeResult | undefined, opts: { testing?: boolean; naEntry?: boolean }): ReachPillState {
+export function pillState(p: ProbeResult | undefined, opts: { testing?: boolean; naEntry?: boolean }): ReachPillState {
   // An entry (front-door) host in a non-direct column: the proxy can't dial a hostname
   // and an in-cluster dial of it is a hairpin, so this vantage simply doesn't apply.
   if (opts.naEntry) return { label: 'n/a', tone: 'neutral', muted: true, reason: 'A front-door host is reached from outside the cluster, so this vantage doesn’t apply.' }
@@ -221,7 +224,18 @@ function pillState(p: ProbeResult | undefined, opts: { testing?: boolean; naEntr
   if (!p) return { label: 'Not tested', tone: 'neutral', muted: true }
   if (p.skipped) return { label: 'Not tested', tone: 'neutral', muted: true, reason: plainReason(p) }
   const tone = cellTone(p)
-  const label = tone === 'unhealthy' ? 'Unreachable' : tone === 'degraded' ? 'Degraded' : tone === 'neutral' ? 'Reached' : 'Verified'
+  // A neutral live cell is either an HTTP 3xx/4xx (reached, not verified) or a
+  // transport-only TCP/TLS/DNS success (port reachable). Only an HTTP 2xx is "Verified".
+  const label =
+    tone === 'unhealthy'
+      ? 'Unreachable'
+      : tone === 'degraded'
+        ? 'Degraded'
+        : tone === 'neutral'
+          ? p.tone === 'reached'
+            ? 'Reached'
+            : 'Port reachable'
+          : 'Verified'
   return { label, tone, code: httpCode(p), reason: plainReason(p) }
 }
 

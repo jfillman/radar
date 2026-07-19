@@ -17,7 +17,7 @@ import { AlertBanner } from '../ui/drawer-components'
  * backend stay untouched.
  */
 export function ReachabilityView(props: TracePanelProps) {
-  const { trace, isLoading, error, inClusterError, inClusterFallback, probeError, onRunProbes, onRefresh } = props
+  const { trace, isLoading, error, inClusterError, inClusterPartial, inClusterFallback, inClusterEvidenceOnly, inClusterEvidenceNote, probeError, onRunProbes, onRefresh, clusterChangedSinceTest } = props
   // A fetch that is still loading or has FAILED must not read as a definitive
   // "No reachability data." negative (ReachabilityDiagram's empty-trace fallback).
   // Mirror TracePanel: surface the loading state, and an error with a retry, so an
@@ -59,10 +59,40 @@ export function ReachabilityView(props: TracePanelProps) {
           )}
         </AlertBanner>
       )}
+      {/* "Couldn't run" is only honest when NOTHING ran. A run whose trailing
+          routes hit the pod cap / time budget still folded results into the
+          merged trace - title that "partially completed" with the status as
+          the body, or the banner lies over live results. */}
       {inClusterError && (
-        <AlertBanner variant="warning" title="In-cluster test couldn't run" message={inClusterError}>
+        <AlertBanner
+          variant="warning"
+          title={inClusterPartial ? 'In-cluster test partially completed' : "In-cluster test couldn't run"}
+          message={inClusterError}
+        >
           {inClusterFallback && <div className="mt-2"><CopyableCommand command={inClusterFallback} /></div>}
         </AlertBanner>
+      )}
+      {/* The run produced results but folded NONE (all override-mismatch /
+          throwaway-denied / guessed path) - route outcomes are unchanged. Without
+          this the run is a silent no-op and the "evidence only" status vanishes. */}
+      {!inClusterError && inClusterEvidenceOnly && (
+        <AlertBanner
+          variant="info"
+          title="In-cluster test ran as evidence only - route outcomes unchanged"
+          message={inClusterEvidenceNote || 'The in-cluster probe produced evidence but nothing that changes a declared route outcome.'}
+        >
+          {inClusterFallback && <div className="mt-2"><CopyableCommand command={inClusterFallback} /></div>}
+        </AlertBanner>
+      )}
+      {/* The staleness mask dropped a probe snapshot because the cluster's static
+          state changed underneath it - name that, or the silent fallback to live
+          state would read as the test's results vanishing. */}
+      {clusterChangedSinceTest && (
+        <AlertBanner
+          variant="info"
+          title="Cluster state changed since this test ran"
+          message="Showing live state; re-run to re-test."
+        />
       )}
       <ReachabilityDiagram
         trace={trace}
@@ -76,12 +106,13 @@ export function ReachabilityView(props: TracePanelProps) {
         probePath={props.probePath}
         onApplyProbePath={props.onApplyProbePath}
         runNonce={props.runNonce}
+        testedAt={props.testedAt}
       />
     </div>
   )
 }
 
-function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, probed, onRunInCluster, inClusterRunning, inClusterAllowed, probePath, onApplyProbePath, runNonce }: { trace?: Trace; onNavigate?: (ref: ResourceRef) => void; onRunProbes?: () => void; probeRequested?: boolean; probed?: boolean; onRunInCluster?: () => void; inClusterRunning?: boolean; inClusterAllowed?: boolean; probePath?: string; onApplyProbePath?: (p: string) => void; runNonce?: number }) {
+function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, probed, onRunInCluster, inClusterRunning, inClusterAllowed, probePath, onApplyProbePath, runNonce, testedAt }: { trace?: Trace; onNavigate?: (ref: ResourceRef) => void; onRunProbes?: () => void; probeRequested?: boolean; probed?: boolean; onRunInCluster?: () => void; inClusterRunning?: boolean; inClusterAllowed?: boolean; probePath?: string; onApplyProbePath?: (p: string) => void; runNonce?: number; testedAt?: Date }) {
   // Track the selection by ID, not by node object - the node is re-derived from the
   // CURRENT topology each render, so when a probe (e.g. the in-cluster test) updates
   // the trace, the open detail panel refreshes in place instead of showing stale data
@@ -132,7 +163,7 @@ function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, p
               <JustTestedNote nonce={runNonce} />
             </div>
             <VerdictCaveat caveat={v.caveat} detail={v.detail} />
-            {probed && <RequestIndicator path={probePath} onApplyProbePath={onApplyProbePath} />}
+            {probed && <RequestIndicator path={probePath} onApplyProbePath={onApplyProbePath} testedAt={testedAt} />}
           </div>
         </div>
         <ReachActions
@@ -283,7 +314,17 @@ export function podReach(probes: ProbeResult[]): { tone: StatusTone; text: strin
   if (failed) return { tone: 'unhealthy', text: failed.detail || failed.error || `${failed.layer.toUpperCase()} failed`, vantage }
   const order: ProbeLayer[] = ['http', 'tls', 'tcp', 'dns']
   const best = order.map((L) => live.find((p) => p.layer === L && p.ok)).find(Boolean)
-  return { tone: best?.tone === 'degraded' ? 'degraded' : 'healthy', text: best?.detail || 'reached', vantage }
+  // Only a real-traffic HTTP 2xx is "verified" (green). A reached 3xx/4xx (tone
+  // 'reached') or a transport-only TCP/TLS/DNS success proves the port answers, not
+  // that the real path serves - so it reads neutral ("reached, not verified"),
+  // matching the route pills, instead of a green dot the headline contradicts.
+  const tone: StatusTone =
+    best?.tone === 'degraded'
+      ? 'degraded'
+      : best?.layer === 'http' && best?.tone !== 'reached'
+        ? 'healthy'
+        : 'neutral'
+  return { tone, text: best?.detail || 'reached', vantage }
 }
 
 // PodReachabilityGrid renders one row per pod: its Kubernetes readiness plus whether
@@ -364,7 +405,7 @@ function HopDetailPanel({ node, namespace, onNavigate, onClose, inClusterRunning
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {ref?.name && onNavigate ? (
-            <button type="button" onClick={() => onNavigate(ref)} className="text-theme-accent hover:underline">Open ↗</button>
+            <button type="button" onClick={() => onNavigate(ref)} className="text-accent-text hover:underline">Open ↗</button>
           ) : null}
           {onClose ? (
             <button type="button" onClick={onClose} aria-label="Close detail" className="text-theme-text-tertiary hover:text-theme-text-primary">✕</button>

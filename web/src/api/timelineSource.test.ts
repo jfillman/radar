@@ -426,6 +426,21 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
     expect(mockApiFetch.mock.calls.at(-1)?.[0]).toContain('limit=3')
   })
 
+  // The local source keeps its historical 5-minute anti-entropy cadence; a
+  // per-source resyncMs below the ring age must force a full reload.
+  it('honors a per-source resync interval', async () => {
+    const flags = new Set<string>()
+    const cached = ring([ev({ id: 'e1' })])
+    cached.loadedAtMs = NOW - 6 * 60 * 1000
+    mockApiFetch.mockResolvedValueOnce(streamResponse([line(ev({ id: 'e2' })), end({ cursor: '9' })]))
+    await runRetainedRingFetch({
+      ringKey: 'k', cached, forceResync: flags, capMs: CAP, now: NOW,
+      resyncMs: 5 * 60 * 1000,
+    })
+    // 6 minutes old with a 5-minute cadence: a FULL window load, not a delta.
+    expect(mockApiFetch.mock.calls.at(-1)?.[0]).toContain('from=')
+  })
+
   // The ring is row-capped, so a namespace-scoped consumer must scope the
   // server query itself — client-side filtering alone would let other
   // namespaces' events consume the cap.

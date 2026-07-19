@@ -142,6 +142,10 @@ export interface TimelineSourceConfig {
 // 10k, matching the default in-process ring size).
 const LOCAL_RING_LIMIT = 10000
 
+// The local anti-entropy cadence: a full ring reload is a cheap same-host
+// request, so server-side evictions surface within minutes.
+const LOCAL_FULL_RESYNC_MS = 5 * 60 * 1000
+
 const LOCAL_HOUR_MS = 60 * 60 * 1000
 
 interface LocalHourSlot {
@@ -504,8 +508,16 @@ export async function runRetainedRingFetch(deps: {
   // Scope the server query when the consumer is namespace-scoped; see
   // namespacesParam.
   namespaces?: string[]
+  // Anti-entropy cadence: how stale the ring may get before a full reload
+  // (server-side evictions and retention prunes are invisible to deltas).
+  // The local binary reloads cheaply so it keeps its historical 5-minute
+  // cadence; a Cloud ring is a heavy transfer and resyncs hourly.
+  resyncMs?: number
 }): Promise<RetainedRing> {
-  const { ringKey, cached, forceResync, capMs, now, signal, ringLimit = RETAINED_RING_LIMIT, namespaces } = deps
+  const {
+    ringKey, cached, forceResync, capMs, now, signal,
+    ringLimit = RETAINED_RING_LIMIT, namespaces, resyncMs = RETAINED_FULL_RESYNC_MS,
+  } = deps
   // Anti-entropy: past the resync window (or on manual refresh), fall through
   // to a full reload regardless of cursor state — refreshing coverage,
   // recomputing the truncated flag, and dropping anything deltas can't
@@ -514,7 +526,7 @@ export async function runRetainedRingFetch(deps: {
   // resume) counts as due: the resync clock must fail toward refreshing, not
   // toward silently suspending anti-entropy for hours.
   const ringAge = cached != null ? now - cached.loadedAtMs : 0
-  const resyncDue = forceResync.has(ringKey) || (cached != null && (ringAge < 0 || ringAge > RETAINED_FULL_RESYNC_MS))
+  const resyncDue = forceResync.has(ringKey) || (cached != null && (ringAge < 0 || ringAge > resyncMs))
   if (cached && !resyncDue) {
     if (!cached.cursor) {
       return cached
@@ -593,8 +605,9 @@ export async function runRetainedRingFetch(deps: {
 function createRingEventsHook(opts: {
   capMs: number
   ringLimit: number
+  resyncMs: number
 }): (query: TimelineQuery) => TimelineEventsResult {
-  const { capMs, ringLimit } = opts
+  const { capMs, ringLimit, resyncMs } = opts
   return function useRingEvents(query: TimelineQuery): TimelineEventsResult {
     const enabled = query.enabled ?? true
     const queryClient = useQueryClient()
@@ -625,6 +638,7 @@ function createRingEventsHook(opts: {
           signal,
           ringLimit,
           namespaces: ringNamespacesKey ? ringNamespacesKey.split(',') : undefined,
+          resyncMs,
         }),
       enabled,
       refetchInterval: RETAINED_POLL_MS,
@@ -743,6 +757,7 @@ export const localSource: TimelineSource = {
     // pruning and 'all'-range resolution.
     capMs: RETAINED_MAX_DEPTH_DAYS * DAY_MS,
     ringLimit: LOCAL_RING_LIMIT,
+    resyncMs: LOCAL_FULL_RESYNC_MS,
   }),
 }
 
@@ -758,6 +773,7 @@ export function createRetainedSource(config: TimelineSourceConfig): TimelineSour
       capMs:
         Math.min(capabilities.maxRangeDays ?? DEFAULT_RETAINED_MAX_RANGE_DAYS, RETAINED_MAX_DEPTH_DAYS) * DAY_MS,
       ringLimit: RETAINED_RING_LIMIT,
+      resyncMs: RETAINED_FULL_RESYNC_MS,
     }),
     fetchOverview: fetchRetainedOverview,
   }

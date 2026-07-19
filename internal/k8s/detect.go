@@ -609,8 +609,10 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					switch rolloutLookup {
 					case rolloutLookupForbidden:
 						message += "; couldn't check Argo Rollouts (no RBAC to list rollouts.argoproj.io) - if this is a Rollout intentionally scaled to zero, ignore this"
-					case rolloutLookupTransient, rolloutLookupScopeUnverifiable:
-						message += "; couldn't fully verify the backing workload from this session's cache scope - re-check shortly"
+					case rolloutLookupTransient:
+						message += "; couldn't verify the backing workload yet (cache still syncing) - re-check shortly"
+					case rolloutLookupScopeUnverifiable:
+						message += "; the backing workload is outside this session's cache scope, so a scale-to-zero couldn't be confirmed - check the workload directly"
 					}
 				}
 				problems = append(problems, Detection{

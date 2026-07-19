@@ -32,6 +32,14 @@ func TestUncleanProbeStatus(t *testing.T) {
 	if !strings.Contains(got, "server error") {
 		t.Errorf("a reached-but-5xx result should say the backend returned a server error, got %q", got)
 	}
+	certFail := []probe.Result{
+		{Layer: probe.LayerTCP, OK: true, Tone: probe.ToneHealthy},
+		{Layer: probe.LayerTLS, OK: true, Tone: probe.ToneDegraded},
+	}
+	gotCert := uncleanProbeStatus(certFail)
+	if strings.Contains(gotCert, "server error") || !strings.Contains(gotCert, "certificate") {
+		t.Errorf("a degraded TLS result should read as a certificate problem, not a server error, got %q", gotCert)
+	}
 }
 
 // TestRunInClusterTests_NilClientIsHonest: with no impersonated client in context,

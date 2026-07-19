@@ -291,7 +291,7 @@ func fqdnDialTarget(target, namespace string) string {
 // pod couldn't connect - NetworkPolicy / mesh mTLS) reads differently than a
 // backend that answered with a server error (5xx), which the pod DID reach.
 func uncleanProbeStatus(results []probe.Result) string {
-	reachedButDegraded := false
+	degradedDetail := ""
 	for _, p := range results {
 		if p.Skipped {
 			continue
@@ -299,12 +299,19 @@ func uncleanProbeStatus(results []probe.Result) string {
 		if !p.OK {
 			return "in-cluster probe from a throwaway pod didn't get through - this can differ from real client traffic (source-scoped NetworkPolicy / mesh mTLS), so it's not treated as a confirmed failure"
 		}
-		if p.Tone == probe.ToneDegraded {
-			reachedButDegraded = true
+		if p.Tone == probe.ToneDegraded && degradedDetail == "" {
+			// ToneDegraded covers both an HTTP server error and a TLS/certificate
+			// problem - the pod reached a server either way, but the two read very
+			// differently, so name the one that actually happened.
+			if p.Layer == probe.LayerTLS {
+				degradedDetail = "the TLS handshake had a certificate problem"
+			} else {
+				degradedDetail = "it returned a server error"
+			}
 		}
 	}
-	if reachedButDegraded {
-		return "in-cluster probe reached the backend but it returned a server error - kept informational (the throwaway pod's identity/path/auth can differ from real clients), so it's not folded into the route outcome"
+	if degradedDetail != "" {
+		return "in-cluster probe reached the backend but " + degradedDetail + " - kept informational (the throwaway pod's identity/path/auth can differ from real clients), so it's not folded into the route outcome"
 	}
 	return "in-cluster probe result was inconclusive - kept informational, not folded into the route outcome"
 }

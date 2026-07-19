@@ -200,10 +200,21 @@ func stampInClusterProbes(tr *trace.Trace, tests []reachability.InClusterTestRes
 				if pr.Path == "" {
 					pr.Path = probe.PathData
 				}
-				if !pr.Skipped && !pr.OK {
+				// A throwaway-pod result is kept informational, never a confident
+				// condemnation - its identity/path/auth can differ from real clients.
+				// Demote BOTH a failed connect and a reached-but-degraded response
+				// (OK=true, ToneDegraded - a 5xx or TLS/cert problem) to a skip, so
+				// the matrix doesn't paint the path degraded when the fold logic
+				// deliberately withheld it. A folded (clean) result never carries a
+				// degraded probe, so this only touches unfolded results.
+				if !pr.Skipped && (!pr.OK || pr.Tone == probe.ToneDegraded) {
 					pr.Skipped = true
 					if pr.Reason == "" {
-						pr.Reason = "in-cluster probe from a throwaway pod didn't get through - this can differ from real client traffic (source-scoped NetworkPolicy / mesh mTLS), so it's not treated as a confirmed failure"
+						if pr.OK {
+							pr.Reason = "in-cluster probe from a throwaway pod reached the backend but got a degraded response (a server error, or a TLS/certificate problem) - the pod's identity/path/auth can differ from real clients, so it's kept informational, not a confirmed failure"
+						} else {
+							pr.Reason = "in-cluster probe from a throwaway pod didn't get through - this can differ from real client traffic (source-scoped NetworkPolicy / mesh mTLS), so it's not treated as a confirmed failure"
+						}
 					}
 				}
 				tr.Downstream[hi].Probes = append(tr.Downstream[hi].Probes, pr)

@@ -128,7 +128,15 @@ func runInClusterTests(ctx context.Context, typed kubernetes.Interface, image st
 		// explicit override also clears PathGuessed - the operator chose this path,
 		// it is not a guessed concretization of a pattern.
 		req := *r.InClusterRequest
-		declaredPath := NormalizeProbePath(req.Path)
+		// Every probe path is sanitized before it reaches the Job (strip CR/LF and
+		// other control characters, force a single leading slash) - not only the
+		// operator override. A raw declared path from a route spec must not reach
+		// the probe un-normalized.
+		req.Path = NormalizeProbePath(req.Path)
+		if req.Path == "" {
+			req.Path = "/"
+		}
+		declaredPath := req.Path
 		// An override tests ONE specific request. Only when it equals this route's
 		// own declared path is the probe evidence about the route's declared
 		// traffic - otherwise a clean probe of the override path would fold under
@@ -136,8 +144,12 @@ func runInClusterTests(ctx context.Context, typed kubernetes.Interface, image st
 		// paths that were never dialed.
 		overrideMismatch := false
 		if override != "" {
-			overrideMismatch = override != declaredPath
-			req.Path = override
+			normalizedOverride := NormalizeProbePath(override)
+			if normalizedOverride == "" {
+				normalizedOverride = "/"
+			}
+			overrideMismatch = normalizedOverride != declaredPath
+			req.Path = normalizedOverride
 			req.PathGuessed = false
 		}
 		// For a cross-namespace backend (Gateway API backendRef into another ns)

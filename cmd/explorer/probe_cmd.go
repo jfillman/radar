@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skyhook-io/radar/internal/trace"
 	"github.com/skyhook-io/radar/pkg/probe"
 )
 
@@ -68,9 +69,9 @@ func runProbeCommand(args []string) int {
 		results = append(results, probe.TLS(ctx, *target, h, vantage))
 	}
 	if want["http"] {
-		reqPath := *path
-		if !strings.HasPrefix(reqPath, "/") {
-			reqPath = "/" + reqPath
+		reqPath := trace.SanitizeHTTPPath(*path)
+		if reqPath == "" {
+			reqPath = "/"
 		}
 		results = append(results, probe.HTTP(ctx, fmt.Sprintf("%s://%s%s", *scheme, *target, reqPath), h, vantage))
 	}

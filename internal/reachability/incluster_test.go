@@ -93,6 +93,31 @@ func TestRunInClusterTests_PathOverrideThreads(t *testing.T) {
 	}
 }
 
+// TestRunInClusterTests_DeclaredPathSanitized pins that EVERY probe path is
+// sanitized before it reaches the Job - not only the operator override. A raw
+// declared path carrying CR/LF (a malformed route spec) must reach the runner
+// with the control characters stripped and a leading slash forced.
+func TestRunInClusterTests_DeclaredPathSanitized(t *testing.T) {
+	calls := stubCleanProbe(t)
+	tr := &trace.Trace{
+		Routes: []trace.RouteResult{{
+			Route: "api", Target: "api:80", Outcome: trace.OutcomeReached, Confidence: trace.ConfidenceIndirect,
+			InClusterRequest: &trace.ProbeRequest{Scheme: "http", Path: "api/v1\r\nX-Injected: 1"},
+		}},
+	}
+	runInClusterTests(context.Background(), fake.NewSimpleClientset(), "img:test", tr, "prod", InClusterTestOptions{})
+	if len(*calls) != 1 {
+		t.Fatalf("want 1 probe call, got %d", len(*calls))
+	}
+	got := (*calls)[0].Path
+	if strings.ContainsAny(got, "\r\n") {
+		t.Errorf("declared path reached the runner with CR/LF unstripped: %q", got)
+	}
+	if got != "/api/v1X-Injected: 1" {
+		t.Errorf("declared path not sanitized as expected, got %q", got)
+	}
+}
+
 // stubCleanProbe replaces the per-route probe with a canned CLEAN result (no
 // probe pod, no cluster), restoring the real runner on cleanup. Returns the
 // recorded per-route RunOptions so tests can assert what would have been dialed.

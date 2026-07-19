@@ -13,6 +13,27 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
+// TestUncleanProbeStatus pins that the unclean-fold reason matches what actually
+// happened: a failed connect blames NetworkPolicy / mTLS, but a backend that
+// answered with a 5xx must NOT - the pod reached a server.
+func TestUncleanProbeStatus(t *testing.T) {
+	didntConnect := []probe.Result{{Layer: "tcp", OK: false}}
+	if got := uncleanProbeStatus(didntConnect); !strings.Contains(got, "didn't get through") {
+		t.Errorf("failed connect should read as a transport failure, got %q", got)
+	}
+	reached5xx := []probe.Result{
+		{Layer: "tcp", OK: true, Tone: probe.ToneHealthy},
+		{Layer: "http", OK: true, Tone: probe.ToneDegraded},
+	}
+	got := uncleanProbeStatus(reached5xx)
+	if strings.Contains(got, "didn't get through") || strings.Contains(got, "NetworkPolicy") {
+		t.Errorf("a reached-but-5xx result must not blame NetworkPolicy, got %q", got)
+	}
+	if !strings.Contains(got, "server error") {
+		t.Errorf("a reached-but-5xx result should say the backend returned a server error, got %q", got)
+	}
+}
+
 // TestRunInClusterTests_NilClientIsHonest: with no impersonated client in context,
 // the in-cluster run must report an honest per-route status + a copyable fallback
 // command - never panic, never silently drop the request.

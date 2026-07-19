@@ -590,7 +590,8 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				// components disabled, antrea on Autopilot, dormant staging) from
 				// a genuinely orphaned selector. Both stay warning, but an honest
 				// reason keeps the row from reading as a routing fault.
-				if zero, _ := scaledToZeroBackingWorkload(cache, svc); zero {
+				zero, rolloutLookup := scaledToZeroBackingWorkload(cache, svc)
+				if zero {
 					reason = ScaledToZeroReason
 					message = "selector matches a workload (Deployment/StatefulSet/Rollout) intentionally scaled to 0 replicas"
 					fingerprint = ScaledToZeroFingerprint
@@ -600,6 +601,17 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					// false lead for an operator who can see them with kubectl.
 					reason = "Selector matches only completed pods"
 					message = "selector matches finished Job pods, which are not routable endpoints"
+				} else {
+					// Couldn't confirm scale-to-zero: if the workload lookup was
+					// inconclusive (RBAC-denied, unsynced, or out-of-scope), say so
+					// rather than asserting a bare orphaned selector — the same honest
+					// framing the ready==0 path uses.
+					switch rolloutLookup {
+					case rolloutLookupForbidden:
+						message += "; couldn't check Argo Rollouts (no RBAC to list rollouts.argoproj.io) - if this is a Rollout intentionally scaled to zero, ignore this"
+					case rolloutLookupTransient, rolloutLookupScopeUnverifiable:
+						message += "; couldn't fully verify the backing workload from this session's cache scope - re-check shortly"
+					}
 				}
 				problems = append(problems, Detection{
 					Kind:            "Service",

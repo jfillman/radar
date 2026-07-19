@@ -196,12 +196,12 @@ func runInClusterTests(ctx context.Context, typed kubernetes.Interface, image st
 			res.FallbackCommand = fallback
 		case !inClusterClean(results):
 			// The throwaway probe pod has a DIFFERENT identity than the real client,
-			// so a source-scoped NetworkPolicy or mesh mTLS can deny it while real
-			// traffic flows. Never let that escalate the static verdict to a
-			// confident broken/unreachable - keep the failed probe informational and
-			// don't fold it into the route outcome.
+			// so its result stays informational and is never folded into the route
+			// outcome - but the reason must match what actually happened: a failed
+			// connect (NetworkPolicy / mesh mTLS) reads differently than a backend
+			// that answered with a 5xx.
 			res.Results = results
-			res.Status = "in-cluster probe from a throwaway pod didn't get through - this can differ from real client traffic (source-scoped NetworkPolicy / mesh mTLS), so it's not treated as a confirmed failure"
+			res.Status = uncleanProbeStatus(results)
 			res.FallbackCommand = FallbackCommand(opts)
 		case overrideMismatch:
 			// The clean probe tested the operator's custom path, not this route's
@@ -286,6 +286,29 @@ func fqdnDialTarget(target, namespace string) string {
 // reach: at least one non-skipped probe succeeded and none failed. Only a clean
 // result is folded into the route verdict - a probe failure from a throwaway pod
 // must never escalate the static verdict to a confident unreachable.
+// uncleanProbeStatus explains WHY an in-cluster probe result was not folded, with
+// the reason matching what actually happened: a transport failure (the throwaway
+// pod couldn't connect - NetworkPolicy / mesh mTLS) reads differently than a
+// backend that answered with a server error (5xx), which the pod DID reach.
+func uncleanProbeStatus(results []probe.Result) string {
+	reachedButDegraded := false
+	for _, p := range results {
+		if p.Skipped {
+			continue
+		}
+		if !p.OK {
+			return "in-cluster probe from a throwaway pod didn't get through - this can differ from real client traffic (source-scoped NetworkPolicy / mesh mTLS), so it's not treated as a confirmed failure"
+		}
+		if p.Tone == probe.ToneDegraded {
+			reachedButDegraded = true
+		}
+	}
+	if reachedButDegraded {
+		return "in-cluster probe reached the backend but it returned a server error - kept informational (the throwaway pod's identity/path/auth can differ from real clients), so it's not folded into the route outcome"
+	}
+	return "in-cluster probe result was inconclusive - kept informational, not folded into the route outcome"
+}
+
 func inClusterClean(results []probe.Result) bool {
 	sawOK := false
 	for _, p := range results {

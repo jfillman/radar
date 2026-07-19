@@ -128,6 +128,8 @@ The route outcomes roll up to the verdict:
 
 A real-traffic `reached` non-2xx (e.g. a 404) reads as healthy **coverage** with a qualified headline - *"server reached, route not verified"*: the network path is reachable, but the route itself isn't confirmed.
 
+`verdict` is therefore a **coarse rollup**, not a promise of a verified 2xx. `healthy` means "no failing route was found" - it can include routes that were only *reached* (a 3xx/4xx, or a transport-only TCP/TLS connection) rather than verified, and can reflect a static-config-only assessment (`probe=false`) or partial coverage. Agents (and the MCP `diagnose` tool's `verdict` field) that need certainty must read each route's `outcome` (verified vs reached vs not-tested) and `confidence` (real vs indirect) plus the `headline` / `diagnosis` text before keying an action on `verdict` alone.
+
 The UI shows the verdict at the top of the panel with a one-sentence reason. Treat *unknown* as a pause-and-investigate signal - it means the trace can't honestly answer the question, not that everything is fine.
 
 ## MCP

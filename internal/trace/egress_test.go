@@ -275,3 +275,53 @@ func TestEgress_NamedPort53StaysSilent(t *testing.T) {
 		t.Error("named port to kube-system must not fire the DNS gap (uncertain)")
 	}
 }
+
+// S5: cluster DNS is primarily UDP, so a :53 port match only proves coverage when
+// the rule permits UDP. A TCP-only :53 rule permits at most a TCP fallback, not
+// primary UDP resolution, so it must NOT suppress the DNS-gap advisory.
+func TestEgress_Port53ProtocolAwareness(t *testing.T) {
+	kubeSystem := peerNS(sel("kubernetes.io/metadata.name", "kube-system"))
+	tests := []struct {
+		name    string
+		ports   []networkingv1.NetworkPolicyPort
+		wantCov dnsCoverage
+		wantGap bool
+	}{
+		{
+			name:    "UDP :53 -> covered (advisory suppressed)",
+			ports:   []networkingv1.NetworkPolicyPort{udp(53)},
+			wantCov: dnsCovered,
+			wantGap: false,
+		},
+		{
+			name:    "TCP-only :53 -> NOT covered (advisory fires)",
+			ports:   []networkingv1.NetworkPolicyPort{tcp(53)},
+			wantCov: dnsUncovered,
+			wantGap: true,
+		},
+		{
+			name:    "no ports (all protocols) -> covered",
+			ports:   nil,
+			wantCov: dnsCovered,
+			wantGap: false,
+		},
+		{
+			name:    "UDP + TCP :53 -> covered (UDP present)",
+			ports:   []networkingv1.NetworkPolicyPort{udp(53), tcp(53)},
+			wantCov: dnsCovered,
+			wantGap: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := egressPolicy(rule(tt.ports, kubeSystem))
+			s := summarizeEgress([]*networkingv1.NetworkPolicy{p}, egressTestPods)
+			if s.dnsCov != tt.wantCov {
+				t.Errorf("dnsCov = %d, want %d", s.dnsCov, tt.wantCov)
+			}
+			if s.dnsGapFires() != tt.wantGap {
+				t.Errorf("dnsGapFires = %v, want %v", s.dnsGapFires(), tt.wantGap)
+			}
+		})
+	}
+}

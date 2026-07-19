@@ -1155,8 +1155,12 @@ func downstreamBranches(hops []Hop) []branchSpan {
 	var spans []branchSpan
 	for i := 1; i < len(hops); i++ {
 		switch {
-		case strings.HasSuffix(hops[i].Edge, "->Service"):
+		case strings.HasSuffix(hops[i].Edge, "->Service") && hops[i].Resource.Name != "":
 			// An Ingress/Route backend: the Service hop + its optional Pods hop.
+			// The name guard excludes the anonymous cross-namespace-redacted
+			// aggregate hop: opening a branch for it would manufacture a blank
+			// route row (and, with probes, a false-verified one from the entry's
+			// front-door dials). Its rbac finding is the honest disclosure.
 			end := i + 1
 			if end < len(hops) && hops[end].Edge == "Service->Pods" {
 				end++

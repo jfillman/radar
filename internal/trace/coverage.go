@@ -2,6 +2,7 @@ package trace
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -200,8 +201,18 @@ func recountCoverage(t *Trace) {
 	if len(t.Routes) == 0 && len(t.NotTested) == 0 {
 		return
 	}
+	// The counting unit is coherent per HOST: a not-tested route and the raw
+	// host-level skip rows for its host describe the SAME gap. A host with ≥1
+	// not-tested route contributes its ROUTES (each not-tested route is its own
+	// gap - a sibling rule on the same host must not be swallowed) and its raw
+	// skip rows are absorbed entirely; a host with no matching route contributes
+	// its row count as-is.
 	skipped := 0
-	skippedRouteKeys := map[string]bool{}
+	// Host → count of raw non-benign skip rows. Keyed on the host
+	// (RouteSkip.Route is a probe target like "shop.example.com" or
+	// "host:port"); the not-tested route below carries the same host, so the
+	// two key spaces line up and the absorption actually fires.
+	skipRowsByHost := map[string]int{}
 	for _, s := range t.NotTested {
 		// Benign skips (sampled identical pods, duplicate default backend) lose no
 		// coverage by design - counting them would downgrade a fully-tested route
@@ -210,13 +221,11 @@ func recountCoverage(t *Trace) {
 			continue
 		}
 		skipped++
-		// Key on the host (RouteSkip.Route is a probe target like "shop.example.com"
-		// or "host:port"); the not-tested route below carries the same host in its
-		// Route label, so the two key spaces line up and the dedup actually fires.
 		if h := routeHostKey(s.Route); h != "" {
-			skippedRouteKeys[h] = true
+			skipRowsByHost[h]++
 		}
 	}
+	consumedHosts := map[string]bool{}
 	cov := Coverage{}
 	for _, r := range t.Routes {
 		switch r.Outcome {
@@ -228,12 +237,17 @@ func recountCoverage(t *Trace) {
 			cov.Failed++
 		case OutcomeNotTested:
 			// A route whose only evidence was a DNS resolve (transport probes
-			// skipped from this vantage) is a coverage gap. Count it once - if its
-			// skipped transport-probe rows are already in NotTested (matched by host),
-			// the route is already represented, so don't double-count it here.
-			if h := routeResultHostKey(r); h == "" || !skippedRouteKeys[h] {
-				skipped++
+			// skipped from this vantage) is a coverage gap. The first not-tested
+			// route on a host consumes ALL of that host's raw skip rows (they
+			// describe the same untested front door); subsequent sibling routes on
+			// the host just count themselves.
+			if h := routeResultHostKey(r); h != "" && !consumedHosts[h] {
+				if n := skipRowsByHost[h]; n > 0 {
+					skipped -= n
+					consumedHosts[h] = true
+				}
 			}
+			skipped++
 		default:
 			cov.Tested++
 		}
@@ -261,10 +275,17 @@ func InClusterResultKey(route, target, targetNamespace string) string {
 // the whole projection stays consistent. Benign (intentional scale-to-0) routes
 // are left untouched - they are deliberately dormant, not a path to confirm.
 // Routes with no in-cluster result keep their prior (proxy/static) outcome.
+//
+// A run that folded NOTHING (nil/empty map, or no key matching a route) leaves the
+// trace completely unchanged: the runner returns an empty map for every degraded
+// case (impersonation failure, probe cap, unclean throwaway-pod probe, guessed
+// path), and a test that produced no evidence must not move a verdict, prune a
+// skip row, or clear a reason.
 func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 	if t == nil {
 		return
 	}
+	folded := false
 	for i := range t.Routes {
 		if t.Routes[i].Benign {
 			continue
@@ -282,6 +303,10 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 		rr.InClusterRequest = t.Routes[i].InClusterRequest
 		rr.TargetNamespace = t.Routes[i].TargetNamespace
 		t.Routes[i] = rr
+		folded = true
+	}
+	if !folded {
+		return
 	}
 	// A route that was only DNS-resolvable from the laptop/proxy vantage carries a
 	// SkipClassVantage "run radar in-cluster" row in NotTested. When the live pass
@@ -338,6 +363,13 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 		// fresh verdict re-explains (or leaves it empty when there's nothing to explain).
 		t.Reason = ""
 		t.Verdict, t.BrokenAt = computeVerdict(t)
+		// Mirror BuildTraceWithOptions: computeVerdict reads only static findings,
+		// while probe-failure evidence (a failed entry front-door dial) lives ONLY
+		// in the hop probes and reaches the verdict via reviseVerdictWithProbes.
+		// Without this re-run, a clean backend fold would silently discard the
+		// entry-hop failure and flip a broken front door to healthy - a backend-only
+		// in-cluster success must never vouch for the entry segment.
+		t.Verdict, t.BrokenAt = reviseVerdictWithProbes(t)
 	}
 	// BrokenAt may have moved (a live confirmation cleared an earlier break);
 	// recountCoverage never refreshes BrokenRoute, so re-derive it the same way
@@ -879,6 +911,16 @@ func CoverageVerdict(t *Trace) string {
 		}
 		return VerdictDegraded
 	}
+	if c.Skipped > 0 {
+		// A real pass exists AND nothing failed, but some intended routes were never
+		// actually tested (budget exhausted, vantage-skipped from here, or otherwise
+		// couldn't-test). recountCoverage already excludes by-design BENIGN skips from
+		// Coverage.Skipped (SkipClassBenign is dropped), so a positive count is a
+		// genuine coverage gap - a non-benign route whose real path was never
+		// confirmed. "healthy" beside a "· N not tested" headline would over-claim, so
+		// the honest verdict is unknown: partial coverage, not a confident green.
+		return VerdictUnknown
+	}
 	return VerdictHealthy
 }
 
@@ -1038,20 +1080,27 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 		if strings.HasPrefix(backend.Edge, "Gateway->") {
 			continue
 		}
-		labels := routeLabelsForBackend(entry, backend.Resource.Name, backend.Resource.Namespace)
-		routeID := strings.Join(labels, ", ")
-		if routeID == "" {
-			routeID = backend.Resource.Name
+		// ONE RouteResult PER declared host+path rule (never joined): each rule is
+		// its own intended route with its own fold key, so an in-cluster result for
+		// /web can never vouch for a sibling /admin that shares the backend (the
+		// InClusterResultKey invariant). Fallback when no declared rule is readable
+		// (nil entry Config, or rules that don't name this backend): the backend
+		// name, scoped to every port the entry declares for it.
+		rules := ruleRoutesForBackend(entry, backend.Resource.Name, backend.Resource.Namespace, backend.Config)
+		if len(rules) == 0 {
+			rules = []ruleRoute{{label: backend.Resource.Name, ports: backendDeclaredPorts(entry, backend.Resource.Name, backend.Resource.Namespace, backend.Config)}}
 		}
 		// A drained (explicit weight-0) backend carries no traffic by design - it
 		// was traced informationally and never probed. Record it as a benign skip
 		// (no coverage lost) instead of a coverage gap or a failed route.
 		if isDrainedBackendHop(backend) {
-			unprobed = append(unprobed, RouteSkip{
-				Route:       routeID,
-				Reason:      "backend is weighted to 0 (drained / canary-cutover) - serves no traffic by design",
-				ReasonClass: SkipClassBenign,
-			})
+			for _, rr := range rules {
+				unprobed = append(unprobed, RouteSkip{
+					Route:       rr.label,
+					Reason:      "backend is weighted to 0 (drained / canary-cutover) - serves no traffic by design",
+					ReasonClass: SkipClassBenign,
+				})
+			}
 			continue
 		}
 		target := backend.Resource.Name
@@ -1061,34 +1110,49 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 		// A KNOWN static break (missing backend, critical finding) is a FAILED
 		// route REGARDLESS of whether the shared front door dialed OK - a working
 		// front door doesn't make a route to a non-existent backend reachable.
+		// Every rule pointing at the broken backend is genuinely broken.
 		if ev, broken := branchKnownBreak(t, entry, b); broken {
-			out = append(out, RouteResult{Route: routeID, Target: target, Outcome: OutcomeUnreachable, Evidence: ev})
+			for _, rr := range rules {
+				out = append(out, RouteResult{Route: rr.label, Target: target, Outcome: OutcomeUnreachable, Evidence: ev})
+			}
 			continue
 		}
 		// Front-door (entry) host dials are shared, port-agnostic context for this
-		// backend's routes; the backend Service hop's probes carry the per-port
-		// outcome; the Pods hop sits behind the Service → localization. Scope to
-		// the port(s) the rules declare for this backend (an Ingress route targets
-		// a specific port) - empty/unresolvable scope means all probed ports.
+		// backend's routes (scoped to the rule's own host); the backend Service
+		// hop's probes carry the per-port outcome; the Pods hop sits behind the
+		// Service → localization. Scope to the port(s) THIS rule declares for the
+		// backend - empty/unresolvable scope means all probed ports.
 		end := b.end
 		if end > len(t.Downstream) {
 			end = len(t.Downstream)
 		}
-		shared := entryProbesForHosts(entry, hostsOf(labels))
 		podLoc := factsFromProbes(downstreamProbes(t.Downstream[b.start+1 : end]))
-		outcomeProbes := append(append([]probe.Result{}, shared...), backend.Probes...)
-		scope := backendDeclaredPorts(entry, backend.Resource.Name, backend.Resource.Namespace, backend.Config)
-		routes := routesByPort(routeID, backend.Resource.Name, target, outcomeProbes, scope, podLoc)
-		if len(routes) > 0 {
-			setTargetNamespace(routes, backend.Resource.Namespace)
-			markBenignScaleZero(routes, backend)
-			host, path := firstRuleHostPath(entry, backend.Resource.Name, backend.Resource.Namespace)
-			attachInClusterRequest(routes, host, path, backend.Config)
-			out = append(out, routes...)
-			continue
+		// Scope front-door dials to the rule's own declared host only on a
+		// multi-host entry, where sibling hosts' dials would cross-contaminate
+		// this rule's outcome. A single-host entry's dials all belong to its one
+		// host, and the fallback rule (no readable declared rule) can't be
+		// scoped - both pass "" so every entry probe applies.
+		multiHost := entry.Config != nil && len(entry.Config.Hostnames) > 1
+		for _, rr := range rules {
+			scopeHost := ""
+			if multiHost {
+				scopeHost = rr.host
+			}
+			shared := entryProbesForHost(entry, scopeHost)
+			outcomeProbes := append(append([]probe.Result{}, shared...), backend.Probes...)
+			routes := routesByPort(rr.label, backend.Resource.Name, target, outcomeProbes, rr.ports, podLoc)
+			if len(routes) > 0 {
+				setTargetNamespace(routes, backend.Resource.Namespace)
+				markBenignScaleZero(routes, backend)
+				// Each route carries ITS OWN rule's host+path - the request must test
+				// the exact thing this route declares, never a sibling's.
+				attachInClusterRequest(routes, rr.host, rr.path, backend.Config)
+				out = append(out, routes...)
+				continue
+			}
+			// Not a known break and no probe result → a genuine coverage gap.
+			unprobed = append(unprobed, RouteSkip{Route: rr.label, Reason: "route not actively tested", ReasonClass: SkipClassCoverage})
 		}
-		// Not a known break and no probe result → a genuine coverage gap.
-		unprobed = append(unprobed, RouteSkip{Route: routeID, Reason: "route not actively tested", ReasonClass: SkipClassCoverage})
 	}
 	// A Gateway subject's attached routes were all skipped above (each is its own
 	// entry path). Surface the Gateway's OWN front-door reachability as the route
@@ -1208,6 +1272,13 @@ func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Re
 		rid := routeID
 		if multi {
 			rid = target // distinguish multiple ports of the same backend
+			if routeID != "" && routeID != backendName {
+				// A host+path rule label with multiple declared ports: keep the rule
+				// identity in the route ID - the bare target would collide with a
+				// sibling rule's same-port route and break the per-route fold-key
+				// invariant (InClusterResultKey).
+				rid = routeID + " · " + target
+			}
 		}
 		if r, ok := emit(rid, target, ps); ok {
 			out = append(out, r)
@@ -1468,62 +1539,103 @@ func routeFromProbes(routeID, target string, probes []probe.Result) (RouteResult
 // HTTP was reached but the gateway couldn't reach its backend) and is empty for a
 // reachable outcome.
 func worstOutcome(probes []probe.Result) (outcome, evidence, failedLayer string) {
-	httpVerified := false
-	transportReached := false // a non-DNS layer actually confirmed reachability
-	for _, p := range probes {
-		detail := probeDetail(p)
-		if !p.OK || p.Tone == probe.ToneUnhealthy {
-			// The failing layer names where the path broke: a TCP connect, a TLS
-			// handshake, or an HTTP request that got no response back.
-			return OutcomeUnreachable, detail, string(p.Layer)
+	// Precedence is decided over the WHOLE set, never first-hit, so the result is
+	// invariant under probe reordering. The deciding probe within each class is
+	// chosen deterministically: failures/degraded prefer the EARLIEST network
+	// layer (the root break - dns < tcp < tls < http; an HTTP failure behind a
+	// failed TCP is a consequence, not the cause), successes prefer the LATEST
+	// (most conclusive) layer, with target+detail tiebreaks.
+	var failed, degraded, verified, reached, dnsOnly *probe.Result
+	better := func(cur *probe.Result, p *probe.Result, preferEarly bool) bool {
+		if cur == nil {
+			return true
 		}
-		if p.Tone == probe.ToneDegraded {
-			// A degraded probe still reached the responder. Name the layer honestly.
-			switch p.Layer {
-			case probe.LayerTLS:
-				// A cert verification failure (expired / wrong host). A valid cert that
-				// only expires soon is NOT degraded - it stays reachable (probe.go).
-				return OutcomeServerError, detail, "tls"
-			case probe.LayerHTTP:
-				// A 502/504: HTTP was reached (a response came back), whose meaning is
-				// that this gateway couldn't reach its upstream - an upstream fault,
-				// never an HTTP failure.
-				return OutcomeServerError, detail, "upstream"
-			default:
-				// No other layer sets ToneDegraded today; name the layer rather than
-				// silently mislabeling a future one as "upstream".
-				return OutcomeServerError, detail, string(p.Layer)
+		if a, b := layerRank(cur.Layer), layerRank(p.Layer); a != b {
+			if preferEarly {
+				return b < a
 			}
+			return b > a
 		}
-		if p.Layer == probe.LayerDNS {
+		if cur.Target != p.Target {
+			return p.Target < cur.Target
+		}
+		return probeDetail(*p) < probeDetail(*cur)
+	}
+	pick := func(cur **probe.Result, p *probe.Result, preferEarly bool) {
+		if better(*cur, p, preferEarly) {
+			*cur = p
+		}
+	}
+	for i := range probes {
+		p := &probes[i]
+		switch {
+		case !p.OK || p.Tone == probe.ToneUnhealthy:
+			pick(&failed, p, true)
+		case p.Tone == probe.ToneDegraded:
+			pick(&degraded, p, true)
+		case p.Layer == probe.LayerDNS:
 			// A name resolving is not transport reachability. Record it as evidence
 			// but never let a DNS-only success read as "server reached" - that
 			// overclaims reachability from a name lookup (the host may be internal /
 			// split-horizon with TCP/TLS/HTTP skipped from this vantage).
-			if evidence == "" {
-				evidence = detail
-			}
-			continue
-		}
-		if p.Tone == probe.ToneHealthy && p.Layer == probe.LayerHTTP {
-			httpVerified = true
-		}
-		transportReached = true
-		if evidence == "" {
-			evidence = detail
+			pick(&dnsOnly, p, true)
+		case p.Layer == probe.LayerHTTP && p.Tone == probe.ToneHealthy:
+			pick(&verified, p, false)
+		default:
+			pick(&reached, p, false)
 		}
 	}
-	if httpVerified {
-		return OutcomeVerified, evidence, ""
-	}
-	if transportReached {
+	switch {
+	case failed != nil:
+		// ANY transport failure condemns the set, regardless of where it sat in the
+		// slice. The failing layer names where the path broke: a TCP connect, a TLS
+		// handshake, or an HTTP request that got no response back.
+		return OutcomeUnreachable, probeDetail(*failed), string(failed.Layer)
+	case degraded != nil:
+		// A degraded probe still reached the responder. Name the layer honestly.
+		switch degraded.Layer {
+		case probe.LayerTLS:
+			// A cert verification failure (expired / wrong host). A valid cert that
+			// only expires soon is NOT degraded - it stays reachable (probe.go).
+			return OutcomeServerError, probeDetail(*degraded), "tls"
+		case probe.LayerHTTP:
+			// A 502/504: HTTP was reached (a response came back), whose meaning is
+			// that this gateway couldn't reach its upstream - an upstream fault,
+			// never an HTTP failure.
+			return OutcomeServerError, probeDetail(*degraded), "upstream"
+		default:
+			// No other layer sets ToneDegraded today; name the layer rather than
+			// silently mislabeling a future one as "upstream".
+			return OutcomeServerError, probeDetail(*degraded), string(degraded.Layer)
+		}
+	case verified != nil:
+		return OutcomeVerified, probeDetail(*verified), ""
+	case reached != nil:
 		// Reached the server (3xx/4xx) or only a transport layer (TCP/TLS)
 		// succeeded: reachable, but the exact HTTP route wasn't verified.
-		return OutcomeReached, evidence, ""
+		return OutcomeReached, probeDetail(*reached), ""
+	case dnsOnly != nil:
+		// Only DNS resolved (TCP/TLS/HTTP skipped for a vantage reason): name
+		// resolution alone is not server reachability - report not-tested.
+		return OutcomeNotTested, probeDetail(*dnsOnly), ""
 	}
-	// Only DNS resolved (TCP/TLS/HTTP skipped for a vantage reason): name
-	// resolution alone is not server reachability - report not-tested.
-	return OutcomeNotTested, evidence, ""
+	return OutcomeNotTested, "", ""
+}
+
+// layerRank orders probe layers by network depth (dns < tcp < tls < http) for
+// worstOutcome's deterministic deciding-probe selection.
+func layerRank(l probe.Layer) int {
+	switch l {
+	case probe.LayerDNS:
+		return 0
+	case probe.LayerTCP:
+		return 1
+	case probe.LayerTLS:
+		return 2
+	case probe.LayerHTTP:
+		return 3
+	}
+	return 4
 }
 
 // buildNotTested lists every distinct skip on the intended route (DOWNSTREAM
@@ -1609,32 +1721,54 @@ func probeDetail(p probe.Result) string {
 	return p.Error
 }
 
-// routeLabelsForBackend mirrors the TS backendRouteInfo (N4): the route
-// identities (host+path, host included only when the entry serves >1 host) that
-// select a given backend. Kept in sync with the UI so the matrix and the
-// headline name routes the same way.
-func routeLabelsForBackend(entry Hop, backendName, backendNS string) []string {
+// ruleRoute is ONE declared host+path rule selecting a backend - the unit of
+// route identity. label is the route's display/fold identity (host included only
+// when the entry serves >1 host); host+path build the route's OWN in-cluster
+// request so it tests exactly what this rule declares; ports are the backend
+// ports THIS rule resolves (empty when the rule doesn't pin one).
+type ruleRoute struct {
+	label string
+	host  string
+	path  string
+	ports []int32
+}
+
+// ruleRoutesForBackend derives the per-rule route identities that select a given
+// backend. Never joined: two rules sharing a backend stay two routes, each with
+// its own host+path, so an observation of one can never vouch for the other.
+// Duplicate labels (the same host+path declared twice for this backend) collapse
+// into one, merging their declared ports.
+func ruleRoutesForBackend(entry Hop, backendName, backendNS string, cfg *HopConfig) []ruleRoute {
 	if entry.Config == nil || backendName == "" {
 		return nil
 	}
 	multiHost := len(entry.Config.Hostnames) > 1
-	var labels []string
-	seen := map[string]bool{}
-	add := func(l string) {
-		if l != "" && !seen[l] {
-			seen[l] = true
-			labels = append(labels, l)
+	var out []ruleRoute
+	idx := map[string]int{}
+	add := func(label, host, path string, ports []int32) {
+		if label == "" {
+			return
 		}
+		if i, ok := idx[label]; ok {
+			out[i].ports = mergePorts(out[i].ports, ports)
+			return
+		}
+		idx[label] = len(out)
+		out = append(out, ruleRoute{label: label, host: host, path: path, ports: ports})
 	}
 	for _, rule := range entry.Config.Rules {
-		hasBackend := false
+		var ports []int32
+		matched := false
 		for _, b := range rule.Backends {
-			if backendRefMatches(b, backendName, entry.Resource.Namespace, backendNS) {
-				hasBackend = true
-				break
+			if !backendRefMatches(b, backendName, entry.Resource.Namespace, backendNS) {
+				continue
+			}
+			matched = true
+			if p := resolveBackendPort(b.Port, cfg); p > 0 {
+				ports = mergePorts(ports, []int32{p})
 			}
 		}
-		if !hasBackend {
+		if !matched {
 			continue
 		}
 		paths := rule.Paths
@@ -1644,8 +1778,9 @@ func routeLabelsForBackend(entry Hop, backendName, backendNS string) []string {
 		// Gateway-API routes keep hostnames at Config.Hostnames, not per-rule
 		// (ingressConfig sets rule.Hosts; routeConfig does not). Fall back to the
 		// entry's hostnames so a multi-host route still emits host-qualified
-		// labels - otherwise hostsOf() reads empty and every front-door host dial
-		// folds into each backend, cross-contaminating sibling hosts' outcomes.
+		// labels with the rule's own host - otherwise entryProbesForHost has no
+		// host to scope by and every front-door host dial folds into each
+		// backend, cross-contaminating sibling hosts' outcomes.
 		ruleHosts := rule.Hosts
 		if len(ruleHosts) == 0 {
 			ruleHosts = entry.Config.Hostnames
@@ -1653,14 +1788,29 @@ func routeLabelsForBackend(entry Hop, backendName, backendNS string) []string {
 		for _, p := range paths {
 			if multiHost && len(ruleHosts) > 0 {
 				for _, h := range ruleHosts {
-					add(routeLabel(h, p))
+					add(routeLabel(h, p), h, p, ports)
 				}
 			} else {
-				add(routeLabel("", p))
+				// Single-host entry: the label omits the host, but the in-cluster
+				// request still needs the declared Host header when one exists.
+				host := ""
+				if len(ruleHosts) > 0 {
+					host = ruleHosts[0]
+				}
+				add(routeLabel("", p), host, p, ports)
 			}
 		}
 	}
-	return labels
+	return out
+}
+
+func mergePorts(existing, add []int32) []int32 {
+	for _, p := range add {
+		if !slices.Contains(existing, p) {
+			existing = append(existing, p)
+		}
+	}
+	return existing
 }
 
 // attachInClusterRequest fills each route's best-guess in-cluster request from
@@ -1788,34 +1938,6 @@ func portFromTarget(target string, cfg *HopConfig) PortMap {
 	return PortMap{Port: num}
 }
 
-// firstRuleHostPath returns the first declared host+path that selects a backend,
-// the representative route for the in-cluster guess.
-func firstRuleHostPath(entry Hop, backendName, backendNS string) (host, path string) {
-	if entry.Config == nil {
-		return "", ""
-	}
-	for _, rule := range entry.Config.Rules {
-		for _, b := range rule.Backends {
-			if !backendRefMatches(b, backendName, entry.Resource.Namespace, backendNS) {
-				continue
-			}
-			if len(rule.Hosts) > 0 {
-				host = rule.Hosts[0]
-			} else if len(entry.Config.Hostnames) > 0 {
-				// Gateway-API routes keep their hostnames at spec.hostnames
-				// (Config.Hostnames), not on the per-rule match; without this the
-				// in-cluster request omits the Host/SNI a route declares.
-				host = entry.Config.Hostnames[0]
-			}
-			if len(rule.Paths) > 0 {
-				path = rule.Paths[0]
-			}
-			return host, path
-		}
-	}
-	return "", ""
-}
-
 // backendRefMatches reports whether a route BackendRef points at the given
 // backend hop. Names must match; namespaces must match too once the backend's
 // namespace is known - a BackendRef with no namespace defaults to the route's
@@ -1853,32 +1975,20 @@ func routeLabel(host, path string) string {
 	return path
 }
 
-// hostsOf extracts the host portion from route labels (the part before the
-// first "/"), so entry front-door probes can be matched to a backend's routes.
-func hostsOf(labels []string) map[string]bool {
-	hosts := map[string]bool{}
-	for _, l := range labels {
-		if i := strings.IndexByte(l, '/'); i > 0 {
-			hosts[l[:i]] = true
-		}
-	}
-	return hosts
-}
-
-// entryProbesForHosts returns the entry hop's front-door probes whose target
-// host is in the given set - the real-traffic dials that belong to a backend's
-// routes. When the entry serves a single host (hosts empty), all entry probes
-// apply.
-func entryProbesForHosts(entry Hop, hosts map[string]bool) []probe.Result {
+// entryProbesForHost returns the entry hop's front-door probes whose target
+// matches the given declared host - the real-traffic dials that belong to a
+// rule's routes. An empty host means every entry probe applies (single-host
+// entry, or a fallback rule with no declared host to scope by).
+func entryProbesForHost(entry Hop, host string) []probe.Result {
 	if len(entry.Probes) == 0 {
 		return nil
 	}
-	if len(hosts) == 0 {
+	if host == "" {
 		return entry.Probes
 	}
 	var out []probe.Result
 	for _, p := range entry.Probes {
-		if hosts[targetHost(p.Target)] {
+		if targetHost(p.Target) == host {
 			out = append(out, p)
 		}
 	}
@@ -1913,7 +2023,7 @@ func targetHost(target string) string {
 // routeResultHostKey recovers the front-door host a route's probes target, for
 // deduping a NotTested route against its own skipped probe rows (keyed by probe
 // Target host). A single-host route's Route label is path-only ("/api") because
-// routeLabelsForBackend omits the host when the entry serves one host, so
+// ruleRoutesForBackend omits the host when the entry serves one host, so
 // reading the host off the label yields "" and the dedup misfires - counting the
 // route AND its skip rows. The declared host lives on InClusterRequest (the same
 // concretized host the front-door probe dialed), so fall back to it.

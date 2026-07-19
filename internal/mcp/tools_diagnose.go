@@ -692,8 +692,18 @@ func networkTraceKind(kind string) (string, bool) {
 // No flat RelatedIssues: the per-hop Findings are the non-duplicated home for it.
 type networkDiagnoseResponse struct {
 	Subject trace.ResourceRef `json:"subject"`
-	Verdict string            `json:"verdict"` // kept until Wave 4 redefines verdict semantics
-	Reason  string            `json:"reason,omitempty"`
+	// Verdict is a coarse rollup enum (healthy | degraded | broken | unknown) that
+	// agents may key follow-up actions on. It is intentionally lossy: `healthy`
+	// means "no failing route was found" - it can include routes that were only
+	// REACHED (a 3xx/4xx response, or a transport-only TCP/TLS connection) rather
+	// than verified with a real 2xx, and can reflect a static-config-only
+	// assessment (probe=false) or partial coverage. Consumers that need certainty
+	// must read Routes[].Outcome (verified vs reached vs not-tested), each route's
+	// Confidence (real vs indirect), and the Summary.Headline / Diagnosis text
+	// rather than keying solely on Verdict. (Wire vocabulary reshape is deferred to
+	// a later wave; this field's meaning is unchanged here.)
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason,omitempty"`
 	// Diagnosis is the lead: the one finding that matters - cause, the named
 	// culprit, the next action - hoisted from path[] so the agent reads the
 	// "why + what next" without walking the hop chain. nil when there is

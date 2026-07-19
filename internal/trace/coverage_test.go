@@ -599,12 +599,177 @@ func TestWorstOutcome_FailedLayerNamesTheBrokenLayer(t *testing.T) {
 	}
 }
 
+// worstOutcome truth table + permutation invariance: precedence is decided over
+// the WHOLE probe set (any transport failure → unreachable; else any degraded →
+// server-error; else verified/reached/not-tested), and the same set shuffled
+// yields the identical (outcome, evidence, failedLayer) triple - slice order must
+// never pick the deciding probe.
+func TestWorstOutcome_PrecedencePermutationInvariant(t *testing.T) {
+	tcpFail := probe.Result{Layer: probe.LayerTCP, Target: "a:80", OK: false, Error: "connection refused"}
+	httpFail := probe.Result{Layer: probe.LayerHTTP, Target: "http://a/", OK: false, Error: "no response"}
+	http502 := probe.Result{Layer: probe.LayerHTTP, Target: "http://a/", OK: true, Tone: probe.ToneDegraded, Detail: "HTTP 502"}
+	tlsCert := probe.Result{Layer: probe.LayerTLS, Target: "a:443", OK: true, Tone: probe.ToneDegraded, Detail: "certificate expired"}
+	httpOK := probe.Result{Layer: probe.LayerHTTP, Target: "http://a/", OK: true, Tone: probe.ToneHealthy, Detail: "HTTP 200"}
+	http404 := probe.Result{Layer: probe.LayerHTTP, Target: "http://a/", OK: true, Tone: probe.ToneReached, Detail: "HTTP 404"}
+	tcpOK := probe.Result{Layer: probe.LayerTCP, Target: "a:80", OK: true, Tone: probe.ToneHealthy, Detail: "tcp ok"}
+	dnsOK := probe.Result{Layer: probe.LayerDNS, Target: "a", OK: true, Tone: probe.ToneHealthy, Detail: "resolved"}
+
+	cases := []struct {
+		name        string
+		probes      []probe.Result
+		outcome     string
+		evidence    string
+		failedLayer string
+	}{
+		// Precedence, not first-hit: a real transport failure ALWAYS wins over a
+		// degraded HTTP answer, regardless of probe order.
+		{"transport failure beats degraded", []probe.Result{http502, tcpFail}, OutcomeUnreachable, "connection refused", "tcp"},
+		{"transport failure beats verified", []probe.Result{httpOK, tcpFail}, OutcomeUnreachable, "connection refused", "tcp"},
+		{"multiple failures: earliest layer is the root break", []probe.Result{httpFail, tcpFail}, OutcomeUnreachable, "connection refused", "tcp"},
+		{"degraded beats verified", []probe.Result{httpOK, http502}, OutcomeServerError, "HTTP 502", "upstream"},
+		{"tls degraded names tls", []probe.Result{tcpOK, tlsCert}, OutcomeServerError, "certificate expired", "tls"},
+		{"verified with transport context", []probe.Result{dnsOK, tcpOK, httpOK}, OutcomeVerified, "HTTP 200", ""},
+		{"reached: 404 answered", []probe.Result{tcpOK, http404}, OutcomeReached, "HTTP 404", ""},
+		{"reached: transport only", []probe.Result{dnsOK, tcpOK}, OutcomeReached, "tcp ok", ""},
+		{"dns only is not reachability", []probe.Result{dnsOK}, OutcomeNotTested, "resolved", ""},
+	}
+	var permute func(ps []probe.Result, k int, visit func([]probe.Result))
+	permute = func(ps []probe.Result, k int, visit func([]probe.Result)) {
+		if k == len(ps) {
+			visit(ps)
+			return
+		}
+		for i := k; i < len(ps); i++ {
+			ps[k], ps[i] = ps[i], ps[k]
+			permute(ps, k+1, visit)
+			ps[k], ps[i] = ps[i], ps[k]
+		}
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ps := append([]probe.Result{}, c.probes...)
+			permute(ps, 0, func(p []probe.Result) {
+				o, e, l := worstOutcome(append([]probe.Result{}, p...))
+				if o != c.outcome || e != c.evidence || l != c.failedLayer {
+					t.Errorf("order %v: got (%q, %q, %q), want (%q, %q, %q)",
+						p, o, e, l, c.outcome, c.evidence, c.failedLayer)
+				}
+			})
+		})
+	}
+}
+
+// Route identity is per host+path rule, never joined: two rules (/web, /admin)
+// sharing one backend emit TWO RouteResults, each carrying its OWN rule's
+// in-cluster request - so each has its own fold key and testing /web can never
+// vouch for /admin.
+func TestBuildRoutes_PerRuleIdentityNotJoined(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "shop"},
+		BrokenAt: -1,
+		Downstream: []Hop{
+			{Resource: ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "shop"}, Edge: "entry:Ingress",
+				Config: &HopConfig{Hostnames: []string{"shop.example.com"}, Rules: []RouteRule{
+					{Hosts: []string{"shop.example.com"}, Paths: []string{"/web"}, Backends: []BackendRef{{Kind: "Service", Name: "web"}}},
+					{Hosts: []string{"shop.example.com"}, Paths: []string{"/admin"}, Backends: []BackendRef{{Kind: "Service", Name: "web"}}},
+				}}},
+			{Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "web"}, Edge: "Ingress->Service",
+				Config: &HopConfig{Ports: []PortMap{{Port: 80}}},
+				Probes: []probe.Result{{Layer: probe.LayerHTTP, Path: probe.PathData, Port: 80, OK: true, Tone: probe.ToneHealthy, Detail: "HTTP 200"}}},
+			{Resource: ResourceRef{Kind: "Pods", Namespace: "prod"}, Edge: "Service->Pods"},
+		},
+	}
+	routes, _ := buildRoutes(tr)
+	if len(routes) != 2 {
+		t.Fatalf("want 2 per-rule routes, got %d: %+v", len(routes), routes)
+	}
+	byRoute := map[string]RouteResult{}
+	for _, r := range routes {
+		byRoute[r.Route] = r
+	}
+	web, okW := byRoute["/web"]
+	admin, okA := byRoute["/admin"]
+	if !okW || !okA {
+		t.Fatalf("want routes /web and /admin (never a joined \"/web, /admin\"), got %+v", routes)
+	}
+	if web.Target != "web:80" || admin.Target != "web:80" {
+		t.Errorf("both rules share the backend target web:80, got %q / %q", web.Target, admin.Target)
+	}
+	if web.InClusterRequest == nil || web.InClusterRequest.Path != "/web" {
+		t.Errorf("/web request = %+v, want its own path /web", web.InClusterRequest)
+	}
+	if admin.InClusterRequest == nil || admin.InClusterRequest.Path != "/admin" {
+		t.Errorf("/admin request = %+v, want its own path /admin (never /web's)", admin.InClusterRequest)
+	}
+	k1 := InClusterResultKey(web.Route, web.Target, web.TargetNamespace)
+	k2 := InClusterResultKey(admin.Route, admin.Target, admin.TargetNamespace)
+	if k1 == k2 {
+		t.Errorf("fold keys collide (%q) - a result for one rule would vouch for its sibling", k1)
+	}
+}
+
 func TestCoverageVerdict_ZeroTestedIsNotHealthy(t *testing.T) {
 	// Healthy internal verdict but nothing actually tested (all skipped) - the
 	// "couldn't test any route" headline must not sit beside a confident healthy.
 	tr := &Trace{Verdict: VerdictHealthy, Coverage: &Coverage{Tested: 0, Skipped: 2}}
 	if v := CoverageVerdict(tr); v != VerdictUnknown {
 		t.Errorf("zero-tested = %q, want unknown", v)
+	}
+}
+
+// TestCoverageVerdict_UntestedRoutesTruthTable pins S2: a healthy internal verdict
+// may only ship as healthy when every non-benign intended route was actually
+// tested. A trace with a real pass but leftover non-benign coverage gaps
+// (budget-exhausted / vantage-skipped / couldn't-test) over-claims as healthy - the
+// honest verdict is unknown. By-design benign skips lose no coverage
+// (recountCoverage drops them from Coverage.Skipped), so a fully-tested-except-benign
+// trace stays healthy.
+func TestCoverageVerdict_UntestedRoutesTruthTable(t *testing.T) {
+	realPass := func(n int) []RouteResult {
+		rs := make([]RouteResult, n)
+		for i := range rs {
+			rs[i] = RouteResult{Outcome: OutcomeVerified, Confidence: ConfidenceReal}
+		}
+		return rs
+	}
+	tests := []struct {
+		name string
+		tr   *Trace
+		want string
+	}{
+		{
+			name: "all tested + pass -> healthy",
+			tr:   &Trace{Verdict: VerdictHealthy, Coverage: &Coverage{Tested: 5, Passed: 5}, Routes: realPass(5)},
+			want: VerdictHealthy,
+		},
+		{
+			name: "some pass + non-benign untested -> unknown (real coverage gap)",
+			tr:   &Trace{Verdict: VerdictHealthy, Coverage: &Coverage{Tested: 5, Passed: 5, Skipped: 5}, Routes: realPass(5)},
+			want: VerdictUnknown,
+		},
+		{
+			name: "all pass + only benign skips (already excluded from Skipped) -> healthy",
+			tr:   &Trace{Verdict: VerdictHealthy, Coverage: &Coverage{Tested: 5, Passed: 5, Skipped: 0}, Routes: realPass(5)},
+			want: VerdictHealthy,
+		},
+		{
+			name: "zero tested -> unknown",
+			tr:   &Trace{Verdict: VerdictHealthy, Coverage: &Coverage{Tested: 0, Skipped: 5}},
+			want: VerdictUnknown,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := CoverageVerdict(tt.tr)
+			if v != tt.want {
+				t.Errorf("CoverageVerdict = %q, want %q", v, tt.want)
+			}
+			// Idempotent: re-running on the stored verdict yields the same answer.
+			tt.tr.Verdict = v
+			if v2 := CoverageVerdict(tt.tr); v2 != tt.want {
+				t.Errorf("CoverageVerdict (rerun) = %q, want %q (must be idempotent)", v2, tt.want)
+			}
+		})
 	}
 }
 
@@ -1178,6 +1343,38 @@ func TestRecountCoverage_MultiHostNotTestedDedup(t *testing.T) {
 	}
 }
 
+// Per-rule siblings: ONE host-level skip row absorbs ONE not-tested route, not
+// every sibling on that host. Two untested rules (/web, /admin) with a single
+// host vantage-skip row are TWO coverage gaps - host-wide dedup must not hide
+// the second rule's gap.
+func TestRecountCoverage_HostSkipDoesNotSwallowSiblingRoutes(t *testing.T) {
+	tr := &Trace{
+		Routes: []RouteResult{
+			{
+				Route:            "/web",
+				Target:           "shop:80",
+				Outcome:          OutcomeNotTested,
+				InClusterRequest: &ProbeRequest{Host: "shop.example.com", Path: "/web"},
+			},
+			{
+				Route:            "/admin",
+				Target:           "shop:80",
+				Outcome:          OutcomeNotTested,
+				InClusterRequest: &ProbeRequest{Host: "shop.example.com", Path: "/admin"},
+			},
+		},
+		NotTested: []RouteSkip{{
+			Route:       "shop.example.com:443",
+			Reason:      "the entry path couldn't be reached from where Radar ran",
+			ReasonClass: SkipClassVantage,
+		}},
+	}
+	recountCoverage(tr)
+	if tr.Coverage.Skipped != 2 {
+		t.Errorf("Coverage.Skipped = %d, want 2 - the skip row absorbs one route; the sibling is its own gap", tr.Coverage.Skipped)
+	}
+}
+
 // A host-less not-tested route (subject/port identity, no front-door host) with no
 // matching skip row is still its own genuine gap - counted once.
 func TestRecountCoverage_HostlessNotTestedCountsOnce(t *testing.T) {
@@ -1191,5 +1388,168 @@ func TestRecountCoverage_HostlessNotTestedCountsOnce(t *testing.T) {
 	recountCoverage(tr)
 	if tr.Coverage.Skipped != 1 {
 		t.Errorf("Coverage.Skipped = %d, want 1 (genuine gap, no dedup partner)", tr.Coverage.Skipped)
+	}
+}
+
+// A cross-namespace-redacted aggregate backend hop (anonymous ResourceRef -
+// Kind Service, no name) must never open a route branch. A branch over it
+// manufactures a blank RouteSkip in the static case, and with front-door
+// probes present the nameless fallback rule folds EVERY entry probe into a
+// blank RouteResult that skips demoteSharedFrontDoor - a blank false-verified
+// row; N redacted backends also collapse into 1 row. The aggregate hop's
+// rbac:cross-namespace-redacted finding (which carries the count) is the
+// honest disclosure - routes and coverage must not manufacture rows for it.
+func TestComputeCoverage_RedactedAggregateBackendNoRouteRows(t *testing.T) {
+	base := func() *Trace {
+		return &Trace{
+			Subject:  ResourceRef{Kind: "HTTPRoute", Namespace: "prod", Name: "web"},
+			BrokenAt: -1,
+			Downstream: []Hop{
+				{Resource: ResourceRef{Group: "gateway.networking.k8s.io", Kind: "HTTPRoute", Namespace: "prod", Name: "web"},
+					Edge:   "entry:HTTPRoute",
+					Config: &HopConfig{Hostnames: []string{"shop.example.com"}}},
+				redactedAggregateHop(ResourceRef{Kind: "Service"}, "HTTPRoute->Service",
+					"This route references 2 backend Services in namespaces outside your access. Identities, config, and probe results are not shown."),
+			},
+		}
+	}
+
+	t.Run("static", func(t *testing.T) {
+		tr := base()
+		if got := len(downstreamBranches(tr.Downstream)); got != 0 {
+			t.Fatalf("downstreamBranches = %d spans, want 0 - the nameless aggregate must not open a branch", got)
+		}
+		computeCoverage(tr)
+		if len(tr.Routes) != 0 {
+			t.Errorf("static redacted-only trace manufactured route rows: %+v", tr.Routes)
+		}
+		for _, s := range tr.NotTested {
+			if s.Route == "" && s.Reason == "route not actively tested" {
+				t.Errorf("blank coverage-gap skip manufactured for the redacted aggregate: %+v", s)
+			}
+		}
+	})
+
+	t.Run("probed", func(t *testing.T) {
+		tr := base()
+		// The realistic probe shape for an HTTPRoute entry: its own hop carries
+		// the no-own-address skip; the healthy front-door dial stands in for any
+		// port-agnostic entry probe that must not leak into a nameless rule.
+		tr.Downstream[0].Probes = []probe.Result{
+			{Layer: probe.LayerTCP, Skipped: true, Reason: "route has no own address; reachability lives on parent Gateway and backend Service"},
+			{Layer: probe.LayerHTTP, Path: probe.PathData, Target: "http://shop.example.com/", OK: true, Tone: probe.ToneHealthy, Detail: "HTTP 200"},
+		}
+		computeCoverage(tr)
+		for _, r := range tr.Routes {
+			if r.Route == "" {
+				t.Errorf("blank route row manufactured for the redacted aggregate: %+v", r)
+			}
+			if r.Target == "" && r.Outcome == OutcomeVerified {
+				t.Errorf("false-verified target-less row for the redacted aggregate: %+v", r)
+			}
+		}
+	})
+}
+
+// A redacted aggregate alongside an IN-SCOPE backend: the named backend keeps
+// its per-rule routes; the aggregate contributes none.
+func TestBuildRoutes_RedactedAggregateAlongsideInScopeBackend(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "HTTPRoute", Namespace: "prod", Name: "web"},
+		BrokenAt: -1,
+		Downstream: []Hop{
+			{Resource: ResourceRef{Group: "gateway.networking.k8s.io", Kind: "HTTPRoute", Namespace: "prod", Name: "web"},
+				Edge: "entry:HTTPRoute",
+				Config: &HopConfig{Hostnames: []string{"shop.example.com"}, Rules: []RouteRule{
+					{Paths: []string{"/web"}, Backends: []BackendRef{{Kind: "Service", Name: "web", Port: "80"}}},
+				}}},
+			{Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "web"}, Edge: "HTTPRoute->Service",
+				Config: &HopConfig{Ports: []PortMap{{Port: 80}}},
+				Probes: []probe.Result{{Layer: probe.LayerHTTP, Path: probe.PathData, Port: 80, OK: true, Tone: probe.ToneHealthy, Detail: "HTTP 200"}}},
+			redactedAggregateHop(ResourceRef{Kind: "Service"}, "HTTPRoute->Service",
+				"This route references 1 backend Service in namespaces outside your access. Identities, config, and probe results are not shown."),
+		},
+	}
+	if got := len(downstreamBranches(tr.Downstream)); got != 1 {
+		t.Fatalf("downstreamBranches = %d spans, want 1 (the in-scope backend only)", got)
+	}
+	routes, unprobed := buildRoutes(tr)
+	if len(routes) != 1 || routes[0].Route != "/web" {
+		t.Fatalf("want exactly the in-scope /web route, got %+v", routes)
+	}
+	for _, s := range unprobed {
+		if s.Route == "" {
+			t.Errorf("blank skip manufactured for the redacted aggregate: %+v", s)
+		}
+	}
+}
+
+// Multi-host entry with a default-backend rule: only the rule's OWN host's
+// front-door dials fold into its outcome. The label "host (default backend)"
+// carries no '/', so deriving the host by re-parsing the label reads empty and
+// folds EVERY host's dials into the rule - a sibling host's failure would
+// condemn (or its success vouch for) a rule it never served.
+func TestBuildRoutes_MultiHostDefaultBackendScopedToOwnHost(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "shop"},
+		BrokenAt: -1,
+		Downstream: []Hop{
+			{Resource: ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "shop"}, Edge: "entry:Ingress",
+				Config: &HopConfig{Hostnames: []string{"a.example.com", "b.example.com"}, Rules: []RouteRule{
+					{Hosts: []string{"a.example.com"}, Paths: []string{"(default backend)"}, Backends: []BackendRef{{Kind: "Service", Name: "web", Port: "80"}}},
+				}},
+				Probes: []probe.Result{
+					{Layer: probe.LayerHTTP, Path: probe.PathData, Target: "http://a.example.com/", OK: true, Tone: probe.ToneHealthy, Detail: "HTTP 200"},
+					{Layer: probe.LayerTCP, Path: probe.PathData, Target: "b.example.com:80", OK: false, Error: "connect: connection refused"},
+				}},
+			{Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "web"}, Edge: "Ingress->Service",
+				Config: &HopConfig{Ports: []PortMap{{Port: 80}}}},
+		},
+	}
+	routes, _ := buildRoutes(tr)
+	if len(routes) != 1 {
+		t.Fatalf("want 1 route, got %+v", routes)
+	}
+	r := routes[0]
+	if r.Route != "a.example.com (default backend)" {
+		t.Fatalf("route = %q, want the host-qualified default-backend label", r.Route)
+	}
+	if r.Outcome != OutcomeVerified {
+		t.Errorf("outcome = %s (%s), want verified from a.example.com's own healthy dial - b.example.com's failure must not contaminate it", r.Outcome, r.Evidence)
+	}
+}
+
+// The skip-count unit is coherent per host: a host consumed by >=1 not-tested
+// route contributes its ROUTES (each not-tested route counts once) and its raw
+// skip rows are absorbed entirely; hosts with no matching route contribute
+// their row count.
+func TestRecountCoverage_SkipAbsorptionTruthTable(t *testing.T) {
+	row := func(target string) RouteSkip {
+		return RouteSkip{Route: target, Reason: "couldn't be reached from where Radar ran", ReasonClass: SkipClassVantage}
+	}
+	route := func(path string) RouteResult {
+		return RouteResult{Route: path, Target: "shop:80", Outcome: OutcomeNotTested,
+			InClusterRequest: &ProbeRequest{Host: "shop.example.com", Path: path}}
+	}
+	cases := []struct {
+		name   string
+		rows   []RouteSkip
+		routes []RouteResult
+		want   int
+	}{
+		{"2 rows + 2 sibling routes = 2", []RouteSkip{row("shop.example.com:80"), row("shop.example.com:443")}, []RouteResult{route("/web"), route("/admin")}, 2},
+		{"1 row + 2 sibling routes = 2", []RouteSkip{row("shop.example.com:443")}, []RouteResult{route("/web"), route("/admin")}, 2},
+		{"2 rows + 0 routes = 2", []RouteSkip{row("shop.example.com:80"), row("shop.example.com:443")}, nil, 2},
+		{"2 rows + 1 route = 1", []RouteSkip{row("shop.example.com:80"), row("shop.example.com:443")}, []RouteResult{route("/web")}, 1},
+		{"unrelated host's row stays counted", []RouteSkip{row("other.example.com:443")}, []RouteResult{route("/web")}, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tr := &Trace{Routes: c.routes, NotTested: c.rows}
+			recountCoverage(tr)
+			if tr.Coverage == nil || tr.Coverage.Skipped != c.want {
+				t.Errorf("Coverage.Skipped = %+v, want %d", tr.Coverage, c.want)
+			}
+		})
 	}
 }

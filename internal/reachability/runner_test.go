@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/skyhook-io/radar/pkg/probe"
 	authzv1 "k8s.io/api/authorization/v1"
@@ -141,7 +142,7 @@ func TestProbeTimeoutError_NamesTheCause(t *testing.T) {
 		}}, "ImagePullBackOff"},
 	}
 	for _, c := range cases {
-		got := probeTimeoutError(c.pod, nil).Error()
+		got := probeTimeoutError(c.pod, nil, 0).Error()
 		if !strings.Contains(got, c.want) {
 			t.Errorf("%s: error = %q, want it to mention %q", c.name, got, c.want)
 		}
@@ -152,6 +153,107 @@ func TestProbeTimeoutError_NamesTheCause(t *testing.T) {
 	}}
 	if r := podStartupBlock(healthy); r != "" {
 		t.Errorf("a finished init container should not block; got %q", r)
+	}
+}
+
+// TestProbeTimeoutError_ImagePullIsInfraFailure pins the image-pull
+// classification: the probe container failing to pull is probe INFRASTRUCTURE
+// failing to run - the message must read as couldn't-run/not-tested (never
+// "probe failed" or a bare timeout) and must name the --reachability-image
+// remedy. Scoped to the probe container: an injected sidecar's pull failure
+// stays on the generic sidecar-attribution path.
+func TestProbeTimeoutError_ImagePullIsInfraFailure(t *testing.T) {
+	for _, reason := range []string{"ImagePullBackOff", "ErrImagePull", "InvalidImageName", "ImageInspectError"} {
+		pod := &corev1.Pod{Status: corev1.PodStatus{
+			Phase:             corev1.PodPending,
+			ContainerStatuses: []corev1.ContainerStatus{{Name: "probe", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: reason}}}},
+		}}
+		got := probeTimeoutError(pod, nil, 0).Error()
+		if !strings.Contains(got, "couldn't run") || !strings.Contains(got, "NOT tested") {
+			t.Errorf("%s: must read as couldn't-run/not-tested, got %q", reason, got)
+		}
+		if !strings.Contains(got, reason) {
+			t.Errorf("%s: must name the kubelet reason, got %q", reason, got)
+		}
+		if !strings.Contains(got, "--reachability-image") {
+			t.Errorf("%s: must name the remedy flag, got %q", reason, got)
+		}
+		if strings.Contains(got, "probe pod failed") {
+			t.Errorf("%s: infra failure must not read as a probe FAILURE, got %q", reason, got)
+		}
+	}
+	// A sidecar's pull failure is NOT the probe infrastructure's fault - it keeps
+	// the generic sidecar attribution, without the private-registry remedy.
+	sidecar := &corev1.Pod{Status: corev1.PodStatus{
+		Phase:             corev1.PodPending,
+		ContainerStatuses: []corev1.ContainerStatus{{Name: "vault-agent", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff"}}}},
+	}}
+	got := probeTimeoutError(sidecar, nil, 0).Error()
+	if strings.Contains(got, "--reachability-image") || !strings.Contains(got, "sidecar") {
+		t.Errorf("sidecar pull failure must keep the sidecar attribution, got %q", got)
+	}
+	// A non-image-pull waiting reason on the probe container keeps the generic
+	// startup-block wording.
+	creating := &corev1.Pod{Status: corev1.PodStatus{
+		Phase:             corev1.PodPending,
+		ContainerStatuses: []corev1.ContainerStatus{{Name: "probe", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}}}},
+	}}
+	if got := probeTimeoutError(creating, nil, 0).Error(); strings.Contains(got, "--reachability-image") {
+		t.Errorf("non-pull waiting reason must not claim an image-pull cause, got %q", got)
+	}
+}
+
+// TestProbeTimeoutError_BudgetTightenedNamesTheBudget: a run that started with
+// less request budget than jobTimeout must attribute its expiry to the REQUEST
+// BUDGET, not to cluster slowness - "the pod was pending, try again" sends the
+// operator chasing a scheduling problem that doesn't exist. Pod-state detail is
+// kept when available; probe-infra image-pull failure still outranks the budget
+// framing (a full-length run would have failed the same way).
+func TestProbeTimeoutError_BudgetTightenedNamesTheBudget(t *testing.T) {
+	pending := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending}}
+	got := probeTimeoutError(pending, nil, 9*time.Second).Error()
+	for _, want := range []string{"request time budget", "9s granted", "re-run"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("budget-tightened timeout must mention %q, got %q", want, got)
+		}
+	}
+	if !strings.Contains(got, "pending") {
+		t.Errorf("pod-state detail must be kept when available, got %q", got)
+	}
+	if strings.Contains(got, "try again, or run the command below") {
+		t.Errorf("budget expiry must not read as a generic cluster timeout, got %q", got)
+	}
+
+	// Startup-block detail (e.g. unschedulable) is kept alongside the budget framing.
+	unschedulable := &corev1.Pod{Status: corev1.PodStatus{
+		Phase:      corev1.PodPending,
+		Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Message: "0/1 nodes are available"}},
+	}}
+	got = probeTimeoutError(unschedulable, nil, 12*time.Second).Error()
+	if !strings.Contains(got, "request time budget") || !strings.Contains(got, "couldn't be scheduled") {
+		t.Errorf("budget framing must keep the startup-block detail, got %q", got)
+	}
+
+	// Never-observed pod: still a budget story, no pod detail to add.
+	got = probeTimeoutError(nil, nil, 7*time.Second).Error()
+	if !strings.Contains(got, "request time budget") || strings.Contains(got, "never saw the probe pod run") {
+		t.Errorf("nil pod under a tight budget must blame the budget, got %q", got)
+	}
+
+	// Image-pull infra failure outranks the budget attribution.
+	pullBlocked := &corev1.Pod{Status: corev1.PodStatus{
+		Phase:             corev1.PodPending,
+		ContainerStatuses: []corev1.ContainerStatus{{Name: "probe", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff"}}}},
+	}}
+	got = probeTimeoutError(pullBlocked, nil, 10*time.Second).Error()
+	if !strings.Contains(got, "ImagePullBackOff") || strings.Contains(got, "request time budget") {
+		t.Errorf("image-pull failure must outrank the budget framing, got %q", got)
+	}
+
+	// A zero budget (run started with >= jobTimeout available) keeps the existing
+	// generic attribution.
+	if got := probeTimeoutError(pending, nil, 0).Error(); strings.Contains(got, "request time budget") {
+		t.Errorf("full-budget timeout must not claim a budget cause, got %q", got)
 	}
 }
 

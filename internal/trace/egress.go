@@ -300,27 +300,46 @@ func classifyDNS(rules []*networkingv1.NetworkPolicyEgressRule, srcNamespace str
 
 func rulePort53(rule *networkingv1.NetworkPolicyEgressRule) tri {
 	if len(rule.Ports) == 0 {
-		return triYes // all ports include 53
+		return triYes // all ports of ALL protocols include UDP 53
 	}
 	maybe := false
 	for i := range rule.Ports {
 		p := &rule.Ports[i]
+		// Cluster DNS resolution is primarily UDP. A :53 port match only proves DNS
+		// coverage when the rule permits UDP - a nil Protocol defaults to TCP per
+		// NetworkPolicy semantics (NOT UDP), so a TCP-only (or unspecified) :53 rule
+		// permits at most a TCP fallback, never primary UDP resolution. Skip non-UDP
+		// port entries so a UDP-less egress policy can't suppress the DNS-gap advisory
+		// (returning triMaybe here would route through classifyDNS to dnsUncertain,
+		// which is SILENT - the honest result is to leave this rule as no-coverage so
+		// the gap still fires).
+		if !portProtocolIsUDP(p) {
+			continue
+		}
 		if p.Port == nil {
-			return triYes // all ports of a protocol
+			return triYes // all UDP ports of this rule include 53
 		}
 		if p.Port.Type == intstr.Int {
 			if p.Port.IntVal == 53 || (p.EndPort != nil && p.Port.IntVal <= 53 && *p.EndPort >= 53) {
-				return triYes // a numeric port or range covering 53
+				return triYes // a numeric UDP port or range covering 53
 			}
 		}
 		if p.Port.Type == intstr.String {
-			maybe = true // named port could resolve to 53
+			maybe = true // named UDP port could resolve to 53
 		}
 	}
 	if maybe {
 		return triMaybe
 	}
 	return triNo
+}
+
+// portProtocolIsUDP reports whether a NetworkPolicyPort permits UDP. Cluster DNS
+// is primarily UDP, so only a UDP port match counts as DNS coverage. A nil
+// Protocol defaults to TCP per NetworkPolicy semantics (NOT UDP), so a rule that
+// leaves Protocol unset permits only TCP on that port and does not cover UDP DNS.
+func portProtocolIsUDP(p *networkingv1.NetworkPolicyPort) bool {
+	return p.Protocol != nil && *p.Protocol == corev1.ProtocolUDP
 }
 
 func ruleDestCoversDNS(rule *networkingv1.NetworkPolicyEgressRule, srcNamespace string) tri {

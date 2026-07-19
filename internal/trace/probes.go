@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,19 +27,41 @@ const (
 // in tests via package-level override without touching pkg/probe's API.
 var detectVantage = probe.DetectVantage
 
-// httpPath normalizes the operator-chosen HTTP probe path: leading slash,
-// defaulting to the root, and . / .. segments collapsed so the probe requests
-// the path the operator meant, never a traversal the caller didn't intend
-// (mirrors handleProbeInCluster's path.Clean). Every L7 probe requests this path.
-func httpPath(p string) string {
-	p = strings.TrimSpace(p)
+// SanitizeHTTPPath normalizes an operator-chosen HTTP request path just enough
+// to be a safe request target: trim surrounding whitespace, strip CR/LF and
+// other control characters (header/request-line injection), and ensure a
+// leading '/'. Empty/whitespace-only input returns "" so callers keep their
+// own no-path semantics. Everything else - trailing slashes, repeated slashes,
+// dot-segments, query strings - is preserved verbatim: an HTTP path is an
+// opaque route key, not a filesystem path, and "cleaning" it makes the request
+// something the operator didn't ask for (/api/v1/ and /api/v1 are different
+// resources to an APPEND_SLASH-style server, and path.Clean would rewrite a
+// query string containing "..") - producing false failures on healthy
+// backends. Exported as the one sanitizer for probe paths; the in-cluster
+// runner (internal/reachability) delegates to it.
+func SanitizeHTTPPath(p string) string {
+	p = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(p))
 	if p == "" {
-		return "/"
+		return ""
 	}
 	if p[0] != '/' {
 		p = "/" + p
 	}
-	return path.Clean(p)
+	return p
+}
+
+// httpPath is SanitizeHTTPPath with the trace probes' default: an empty path
+// means probe the root. Every L7 probe requests this path.
+func httpPath(p string) string {
+	if s := SanitizeHTTPPath(p); s != "" {
+		return s
+	}
+	return "/"
 }
 
 // serviceProxyProbe and podProxyProbe are call-site indirections so tests
@@ -50,6 +71,18 @@ func httpPath(p string) string {
 var (
 	serviceProxyProbe = probe.ServiceProxy
 	podProxyProbe     = probe.PodProxy
+)
+
+// ingressDNSProbe/ingressTCPProbe/ingressTLSProbe/ingressHTTPProbe are
+// call-site indirections (same pattern as serviceProxyProbe) so tests can
+// drive probeIngress's full emission shape without real listeners: the SSRF
+// dial guard refuses loopback targets and :80/:443 are privileged ports, so a
+// hermetic test can't bind real ones.
+var (
+	ingressDNSProbe  = probe.DNS
+	ingressTCPProbe  = probe.TCP
+	ingressTLSProbe  = probe.TLS
+	ingressHTTPProbe = probe.HTTP
 )
 
 // runProbes augments the static trace with reachability probes, sized to
@@ -421,24 +454,37 @@ func probeHop(ctx context.Context, h *Hop, vantage probe.Vantage, client kuberne
 		// belongs on the Gateway listener and on the backend Service.
 		return []probe.Result{probe.Skipped(probe.LayerTCP, "", vantage,
 			"route has no own address; reachability lives on parent Gateway and backend Service")}
+	case "TCPRoute", "TLSRoute":
+		// L4 routes are inventoried on the Gateway trace but not traced or
+		// tested - say so instead of leaving the hop's coverage unexplained.
+		return []probe.Result{probe.Skipped(probe.LayerTCP, "", vantage,
+			"L4 route - radar doesn't trace or test TCPRoute/TLSRoute backends; the parent Gateway listener's TCP reachability is still probed")}
 	}
 	return nil
 }
 
+// External hosts are slower than in-cluster targets, so ExternalName probes
+// get more generous timeouts than the in-cluster constants.
+const (
+	extDNSTimeout  = time.Second
+	extTCPTimeout  = time.Second
+	extHTTPTimeout = 1500 * time.Millisecond
+)
+
 // probeExternalName tests an ExternalName Service's target - a host OUTSIDE the
 // cluster (a DNS alias; no pods, no ClusterIP). It IS reachability-testable, just
-// not in-cluster: does the alias host RESOLVE (DNS), and does it ANSWER (HTTP)?
-// Probed from the current vantage - "is <host> reachable from here". No port is
-// declared on an ExternalName, so HTTP is best-effort over the common web port;
-// DNS is the definitive resolve check. External lookups are slower than in-cluster
-// DNS, so the timeouts are more generous than the in-cluster constants.
+// not in-cluster: does the alias host RESOLVE (DNS), and does it ANSWER? DNS is
+// the definitive resolve check; per-port probing follows the Service's DECLARED
+// spec.ports (carried on the hop Config) so the protocol tested is the one the
+// operator declared, never a guess presented as a verdict. Only when the
+// Service declares no ports does the fallback assumed-HTTP-on-80 probe run,
+// and its failure stays a skip (the assumption, not the dependency, may be
+// what failed).
 func probeExternalName(ctx context.Context, h *Hop, vantage probe.Vantage, path string) []probe.Result {
 	host := strings.TrimSpace(h.Resource.Name)
 	if host == "" {
 		return nil
 	}
-	const extDNSTimeout = time.Second
-	const extHTTPTimeout = 1500 * time.Millisecond
 	var out []probe.Result
 
 	dctx, dcancel := context.WithTimeout(ctx, extDNSTimeout)
@@ -449,8 +495,8 @@ func probeExternalName(ctx context.Context, h *Hop, vantage probe.Vantage, path 
 		// can't resolve. A failed LOCAL lookup isn't proof the alias is broken -
 		// demote to a skip with a run-in-cluster hint instead of a confident red row
 		// (mirrors probeIngress's local-vantage demotion).
-		return []probe.Result{probe.SkippedCmd(probe.LayerDNS, host, vantage,
-			"couldn't resolve this external alias from where Radar runs - it may be a split-horizon or cluster-internal name. Run the in-cluster test to check it from inside.", "")}
+		return []probe.Result{classed(probe.SkippedCmd(probe.LayerDNS, host, vantage,
+			"couldn't resolve this external alias from where Radar runs - it may be a split-horizon or cluster-internal name. Run the in-cluster test to check it from inside.", ""), SkipClassVantage)}
 	}
 	dns.Path = probe.PathData
 	out = append(out, dns)
@@ -459,21 +505,111 @@ func probeExternalName(ctx context.Context, h *Hop, vantage probe.Vantage, path 
 	if ctx.Err() != nil || !dns.OK {
 		return out
 	}
+	if h.Config == nil || len(h.Config.Ports) == 0 {
+		return append(out, probeExternalNameAssumedHTTP(ctx, host, path, vantage))
+	}
+	// If the alias resolves only to internal/private addresses, a failed dial
+	// from a laptop is "can't reach from here", not a broken dependency - the
+	// per-port probes demote those failures to skips (mirrors probeIngress).
+	internalOnly := vantage == probe.VantageLocal && hostResolvesInternalOnly(ctx, host)
+	for _, p := range h.Config.Ports {
+		if ctx.Err() != nil {
+			break
+		}
+		out = append(out, probeExternalNamePort(ctx, host, path, p, vantage, internalOnly))
+	}
+	return out
+}
+
+// probeExternalNamePort tests ONE declared Service port against the external
+// host, picking the probe by what the operator declared rather than guessing:
+//
+//   - a TLS port (443 / named https/wss / appProtocol) gets a real HTTPS
+//     request with SNI + Host set to the external hostname;
+//   - a confidently-HTTP port (80, named http, well-known web port) gets the
+//     plain HTTP request;
+//   - everything else gets a TCP dial only - "the port accepts connections"
+//     is all that can be claimed without knowing the protocol, so no HTTP
+//     verdict is invented for it (an assumed-HTTP failure must never read as
+//     "broken");
+//   - UDP/SCTP can't be tested from here at all, so they skip honestly.
+func probeExternalNamePort(ctx context.Context, host, path string, p PortMap, vantage probe.Vantage, internalOnly bool) probe.Result {
+	target := net.JoinHostPort(host, strconv.Itoa(int(p.Port)))
+	if proto := strings.ToUpper(strings.TrimSpace(p.Protocol)); proto == "UDP" || proto == "SCTP" {
+		skip := probe.SkippedCmd(probe.LayerTCP, target, vantage,
+			fmt.Sprintf("port %d is %s - a TCP dial can't test it; reachability not verified.", p.Port, proto), "")
+		skip.Path = probe.PathData
+		skip.Port = p.Port
+		return skip
+	}
+	var r probe.Result
+	switch {
+	case isHTTPSPort(p.Name, p.AppProtocol, p.Port):
+		hctx, cancel := context.WithTimeout(ctx, extHTTPTimeout)
+		r = probe.HTTP(hctx, "https://"+hostPortForURL(host, p.Port, 443)+path, host, vantage)
+		cancel()
+	case isHTTPProbablePort(p.Name, p.AppProtocol, p.Port) && !httpPortAssumed(p.Name, p.AppProtocol, p.Port):
+		hctx, cancel := context.WithTimeout(ctx, extHTTPTimeout)
+		r = probe.HTTP(hctx, "http://"+hostPortForURL(host, p.Port, 80)+path, host, vantage)
+		cancel()
+	default:
+		tctx, cancel := context.WithTimeout(ctx, extTCPTimeout)
+		r = probe.TCP(tctx, target, vantage)
+		cancel()
+	}
+	r.Path = probe.PathData
+	r.Port = p.Port
+	// The dial-time SSRF guard refused an internal/metadata target (an ExternalName
+	// can alias 169.254.169.254 or a loopback address). Its raw "(SSRF guard)"
+	// string must never surface as a red "unreachable" verdict at ANY vantage -
+	// demote to an honest skip naming the blocked target (mirrors probeGateway).
+	if !r.OK && isInternalGuardError(r) {
+		skip := probe.SkippedCmd(r.Layer, r.Target, vantage,
+			fmt.Sprintf("%q maps to an internal or blocked address (e.g. cloud metadata or loopback) that can't be probed from here.", host), "")
+		skip.Path = probe.PathData
+		skip.Port = p.Port
+		return skip
+	}
+	if !r.OK && internalOnly {
+		skip := probe.SkippedCmd(r.Layer, r.Target, vantage,
+			fmt.Sprintf("%q resolves to an internal address your machine can't reach - it may be cluster-internal. Run the in-cluster test to check it from inside.", host), "")
+		skip.Path = probe.PathData
+		skip.Port = p.Port
+		return classed(skip, SkipClassVantage)
+	}
+	return budgetSkipIfExhausted(ctx, r, vantage)
+}
+
+// probeExternalNameAssumedHTTP is the no-declared-ports fallback: best-effort
+// plain HTTP over the common web port. The port AND protocol are assumptions,
+// so a failure is surfaced as a skip naming the assumption, never a hard fail
+// condemning a dependency that may simply be HTTPS-only or on another port.
+func probeExternalNameAssumedHTTP(ctx context.Context, host, path string, vantage probe.Vantage) probe.Result {
 	hctx, hcancel := context.WithTimeout(ctx, extHTTPTimeout)
 	r := probe.HTTP(hctx, "http://"+host+path, host, vantage)
 	hcancel()
 	if !r.OK {
-		// No protocol/port is declared on an ExternalName, so this assumed plain
-		// HTTP on :80. An HTTPS-only or non-:80 dependency fails that assumption -
-		// don't condemn it; surface the assumption as a skip instead of a hard fail.
-		out = append(out, probe.SkippedCmd(probe.LayerHTTP, "http://"+host+path, vantage,
+		// A guard-refused internal/metadata alias must read as a neutral skip, not a
+		// red "unreachable" carrying the raw "(SSRF guard)" string (mirrors probeGateway).
+		if isInternalGuardError(r) {
+			return probe.SkippedCmd(probe.LayerHTTP, "http://"+host+path, vantage,
+				fmt.Sprintf("%q maps to an internal or blocked address (e.g. cloud metadata or loopback) that can't be probed from here.", host), "")
+		}
+		return probe.SkippedCmd(probe.LayerHTTP, "http://"+host+path, vantage,
 			"assumed plain HTTP on port 80 (an ExternalName declares no protocol) and couldn't reach it that way - the real dependency may be HTTPS or on another port.",
-			"curl -sS https://"+host+path))
-		return out
+			"curl -sS https://"+host+path)
 	}
 	r.Path = probe.PathData
-	out = append(out, r)
-	return out
+	return r
+}
+
+// hostPortForURL renders host[:port] for a probe URL, omitting the port when
+// it's the scheme default so the target reads the way an operator would type it.
+func hostPortForURL(host string, port, schemeDefault int32) string {
+	if port == schemeDefault {
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(int(port)))
 }
 
 // probeService runs every feasible path for each port. In-cluster + client
@@ -1054,7 +1190,7 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 			continue
 		}
 		dctx, dcancel := context.WithTimeout(ctx, dnsTimeout)
-		dnsRes := probe.DNS(dctx, host, vantage)
+		dnsRes := ingressDNSProbe(dctx, host, vantage)
 		dcancel()
 		if !dnsRes.OK {
 			// A DNS failure from a laptop says nothing about in-cluster
@@ -1084,8 +1220,10 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 		// host. Probing 443 on a plain-HTTP host dials a port the Ingress
 		// doesn't serve (or hits the controller's default cert) and reports a
 		// false unreachable / cert failure. Port 80 is always HTTP.
+		servesTLS := hostServesTLS(host)
+		hostStart := len(out)
 		ports := []int{80}
-		if hostServesTLS(host) {
+		if servesTLS {
 			ports = append(ports, 443)
 		}
 		for _, port := range ports {
@@ -1094,13 +1232,24 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 			}
 			addr := net.JoinHostPort(host, strconv.Itoa(port))
 			tctx, tcancel := context.WithTimeout(ctx, tcpTimeout)
-			tcpRes := probe.TCP(tctx, addr, vantage)
+			tcpRes := ingressTCPProbe(tctx, addr, vantage)
 			tcancel()
 			if !tcpRes.OK && ctx.Err() != nil {
 				// Budget exhausted mid-dial - a deadline error isn't a real
 				// unreachable; degrade to a skip and stop (later ports can't run).
 				out = append(out, budgetSkipIfExhausted(ctx, tcpRes, vantage))
 				break
+			}
+			// The dial-time SSRF guard refused an internal/metadata target (a host
+			// resolving to 169.254.169.254, loopback, or an internal address). Its raw
+			// "(SSRF guard)" string must never read as a red "unreachable" verdict at
+			// ANY vantage - demote to an honest skip naming the blocked target
+			// (mirrors probeGateway).
+			if !tcpRes.OK && isInternalGuardError(tcpRes) {
+				out = append(out, probe.SkippedCmd(probe.LayerTCP, addr, vantage,
+					fmt.Sprintf("%q maps to an internal or blocked address (e.g. cloud metadata or loopback) that can't be probed from here.", host),
+					curlReachCmd("https", host)))
+				continue
 			}
 			if !tcpRes.OK && internalOnly {
 				out = append(out, classed(probe.SkippedCmd(probe.LayerTCP, addr, vantage,
@@ -1114,7 +1263,7 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 			}
 			if port == 443 {
 				lctx, lcancel := context.WithTimeout(ctx, tlsTimeout)
-				out = append(out, budgetSkipIfExhausted(ctx, probe.TLS(lctx, addr, host, vantage), vantage))
+				out = append(out, budgetSkipIfExhausted(ctx, ingressTLSProbe(lctx, addr, host, vantage), vantage))
 				lcancel()
 			}
 			hctx, hcancel := context.WithTimeout(ctx, httpTimeout)
@@ -1122,11 +1271,51 @@ func probeIngress(ctx context.Context, h *Hop, vantage probe.Vantage, path strin
 			if port == 443 {
 				scheme = "https"
 			}
-			out = append(out, budgetSkipIfExhausted(ctx, probe.HTTP(hctx, fmt.Sprintf("%s://%s%s", scheme, host, path), host, vantage), vantage))
+			out = append(out, budgetSkipIfExhausted(ctx, ingressHTTPProbe(hctx, fmt.Sprintf("%s://%s%s", scheme, host, path), host, vantage), vantage))
 			hcancel()
+		}
+		if servesTLS {
+			reconcileHTTPSOnlyHost(out[hostStart:], host, vantage)
 		}
 	}
 	return out
+}
+
+// reconcileHTTPSOnlyHost finalizes a TLS-serving host's :80 outcome AFTER :443
+// has been probed - the two ports are separate entry surfaces, and only the
+// pair tells the story. When the :443 TCP dial succeeded while :80's failed,
+// the host is likely serving HTTPS only (no plain-HTTP listener) - a valid,
+// common configuration - so the :80 failure demotes to a skip instead of
+// failing every route folded onto this host (mirrors the file's other
+// demote-to-skip patterns). When :443 ALSO failed, both failures stand: that's
+// a real outage, not an HTTPS-only setup. Rows already demoted to skips
+// (budget, internal-address vantage) are left alone.
+func reconcileHTTPSOnlyHost(rs []probe.Result, host string, vantage probe.Vantage) {
+	addr80 := net.JoinHostPort(host, "80")
+	addr443 := net.JoinHostPort(host, "443")
+	fail80 := -1
+	ok443 := false
+	for i, r := range rs {
+		if r.Layer != probe.LayerTCP || r.Skipped {
+			continue
+		}
+		switch r.Target {
+		case addr80:
+			if !r.OK {
+				fail80 = i
+			}
+		case addr443:
+			if r.OK {
+				ok443 = true
+			}
+		}
+	}
+	if fail80 < 0 || !ok443 {
+		return
+	}
+	rs[fail80] = probe.SkippedCmd(probe.LayerTCP, addr80, vantage,
+		"port 80 not reachable - this host may be HTTPS-only; port 443 reached. Plain-HTTP clients would need a listener on :80.",
+		curlReachCmd("https", host))
 }
 
 // probeGateway probes each listener against the Gateway's status.addresses.

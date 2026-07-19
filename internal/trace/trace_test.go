@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -216,6 +217,7 @@ func TestBuildTrace_ServiceExternalNameIsTerminal(t *testing.T) {
 		Spec: corev1.ServiceSpec{
 			Type:         corev1.ServiceTypeExternalName,
 			ExternalName: "stripe.example.com",
+			Ports:        []corev1.ServicePort{{Name: "https", Port: 443}},
 		},
 	}
 	client := fake.NewClientset(svc)
@@ -240,6 +242,12 @@ func TestBuildTrace_ServiceExternalNameIsTerminal(t *testing.T) {
 	})
 	if trace.Downstream[1].Resource.Kind != "ExternalName" {
 		t.Errorf("expected ExternalName hop, got %+v", trace.Downstream[1].Resource)
+	}
+	// The declared Service ports ride on the terminal hop so the probe layer
+	// tests the declared port/protocol instead of assuming HTTP on :80.
+	cfg := trace.Downstream[1].Config
+	if cfg == nil || len(cfg.Ports) != 1 || cfg.Ports[0].Port != 443 || cfg.Ports[0].Name != "https" {
+		t.Errorf("ExternalName hop should carry the declared Service ports, got %+v", cfg)
 	}
 	if trace.Verdict == VerdictBroken {
 		t.Errorf("ExternalName service should not be broken: %+v", trace)
@@ -406,10 +414,12 @@ func TestBuildTrace_UnknownKindReturnsUnknown(t *testing.T) {
 // TestTraceGatewayEntry_RedactsCrossNamespaceRoutes pins the per-request
 // scope check on the Gateway-entry fan-out. A Gateway can have Routes from
 // many namespaces attach to it (the multi-tenant Gateway API model); a
-// caller scoped to a subset must see that out-of-scope Routes exist without
-// their findings leaking out of the cluster-wide cache. This guards the
-// fourth fan-out site against the missed-redaction class that the other
-// three sites already cover.
+// caller scoped to a subset must see that out-of-scope Routes exist (as an
+// anonymous count) without their identities OR findings leaking out of the
+// cluster-wide cache - the name + namespace of a route the caller can't
+// read are themselves protected data. This guards the fourth fan-out site
+// against the missed-redaction class that the other three sites already
+// cover.
 func TestTraceGatewayEntry_RedactsCrossNamespaceRoutes(t *testing.T) {
 	defer k8s.ResetTestState()
 	defer k8s.ResetTestDynamicState()
@@ -430,6 +440,7 @@ func TestTraceGatewayEntry_RedactsCrossNamespaceRoutes(t *testing.T) {
 		},
 		attachedHTTPRoute("route-b", "team-b", "api-gateway", "gateway-system"),
 		attachedHTTPRoute("route-c", "team-c", "api-gateway", "gateway-system"),
+		attachedHTTPRoute("route-d", "team-d", "api-gateway", "gateway-system"),
 	)
 	// Add the Gateway through the tracker with an explicit GVR: the fake
 	// client's kind-to-resource guess pluralizes "Gateway" to "gatewaies",
@@ -460,7 +471,7 @@ func TestTraceGatewayEntry_RedactsCrossNamespaceRoutes(t *testing.T) {
 		Dynamic:           dynCache,
 		Discovery:         k8s.GetResourceDiscovery(),
 		Issues:            issues.NewCacheProvider(),
-		AllowedNamespaces: []string{"gateway-system", "team-b"}, // team-c is out of scope
+		AllowedNamespaces: []string{"gateway-system", "team-b"}, // team-c + team-d are out of scope
 	}
 	tr, err := BuildTraceWithOptions(context.Background(), deps, "Gateway", "gateway-system", "api-gateway", Options{})
 	if err != nil {
@@ -469,34 +480,31 @@ func TestTraceGatewayEntry_RedactsCrossNamespaceRoutes(t *testing.T) {
 
 	var inScope, redacted *Hop
 	for i := range tr.Downstream {
-		switch tr.Downstream[i].Resource.Namespace {
-		case "team-b":
+		if tr.Downstream[i].Resource.Namespace == "team-b" {
 			inScope = &tr.Downstream[i]
-		case "team-c":
+		}
+		if findingCodePresent(tr.Downstream[i].Findings, "rbac:cross-namespace-redacted") {
 			redacted = &tr.Downstream[i]
 		}
 	}
-	if inScope == nil || redacted == nil {
-		t.Fatalf("expected both attached-route hops, got verdict=%q reason=%q downstream %+v", tr.Verdict, tr.Reason, tr.Downstream)
+	if inScope == nil {
+		t.Fatalf("expected the in-scope attached-route hop, got verdict=%q reason=%q downstream %+v", tr.Verdict, tr.Reason, tr.Downstream)
 	}
-
-	if got := redacted.Meta["endpointSource"]; got != "unknown" {
-		t.Errorf("out-of-scope hop endpointSource = %v, want \"unknown\"", got)
-	}
-	// Exactly the redaction finding, nothing else: a regression that kept
-	// the gate but still appended hopFindings would show up as extra
-	// findings here. (Proving a *real* cross-namespace finding is withheld
-	// needs a seeded issue on route-c; that belongs with the CR5 per-site
-	// tests for the other three fan-out sites.)
-	if len(redacted.Findings) != 1 || redacted.Findings[0].Code != "rbac:cross-namespace-redacted" {
-		t.Errorf("out-of-scope hop should carry exactly the redaction finding, got %+v", redacted.Findings)
-	}
+	// BOTH out-of-scope routes collapse into ONE anonymous aggregate carrying
+	// the count - not one identified hop each.
+	assertRedactedAggregate(t, redacted, "2 HTTPRoutes")
+	assertNoIdentityLeak(t, tr, "route-c", "team-c", "route-d", "team-d")
 
 	if _, marked := inScope.Meta["endpointSource"]; marked {
 		t.Errorf("in-scope hop should not carry the redaction marker, got %+v", inScope.Meta)
 	}
 	if findingCodePresent(inScope.Findings, "rbac:cross-namespace-redacted") {
 		t.Errorf("in-scope hop should not be redacted, got %+v", inScope.Findings)
+	}
+	// The synced cluster-wide test cache is authoritative - the inventory
+	// must not carry the incomplete-index marker.
+	if findingCodePresent(tr.Downstream[0].Findings, "trace:attached-routes-incomplete") {
+		t.Errorf("synced route index must not flag the inventory incomplete, got %+v", tr.Downstream[0].Findings)
 	}
 }
 
@@ -1018,20 +1026,56 @@ func httpRouteWithBackend(name, ns, backendName, backendNS string) *unstructured
 	}}
 }
 
-// assertRedactedHop fails unless the hop carries exactly the cross-namespace
-// redaction marker - endpointSource:"unknown" + the single rbac finding, and no
-// leaked real findings. Shared by the three CR5 per-site tests.
-func assertRedactedHop(t *testing.T, hop *Hop) {
+// assertRedactedAggregate fails unless hop is the ANONYMOUS aggregate for
+// out-of-scope matches: no name, no namespace, endpointSource:"unknown",
+// exactly the single rbac finding (no leaked real findings), and the
+// out-of-scope count phrase in its message. Shared by the four per-site
+// redaction tests.
+func assertRedactedAggregate(t *testing.T, hop *Hop, wantCountPhrase string) {
 	t.Helper()
 	if hop == nil {
-		t.Fatal("expected an out-of-scope (redacted) hop, got none")
+		t.Fatal("expected an anonymous aggregate hop for out-of-scope matches, got none")
+	}
+	if hop.Resource.Name != "" || hop.Resource.Namespace != "" {
+		t.Errorf("aggregate hop must carry no identity, got %+v", hop.Resource)
 	}
 	if got := hop.Meta["endpointSource"]; got != "unknown" {
 		t.Errorf("redacted hop endpointSource = %v, want \"unknown\"", got)
 	}
 	if len(hop.Findings) != 1 || hop.Findings[0].Code != "rbac:cross-namespace-redacted" {
-		t.Errorf("redacted hop should carry exactly the redaction finding, got %+v", hop.Findings)
+		t.Fatalf("redacted hop should carry exactly the redaction finding, got %+v", hop.Findings)
 	}
+	if !strings.Contains(hop.Findings[0].Message, wantCountPhrase) {
+		t.Errorf("aggregate message = %q, want the count phrase %q", hop.Findings[0].Message, wantCountPhrase)
+	}
+}
+
+// assertNoIdentityLeak marshals the whole trace and asserts the hidden
+// identifiers appear nowhere in the wire output. The serialized form is what
+// the caller actually receives, so a redaction that leaks through any other
+// field (Message, Command, Meta, Config) still fails here.
+func assertNoIdentityLeak(t *testing.T, tr *Trace, hidden ...string) {
+	t.Helper()
+	raw, err := json.Marshal(tr)
+	if err != nil {
+		t.Fatalf("marshal trace: %v", err)
+	}
+	for _, s := range hidden {
+		if strings.Contains(string(raw), s) {
+			t.Errorf("serialized trace leaks %q", s)
+		}
+	}
+}
+
+// findRedactedHop returns the hop carrying the cross-namespace redaction
+// finding, if any.
+func findRedactedHop(hops []Hop) *Hop {
+	for i := range hops {
+		if findingCodePresent(hops[i].Findings, "rbac:cross-namespace-redacted") {
+			return &hops[i]
+		}
+	}
+	return nil
 }
 
 func cr5Setup(t *testing.T, typed *fake.Clientset, objs ...runtime.Object) Deps {
@@ -1065,8 +1109,10 @@ func cr5Setup(t *testing.T, typed *fake.Clientset, objs ...runtime.Object) Deps 
 }
 
 // TestRouteUpstreamsForService_RedactsCrossNamespace covers the Service-entry
-// upstream fan-out (entries.go routeUpstreamsForService): a Route in a namespace
-// the caller can't read that references this Service must appear redacted.
+// upstream fan-out (entries.go routeUpstreamsForService): a Route in a
+// namespace the caller can't read that references this Service must appear
+// only as the anonymous aggregate - its name and namespace must not reach the
+// wire anywhere.
 func TestRouteUpstreamsForService_RedactsCrossNamespaceRoutes(t *testing.T) {
 	defer k8s.ResetTestState()
 	defer k8s.ResetTestDynamicState()
@@ -1081,18 +1127,21 @@ func TestRouteUpstreamsForService_RedactsCrossNamespaceRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildTraceWithOptions: %v", err)
 	}
-	var redacted *Hop
-	for i := range tr.Upstreams {
-		if tr.Upstreams[i].Resource.Namespace == "team-x" {
-			redacted = &tr.Upstreams[i]
-		}
+	assertRedactedAggregate(t, findRedactedHop(tr.Upstreams), "1 HTTPRoute")
+	assertNoIdentityLeak(t, tr, "route-x", "team-x")
+	// The synced cluster-wide test cache is authoritative - no incomplete-index
+	// marker on the entry hop.
+	if findingCodePresent(tr.Downstream[0].Findings, "trace:upstreams-incomplete") {
+		t.Errorf("synced route index must not flag the upstream walk incomplete, got %+v", tr.Downstream[0].Findings)
 	}
-	assertRedactedHop(t, redacted)
 }
 
 // TestTraceRouteEntry_RedactsCrossNamespaceBackend covers the Route-entry
 // backendRef fan-out (entries.go traceRouteEntry): a backend Service in a
-// namespace the caller can't read must appear redacted downstream.
+// namespace the caller can't read appears only as the anonymous aggregate hop.
+// (The route's own spec - which the caller can read - still names the
+// backendRef in the entry hop's Config; the redaction is about not presenting
+// the out-of-scope Service as an identified hop with state of its own.)
 func TestTraceRouteEntry_RedactsCrossNamespaceBackend(t *testing.T) {
 	defer k8s.ResetTestState()
 	defer k8s.ResetTestDynamicState()
@@ -1106,18 +1155,29 @@ func TestTraceRouteEntry_RedactsCrossNamespaceBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildTraceWithOptions: %v", err)
 	}
-	var redacted *Hop
-	for i := range tr.Downstream {
-		if tr.Downstream[i].Resource.Namespace == "team-b" {
-			redacted = &tr.Downstream[i]
+	redacted := findRedactedHop(tr.Downstream)
+	assertRedactedAggregate(t, redacted, "1 backend Service")
+	// The aggregate hop itself must not carry the backend's identity in any
+	// field. (A whole-trace leak check doesn't apply at this site: the entry
+	// hop's Config honestly echoes the route's own caller-readable spec,
+	// which names the backendRef.)
+	if redacted != nil {
+		raw, err := json.Marshal(redacted)
+		if err != nil {
+			t.Fatalf("marshal redacted hop: %v", err)
+		}
+		for _, s := range []string{"svc-b", "team-b"} {
+			if strings.Contains(string(raw), s) {
+				t.Errorf("serialized redacted hop leaks %q", s)
+			}
 		}
 	}
-	assertRedactedHop(t, redacted)
 }
 
 // TestRouteParentGateways_RedactsCrossNamespace covers the Route-entry parent
-// fan-out (entries.go routeParentGateways): a parent Gateway in a namespace the
-// caller can't read must appear redacted upstream.
+// fan-out (entries.go routeParentGateways): a parent Gateway in a namespace
+// the caller can't read appears only as the anonymous aggregate - its name
+// and namespace must not reach the wire anywhere.
 func TestRouteParentGateways_RedactsCrossNamespaceGateway(t *testing.T) {
 	defer k8s.ResetTestState()
 	defer k8s.ResetTestDynamicState()
@@ -1131,13 +1191,155 @@ func TestRouteParentGateways_RedactsCrossNamespaceGateway(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildTraceWithOptions: %v", err)
 	}
-	var redacted *Hop
-	for i := range tr.Upstreams {
-		if tr.Upstreams[i].Resource.Namespace == "gateway-system" {
-			redacted = &tr.Upstreams[i]
+	assertRedactedAggregate(t, findRedactedHop(tr.Upstreams), "1 parent Gateway")
+	assertNoIdentityLeak(t, tr, "shared-gw", "gateway-system")
+}
+
+// TestServiceUpstreams_UnreadableRouteIndexFlagsIncomplete: when the route
+// kinds exist in discovery but the dynamic cache can't serve them, "no
+// upstream routes found" must NOT read as "nothing references this Service" -
+// the entry hop carries an explicit incomplete-enumeration marker.
+func TestServiceUpstreams_UnreadableRouteIndexFlagsIncomplete(t *testing.T) {
+	defer k8s.ResetTestState()
+	defer k8s.ResetTestDynamicState()
+
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "team-a"}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}}}
+	deps := cr5Setup(t, fake.NewClientset(svc),
+		httpRouteWithBackend("route-x", "team-x", "api", "team-a"),
+	)
+	deps.Dynamic = nil // HTTPRoute is discovered but its index is unreadable
+
+	tr, err := BuildTraceWithOptions(context.Background(), deps, "Service", "team-a", "api", Options{})
+	if err != nil {
+		t.Fatalf("BuildTraceWithOptions: %v", err)
+	}
+	if len(tr.Upstreams) != 0 {
+		t.Errorf("unreadable index should yield no route upstreams, got %+v", tr.Upstreams)
+	}
+	if !findingCodePresent(tr.Downstream[0].Findings, "trace:upstreams-incomplete") {
+		t.Errorf("entry hop must flag the upstream enumeration as incomplete, got %+v", tr.Downstream[0].Findings)
+	}
+}
+
+// TestAttachedRoutes_UnreadableIndexNotComplete pins the same absence-honesty
+// on the Gateway inventory: a discovered-but-unreadable route kind means the
+// enumeration is NOT authoritative.
+func TestAttachedRoutes_UnreadableIndexNotComplete(t *testing.T) {
+	defer k8s.ResetTestState()
+	defer k8s.ResetTestDynamicState()
+
+	deps := cr5Setup(t, fake.NewClientset())
+	deps.Dynamic = nil
+
+	refs, total, complete := attachedRoutes(deps, gatewayObject("gw", "ns"))
+	if len(refs) != 0 || total != 0 {
+		t.Errorf("unreadable index should list nothing, got refs=%v total=%d", refs, total)
+	}
+	if complete {
+		t.Error("a discovered-but-unreadable route kind must not claim a complete inventory")
+	}
+}
+
+// TestTraceGatewayEntry_ListsL4RoutesStaticOnly: TCPRoute/TLSRoute attachments
+// appear in the Gateway inventory (so it never claims HTTP-only completeness)
+// with an explicit not-traced note - static presence, no reachability claim.
+func TestTraceGatewayEntry_ListsL4RoutesStaticOnly(t *testing.T) {
+	defer k8s.ResetTestState()
+	defer k8s.ResetTestDynamicState()
+
+	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	gwGVR := schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"}
+	httpGVR := schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"}
+	tcpGVR := schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1alpha2", Resource: "tcproutes"}
+	dynClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{
+			gwGVR:   "GatewayList",
+			httpGVR: "HTTPRouteList",
+			tcpGVR:  "TCPRouteList",
+		},
+		attachedHTTPRoute("web", "ns", "gw", "ns"),
+		attachedL4Route("TCPRoute", "db-route", "ns", "gw", "ns"),
+	)
+	if err := dynClient.Tracker().Create(gwGVR, gatewayObject("gw", "ns"), "ns"); err != nil {
+		t.Fatalf("tracker create gateway: %v", err)
+	}
+	if err := k8s.InitTestDynamicResourceCache(dynClient, []k8s.APIResource{
+		{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway", Name: "gateways", Namespaced: true, Verbs: []string{"list", "watch"}},
+		{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute", Name: "httproutes", Namespaced: true, Verbs: []string{"list", "watch"}},
+		{Group: "gateway.networking.k8s.io", Version: "v1alpha2", Kind: "TCPRoute", Name: "tcproutes", Namespaced: true, Verbs: []string{"list", "watch"}},
+	}); err != nil {
+		t.Fatalf("InitTestDynamicResourceCache: %v", err)
+	}
+	dynCache := k8s.GetDynamicResourceCache()
+	for _, gvr := range []schema.GroupVersionResource{gwGVR, httpGVR, tcpGVR} {
+		if err := dynCache.EnsureWatching(gvr); err != nil {
+			t.Fatalf("EnsureWatching %s: %v", gvr.Resource, err)
+		}
+		if !dynCache.WaitForSync(gvr, 2*time.Second) {
+			t.Fatalf("dynamic cache did not sync %s", gvr.Resource)
 		}
 	}
-	assertRedactedHop(t, redacted)
+
+	deps := Deps{Cache: k8s.GetResourceCache(), Dynamic: dynCache, Discovery: k8s.GetResourceDiscovery(), Issues: issues.NewCacheProvider()}
+	tr, err := BuildTraceWithOptions(context.Background(), deps, "Gateway", "ns", "gw", Options{})
+	if err != nil {
+		t.Fatalf("BuildTraceWithOptions: %v", err)
+	}
+
+	var l4, http *Hop
+	for i := range tr.Downstream {
+		switch tr.Downstream[i].Resource.Kind {
+		case "TCPRoute":
+			l4 = &tr.Downstream[i]
+		case "HTTPRoute":
+			http = &tr.Downstream[i]
+		}
+	}
+	if http == nil {
+		t.Fatalf("expected the HTTPRoute hop, got %+v", tr.Downstream)
+	}
+	if l4 == nil {
+		t.Fatalf("TCPRoute attachment missing from the Gateway inventory - the list claims false completeness; got %+v", tr.Downstream)
+	}
+	if l4.Resource.Name != "db-route" {
+		t.Errorf("l4 hop name = %q, want db-route", l4.Resource.Name)
+	}
+	f := findingByCode(l4.Findings, "gateway:l4-route-not-traced")
+	if f == nil {
+		t.Fatalf("l4 hop must carry the not-traced note, got %+v", l4.Findings)
+	}
+	if f.Severity != SeverityInfo {
+		t.Errorf("l4 not-traced note severity = %q, want info (presence is not a problem)", f.Severity)
+	}
+	if findingCodePresent(http.Findings, "gateway:l4-route-not-traced") {
+		t.Errorf("HTTPRoute hop must not carry the l4 note, got %+v", http.Findings)
+	}
+}
+
+func findingByCode(findings []Finding, code string) *Finding {
+	for i := range findings {
+		if findings[i].Code == code {
+			return &findings[i]
+		}
+	}
+	return nil
+}
+
+// attachedL4Route builds a TCPRoute/TLSRoute (v1alpha2) attached to a Gateway.
+func attachedL4Route(kind, name, namespace, gwName, gwNamespace string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "gateway.networking.k8s.io/v1alpha2",
+		"kind":       kind,
+		"metadata":   map[string]any{"name": name, "namespace": namespace},
+		"spec": map[string]any{
+			"parentRefs": []any{
+				map[string]any{"name": gwName, "namespace": gwNamespace},
+			},
+		},
+	}}
 }
 
 // Defect 3: a DOWN drained (weight-0) backend must not drag the verdict to
@@ -1181,5 +1383,103 @@ func TestHasNonBenignCriticalFinding_ScopesUpstreamMissingRef(t *testing.T) {
 	tr.Downstream[0].Findings = []Finding{{Code: "svc:no-controller", Severity: SeverityCritical}}
 	if !hasNonBenignCriticalFinding(tr) {
 		t.Error("a downstream critical must still register")
+	}
+}
+
+// TestIngressUpstreamsForService_UnavailableCacheNotAuthoritative (S10): when the
+// Ingress lister can't be read, an empty enumeration must NOT read as "no Ingress
+// references this Service" - the walk reports itself non-authoritative and
+// serviceUpstreams folds that into the completeness signal (mirrors the route
+// reverse-walk's cluster-wide-synced check).
+func TestIngressUpstreamsForService_UnavailableCacheNotAuthoritative(t *testing.T) {
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "team-a"}}
+	hops, authoritative := ingressUpstreamsForService(Deps{}, svc)
+	if len(hops) != 0 {
+		t.Errorf("unavailable cache should yield no ingress upstreams, got %+v", hops)
+	}
+	if authoritative {
+		t.Error("unavailable Ingress cache must not claim an authoritative enumeration")
+	}
+	if _, complete := serviceUpstreams(Deps{}, svc); complete {
+		t.Error("serviceUpstreams must report incomplete when the Ingress walk isn't authoritative")
+	}
+}
+
+// TestIngressUpstreamsForService_SyncedCacheAuthoritative (S10): a synced,
+// namespace-covering cache backs the claim "these are ALL the Ingresses" - the
+// referencing Ingress surfaces AND the walk reports authoritative, so no false
+// incomplete marker is raised.
+func TestIngressUpstreamsForService_SyncedCacheAuthoritative(t *testing.T) {
+	defer k8s.ResetTestState()
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "team-a"},
+		Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}},
+	}
+	ing := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "team-a"},
+		Spec: networkingv1.IngressSpec{
+			Rules: []networkingv1.IngressRule{{
+				IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
+					Paths: []networkingv1.HTTPIngressPath{{
+						Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{Name: "api"}},
+					}},
+				}},
+			}},
+		},
+	}
+	if err := k8s.InitTestResourceCache(fake.NewClientset(svc, ing)); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	deps := Deps{Cache: k8s.GetResourceCache(), Issues: issues.NewCacheProvider()}
+	hops, authoritative := ingressUpstreamsForService(deps, svc)
+	if !authoritative {
+		t.Error("a synced cluster-wide cache must be authoritative for the Ingress walk")
+	}
+	if len(hops) != 1 || hops[0].Resource.Name != "web" {
+		t.Fatalf("want the referencing Ingress hop, got %+v", hops)
+	}
+}
+
+// TestBuildTrace_GatewaySubjectNilDiscoveryDegrades (nil-Discovery): a Gateway
+// trace when Discovery failed to init must degrade honestly to Unknown, never
+// nil-deref panic on deps.Discovery.GetGVRWithGroup.
+func TestBuildTrace_GatewaySubjectNilDiscoveryDegrades(t *testing.T) {
+	defer k8s.ResetTestState()
+	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	deps := Deps{Cache: k8s.GetResourceCache(), Issues: issues.NewCacheProvider()} // Discovery + Dynamic nil
+	tr, err := BuildTraceWithOptions(context.Background(), deps, "Gateway", "ns", "gw", Options{})
+	if err != nil {
+		t.Fatalf("BuildTraceWithOptions: %v", err)
+	}
+	if tr.Verdict != VerdictUnknown {
+		t.Errorf("nil Discovery on a Gateway trace must degrade to Unknown, got %q (%s)", tr.Verdict, tr.Reason)
+	}
+}
+
+// TestBuildTrace_ServiceSubjectNilDiscoveryNoPanic (nil-Discovery): the Service
+// reverse-walk touches Discovery for the route index. With Discovery nil it must
+// not panic and must flag the upstream enumeration incomplete rather than assert
+// "nothing references this Service".
+func TestBuildTrace_ServiceSubjectNilDiscoveryNoPanic(t *testing.T) {
+	defer k8s.ResetTestState()
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "ns"},
+		Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}, Selector: map[string]string{"app": "api"}},
+	}
+	if err := k8s.InitTestResourceCache(fake.NewClientset(svc)); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	deps := Deps{Cache: k8s.GetResourceCache(), Issues: issues.NewCacheProvider()} // Discovery nil
+	tr, err := BuildTraceWithOptions(context.Background(), deps, "Service", "ns", "api", Options{})
+	if err != nil {
+		t.Fatalf("BuildTraceWithOptions: %v", err)
+	}
+	if len(tr.Downstream) == 0 {
+		t.Fatal("expected a downstream service hop")
+	}
+	if !findingCodePresent(tr.Downstream[0].Findings, "trace:upstreams-incomplete") {
+		t.Errorf("nil Discovery must flag upstreams incomplete, got %+v", tr.Downstream[0].Findings)
 	}
 }

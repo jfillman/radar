@@ -1600,22 +1600,342 @@ func TestNonHTTPSkipReason_TCPClaimGatedOnTCPRan(t *testing.T) {
 	}
 }
 
-// TestHTTPPath_NormalizesTraversal pins that the operator-chosen probe path is
-// cleaned - . and .. segments collapse so the probe requests the intended path,
-// never a traversal (matches handleProbeInCluster's path.Clean).
-func TestHTTPPath_NormalizesTraversal(t *testing.T) {
+// TestHTTPPath_PreservesRequestTarget pins that the operator-chosen probe path
+// is sent as written: only whitespace trimming, control-character stripping
+// (header injection) and a leading '/' are applied. HTTP paths are opaque
+// route keys, not filesystem paths - filesystem-style cleaning (collapsing
+// //, resolving ./.., dropping a trailing slash) makes the probe request a
+// DIFFERENT resource than the one the operator asked to test (/api/v1/ vs
+// /api/v1 on an APPEND_SLASH-style server) and corrupts query strings.
+func TestHTTPPath_PreservesRequestTarget(t *testing.T) {
 	cases := map[string]string{
-		"":               "/",
-		"/":              "/",
-		"healthz":        "/healthz",
-		"/api/../secret": "/secret",
-		"/a/./b":         "/a/b",
-		"/../../etc":     "/etc",
-		"  /x  ":         "/x",
+		"":        "/",
+		"/":       "/",
+		"healthz": "/healthz",
+		"  /x  ":  "/x",
+		// Preserved verbatim - the server, not the probe, interprets these.
+		"/api/v1/":          "/api/v1/",
+		"//double":          "//double",
+		"/a/./b":            "/a/./b",
+		"/api/../other":     "/api/../other",
+		"/x?next=/api/v1/":  "/x?next=/api/v1/",
+		"/search?q=..%2f..": "/search?q=..%2f..",
+		// Control characters are stripped so the path can't smuggle headers
+		// or split the request line.
+		"/x\r\nHost: evil": "/xHost: evil",
+		"/a\tb":            "/ab",
 	}
 	for in, want := range cases {
 		if got := httpPath(in); got != want {
 			t.Errorf("httpPath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestReconcileHTTPSOnlyHost pins the HTTPS-only demotion: :80 and :443 are
+// separate entry surfaces, so on a TLS-serving host a failed :80 TCP dial
+// paired with a successful :443 one reads as "likely HTTPS-only" (skip), while
+// :443 also failing keeps BOTH failures - that's a real outage.
+func TestReconcileHTTPSOnlyHost(t *testing.T) {
+	tcp := func(port string, ok bool) probe.Result {
+		return probe.Result{Layer: probe.LayerTCP, Target: "sec.example.com:" + port, OK: ok}
+	}
+	cases := []struct {
+		name       string
+		rs         []probe.Result
+		wantSkip80 bool
+	}{
+		{"80 fails, 443 reached -> 80 demotes to skip", []probe.Result{tcp("80", false), tcp("443", true)}, true},
+		{"both fail -> both failures stand (real outage)", []probe.Result{tcp("80", false), tcp("443", false)}, false},
+		{"80 reached -> nothing to demote", []probe.Result{tcp("80", true), tcp("443", true)}, false},
+		{"already-skipped 80 row is left alone", []probe.Result{
+			{Layer: probe.LayerTCP, Target: "sec.example.com:80", Skipped: true, Reason: "probe budget exhausted before this check finished"},
+			tcp("443", true),
+		}, false},
+		{"HTTP rows don't count as the 443 signal", []probe.Result{
+			tcp("80", false),
+			{Layer: probe.LayerHTTP, Target: "https://sec.example.com/", OK: true},
+		}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rs := append([]probe.Result{}, c.rs...)
+			before := rs[0]
+			reconcileHTTPSOnlyHost(rs, "sec.example.com", probe.VantageLocal)
+			got := rs[0]
+			if c.wantSkip80 {
+				if !got.Skipped || !strings.Contains(got.Reason, "HTTPS-only") || !strings.Contains(got.Reason, "port 443 reached") {
+					t.Errorf("want :80 demoted to HTTPS-only skip, got %+v", got)
+				}
+				return
+			}
+			if got.Skipped != before.Skipped || got.OK != before.OK || got.Reason != before.Reason {
+				t.Errorf(":80 row must be untouched, got %+v want %+v", got, before)
+			}
+		})
+	}
+}
+
+// TestProbeExternalNamePort_DeclaredProtocolDrivesProbe pins that an
+// ExternalName probe follows the DECLARED Service port instead of guessing:
+// TLS ports get HTTPS with SNI = the external hostname, confident HTTP ports
+// get plain HTTP, unlabeled/non-HTTP ports get a TCP dial only (reached, not
+// verified - no invented HTTP verdict), and UDP/SCTP skip. 203.0.113.0/24 is
+// TEST-NET (unroutable), so dials fail against the short context deadline;
+// budgetSkipIfExhausted preserves Layer + Target, which carry the assertion.
+func TestProbeExternalNamePort_DeclaredProtocolDrivesProbe(t *testing.T) {
+	const host = "203.0.113.10"
+	cases := []struct {
+		name       string
+		pm         PortMap
+		wantLayer  probe.Layer
+		wantTarget string
+	}{
+		{"443 is HTTPS with default port elided", PortMap{Port: 443}, probe.LayerHTTP, "https://203.0.113.10/healthz"},
+		{"named https port keeps its number", PortMap{Name: "https", Port: 8443}, probe.LayerHTTP, "https://203.0.113.10:8443/healthz"},
+		{"80 is plain HTTP", PortMap{Port: 80}, probe.LayerHTTP, "http://203.0.113.10/healthz"},
+		{"well-known web port is plain HTTP", PortMap{Port: 8080}, probe.LayerHTTP, "http://203.0.113.10:8080/healthz"},
+		{"declared non-HTTP port is TCP-only", PortMap{Name: "postgres", Port: 5432}, probe.LayerTCP, "203.0.113.10:5432"},
+		{"unlabeled unusual port is TCP-only (assumed HTTP is never probed)", PortMap{Port: 9999}, probe.LayerTCP, "203.0.113.10:9999"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			r := probeExternalNamePort(ctx, host, "/healthz", c.pm, probe.VantageLocal, false)
+			if r.Layer != c.wantLayer {
+				t.Errorf("layer = %q, want %q", r.Layer, c.wantLayer)
+			}
+			if r.Target != c.wantTarget {
+				t.Errorf("target = %q, want %q", r.Target, c.wantTarget)
+			}
+			if r.Port != c.pm.Port {
+				t.Errorf("port = %d, want %d", r.Port, c.pm.Port)
+			}
+		})
+	}
+}
+
+// TestProbeExternalNamePort_UDPSkips: a UDP/SCTP declared port can't be tested
+// with a TCP/HTTP dial - honest skip, no dial, no false condemnation.
+func TestProbeExternalNamePort_UDPSkips(t *testing.T) {
+	r := probeExternalNamePort(context.Background(), "203.0.113.10", "/", PortMap{Port: 53, Protocol: "UDP"}, probe.VantageLocal, false)
+	if !r.Skipped || !strings.Contains(r.Reason, "UDP") {
+		t.Errorf("UDP declared port should skip, got %+v", r)
+	}
+}
+
+// TestProbeExternalNamePort_InternalOnlyFailureSkips: when the alias resolves
+// only to internal addresses, a failed dial from a laptop is "can't reach from
+// here", not a broken dependency - demote to a vantage skip.
+func TestProbeExternalNamePort_InternalOnlyFailureSkips(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	r := probeExternalNamePort(ctx, "203.0.113.10", "/", PortMap{Name: "postgres", Port: 5432}, probe.VantageLocal, true)
+	if !r.Skipped || !strings.Contains(r.Reason, "internal address") {
+		t.Errorf("internal-only failure should demote to a vantage skip, got %+v", r)
+	}
+	if r.SkipClass != SkipClassVantage {
+		t.Errorf("skip class = %q, want %q", r.SkipClass, SkipClassVantage)
+	}
+}
+
+// TestProbeExternalName_LocalDNSFailStillSkips: the split-horizon demotion is
+// unchanged by declared-port probing - if the alias doesn't resolve from a
+// laptop, nothing is dialed and the single DNS skip explains why.
+func TestProbeExternalName_LocalDNSFailStillSkips(t *testing.T) {
+	h := &Hop{
+		Resource: ResourceRef{Kind: "ExternalName", Name: "nope.invalid"},
+		Config:   &HopConfig{Ports: []PortMap{{Port: 443}}},
+	}
+	out := probeExternalName(context.Background(), h, probe.VantageLocal, "/")
+	if len(out) != 1 || !out[0].Skipped || !strings.Contains(out[0].Reason, "resolve this external alias") {
+		t.Errorf("local DNS fail should yield exactly the DNS skip, got %+v", out)
+	}
+}
+
+// TestProbeHop_L4RouteSkips: TCPRoute/TLSRoute hops (Gateway inventory) are
+// static-only - the probe layer says so instead of leaving coverage unexplained.
+func TestProbeHop_L4RouteSkips(t *testing.T) {
+	for _, kind := range []string{"TCPRoute", "TLSRoute"} {
+		out := probeHop(context.Background(), &Hop{Resource: ResourceRef{Kind: kind}}, probe.VantageLocal, nil, "/")
+		if len(out) != 1 || !out[0].Skipped || !strings.Contains(out[0].Reason, "L4 route") {
+			t.Errorf("%s: want a single L4 skip, got %+v", kind, out)
+		}
+	}
+}
+
+// TestSanitizeHTTPPath_Contract pins the exported sanitizer's semantics -
+// internal/reachability's probe-path normalization delegates to it, so the
+// ""-for-empty return (no "/" defaulting) is load-bearing for callers that
+// treat "no path" differently from "root".
+func TestSanitizeHTTPPath_Contract(t *testing.T) {
+	cases := map[string]string{
+		"":            "",
+		"   ":         "",
+		"\r\n":        "",
+		"/":           "/",
+		"healthz":     "/healthz",
+		"  /x  ":      "/x",
+		"/a\r\nHost:": "/aHost:",  // control chars stripped, no injection
+		"/api/v1/":    "/api/v1/", // preserved verbatim - no path.Clean
+	}
+	for in, want := range cases {
+		if got := SanitizeHTTPPath(in); got != want {
+			t.Errorf("SanitizeHTTPPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestProbeIngress_HTTPSOnlyHostDemotes80 drives the fail-:80/ok-:443 shape
+// THROUGH probeIngress (stubbed dial ladder - the SSRF guard refuses loopback
+// listeners and :80/:443 can't be bound hermetically): the :80 TCP failure
+// must end as the HTTPS-only skip, wired via the reconciler over the emitted
+// row slice. Pinning reconcileHTTPSOnlyHost only in isolation would let an
+// emission-shape change (row order, hostStart slicing) silently disconnect it.
+func TestProbeIngress_HTTPSOnlyHostDemotes80(t *testing.T) {
+	prevDNS, prevTCP, prevTLS, prevHTTP := ingressDNSProbe, ingressTCPProbe, ingressTLSProbe, ingressHTTPProbe
+	t.Cleanup(func() {
+		ingressDNSProbe, ingressTCPProbe, ingressTLSProbe, ingressHTTPProbe = prevDNS, prevTCP, prevTLS, prevHTTP
+	})
+	ingressDNSProbe = func(_ context.Context, host string, v probe.Vantage) probe.Result {
+		return probe.Result{Layer: probe.LayerDNS, Target: host, Vantage: v, OK: true, Tone: probe.ToneHealthy, Detail: "resolved"}
+	}
+	ingressTCPProbe = func(_ context.Context, addr string, v probe.Vantage) probe.Result {
+		if strings.HasSuffix(addr, ":80") {
+			return probe.Result{Layer: probe.LayerTCP, Target: addr, Vantage: v, OK: false, Error: "connect: connection refused"}
+		}
+		return probe.Result{Layer: probe.LayerTCP, Target: addr, Vantage: v, OK: true, Tone: probe.ToneHealthy}
+	}
+	ingressTLSProbe = func(_ context.Context, addr, _ string, v probe.Vantage) probe.Result {
+		return probe.Result{Layer: probe.LayerTLS, Target: addr, Vantage: v, OK: true, Tone: probe.ToneHealthy}
+	}
+	ingressHTTPProbe = func(_ context.Context, url, _ string, v probe.Vantage) probe.Result {
+		return probe.Result{Layer: probe.LayerHTTP, Target: url, Vantage: v, OK: true, Tone: probe.ToneHealthy, Detail: "HTTP 200"}
+	}
+
+	h := &Hop{
+		Resource: ResourceRef{Kind: "Ingress"},
+		Config:   &HopConfig{Hostnames: []string{"sec.example.com"}, TLSHosts: []string{"sec.example.com"}},
+	}
+	out := probeIngress(context.Background(), h, probe.VantageInCluster, "/")
+
+	var row80 *probe.Result
+	ok443 := false
+	for i := range out {
+		if out[i].Layer != probe.LayerTCP {
+			continue
+		}
+		switch out[i].Target {
+		case "sec.example.com:80":
+			row80 = &out[i]
+		case "sec.example.com:443":
+			ok443 = out[i].OK
+		}
+	}
+	if row80 == nil {
+		t.Fatalf("no :80 TCP row emitted; rows: %+v", out)
+	}
+	if !ok443 {
+		t.Fatalf("expected the :443 TCP row to be OK; rows: %+v", out)
+	}
+	if !row80.Skipped || !strings.Contains(row80.Reason, "HTTPS-only") {
+		t.Errorf(":80 row = %+v, want an HTTPS-only skip (not a hard failure) when :443 connects", *row80)
+	}
+}
+
+// TestProbeExternalName_LocalDNSFailIsVantageSkip (S6): from a laptop an
+// ExternalName alias that doesn't resolve may be split-horizon / cluster-internal.
+// The skip must be stamped SkipClassVantage structurally - so the post-in-cluster
+// fold can prune it once an in-cluster pass resolves the host - not left to the
+// message-text classifier (whose wording it doesn't match, which would misfile it
+// as a coverage gap and leave a stale "couldn't test").
+func TestProbeExternalName_LocalDNSFailIsVantageSkip(t *testing.T) {
+	h := &Hop{Resource: ResourceRef{Kind: "ExternalName", Name: "no-such-host.invalid"}}
+	out := probeExternalName(context.Background(), h, probe.VantageLocal, "/")
+	if len(out) != 1 {
+		t.Fatalf("want one DNS skip row, got %+v", out)
+	}
+	r := out[0]
+	if !r.Skipped {
+		t.Fatalf("local unresolvable alias must skip, got %+v", r)
+	}
+	if r.SkipClass != SkipClassVantage {
+		t.Errorf("skip must be stamped SkipClassVantage, got %q", r.SkipClass)
+	}
+	if skipClassOf(r) != SkipClassVantage {
+		t.Errorf("skipClassOf = %q, want vantage (must not fall back to coverage on reworded text)", skipClassOf(r))
+	}
+}
+
+// TestProbeIngress_SSRFGuardDemotesToSkip (S7): a host resolving to a metadata /
+// loopback / internal address trips the dial-time SSRF guard. Its raw
+// "(SSRF guard)" string must read as a neutral skip, never a red "unreachable"
+// row - at IN-CLUSTER vantage, where the internal-address demotion doesn't
+// apply, the guard demotion is the ONLY thing keeping the raw error off the row.
+func TestProbeIngress_SSRFGuardDemotesToSkip(t *testing.T) {
+	prevDNS, prevTCP, prevTLS, prevHTTP := ingressDNSProbe, ingressTCPProbe, ingressTLSProbe, ingressHTTPProbe
+	t.Cleanup(func() {
+		ingressDNSProbe, ingressTCPProbe, ingressTLSProbe, ingressHTTPProbe = prevDNS, prevTCP, prevTLS, prevHTTP
+	})
+	ingressDNSProbe = func(_ context.Context, host string, v probe.Vantage) probe.Result {
+		return probe.Result{Layer: probe.LayerDNS, Target: host, Vantage: v, OK: true, Tone: probe.ToneHealthy}
+	}
+	ingressTCPProbe = func(_ context.Context, addr string, v probe.Vantage) probe.Result {
+		return probe.Result{Layer: probe.LayerTCP, Target: addr, Vantage: v, OK: false,
+			Error: "dial tcp 169.254.169.254:80: refusing to probe internal address 169.254.169.254 (SSRF guard)"}
+	}
+	ingressTLSProbe = func(_ context.Context, addr, _ string, v probe.Vantage) probe.Result {
+		return probe.Result{Layer: probe.LayerTLS, Target: addr, Vantage: v, OK: true}
+	}
+	ingressHTTPProbe = func(_ context.Context, url, _ string, v probe.Vantage) probe.Result {
+		return probe.Result{Layer: probe.LayerHTTP, Target: url, Vantage: v, OK: true}
+	}
+
+	h := &Hop{Resource: ResourceRef{Kind: "Ingress"}, Config: &HopConfig{Hostnames: []string{"metadata.example.com"}}}
+	out := probeIngress(context.Background(), h, probe.VantageInCluster, "/")
+
+	var tcp *probe.Result
+	for i := range out {
+		if out[i].Layer == probe.LayerTCP {
+			tcp = &out[i]
+		}
+	}
+	if tcp == nil {
+		t.Fatalf("no TCP row emitted; rows: %+v", out)
+	}
+	if !tcp.Skipped {
+		t.Errorf("SSRF-guard-blocked target must skip, not fail; got %+v", *tcp)
+	}
+	if strings.Contains(tcp.Reason+tcp.Error, "SSRF guard") {
+		t.Errorf("raw SSRF-guard string must not surface to the operator; got %+v", *tcp)
+	}
+}
+
+// TestProbeExternalName_SSRFGuardDemotesToSkip (S7): an in-cluster ExternalName
+// aliasing a loopback / cloud-metadata address trips the dial-time SSRF guard.
+// The raw error must read as a neutral skip, never a red row leaking the guard
+// string.
+func TestProbeExternalName_SSRFGuardDemotesToSkip(t *testing.T) {
+	h := &Hop{
+		Resource: ResourceRef{Kind: "ExternalName", Name: "127.0.0.1"},
+		Config:   &HopConfig{Ports: []PortMap{{Port: 15999, Protocol: "TCP"}}},
+	}
+	out := probeExternalName(context.Background(), h, probe.VantageInCluster, "/")
+
+	var portRow *probe.Result
+	for i := range out {
+		if out[i].Port == 15999 {
+			portRow = &out[i]
+		}
+	}
+	if portRow == nil {
+		t.Fatalf("no port row emitted; rows: %+v", out)
+	}
+	if !portRow.Skipped {
+		t.Errorf("guard-blocked alias must skip, not fail; got %+v", *portRow)
+	}
+	if strings.Contains(portRow.Reason+portRow.Error, "SSRF guard") {
+		t.Errorf("raw SSRF-guard string must not surface; got %+v", *portRow)
 	}
 }

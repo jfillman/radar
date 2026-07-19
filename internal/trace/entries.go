@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
+	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/probe"
 )
@@ -44,13 +45,17 @@ func traceServiceEntry(ctx context.Context, deps Deps, t *Trace) {
 		}, {
 			Resource: ResourceRef{Kind: "ExternalName", Name: svc.Spec.ExternalName},
 			Edge:     "Service->ExternalName",
+			// The declared Service ports ride on the hop so the probe tests
+			// the port(s)/protocol(s) the operator declared instead of
+			// assuming plain HTTP on :80.
+			Config: externalNameConfig(svc),
 			Findings: []Finding{{
 				Code:     "svc:external-name",
 				Severity: SeverityInfo,
 				Message:  fmt.Sprintf("Service resolves to %q outside the cluster; downstream is not traced", svc.Spec.ExternalName),
 			}},
 		}}
-		t.Upstreams = serviceUpstreams(deps, svc)
+		setServiceUpstreams(deps, svc, t)
 		return
 
 	case len(svc.Spec.Selector) == 0:
@@ -65,7 +70,7 @@ func traceServiceEntry(ctx context.Context, deps Deps, t *Trace) {
 				Command:  fmt.Sprintf("kubectl get endpoints %s -n %s", svc.Name, svc.Namespace),
 			}),
 		}}
-		t.Upstreams = serviceUpstreams(deps, svc)
+		setServiceUpstreams(deps, svc, t)
 		return
 	}
 
@@ -100,7 +105,32 @@ func traceServiceEntry(ctx context.Context, deps Deps, t *Trace) {
 	linkNoReadyToCulprit(&svcHop, &podsHop)
 
 	t.Downstream = []Hop{svcHop, podsHop}
-	t.Upstreams = serviceUpstreams(deps, svc)
+	setServiceUpstreams(deps, svc, t)
+}
+
+// externalNameConfig carries an ExternalName Service's declared ports onto its
+// terminal hop (same PortMap shape every other hop uses) so the probe layer can
+// test the declared port/protocol instead of guessing HTTP on :80.
+func externalNameConfig(svc *corev1.Service) *HopConfig {
+	if svc == nil || len(svc.Spec.Ports) == 0 {
+		return nil
+	}
+	return &HopConfig{Ports: servicePortMaps(svc)}
+}
+
+// setServiceUpstreams attaches the reverse-walk result to the trace and, when
+// the route index wasn't authoritative, flags the entry hop so a partial (or
+// empty) upstream list can't read as the complete set of referencing routes.
+func setServiceUpstreams(deps Deps, svc *corev1.Service, t *Trace) {
+	upstreams, complete := serviceUpstreams(deps, svc)
+	t.Upstreams = upstreams
+	if !complete && len(t.Downstream) > 0 {
+		t.Downstream[0].Findings = append(t.Downstream[0].Findings, Finding{
+			Code:     "trace:upstreams-incomplete",
+			Severity: SeverityInfo,
+			Message:  "The Ingress or Gateway API route index isn't fully synced, so Ingresses or routes referencing this Service may be missing from the upstream list - an empty list here doesn't prove nothing references it.",
+		})
+	}
 }
 
 // linkNoReadyToCulprit points a Service's "0/N selected pods ready" symptom at
@@ -379,9 +409,25 @@ func metaInt32Slice(v any) []int32 {
 
 func buildPodsHop(deps Deps, svc *corev1.Service, pods []*corev1.Pod, unreadable bool, backendPorts ...string) Hop {
 	podsRef := ResourceRef{Kind: "Pods", Namespace: svc.Namespace}
+	pnr := svc.Spec.PublishNotReadyAddresses
+	// meta["ready"] is the count of endpoints the dataplane actually routes to
+	// - that's what the severity layers (hopHasReadyEndpoints in trace.go, the
+	// UI's backend-down detection) read to decide whether this hop can serve.
+	// For a publishNotReadyAddresses Service, Kubernetes publishes endpoints
+	// regardless of readiness, so every selected pod IS a published endpoint;
+	// counting only kubelet-ready pods there would render a by-design 0-ready
+	// state (StatefulSet peer discovery, bootstrap ordering) as an outage.
+	// Per-pod kubelet readiness stays visible in Config.Pods.
+	readyEndpoints := readyCount(pods)
+	if pnr {
+		readyEndpoints = publishedEndpointCount(pods)
+	}
 	meta := map[string]any{
 		"selected": len(pods),
-		"ready":    readyCount(pods),
+		"ready":    readyEndpoints,
+	}
+	if pnr {
+		meta["publishNotReadyAddresses"] = true
 	}
 	if unreadable {
 		// Pod lister errored: don't pretend the empty selection means "no
@@ -436,7 +482,10 @@ func buildPodsHop(deps Deps, svc *corev1.Service, pods []*corev1.Pod, unreadable
 	// surface the real blocking pod state (OOM / stuck init / failing readiness)
 	// so the operator isn't left with a bare "not reached". Warning-tier, matching
 	// the present-but-not-ready calibration; a critical no-ready-endpoints issue,
-	// when the detector emits one, already takes precedence here.
+	// when the detector emits one, already takes precedence here. For a
+	// publishNotReadyAddresses Service the same state is info-tier: endpoints
+	// publish regardless of readiness, so traffic still routes and 0 ready is
+	// often the intended shape - worth a glance, never an outage framing.
 	if len(pods) > 0 && readyCount(pods) == 0 &&
 		worstSeverity(hop.Findings) != SeverityCritical && worstSeverity(hop.Findings) != SeverityWarning {
 		for _, pod := range pods {
@@ -445,9 +494,14 @@ func buildPodsHop(deps Deps, svc *corev1.Service, pods []*corev1.Pod, unreadable
 			}
 			if cause, command := podDiagnosis(pod); cause != "" {
 				podRef := ResourceRef{Kind: "Pod", Namespace: pod.Namespace, Name: pod.Name}
+				severity := SeverityWarning
+				if pnr {
+					severity = SeverityInfo
+					cause += " - this Service publishes endpoints regardless of readiness (publishNotReadyAddresses), so traffic still routes to it"
+				}
 				hop.Findings = append(hop.Findings, Finding{
 					Code:     "pods:no-ready-endpoints",
-					Severity: SeverityWarning,
+					Severity: severity,
 					Message:  cause,
 					Command:  command,
 					Resource: &podRef,
@@ -552,8 +606,16 @@ func podsConfig(pods []*corev1.Pod, svc *corev1.Service) *HopConfig {
 		// names, and divergence detection assumes those are the same pods.
 		// Appending names while IP is empty would shift the sequences, so
 		// pods without a PodIP yet are dropped from the sample entirely.
+		//
+		// Probe eligibility follows the dataplane, not raw readiness: a
+		// publishNotReadyAddresses Service publishes endpoints for NotReady
+		// pods too, so those pods really receive traffic and must be
+		// probeable - sampling only ready pods there would leave the actual
+		// backends untested (often ALL of them, e.g. a bootstrapping
+		// StatefulSet).
 		ready := isPodReadyForTrace(pod)
-		if ready && pod.Status.PodIP != "" && len(names) < maxPodIPsInConfig {
+		published := ready || (svc != nil && svc.Spec.PublishNotReadyAddresses)
+		if published && pod.Status.PodIP != "" && len(names) < maxPodIPsInConfig {
 			ips = append(ips, pod.Status.PodIP)
 			names = append(names, pod.Name)
 		}
@@ -856,17 +918,17 @@ func podDiagnosis(pod *corev1.Pod) (cause, command string) {
 		if w == nil {
 			continue
 		}
-		switch w.Reason {
-		case "CrashLoopBackOff":
+		switch {
+		case w.Reason == "CrashLoopBackOff":
 			if lastOOM(cs) {
 				return fmt.Sprintf("Container %q was OOMKilled (out of memory) and is crash-looping", cs.Name),
 					"kubectl logs " + pod.Name + ns + " --previous"
 			}
 			return fmt.Sprintf("Container %q is crash-looping (CrashLoopBackOff)", cs.Name),
 				"kubectl logs " + pod.Name + ns + " --previous"
-		case "ImagePullBackOff", "ErrImagePull", "InvalidImageName":
+		case k8s.IsImagePullReason(w.Reason):
 			return fmt.Sprintf("Container %q cannot pull its image (%s)", cs.Name, w.Reason), describe
-		case "CreateContainerConfigError", "CreateContainerError":
+		case w.Reason == "CreateContainerConfigError" || w.Reason == "CreateContainerError":
 			return fmt.Sprintf("Container %q failed to start (%s)", cs.Name, w.Reason), describe
 		}
 	}
@@ -981,6 +1043,23 @@ func livePods(pods []*corev1.Pod) []*corev1.Pod {
 	return out
 }
 
+// publishedEndpointCount counts the pods a publishNotReadyAddresses Service
+// actually publishes. The EndpointSlice reconciler publishes a selected pod
+// unless it is in a terminal phase (Succeeded/Failed) or has no IP assigned -
+// PNR waives the READINESS condition only, not those rules. Terminating pods
+// stay published until they terminate, so there is deliberately no
+// DeletionTimestamp filter here (livePods would drop them).
+func publishedEndpointCount(pods []*corev1.Pod) int {
+	n := 0
+	for _, p := range pods {
+		if p == nil || p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed || p.Status.PodIP == "" {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 func readyCount(pods []*corev1.Pod) int {
 	n := 0
 	for _, pod := range pods {
@@ -1000,22 +1079,38 @@ func readyCount(pods []*corev1.Pod) int {
 // serviceUpstreams reverse-walks Ingresses and Gateway-API Routes pointing at
 // the Service. Each upstream is one Hop with its own findings; we don't
 // chain through to the route's own pods (that's the route's own trace).
-func serviceUpstreams(deps Deps, svc *corev1.Service) []Hop {
+// The second return value reports whether the route enumeration was
+// authoritative - false means routes may be missing and the caller must not
+// present the list (or its emptiness) as complete.
+func serviceUpstreams(deps Deps, svc *corev1.Service) ([]Hop, bool) {
 	var out []Hop
-	out = append(out, ingressUpstreamsForService(deps, svc)...)
-	out = append(out, routeUpstreamsForService(deps, svc, "HTTPRoute")...)
-	out = append(out, routeUpstreamsForService(deps, svc, "GRPCRoute")...)
+	ingHops, ingComplete := ingressUpstreamsForService(deps, svc)
+	out = append(out, ingHops...)
+	complete := ingComplete
+	for _, kind := range []string{"HTTPRoute", "GRPCRoute"} {
+		hops, authoritative := routeUpstreamsForService(deps, svc, kind)
+		out = append(out, hops...)
+		complete = complete && authoritative
+	}
 	sortHopsByResource(out)
-	return out
+	return out, complete
 }
 
-func ingressUpstreamsForService(deps Deps, svc *corev1.Service) []Hop {
+// ingressUpstreamsForService reverse-walks the Ingress cache for Ingresses that
+// reference the Service. The second return reports whether the enumeration was
+// authoritative: false means the Ingress informer was unavailable, not synced,
+// or doesn't reliably cover this Service's namespace (warmup / scoped install),
+// so an empty result must NOT read as "no Ingress references this Service"
+// (mirrors routeUpstreamsForService's cluster-wide-synced check for routes).
+func ingressUpstreamsForService(deps Deps, svc *corev1.Service) ([]Hop, bool) {
 	if deps.Cache == nil || deps.Cache.Ingresses() == nil {
-		return nil
+		// The Ingress lister isn't available (disabled / RBAC-denied / cold) - we
+		// couldn't look, so absence isn't authoritative.
+		return nil, false
 	}
 	ingresses, err := deps.Cache.Ingresses().Ingresses(svc.Namespace).List(labels.Everything())
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	var out []Hop
 	for _, ing := range ingresses {
@@ -1034,7 +1129,13 @@ func ingressUpstreamsForService(deps Deps, svc *corev1.Service) []Hop {
 			Config: ingressConfig(ing),
 		})
 	}
-	return out
+	// A non-empty read is not proof of a complete index: a warmup or
+	// namespace-scoped informer returns what it has with no error. Only a synced
+	// cache that reliably covers this Service's namespace is authoritative for
+	// "these are ALL the Ingresses"; anything less keeps the matches found but
+	// flags the enumeration as possibly incomplete.
+	authoritative := deps.Cache.IsSyncComplete() && deps.Cache.KindCoversNamespace("ingresses", svc.Namespace)
+	return out, authoritative
 }
 
 func ingressReferencesService(ing *networkingIngress, svcName string) bool {
@@ -1057,13 +1158,22 @@ func ingressReferencesService(ing *networkingIngress, svcName string) bool {
 	return false
 }
 
-func routeUpstreamsForService(deps Deps, svc *corev1.Service, kind string) []Hop {
+func routeUpstreamsForService(deps Deps, svc *corev1.Service, kind string) (hops []Hop, authoritative bool) {
+	if deps.Discovery == nil {
+		// Discovery failed to init - we can't resolve the route GVR, so we can't
+		// enumerate. An empty list must not read as "nothing references this Service".
+		return nil, false
+	}
 	gvr, ok := deps.Discovery.GetGVRWithGroup(kind, "gateway.networking.k8s.io")
 	if !ok {
-		return nil
+		// The kind isn't served in this cluster - nothing can reference the
+		// Service through it, so the (empty) enumeration is authoritative.
+		return nil, true
 	}
 	if deps.Dynamic == nil {
-		return nil
+		// The kind exists but can't be read at all - an empty upstream list
+		// must not read as "nothing references this Service".
+		return nil, false
 	}
 	routes, err := deps.Dynamic.ListWatched(gvr)
 	if err != nil || len(routes) == 0 {
@@ -1079,36 +1189,67 @@ func routeUpstreamsForService(deps Deps, svc *corev1.Service, kind string) []Hop
 			routes = routes3
 		}
 	}
+	// A non-empty snapshot is NOT proof of a complete index: a partially
+	// synced or namespace-scoped cache returns what it has with no error, and
+	// consuming that as the cluster-wide truth silently drops the routes it
+	// missed. Only a synced cluster-wide informer is authoritative for "these
+	// are ALL the routes" - anything less keeps the matches found but makes
+	// the caller flag the enumeration as possibly incomplete.
+	authoritative = deps.Dynamic.IsClusterWideSynced(gvr)
 	var out []Hop
+	outOfScope := 0
 	for _, route := range routes {
 		if !routeReferencesService(route, svc.Namespace, svc.Name) {
 			continue
 		}
-		ref := ResourceRef{Group: "gateway.networking.k8s.io", Kind: kind, Namespace: route.GetNamespace(), Name: route.GetName()}
-		// A Route referencing this Service from a namespace outside the
-		// caller's scope still belongs in the trace (so the topology
-		// isn't a lie) but its findings are suppressed; the existence
-		// of the dependency is in-scope, the Route's own state is not.
+		// An out-of-scope route's EXISTENCE is in-scope topology, but its
+		// identity (name + namespace) is exactly the data the caller's RBAC
+		// can't read - naming it here would leak it. All such routes collapse
+		// into the single anonymous aggregate hop appended below.
 		if !deps.NamespaceAllowed(route.GetNamespace()) {
-			out = append(out, Hop{
-				Resource: ref,
-				Edge:     kind + "->Service",
-				Meta:     map[string]any{"endpointSource": "unknown"},
-				Findings: []Finding{{
-					Code:     "rbac:cross-namespace-redacted",
-					Severity: SeverityInfo,
-					Message:  fmt.Sprintf("Upstream %s %q is in namespace %q, which is outside the namespaces you can read. Its findings are not shown.", kind, route.GetName(), route.GetNamespace()),
-				}},
-			})
+			outOfScope++
 			continue
 		}
+		ref := ResourceRef{Group: "gateway.networking.k8s.io", Kind: kind, Namespace: route.GetNamespace(), Name: route.GetName()}
 		out = append(out, Hop{
 			Resource: ref,
 			Edge:     kind + "->Service",
 			Findings: hopFindings(deps.Issues, ref),
 		})
 	}
-	return out
+	if outOfScope > 0 {
+		out = append(out, redactedAggregateHop(
+			ResourceRef{Group: "gateway.networking.k8s.io", Kind: kind},
+			kind+"->Service",
+			fmt.Sprintf("This Service is referenced by %s in namespaces outside your access. Identities and findings are not shown.", countOf(outOfScope, kind)),
+		))
+	}
+	return out, authoritative
+}
+
+// redactedAggregateHop collapses every out-of-scope match at a reverse-walk
+// site into one anonymous hop: the caller learns that dependencies exist and
+// how many (topology stays honest), but not who they are - kind/name/namespace
+// of an object the caller's RBAC can't read are themselves protected data.
+// The name-less ResourceRef mirrors the Gateway routes-truncated summary hop,
+// which the wire format and UI already render.
+func redactedAggregateHop(ref ResourceRef, edge, message string) Hop {
+	return Hop{
+		Resource: ref,
+		Edge:     edge,
+		Meta:     map[string]any{"endpointSource": "unknown"},
+		Findings: []Finding{{
+			Code:     "rbac:cross-namespace-redacted",
+			Severity: SeverityInfo,
+			Message:  message,
+		}},
+	}
+}
+
+// countOf renders a count + noun ("1 HTTPRoute", "3 HTTPRoutes") for the
+// aggregate redaction messages.
+func countOf(n int, noun string) string {
+	return fmt.Sprintf("%d %s%s", n, noun, plural(n))
 }
 
 func routeReferencesService(route *unstructured.Unstructured, svcNS, svcName string) bool {
@@ -1409,6 +1550,11 @@ func ingressBackendNames(ing *networkingIngress) []string {
 // the verdict lies. Cross-namespace backends respect the BackendRef's own
 // namespace.
 func traceRouteEntry(ctx context.Context, deps Deps, t *Trace, kind string) {
+	if deps.Discovery == nil {
+		t.Verdict = VerdictUnknown
+		t.Reason = kind + " could not be read in this cluster"
+		return
+	}
 	gvr, ok := deps.Discovery.GetGVRWithGroup(kind, "gateway.networking.k8s.io")
 	if !ok {
 		t.Verdict = VerdictUnknown
@@ -1447,28 +1593,21 @@ func traceRouteEntry(ctx context.Context, deps Deps, t *Trace, kind string) {
 			Message:  fmt.Sprintf("Tracing %d of %d backends; remaining backends were skipped to bound the trace response", maxBackendsTraced, len(allBackends)),
 		})
 	}
+	outOfScopeBackends := 0
 	for _, b := range backends {
 		if ctx.Err() != nil {
 			break // total budget exhausted - stop fanning out, return what we have
 		}
 		svcRef := ResourceRef{Kind: "Service", Namespace: b.Namespace, Name: b.Name}
-		// A backendRef pointing at a Service the caller can't read must
-		// still appear in the trace (so the path doesn't pretend it
-		// doesn't exist) but its config + pod fan-out + probes are
-		// suppressed and the hop is marked unverifiable. Without the
-		// scope check, the cluster-wide cache would leak resources the
-		// REST handler did not authorize. See Deps.AllowedNamespaces.
+		// A backendRef pointing at a Service the caller can't read must still
+		// register in the trace (so the path doesn't pretend it doesn't
+		// exist), but only as the anonymous aggregate appended after the
+		// loop: the backend's name + namespace are data the caller's RBAC
+		// can't read, so naming them here would leak identities out of the
+		// cluster-wide cache. Config + pod fan-out + probes are suppressed
+		// with the identity. See Deps.AllowedNamespaces.
 		if !deps.NamespaceAllowed(b.Namespace) {
-			hops = append(hops, Hop{
-				Resource: svcRef,
-				Edge:     kind + "->Service",
-				Meta:     map[string]any{"endpointSource": "unknown"},
-				Findings: []Finding{{
-					Code:     "rbac:cross-namespace-redacted",
-					Severity: SeverityInfo,
-					Message:  fmt.Sprintf("Backend Service %q is in namespace %q, which is outside the namespaces you can read. Its config and probe results are not shown.", b.Name, b.Namespace),
-				}},
-			})
+			outOfScopeBackends++
 			continue
 		}
 		svcHop := Hop{
@@ -1518,6 +1657,13 @@ func traceRouteEntry(ctx context.Context, deps Deps, t *Trace, kind string) {
 		if hasPods {
 			hops = append(hops, buildPodsHop(deps, svc, selPods, unreadable, routeBackendPorts(route, b.Namespace, b.Name)...))
 		}
+	}
+	if outOfScopeBackends > 0 {
+		hops = append(hops, redactedAggregateHop(
+			ResourceRef{Kind: "Service"},
+			kind+"->Service",
+			fmt.Sprintf("This route references %s in namespaces outside your access. Identities, config, and probe results are not shown.", countOf(outOfScopeBackends, "backend Service")),
+		))
 	}
 	t.Downstream = hops
 	t.Upstreams = routeParentGateways(deps, route)
@@ -1777,6 +1923,9 @@ func routeParentGateways(deps Deps, route *unstructured.Unstructured) []Hop {
 	if !found {
 		return nil
 	}
+	if deps.Discovery == nil {
+		return nil
+	}
 	gvr, ok := deps.Discovery.GetGVRWithGroup("Gateway", "gateway.networking.k8s.io")
 	if !ok {
 		return nil
@@ -1786,6 +1935,7 @@ func routeParentGateways(deps Deps, route *unstructured.Unstructured) []Hop {
 	}
 	seen := map[string]bool{}
 	var out []Hop
+	outOfScope := 0
 	for _, p := range parents {
 		pm, ok := p.(map[string]any)
 		if !ok {
@@ -1807,21 +1957,13 @@ func routeParentGateways(deps Deps, route *unstructured.Unstructured) []Hop {
 		}
 		seen[key] = true
 		ref := ResourceRef{Group: "gateway.networking.k8s.io", Kind: "Gateway", Namespace: ns, Name: name}
-		// A parent Gateway in a namespace outside the caller's scope
-		// still belongs in the trace so the path doesn't pretend the
-		// route is orphaned, but config + probes + findings are
-		// redacted and the hop is marked unverifiable.
+		// A parent Gateway outside the caller's scope still registers in the
+		// trace (so the route doesn't read as orphaned), but only via the
+		// anonymous aggregate appended after the loop - its name + namespace
+		// are data the caller's RBAC can't read, so naming it here would
+		// leak them. Config + probes + findings are redacted with it.
 		if !deps.NamespaceAllowed(ns) {
-			out = append(out, Hop{
-				Resource: ref,
-				Edge:     "Gateway->Route",
-				Meta:     map[string]any{"endpointSource": "unknown"},
-				Findings: []Finding{{
-					Code:     "rbac:cross-namespace-redacted",
-					Severity: SeverityInfo,
-					Message:  fmt.Sprintf("Parent Gateway %q is in namespace %q, which is outside the namespaces you can read. Its config and probe results are not shown.", name, ns),
-				}},
-			})
+			outOfScope++
 			continue
 		}
 		gw, gwErr := deps.Dynamic.Get(gvr, ns, name)
@@ -1865,6 +2007,13 @@ func routeParentGateways(deps Deps, route *unstructured.Unstructured) []Hop {
 		}
 		out = append(out, hop)
 	}
+	if outOfScope > 0 {
+		out = append(out, redactedAggregateHop(
+			ResourceRef{Group: "gateway.networking.k8s.io", Kind: "Gateway"},
+			"Gateway->Route",
+			fmt.Sprintf("This route is attached to %s in namespaces outside your access. Identities, config, and probe results are not shown.", countOf(outOfScope, "parent Gateway")),
+		))
+	}
 	return out
 }
 
@@ -1874,6 +2023,11 @@ func routeParentGateways(deps Deps, route *unstructured.Unstructured) []Hop {
 // tab on the route does that. The Gateway is the subject of its own posture;
 // upstreams (which controller manages it) are not modeled here.
 func traceGatewayEntry(ctx context.Context, deps Deps, t *Trace) {
+	if deps.Discovery == nil {
+		t.Verdict = VerdictUnknown
+		t.Reason = "Gateway could not be read in this cluster"
+		return
+	}
 	gvr, ok := deps.Discovery.GetGVRWithGroup("Gateway", "gateway.networking.k8s.io")
 	if !ok {
 		t.Verdict = VerdictUnknown
@@ -1900,35 +2054,55 @@ func traceGatewayEntry(ctx context.Context, deps Deps, t *Trace) {
 		Config:   gatewayConfig(gw),
 	}}
 
-	attached, total := attachedRoutes(deps, gw)
-	// Routes in namespaces the caller can't read render as a referenced
-	// ResourceRef with redacted findings, matching the other three
-	// cross-namespace fan-out sites in this package. The route's name +
-	// namespace are still visible (they identify a dependency the
-	// operator should know exists) but the route's own findings stay
-	// behind the RBAC boundary.
+	attached, total, complete := attachedRoutes(deps, gw)
+	if !complete {
+		hops[0].Findings = append(hops[0].Findings, Finding{
+			Code:     "trace:attached-routes-incomplete",
+			Severity: SeverityInfo,
+			Message:  "The Gateway API route index isn't fully synced, so this list of attached routes may be incomplete.",
+		})
+	}
+	// Routes in namespaces the caller can't read collapse into one anonymous
+	// aggregate hop per kind, matching the other three cross-namespace
+	// fan-out sites in this package: the operator should know dependencies
+	// exist (and how many), but a route's name + namespace are exactly the
+	// data their RBAC can't read, so identities stay behind the boundary
+	// along with the routes' findings.
+	outOfScope := map[string]int{}
 	for _, ref := range attached {
 		if ctx.Err() != nil {
 			break // total budget exhausted - stop fanning out, return what we have
 		}
 		if !deps.NamespaceAllowed(ref.Namespace) {
-			hops = append(hops, Hop{
-				Resource: ref,
-				Edge:     "Gateway->" + ref.Kind,
-				Meta:     map[string]any{"endpointSource": "unknown"},
-				Findings: []Finding{{
-					Code:     "rbac:cross-namespace-redacted",
-					Severity: SeverityInfo,
-					Message:  fmt.Sprintf("Attached %s %q is in namespace %q, which is outside the namespaces you can read. Its findings are not shown.", ref.Kind, ref.Name, ref.Namespace),
-				}},
-			})
+			outOfScope[ref.Kind]++
 			continue
 		}
-		hops = append(hops, Hop{
+		hop := Hop{
 			Resource: ref,
 			Edge:     "Gateway->" + ref.Kind,
 			Findings: hopFindings(deps.Issues, ref),
-		})
+		}
+		// L4 routes are inventoried so the attachment list never claims
+		// HTTP-only completeness, but radar doesn't walk their backends or
+		// probe them - say so instead of leaving an unexplained bare hop.
+		if ref.Kind == "TCPRoute" || ref.Kind == "TLSRoute" {
+			hop.Findings = append(hop.Findings, Finding{
+				Code:     "gateway:l4-route-not-traced",
+				Severity: SeverityInfo,
+				Message:  fmt.Sprintf("This %s is attached to the Gateway but its backends are not traced or tested - radar doesn't walk L4 routes. The Gateway listener's TCP reachability is still probed.", ref.Kind),
+			})
+			sortFindingsBySeverity(hop.Findings)
+		}
+		hops = append(hops, hop)
+	}
+	for _, kind := range gatewayRouteKinds {
+		if n := outOfScope[kind]; n > 0 {
+			hops = append(hops, redactedAggregateHop(
+				ResourceRef{Group: "gateway.networking.k8s.io", Kind: kind},
+				"Gateway->"+kind,
+				fmt.Sprintf("This Gateway has %s attached from namespaces outside your access. Identities and findings are not shown.", countOf(n, kind)),
+			))
+		}
 	}
 	if total > len(attached) {
 		t.Truncated = true
@@ -1994,14 +2168,33 @@ func gatewayConfig(gw *unstructured.Unstructured) *HopConfig {
 	return c
 }
 
-func attachedRoutes(deps Deps, gw *unstructured.Unstructured) ([]ResourceRef, int) {
+// gatewayRouteKinds is the full set of Gateway API route kinds radar
+// inventories on a Gateway trace. TCPRoute/TLSRoute attachments are listed so
+// the inventory never claims HTTP-only completeness, even though their
+// backends aren't traced (see the l4-route note in traceGatewayEntry).
+var gatewayRouteKinds = []string{"HTTPRoute", "GRPCRoute", "TCPRoute", "TLSRoute"}
+
+// attachedRoutes enumerates every route attached to the Gateway. The third
+// return value reports whether the enumeration was authoritative: false means
+// the route index wasn't a synced cluster-wide snapshot, so routes may be
+// missing and the caller must flag the inventory as possibly incomplete.
+func attachedRoutes(deps Deps, gw *unstructured.Unstructured) ([]ResourceRef, int, bool) {
+	if deps.Discovery == nil {
+		// Discovery failed to init - we can't resolve any route GVR, so the
+		// inventory is unreadable, not empty. Never claim completeness.
+		return nil, 0, false
+	}
 	var all []ResourceRef
-	for _, kind := range []string{"HTTPRoute", "GRPCRoute"} {
+	complete := true
+	for _, kind := range gatewayRouteKinds {
 		gvr, ok := deps.Discovery.GetGVRWithGroup(kind, "gateway.networking.k8s.io")
 		if !ok {
+			// Kind not served in this cluster - nothing can attach through it.
 			continue
 		}
 		if deps.Dynamic == nil {
+			// Kind exists but can't be read - the inventory is incomplete.
+			complete = false
 			continue
 		}
 		// Same fallback ladder as routeUpstreamsForService: ListWatched is
@@ -2018,6 +2211,10 @@ func attachedRoutes(deps Deps, gw *unstructured.Unstructured) ([]ResourceRef, in
 				routes = routes3
 			}
 		}
+		// A non-empty snapshot is not a complete index (see
+		// routeUpstreamsForService) - only a synced cluster-wide informer can
+		// back the claim "these are ALL the attached routes".
+		complete = complete && deps.Dynamic.IsClusterWideSynced(gvr)
 		for _, r := range routes {
 			if routeAttachedToGateway(r, gw.GetNamespace(), gw.GetName()) {
 				all = append(all, ResourceRef{Group: "gateway.networking.k8s.io", Kind: kind, Namespace: r.GetNamespace(), Name: r.GetName()})
@@ -2026,9 +2223,9 @@ func attachedRoutes(deps Deps, gw *unstructured.Unstructured) ([]ResourceRef, in
 	}
 	sortRefs(all)
 	if len(all) > gatewayRouteCap {
-		return all[:gatewayRouteCap], len(all)
+		return all[:gatewayRouteCap], len(all), complete
 	}
-	return all, len(all)
+	return all, len(all), complete
 }
 
 func routeAttachedToGateway(route *unstructured.Unstructured, gwNS, gwName string) bool {

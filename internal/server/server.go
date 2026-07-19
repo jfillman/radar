@@ -328,9 +328,10 @@ func (s *Server) setupRoutes() {
 			// Network path trace - path-shaped diagnosis for Service /
 			// Ingress / HTTPRoute / GRPCRoute / Gateway. See internal/trace.
 			r.Get("/trace/{kind}/{namespace}/{name}", s.handleTrace)
-			// Active "test from inside the cluster" - creates a short-lived,
-			// restricted, self-destructing probe Job as the caller's RBAC.
-			r.Post("/trace/{kind}/{namespace}/{name}/probe-in-cluster", s.handleProbeInCluster)
+			// Whether the active "test from inside the cluster" (a short-lived,
+			// restricted, self-destructing probe Job as the caller's RBAC) can
+			// run - gates the UI button and names the cluster + namespace the
+			// probe pod would land in.
 			r.Get("/trace/{kind}/{namespace}/{name}/probe-in-cluster/capability", s.handleProbeInClusterCapability)
 			// Whole-subject in-cluster test: runs every route's live probe and folds
 			// them in server-side (canonical merge), returning the finalized trace so

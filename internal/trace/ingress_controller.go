@@ -17,19 +17,37 @@ import (
 // plain-language "who serves this" finding - WITHOUT inventing a separate node.
 //
 // Honesty invariants (these are the whole point - see the design review):
-//   - FAIL TOWARD SILENCE. "couldn't find the controller", "couldn't read its
-//     namespace", and "it's a cloud LB" must NEVER render as "no controller /
-//     broken". Most production is cloud-LB or cross-namespace-RBAC.
+//   - REPORT THE TIER OF EVIDENCE, never intent as service. The tiers:
+//     configured (a class/annotation exists) < controller observed (pods found
+//     and ready) < programmed (status.loadBalancer address assigned). "Served
+//     by" wording requires at least controller-observed or programmed evidence;
+//     a class or annotation alone reads as "configured for", never "served by".
+//   - FAIL TOWARD SILENCE on UNCERTAINTY. "couldn't read IngressClasses",
+//     "couldn't see the controller pods", and "couldn't read its namespace"
+//     must NEVER render as "no controller / broken". Most production is
+//     cloud-LB or cross-namespace-RBAC.
+//   - A genuinely-OBSERVED empty result is a real observation, not "couldn't
+//     read": a synced-but-empty IngressClass list is authoritative and may
+//     fire the no-controller warning; a cloud-class Ingress whose synced
+//     status has no load balancer address fires the no-address warning.
 //   - The only WARNING headlines are POSITIVELY gated: a true no-controller
-//     (no class resolves AND no address AND no cloud annotations), or controller
-//     pods that exist but are 0-ready.
-//   - "No address" means "couldn't confirm an address was assigned", not "no
-//     controller claimed it".
+//     (classes synced and readable, none resolves, no address, no cloud
+//     annotations, no legacy class), controller pods that exist but are
+//     0-ready, or a cloud-class Ingress with no assigned address.
+//   - Caller scoping: controller pod detail (existence, ready counts) is only
+//     disclosed when every matched pod's namespace is inside the caller's
+//     allow-list; cluster-scoped IngressClass CONTENT - the spec.controller
+//     string and the product identity derived from it (controller/product
+//     names, glosses, and the pod label selectors in suggested commands) - is
+//     omitted for namespace-scoped callers in EVERY branch, pills, tooltips,
+//     and findings alike. They get the evidence tier plus any authorized pod
+//     counts, identity-free.
 
 // ingressEntryAddress returns the external entry address(es) a controller
 // published for the Ingress (status.loadBalancer.ingress[]). Empty ≠ "no
-// controller" - many valid setups (bare NodePort, hostNetwork, on-prem) never
-// populate it.
+// controller" - many valid in-cluster setups (bare NodePort, hostNetwork,
+// on-prem) never populate it. For a CLOUD-class Ingress, though, the address
+// IS the service evidence: the cloud LB only exists once one is assigned.
 func ingressEntryAddress(ing *networkingv1.Ingress) []string {
 	if ing == nil {
 		return nil
@@ -47,23 +65,42 @@ func ingressEntryAddress(ing *networkingv1.Ingress) []string {
 }
 
 type controllerInfo struct {
-	name   string            // operator-facing name
-	labels map[string]string // label set to find its pods (empty = cloud, no pods)
-	cloud  bool              // served by a cloud LB - no in-cluster pods by design
+	name string // operator-facing name of what serves the traffic
+	// controllerName is the in-cluster control-plane component when it differs
+	// from name (the AWS Load Balancer Controller manages ALBs; the ALB itself
+	// is the data plane). Empty = same as name.
+	controllerName string
+	labels         map[string]string // label set to find its pods (empty = nothing in-cluster to check)
+	cloud          bool              // data plane is a cloud LB - service evidence is the assigned address
+}
+
+// podOwnerName names the in-cluster component whose pods we check - used in
+// pod-health wording so a dead AWS Load Balancer Controller isn't reported as
+// "the AWS Application Load Balancer has no ready pods" (the ALB is cloud
+// infrastructure and has no pods).
+func (i controllerInfo) podOwnerName() string {
+	if i.controllerName != "" {
+		return i.controllerName
+	}
+	return i.name
 }
 
 // knownControllers maps an IngressClass spec.controller string to how to find /
-// describe it. The cloud entries are load-bearing: a working ALB/GCLB Ingress
-// has NO in-cluster pods by design, so without knowing it's cloud we'd "find no
-// pods" and risk condemning a healthy front door. Unknown controllers fall
-// through to fail-soft handling (named, never condemned).
+// describe it. cloud=true means the DATA plane is a cloud load balancer, so
+// the service evidence is the address in status.loadBalancer - but the CONTROL
+// plane may still run in-cluster: the AWS Load Balancer Controller is a normal
+// in-cluster Deployment (a dead/crashlooping LBC is the most common ALB
+// failure), so it carries pod labels like any other controller. GCLB's
+// controller runs inside the cloud provider's managed control plane - there is
+// genuinely nothing in-cluster to check. Unknown controllers fall through to
+// fail-soft handling (named, never condemned).
 var knownControllers = map[string]controllerInfo{
 	"k8s.io/ingress-nginx":           {name: "ingress-nginx", labels: map[string]string{"app.kubernetes.io/name": "ingress-nginx", "app.kubernetes.io/component": "controller"}},
 	"nginx.org/ingress-controller":   {name: "NGINX Ingress (F5)", labels: map[string]string{"app.kubernetes.io/name": "nginx-ingress"}},
 	"traefik.io/ingress-controller":  {name: "Traefik", labels: map[string]string{"app.kubernetes.io/name": "traefik"}},
 	"projectcontour.io/contour":      {name: "Contour", labels: map[string]string{"app.kubernetes.io/name": "contour"}},
 	"haproxy.org/ingress-controller": {name: "HAProxy Ingress", labels: map[string]string{"app.kubernetes.io/instance": "haproxy-ingress"}},
-	"ingress.k8s.aws/alb":            {name: "AWS Application Load Balancer", cloud: true},
+	"ingress.k8s.aws/alb":            {name: "AWS Application Load Balancer", controllerName: "aws-load-balancer-controller", labels: map[string]string{"app.kubernetes.io/name": "aws-load-balancer-controller"}, cloud: true},
 	"k8s.io/ingress-gce":             {name: "Google Cloud load balancer", cloud: true},
 }
 
@@ -105,12 +142,16 @@ func resolveIngressClass(deps Deps, ing *networkingv1.Ingress) (name, controller
 		}
 	}
 	if len(classes) == 0 {
-		// A cold/unsynced dynamic informer returns empty WITHOUT error -
-		// indistinguishable from "synced and genuinely empty". Treat an empty
-		// result as unverifiable so a just-created Ingress (informer not yet
-		// synced) with no published LB address isn't false-condemned
-		// "no-controller" before the cache catches up. Fail toward silence.
-		couldRead = false
+		// Empty WITHOUT error is ambiguous on its own: a cold/unsynced informer
+		// and a genuinely class-less cluster both return []. The cache's sync
+		// authority disambiguates: a synced CLUSTER-WIDE informer holding zero
+		// IngressClasses is a real observation ("no ingress controller class
+		// exists in this cluster") and keeps couldRead=true so the positive
+		// no-controller warning can fire. Anything less (unsynced, unwatched,
+		// namespace-scoped fallback) stays unverifiable - fail toward silence so
+		// a just-created Ingress isn't false-condemned before the cache catches
+		// up.
+		couldRead = deps.Dynamic.IsClusterWideSynced(gvr)
 	}
 	want := ""
 	if ing.Spec.IngressClassName != nil {
@@ -149,9 +190,11 @@ func legacyIngressClass(ing *networkingv1.Ingress) string {
 	return strings.TrimSpace(ing.Annotations["kubernetes.io/ingress.class"])
 }
 
-// hasCloudLBAnnotations reports cloud load-balancer ingress annotations - a
-// signal the Ingress is fronted by a cloud LB (no in-cluster controller pods)
-// even when the controller string isn't in the known set.
+// hasCloudLBAnnotations reports cloud load-balancer ingress annotations. This
+// is CONFIGURED-tier evidence at best, and only consulted when no IngressClass
+// resolves: a resolved class is authoritative for who serves the Ingress, so
+// stale alb.* annotations on an nginx-class Ingress must not skip the nginx
+// pod-health check.
 func hasCloudLBAnnotations(ing *networkingv1.Ingress) bool {
 	for k, v := range ing.Annotations {
 		if strings.HasPrefix(k, "alb.ingress.kubernetes.io/") ||
@@ -181,11 +224,52 @@ func findControllerPods(deps Deps, info controllerInfo) (pods []*corev1.Pod, fou
 	return got, true
 }
 
+// scopedCaller reports whether this request carries a namespace allow-list.
+// The trace package treats a non-nil AllowedNamespaces as the caller's
+// authorization boundary (mirroring the cross-namespace hop redaction in
+// entries.go): cluster-scoped IngressClass CONTENT - the spec.controller
+// string and the product identity derived from it - is not disclosed to
+// scoped callers; they get the evidence tier without it.
+func scopedCaller(deps Deps) bool { return deps.AllowedNamespaces != nil }
+
+type controllerPodCheck int
+
+const (
+	podsNotFound controllerPodCheck = iota // labels matched nothing (or pod cache unavailable)
+	podsRedacted                           // pods exist, but a namespace is outside the caller's scope
+	podsChecked                            // pods found, every namespace within the caller's scope
+)
+
+// checkControllerPods locates the controller's pods and authorizes disclosure:
+// pod-level detail (existence, ready counts, namespaces) is namespaced data,
+// so it is only reported when EVERY matched pod's namespace is inside the
+// caller's allow-list. A partial view could otherwise false-condemn the
+// controller (counting only the visible subset as 0-ready) or leak replica
+// counts the REST handler never authorized.
+func checkControllerPods(deps Deps, info controllerInfo) (check controllerPodCheck, ready, total int) {
+	pods, found := findControllerPods(deps, info)
+	if !found {
+		return podsNotFound, 0, 0
+	}
+	for _, p := range pods {
+		if p != nil && !deps.NamespaceAllowed(p.Namespace) {
+			return podsRedacted, 0, 0
+		}
+	}
+	// Terminal (Succeeded/Failed) or being-deleted pods aren't serving -
+	// exclude them so a healthy controller isn't reported as e.g. "1/3 ready"
+	// because old/crashed pods linger under the same label (a rolling update
+	// leaves a Terminating old pod; a crash can leave Failed pods).
+	live := livePods(pods)
+	return podsChecked, readyCount(live), len(live)
+}
+
 // controllerStatus is the controller-tier readout for an Ingress hop. The quiet
 // cases (a controller IS serving it) become a config PILL - servedBy + its
 // tooltip - so a healthy Ingress doesn't light up as a finding. Only a real
-// PROBLEM (no controller / pods unready) is a Finding. This keeps the common
-// healthy path silent and reserves findings for things to act on.
+// PROBLEM (no controller / pods unready / cloud class without an address) is a
+// Finding. This keeps the common healthy path silent and reserves findings for
+// things to act on.
 type controllerStatus struct {
 	servedBy      string // short pill label, "" = no pill
 	servedByTitle string // pill tooltip (the gloss + shared-infra + health detail)
@@ -198,68 +282,43 @@ type controllerStatus struct {
 // Ingress's own pods.
 const sharedControllerNote = "It's shared cluster infrastructure that serves this and other Ingresses."
 
+const scopedRedactionNote = "controller status not checked (outside your namespace access)"
+
 func ingressControllerStatus(deps Deps, ing *networkingv1.Ingress) controllerStatus {
 	var st controllerStatus
 	if ing == nil {
 		return st
 	}
 	addr := ingressEntryAddress(ing)
-	cloudAnno := hasCloudLBAnnotations(ing)
-	className, ctrlStr, classFound, classReadable := resolveIngressClass(deps, ing)
-	_ = className
+	_, ctrlStr, classFound, classReadable := resolveIngressClass(deps, ing)
 
+	// A resolved class is authoritative for who serves this Ingress - the
+	// annotation fallbacks below only apply when NO class resolves.
 	if classFound {
 		info, known := knownControllers[ctrlStr]
-		if cloudAnno || (known && info.cloud) {
-			name := "a cloud load balancer"
-			if known {
-				name = info.name
-			}
-			st.servedBy = "via " + name
-			st.servedByTitle = fmt.Sprintf("Served by %s (a cloud load balancer) - no in-cluster controller pods to check.", name)
-			return st
+		switch {
+		case known && info.cloud:
+			return cloudClassStatus(deps, ing, info, addr)
+		case known:
+			return inClusterClassStatus(deps, info, addr)
+		default:
+			return unknownControllerStatus(deps, ctrlStr, addr)
 		}
-		if known {
-			if pods, found := findControllerPods(deps, info); found {
-				// Terminal (Succeeded/Failed) or being-deleted pods aren't serving -
-				// exclude them so a healthy controller isn't reported as e.g. "1/3 ready"
-				// because old/crashed pods linger under the same label (a rolling update
-				// leaves a Terminating old pod; a crash can leave Failed pods).
-				live := livePods(pods)
-				ready, total := readyCount(live), len(live)
-				if ready == 0 {
-					// The one in-cluster PROBLEM: pods exist but none Ready.
-					st.finding = Finding{
-						Code:     "ingress:controller-unready",
-						Severity: SeverityWarning,
-						Message:  fmt.Sprintf("The ingress controller (%s) has no ready pods - traffic to this Ingress can’t be served right now.", info.name),
-						Cause:    fmt.Sprintf("An ingress controller is the component that actually serves Ingress traffic; %d of %d %s pods are Ready.", 0, total, info.name),
-						Action:   "Check the ingress controller’s pods:",
-						Command:  fmt.Sprintf("kubectl get pods -A -l %s", labels.SelectorFromSet(labels.Set(info.labels)).String()),
-					}
-					st.hasFinding = true
-					return st
-				}
-				st.servedBy = info.name
-				st.servedByTitle = fmt.Sprintf("Handled by the cluster’s %s ingress controller (%d/%d pods ready). %s", info.name, ready, total, sharedControllerNote)
-				return st
-			}
-			// Known in-cluster controller, pods not found - almost always a
-			// namespace Radar's RBAC can't read. Name it, never condemn.
-			st.servedBy = info.name
-			st.servedByTitle = fmt.Sprintf("Served by the %s ingress controller - Radar can’t read its pods (they may be in a namespace it can’t access). %s", info.name, sharedControllerNote)
-			return st
-		}
-		// Class resolves to an unrecognized controller - name it, don't guess pods.
-		st.servedBy = "via a controller"
-		st.servedByTitle = fmt.Sprintf("Served by ingress controller %q. %s", ctrlStr, sharedControllerNote)
-		return st
 	}
 
-	// No IngressClass resolved.
-	if cloudAnno {
-		st.servedBy = "via a cloud LB"
-		st.servedByTitle = "Served by a cloud load balancer - no in-cluster controller pods to check."
+	// No IngressClass resolved - weaker signals, weaker claims.
+	if hasCloudLBAnnotations(ing) {
+		if len(addr) > 0 {
+			st.servedBy = "via a cloud LB"
+			st.servedByTitle = "Served by a cloud load balancer - a load balancer address is assigned."
+			return st
+		}
+		// Annotations are intent, not service: without a resolvable class or an
+		// assigned address, "Served by" would overstate the evidence. The
+		// annotations may also be stale, so this stays a soft configured-tier
+		// pill, never a finding.
+		st.servedBy = "cloud LB (no address)"
+		st.servedByTitle = "This Ingress has cloud load balancer annotations, but no load balancer address has been assigned - Radar couldn't confirm anything is serving it yet."
 		return st
 	}
 	if len(addr) > 0 {
@@ -281,7 +340,9 @@ func ingressControllerStatus(deps Deps, ing *networkingv1.Ingress) controllerSta
 	if !classReadable {
 		// Couldn't read IngressClasses at all (RBAC-denied / cold cache) - that is
 		// not the same as "none configured". Fail toward silence: a soft pill, never
-		// a no-controller condemnation of a possibly-healthy Ingress.
+		// a no-controller condemnation of a possibly-healthy Ingress. (A SYNCED
+		// empty class list does not land here - resolveIngressClass reports it as
+		// readable, because it is a real observation.)
 		st.servedBy = "via a controller"
 		st.servedByTitle = "Radar couldn’t identify the ingress controller (it couldn’t read IngressClasses). This isn’t a sign that nothing is serving the Ingress."
 		return st
@@ -304,5 +365,189 @@ func ingressControllerStatus(deps Deps, ing *networkingv1.Ingress) controllerSta
 		Command:  "kubectl get ingressclass",
 	}
 	st.hasFinding = true
+	return st
+}
+
+// cloudClassStatus reports an Ingress whose class resolves to a cloud load
+// balancer (ALB/GCLB). The cloud LB is the DATA plane, so the service evidence
+// is the address in status.loadBalancer - a cloud class with no address is
+// configured, not served. The CONTROL plane may still be an ordinary in-cluster
+// controller (the AWS Load Balancer Controller), but its pods are checked ONLY
+// on the no-address path, where a dead controller is the likely culprit and
+// the check changes the diagnosis. With an address assigned - the steady-state
+// hot path, rebuilt on every trace - the pod scan (an unindexed cluster-wide
+// pod list) is skipped: the provisioned LB keeps serving its last-applied
+// rules regardless of controller health, so the readout is the programmed
+// tier and claims no pod facts.
+func cloudClassStatus(deps Deps, ing *networkingv1.Ingress, info controllerInfo, addr []string) controllerStatus {
+	var st controllerStatus
+	scoped := scopedCaller(deps)
+	gloss := fmt.Sprintf("%s (a cloud load balancer)", info.name)
+	pill := "via " + info.name
+	if scoped {
+		gloss = "a cloud load balancer"
+		pill = "via a cloud LB"
+	}
+
+	if len(addr) > 0 {
+		// Programmed tier: the controller provisioned the LB and published its
+		// address - the strongest passive evidence of service.
+		st.servedBy = pill
+		st.servedByTitle = fmt.Sprintf("Served by %s - a load balancer address is assigned.", gloss)
+		return st
+	}
+
+	check, ready, total := checkControllerPods(deps, info)
+
+	if check == podsChecked && ready == 0 {
+		// The controller exists in-cluster but has no ready pods, and no
+		// address was ever published - nothing serves the routing rules. The
+		// pod facts (counts) are authorized by podsChecked; the controller
+		// NAME and its label selector are class-derived identity, withheld
+		// from scoped callers.
+		st.finding = Finding{
+			Code:     "ingress:controller-unready",
+			Severity: SeverityWarning,
+			Message:  fmt.Sprintf("The %s has no ready pods and no load balancer address is assigned - this Ingress isn’t being served.", info.podOwnerName()),
+			Cause:    fmt.Sprintf("This controller provisions the cloud load balancer for the Ingress; 0 of %d of its pods are Ready and no address has been published in the Ingress status, so nothing is serving the routing rules.", total),
+			Action:   "Check the controller’s pods:",
+			Command:  fmt.Sprintf("kubectl get pods -A -l %s", labels.SelectorFromSet(labels.Set(info.labels)).String()),
+		}
+		if scoped {
+			st.finding.Message = "This Ingress’s controller has no ready pods and no load balancer address is assigned - this Ingress isn’t being served."
+			st.finding.Action = "Check the controller’s pods."
+			st.finding.Command = ""
+		}
+		st.hasFinding = true
+		return st
+	}
+
+	// Configured tier only: the class is cloud but no address exists. That is
+	// an OBSERVED, actionable state - an address-less cloud Ingress is almost
+	// certainly not being served - not an uncertainty to stay silent about.
+	cause := fmt.Sprintf("This Ingress’s class is served by %s: the controller must provision the load balancer and publish its address in the Ingress status before traffic can arrive, and none is published. A just-created Ingress can take a few minutes to provision; a persistently empty address usually means provisioning failed or the controller isn’t running.", gloss)
+	if check == podsChecked {
+		if scoped {
+			cause += fmt.Sprintf(" The controller is running (%d/%d pods ready), so check the Ingress events for provisioning errors.", ready, total)
+		} else {
+			cause += fmt.Sprintf(" The %s is running (%d/%d pods ready), so check its logs and the Ingress events for provisioning errors.", info.podOwnerName(), ready, total)
+		}
+	}
+	st.finding = Finding{
+		Code:     "ingress:no-address",
+		Severity: SeverityWarning,
+		Message:  fmt.Sprintf("Configured for %s - no load balancer address has been assigned yet, so there is likely nothing serving this Ingress.", gloss),
+		Cause:    cause,
+		Action:   "Check the Ingress events for provisioning errors:",
+		Command:  fmt.Sprintf("kubectl describe ingress %s -n %s", ing.Name, ing.Namespace),
+	}
+	st.hasFinding = true
+	return st
+}
+
+// inClusterClassStatus reports an Ingress whose class resolves to a known
+// in-cluster controller (ingress-nginx, Traefik, ...). Pod readiness is the
+// primary evidence; the LB address adds the programmed tier when present but
+// its absence is normal (NodePort/hostNetwork setups never publish one).
+func inClusterClassStatus(deps Deps, info controllerInfo, addr []string) controllerStatus {
+	var st controllerStatus
+	scoped := scopedCaller(deps)
+	check, ready, total := checkControllerPods(deps, info)
+
+	switch check {
+	case podsChecked:
+		if ready == 0 {
+			// The one hard in-cluster PROBLEM: pods exist but none Ready. The
+			// pod facts (counts) are authorized by podsChecked; the controller
+			// NAME and its label selector are class-derived identity, withheld
+			// from scoped callers.
+			st.finding = Finding{
+				Code:     "ingress:controller-unready",
+				Severity: SeverityWarning,
+				Message:  fmt.Sprintf("The ingress controller (%s) has no ready pods - traffic to this Ingress can’t be served right now.", info.name),
+				Cause:    fmt.Sprintf("An ingress controller is the component that actually serves Ingress traffic; %d of %d %s pods are Ready.", 0, total, info.name),
+				Action:   "Check the ingress controller’s pods:",
+				Command:  fmt.Sprintf("kubectl get pods -A -l %s", labels.SelectorFromSet(labels.Set(info.labels)).String()),
+			}
+			if scoped {
+				st.finding.Message = "This Ingress’s ingress controller has no ready pods - traffic to this Ingress can’t be served right now."
+				st.finding.Cause = fmt.Sprintf("An ingress controller is the component that actually serves Ingress traffic; %d of %d of its pods are Ready.", 0, total)
+				st.finding.Action = "Check the ingress controller’s pods."
+				st.finding.Command = ""
+			}
+			st.hasFinding = true
+			return st
+		}
+		if scoped {
+			st.servedBy = "via a controller"
+			if len(addr) > 0 {
+				st.servedByTitle = fmt.Sprintf("Handled by the cluster’s ingress controller (%d/%d pods ready) - a load balancer address is assigned. %s", ready, total, sharedControllerNote)
+			} else {
+				st.servedByTitle = fmt.Sprintf("Handled by the cluster’s ingress controller (%d/%d pods ready). %s", ready, total, sharedControllerNote)
+			}
+			return st
+		}
+		st.servedBy = info.name
+		if len(addr) > 0 {
+			st.servedByTitle = fmt.Sprintf("Handled by the cluster’s %s ingress controller (%d/%d pods ready) - a load balancer address is assigned. %s", info.name, ready, total, sharedControllerNote)
+		} else {
+			st.servedByTitle = fmt.Sprintf("Handled by the cluster’s %s ingress controller (%d/%d pods ready). %s", info.name, ready, total, sharedControllerNote)
+		}
+		return st
+	case podsRedacted:
+		// The controller's pods exist but live (at least partly) outside the
+		// caller's namespace allow-list - disclose neither counts nor
+		// namespaces, and drop to the configured/programmed tier.
+		st.servedBy = "via a controller"
+		if len(addr) > 0 {
+			st.servedByTitle = fmt.Sprintf("Served by this class’s ingress controller - a load balancer address is assigned; %s. %s", scopedRedactionNote, sharedControllerNote)
+		} else {
+			st.servedByTitle = fmt.Sprintf("This Ingress’s class is configured for an ingress controller - %s. %s", scopedRedactionNote, sharedControllerNote)
+		}
+		return st
+	}
+
+	// Pods not found - almost always a namespace Radar's own service account
+	// can't read. Never condemn; and without observed pods, an address is the
+	// only thing that upgrades "configured" to "served".
+	if scoped {
+		st.servedBy = "via a controller"
+		if len(addr) > 0 {
+			st.servedByTitle = fmt.Sprintf("Served by this class’s ingress controller - a load balancer address is assigned. Radar couldn’t see its pods, so controller health wasn’t checked. %s", sharedControllerNote)
+		} else {
+			st.servedByTitle = fmt.Sprintf("This Ingress’s class is configured for an ingress controller - Radar couldn’t see its pods, so it couldn’t confirm the controller is running. %s", sharedControllerNote)
+		}
+		return st
+	}
+	st.servedBy = info.name
+	if len(addr) > 0 {
+		st.servedByTitle = fmt.Sprintf("Served by the %s ingress controller - a load balancer address is assigned. Radar couldn’t see its pods (they may be in a namespace it can’t access), so controller health wasn’t checked. %s", info.name, sharedControllerNote)
+	} else {
+		st.servedByTitle = fmt.Sprintf("This Ingress’s class is configured for the %s ingress controller - Radar couldn’t see its pods (they may be in a namespace it can’t access), so it couldn’t confirm it’s running. %s", info.name, sharedControllerNote)
+	}
+	return st
+}
+
+// unknownControllerStatus reports a class that resolves to a controller string
+// Radar has no pod-lookup knowledge for. Never condemned: many controllers
+// never publish an address and we can't check their pods. The raw
+// spec.controller string is cluster-scoped IngressClass content, so scoped
+// callers get the tier without it.
+func unknownControllerStatus(deps Deps, ctrlStr string, addr []string) controllerStatus {
+	var st controllerStatus
+	st.servedBy = "via a controller"
+	if scopedCaller(deps) {
+		if len(addr) > 0 {
+			st.servedByTitle = fmt.Sprintf("Served by this class’s ingress controller - a load balancer address is assigned. Controller details are cluster-scoped and not shown for namespace-scoped access. %s", sharedControllerNote)
+		} else {
+			st.servedByTitle = fmt.Sprintf("This Ingress’s class is configured for an ingress controller Radar doesn’t know how to check. Controller details are cluster-scoped and not shown for namespace-scoped access. %s", sharedControllerNote)
+		}
+		return st
+	}
+	if len(addr) > 0 {
+		st.servedByTitle = fmt.Sprintf("Served by ingress controller %q - a load balancer address is assigned. %s", ctrlStr, sharedControllerNote)
+	} else {
+		st.servedByTitle = fmt.Sprintf("This Ingress’s class is handled by controller %q - Radar doesn’t know how to check its pods, and no load balancer address is published (many controllers never publish one). %s", ctrlStr, sharedControllerNote)
+	}
 	return st
 }

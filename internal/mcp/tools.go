@@ -201,7 +201,14 @@ func registerTools(server *mcp.Server) {
 			"`summary` (headline + tested/passed/failed/skipped counts over the INTENDED routes), " +
 			"`routes` (each declared route's outcome + confidence - `indirect` means reached only " +
 			"via the API-server proxy, NOT the live-traffic path), `notTested` (what we couldn't " +
-			"probe + why), a NAMED `brokenRoute`, and `path` (hops with their static findings). Use " +
+			"probe + why), a NAMED `brokenRoute`, and `path` (hops with their static findings). A " +
+			"coarse `verdict` enum (healthy/degraded/broken/unknown) rolls these up: `healthy` means " +
+			"NO failing route was found - it can include routes that were only REACHED (a 3xx/4xx " +
+			"response, or a transport-only TCP/TLS connection) rather than verified with a real 2xx, " +
+			"and can reflect a static-config-only assessment (probe=false) or partial coverage. If you " +
+			"need certainty, read `routes[].outcome` (verified vs reached vs not-tested), each route's " +
+			"`confidence` (real vs indirect), and the `headline`/`diagnosis` text rather than keying " +
+			"solely on `verdict`. Use " +
 			"for 'traffic is not reaching this service / route / ingress', backend port " +
 			"mismatches, route not Accepted by parent gateway, no-ready-endpoints, " +
 			"readiness probe targeting the wrong port. " +

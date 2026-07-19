@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -58,6 +59,80 @@ func TestDetectMesh_AdvisoryIsInfoOnly(t *testing.T) {
 	}
 }
 
+// TestBuildPodsHop_PublishNotReadyAddresses pins the dataplane-honest handling
+// of publishNotReadyAddresses Services: Kubernetes publishes their endpoints
+// regardless of readiness, so (a) not-ready pods ARE probe targets (they
+// receive traffic), (b) meta["ready"] counts published endpoints - the value
+// the severity layers read - so a by-design 0-kubelet-ready state never renders
+// as an outage, and (c) the no-ready-endpoints note is info-tier, not warning.
+// A plain Service with the same pods keeps the strict readiness behavior.
+func TestBuildPodsHop_PublishNotReadyAddresses(t *testing.T) {
+	notReadyPod := func(name, ip string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "prod", Labels: map[string]string{"app": "db"}},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name:  "main",
+				Ports: []corev1.ContainerPort{{ContainerPort: 5432}},
+			}}},
+			Status: corev1.PodStatus{
+				Phase:      corev1.PodRunning,
+				PodIP:      ip,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}},
+			},
+		}
+	}
+	svc := func(pnr bool) *corev1.Service {
+		return &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "prod"},
+			Spec: corev1.ServiceSpec{
+				Selector:                 map[string]string{"app": "db"},
+				Ports:                    []corev1.ServicePort{{Port: 5432}},
+				PublishNotReadyAddresses: pnr,
+			},
+		}
+	}
+	pods := []*corev1.Pod{notReadyPod("db-0", "10.0.0.1"), notReadyPod("db-1", "10.0.0.2")}
+
+	cases := []struct {
+		name         string
+		pnr          bool
+		wantReady    int
+		wantIPs      int
+		wantSeverity string
+	}{
+		{"publishNotReadyAddresses: endpoints publish regardless of readiness", true, 2, 2, SeverityInfo},
+		{"plain Service: only kubelet-ready pods are endpoints", false, 0, 0, SeverityWarning},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			hop := buildPodsHop(Deps{}, svc(c.pnr), pods, false)
+			if got := hop.Meta["ready"]; got != c.wantReady {
+				t.Errorf("meta[ready] = %v, want %d", got, c.wantReady)
+			}
+			if got, _ := hop.Meta["publishNotReadyAddresses"].(bool); got != c.pnr {
+				t.Errorf("meta[publishNotReadyAddresses] = %v, want %v", got, c.pnr)
+			}
+			gotIPs := 0
+			if hop.Config != nil {
+				gotIPs = len(hop.Config.PodIPs)
+			}
+			if gotIPs != c.wantIPs {
+				t.Errorf("probe-eligible pod IPs = %d, want %d (config: %+v)", gotIPs, c.wantIPs, hop.Config)
+			}
+			f := findingByCode(hop.Findings, "pods:no-ready-endpoints")
+			if f == nil {
+				t.Fatalf("expected the no-ready-endpoints note, got %+v", hop.Findings)
+			}
+			if f.Severity != c.wantSeverity {
+				t.Errorf("no-ready note severity = %q, want %q", f.Severity, c.wantSeverity)
+			}
+			if c.pnr && !strings.Contains(f.Message, "publishNotReadyAddresses") {
+				t.Errorf("PNR note should explain traffic still routes, got %q", f.Message)
+			}
+		})
+	}
+}
+
 // Defect 1: selectedPods must distinguish "genuinely nothing to read" (no svc /
 // no selector → readable-empty) from "can't read pod state" (Pods lister
 // unavailable, e.g. Pods kind RBAC-disabled at startup → unreadable). Lumping the
@@ -80,5 +155,51 @@ func TestSelectedPods_NilListerIsUnreadable(t *testing.T) {
 	// nil Service → nothing to read.
 	if pods, unreadable := selectedPods(Deps{}, nil); unreadable || pods != nil {
 		t.Errorf("nil svc: got pods=%v unreadable=%v, want nil/false", pods, unreadable)
+	}
+}
+
+// A publishNotReadyAddresses Service publishes only what the EndpointSlice
+// reconciler would: PNR waives the READINESS condition, not the terminal-phase
+// or has-an-IP rules. Succeeded/Failed and IP-less pods are never endpoints;
+// a terminating (DeletionTimestamp) running pod with an IP stays published.
+// Counting len(pods) would overstate meta["ready"] with endpoints Kubernetes
+// never publishes.
+func TestBuildPodsHop_PNRCountsOnlyPublishedEndpoints(t *testing.T) {
+	now := metav1.Now()
+	pod := func(name, ip string, phase corev1.PodPhase, deleted bool) *corev1.Pod {
+		p := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "prod", Labels: map[string]string{"app": "db"}},
+			Status: corev1.PodStatus{
+				Phase:      phase,
+				PodIP:      ip,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}},
+			},
+		}
+		if deleted {
+			p.ObjectMeta.DeletionTimestamp = &now
+		}
+		return p
+	}
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "prod"},
+		Spec: corev1.ServiceSpec{
+			Selector:                 map[string]string{"app": "db"},
+			Ports:                    []corev1.ServicePort{{Port: 5432}},
+			PublishNotReadyAddresses: true,
+		},
+	}
+	pods := []*corev1.Pod{
+		pod("running-not-ready", "10.0.0.1", corev1.PodRunning, false), // published
+		pod("terminating", "10.0.0.2", corev1.PodRunning, true),        // published: termination doesn't unpublish
+		pod("succeeded", "10.0.0.3", corev1.PodSucceeded, false),       // terminal: never published
+		pod("failed", "10.0.0.4", corev1.PodFailed, false),             // terminal: never published
+		pod("no-ip", "", corev1.PodPending, false),                     // no IP: nothing to publish
+	}
+	hop := buildPodsHop(Deps{}, svc, pods, false)
+	if got := hop.Meta["ready"]; got != 2 {
+		t.Errorf("meta[ready] = %v, want 2 (running + terminating; terminal/IP-less pods are never published, even with PNR)", got)
+	}
+	if got := hop.Meta["selected"]; got != 5 {
+		t.Errorf("meta[selected] = %v, want 5", got)
 	}
 }

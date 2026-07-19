@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/probe"
 	authzv1 "k8s.io/api/authorization/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -181,6 +182,16 @@ func Run(ctx context.Context, client kubernetes.Interface, opts RunOptions) (res
 		return nil, fallbackCommand, &CapabilityError{Reason: reason}
 	}
 
+	// When the caller's remaining request budget is tighter than jobTimeout
+	// (a run late in a multi-route request), record the granted budget so an
+	// expiry is attributed to the request budget - not misread as the cluster
+	// being slow to start the pod.
+	grantedBudget := time.Duration(0)
+	if dl, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(dl); remaining < jobTimeout {
+			grantedBudget = remaining
+		}
+	}
 	runCtx, cancel := context.WithTimeout(ctx, jobTimeout)
 	defer cancel()
 
@@ -206,7 +217,7 @@ func Run(ctx context.Context, client kubernetes.Interface, opts RunOptions) (res
 	if id := created.Labels[probeRunLabelKey]; id != "" {
 		selector = probeRunLabelKey + "=" + id
 	}
-	results, err = waitAndReadProbeJob(runCtx, client, opts.Namespace, selector)
+	results, err = waitAndReadProbeJob(runCtx, client, opts.Namespace, selector, grantedBudget)
 	if err != nil {
 		return nil, fallbackCommand, err
 	}
@@ -308,8 +319,10 @@ func buildProbeJob(opts RunOptions) *batchv1.Job {
 // waitAndReadProbeJob polls the Job's pod to completion (or ctx deadline) and
 // returns the parsed probe results from its logs. selector is the runner's own
 // guaranteed label (radar.skyhook.io/probe-run=<id>), not the k8s-managed
-// job-name label that only exists on clusters >= 1.27.
-func waitAndReadProbeJob(ctx context.Context, client kubernetes.Interface, namespace, selector string) ([]probe.Result, error) {
+// job-name label that only exists on clusters >= 1.27. grantedBudget > 0 means
+// the run started with less than jobTimeout of request budget - an expiry then
+// names the budget, not the cluster.
+func waitAndReadProbeJob(ctx context.Context, client kubernetes.Interface, namespace, selector string, grantedBudget time.Duration) ([]probe.Result, error) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	var lastPod *corev1.Pod
@@ -317,7 +330,13 @@ func waitAndReadProbeJob(ctx context.Context, client kubernetes.Interface, names
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, probeTimeoutError(lastPod, lastListErr)
+			// Only a deadline expiry is a budget story; an explicit cancel
+			// (caller went away) keeps the generic timeout attribution.
+			budget := grantedBudget
+			if ctx.Err() != context.DeadlineExceeded {
+				budget = 0
+			}
+			return nil, probeTimeoutError(lastPod, lastListErr, budget)
 		case <-ticker.C:
 			pods, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 			if err != nil {
@@ -388,8 +407,34 @@ func probeFailedError(raw string, term *corev1.ContainerStateTerminated) error {
 // probeTimeoutError explains WHY the probe ran out of time. The bare "didn't
 // finish" is useless mid-incident; when the pod never ran its probe container the
 // cause is almost always one of three generic startup blocks, so name it.
-func probeTimeoutError(pod *corev1.Pod, listErr error) error {
+// grantedBudget > 0 means the run was capped below jobTimeout by the caller's
+// remaining request budget - the expiry is then the budget's fault, and saying
+// "the pod was slow" would send the operator chasing a cluster problem that
+// doesn't exist.
+func probeTimeoutError(pod *corev1.Pod, listErr error, grantedBudget time.Duration) error {
 	const tail = " - try again, or run the command below"
+	// The probe container's own image-pull failure is probe INFRASTRUCTURE
+	// failing, not a timeout and never a result about the target - classify it as
+	// couldn't-run and name the remedy. The usual cause: radar's image lives in a
+	// private registry, and the probe Job runs in the TARGET namespace under the
+	// default ServiceAccount, where radar's imagePullSecrets don't apply
+	// (pull secrets are namespace-local, so they can't travel with the Job).
+	// This outranks the budget framing: a pull failure would also have doomed a
+	// full-length run.
+	if reason := probeImagePullReason(pod); reason != "" {
+		return fmt.Errorf("in-cluster test couldn't run - probe infrastructure failed to pull its image (%s), so the target was NOT tested. If the Radar image needs registry credentials, they don't apply in the target namespace (pull secrets are namespace-local) - set --reachability-image to an image that namespace can pull", reason)
+	}
+	if grantedBudget > 0 {
+		detail := ""
+		if pod != nil {
+			if reason := podStartupBlock(pod); reason != "" {
+				detail = " (" + reason + ")"
+			} else {
+				detail = fmt.Sprintf(" (the probe pod was %s)", strings.ToLower(string(pod.Status.Phase)))
+			}
+		}
+		return fmt.Errorf("ran out of request time budget (%ds granted) before the probe finished%s - re-run to test the remaining routes", int(grantedBudget.Round(time.Second).Seconds()), detail)
+	}
 	if pod == nil {
 		// We only know we never observed the pod run. When a pod LIST failed, name
 		// that real error rather than asserting a cluster-config cause we can't
@@ -403,6 +448,26 @@ func probeTimeoutError(pod *corev1.Pod, listErr error) error {
 		return fmt.Errorf("in-cluster probe timed out: %s%s", reason, tail)
 	}
 	return fmt.Errorf("in-cluster probe timed out while the pod was %s%s", strings.ToLower(string(pod.Status.Phase)), tail)
+}
+
+// probeImagePullReason returns the probe container's image-pull waiting reason,
+// or "" when it isn't blocked on one. Scoped to the "probe" container by name -
+// an injected sidecar's pull failure is the sidecar's fault and stays on the
+// generic podStartupBlock path.
+func probeImagePullReason(pod *corev1.Pod) string {
+	if pod == nil {
+		return ""
+	}
+	for i := range pod.Status.ContainerStatuses {
+		cs := &pod.Status.ContainerStatuses[i]
+		if cs.Name != "probe" || cs.State.Waiting == nil {
+			continue
+		}
+		if k8s.IsImagePullReason(cs.State.Waiting.Reason) {
+			return cs.State.Waiting.Reason
+		}
+	}
+	return ""
 }
 
 // podStartupBlock names the generic reason a pod hasn't run its main container yet

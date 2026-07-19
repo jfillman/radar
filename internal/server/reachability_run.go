@@ -1,13 +1,9 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"path"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -17,23 +13,7 @@ import (
 	"github.com/skyhook-io/radar/internal/reachability"
 	"github.com/skyhook-io/radar/internal/trace"
 	"github.com/skyhook-io/radar/pkg/probe"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/client-go/kubernetes"
 )
-
-type probeInClusterRequest struct {
-	Target string `json:"target"` // clusterIP:port (or host:port)
-	Host   string `json:"host,omitempty"`
-	Scheme string `json:"scheme,omitempty"`
-	Path   string `json:"path,omitempty"`
-	Layers string `json:"layers,omitempty"`
-}
-
-type probeInClusterResponse struct {
-	Results         []probe.Result `json:"results,omitempty"`
-	FallbackCommand string         `json:"fallbackCommand,omitempty"`
-	Error           string         `json:"error,omitempty"`
-}
 
 type probeCapabilityResponse struct {
 	Allowed   bool   `json:"allowed"`
@@ -46,13 +26,19 @@ type probeCapabilityResponse struct {
 // actually run for this caller, so the button only appears when it works (a
 // button that 403s mid-incident is worse than none). It also names the cluster +
 // namespace the probe pod would be created in - the safety rail, since the
-// runner creates pods in whatever cluster Radar is connected to.
+// runner creates pods in whatever cluster Radar is connected to. Cluster is the
+// stable per-cluster identity (context name, or a kube-system-UID fallback for
+// in-cluster deployments) - the frontend keys its "don't ask again" consent on
+// it, so a shared sentinel here would let one cluster's consent silently
+// suppress the pod-creating confirm on every cluster a shared Hub origin serves.
 func (s *Server) handleProbeInClusterCapability(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
-	resp := probeCapabilityResponse{Cluster: k8s.GetContextName(), Namespace: namespace}
 	if !s.requireConnected(w) {
 		return
 	}
+	// Resolved only past the connected gate: the fallback path issues a live
+	// kube-system GET, which is a doomed API call while disconnected.
+	resp := probeCapabilityResponse{Cluster: k8s.ClusterIdentity(r.Context()), Namespace: namespace}
 	client := s.getClientForRequest(r)
 	if client == nil {
 		resp.Reason = "cluster client not available"
@@ -88,95 +74,6 @@ func (s *Server) handleProbeInClusterCapability(w http.ResponseWriter, r *http.R
 	s.writeJSON(w, resp)
 }
 
-// resolveReachabilityImage picks the probe image: an explicit config override
-// wins, else radar's own running image (self-read via the base SA client), else
-// RADAR_IMAGE / the version default. See reachability.ResolveImage.
-func (s *Server) resolveReachabilityImage(ctx context.Context) string {
-	override := ""
-	if s.effectiveConfig != nil {
-		override = s.effectiveConfig.ReachabilityImage
-	}
-	// Self-read must use radar's OWN service-account client, not the caller's
-	// impersonated one - the deployed image is radar's knowledge, and the caller
-	// may have no access to radar's namespace. Guard the typed-nil interface.
-	var selfClient kubernetes.Interface
-	if base := k8s.GetClient(); base != nil {
-		selfClient = base
-	}
-	return reachability.ResolveImage(ctx, selfClient, override)
-}
-
-// handleProbeInCluster runs a reachability probe from INSIDE the cluster (real
-// dataplane) via the shared reachability runner: a short-lived, restricted,
-// self-destructing Job that runs `radar probe`. It is the ONLY mutating action in
-// the diagnostics surface and is hemmed in - it runs as the CALLER's RBAC
-// (impersonation), gates on a real capability check BEFORE creating anything, and
-// degrades to a copyable kubectl command where the caller can't create Jobs.
-func (s *Server) handleProbeInCluster(w http.ResponseWriter, r *http.Request) {
-	namespace := chi.URLParam(r, "namespace")
-	name := chi.URLParam(r, "name")
-	if !s.requireConnected(w) {
-		return
-	}
-	// Creating the probe Job is the one mutating action here, so it additively
-	// gates on the Cloud-role tier every other mutating handler enforces (helm at
-	// Member) - K8s RBAC alone would let a sub-Member Cloud user bypass that layer.
-	if !s.requireCloudRole(w, r, auth.RoleMember, "run an in-cluster reachability test") {
-		return
-	}
-	// Same namespace boundary as handleTrace/handleTraceInCluster: never create probe
-	// Jobs in a namespace outside the caller's scope (this is a MUTATING action).
-	namespaces := s.parseNamespacesForUser(r)
-	if noNamespaceAccess(namespaces) || (namespace != "" && !namespaceAllowed(namespaces, namespace)) {
-		writeJSONStatus(w, http.StatusForbidden, probeInClusterResponse{Error: fmt.Sprintf("forbidden: no access to namespace %q", namespace)})
-		return
-	}
-	var req probeInClusterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Target) == "" {
-		s.writeError(w, http.StatusBadRequest, "target (clusterIP:port) is required")
-		return
-	}
-	// Sanitize the caller-supplied dial destination before it reaches the probe pod:
-	// require a well-formed host:port, and strip any ../ from the path.
-	if _, _, err := net.SplitHostPort(strings.TrimSpace(req.Target)); err != nil {
-		s.writeError(w, http.StatusBadRequest, "target must be host:port")
-		return
-	}
-	if p := strings.TrimSpace(req.Path); p != "" {
-		req.Path = path.Clean("/" + p)
-	}
-	auth.AuditLog(r, namespace, name)
-
-	client := s.getClientForRequest(r)
-	if client == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "cluster client not available - check cluster connection")
-		return
-	}
-
-	results, fallback, err := reachability.Run(r.Context(), client, reachability.RunOptions{
-		Image:     s.resolveReachabilityImage(r.Context()),
-		Namespace: namespace,
-		Target:    req.Target,
-		Host:      req.Host,
-		Scheme:    req.Scheme,
-		Path:      req.Path,
-		Layers:    req.Layers,
-	})
-	if err != nil {
-		// A capability denial or an apiserver Forbidden is a 403 (the caller can't
-		// run it); every other "ran but couldn't finish" is a 200 carrying the
-		// honest reason + the copyable fallback so the user can run it by hand.
-		status := http.StatusOK
-		var capErr *reachability.CapabilityError
-		if errors.As(err, &capErr) || apierrors.IsForbidden(err) {
-			status = http.StatusForbidden
-		}
-		writeJSONStatus(w, status, probeInClusterResponse{FallbackCommand: fallback, Error: err.Error()})
-		return
-	}
-	s.writeJSON(w, probeInClusterResponse{Results: results})
-}
-
 type traceInClusterRequest struct {
 	Path string `json:"path,omitempty"`
 }
@@ -206,8 +103,8 @@ func (s *Server) handleTraceInCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Creating transient probe pods is the one mutating action here - gate on the
-	// Cloud-role tier every mutating handler enforces (Member), mirroring
-	// handleProbeInCluster and the MCP diagnose(inCluster) path.
+	// Cloud-role tier every mutating handler enforces (Member), mirroring the MCP
+	// diagnose(inCluster) path.
 	if !s.requireCloudRole(w, r, auth.RoleMember, "run an in-cluster reachability test") {
 		return
 	}
@@ -245,7 +142,16 @@ func (s *Server) handleTraceInCluster(w http.ResponseWriter, r *http.Request) {
 	}
 	auth.AuditLog(r, namespace, name)
 
-	tests, byTarget := reachability.RunInClusterTests(r.Context(), tr, namespace)
+	// The frontend's path form always submits something ("/" by default), so a
+	// bare "/" is the untouched default, not a customization - each route keeps
+	// its own declared path then. Anything else is the operator saying "test THIS
+	// path", and the in-cluster probes must honor it, not silently probe the
+	// declared route paths instead.
+	pathOverride := reachability.NormalizeProbePath(req.Path)
+	if pathOverride == "/" {
+		pathOverride = ""
+	}
+	tests, byTarget := reachability.RunInClusterTestsWithOptions(r.Context(), tr, namespace, reachability.InClusterTestOptions{PathOverride: pathOverride})
 	// Canonical fold: upgrades confidence, re-derives verdict/coverage/diagnosis,
 	// and reconciles netpol would-deny predictions the live success contradicts.
 	trace.ApplyInClusterResults(tr, byTarget)
@@ -304,10 +210,4 @@ func stampInClusterProbes(tr *trace.Trace, tests []reachability.InClusterTestRes
 			}
 		}
 	}
-}
-
-func writeJSONStatus(w http.ResponseWriter, status int, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(data)
 }

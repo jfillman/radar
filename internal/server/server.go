@@ -65,6 +65,9 @@ type Server struct {
 	broadcaster        *SSEBroadcaster
 	vitalsMetrics      vitalsMetricsMemo
 	port               int
+	listenAddress      string
+	startupLog         bool
+	remoteAccessHint   bool
 	devMode            bool
 	staticFS           fs.FS
 	startTime          time.Time
@@ -132,6 +135,9 @@ type Server struct {
 // Config holds server configuration
 type Config struct {
 	Port               int
+	ListenAddress      string         // 127.0.0.1/localhost for local-only; 0.0.0.0 for shared access
+	StartupLog         bool           // Emit the operator-facing startup block after a successful bind
+	RemoteAccessHint   bool           // Explain the explicit shared-listener opt-in (native CLI only)
 	DevMode            bool           // Serve frontend from filesystem instead of embedded
 	StaticFS           embed.FS       // Embedded frontend files
 	StaticRoot         string         // Path within StaticFS
@@ -151,6 +157,9 @@ func New(cfg Config) *Server {
 		router:             chi.NewRouter(),
 		broadcaster:        NewSSEBroadcaster(),
 		port:               cfg.Port,
+		listenAddress:      cfg.ListenAddress,
+		startupLog:         cfg.StartupLog,
+		remoteAccessHint:   cfg.RemoteAccessHint,
 		devMode:            cfg.DevMode,
 		startTime:          time.Now(),
 		mcpHandler:         cfg.MCPHandler,
@@ -194,7 +203,6 @@ func New(cfg Config) *Server {
 				// history won't survive a restart, not just a log line.
 				s.aiRuns.MarkHistoryUnavailable(cfg.AIHistoryDB)
 			}
-			log.Printf("[ai] diagnose enabled (default agent: %s)", d.DefaultAgent())
 		}
 	}
 
@@ -262,10 +270,6 @@ func New(cfg Config) *Server {
 			s.oidcHandler = oidcHandler
 		}
 
-		if s.authConfig.Mode == "proxy" {
-			log.Printf("WARNING: Auth mode is 'proxy'. Ensure your ingress strips %s and %s headers from external requests to prevent spoofing.",
-				s.authConfig.UserHeader, s.authConfig.GroupsHeader)
-		}
 	}
 
 	// Set up static file system
@@ -734,22 +738,43 @@ func (s *Server) Start() error {
 // StartWithReady starts the server and signals on the ready channel once it
 // is accepting connections. If port is 0, an OS-assigned port is used.
 func (s *Server) StartWithReady(ready chan<- struct{}) error {
-	s.broadcaster.Start()
-
-	addr := fmt.Sprintf(":%d", s.port)
-	ln, err := net.Listen("tcp", addr)
+	configuredListenAddress := s.listenAddress
+	listenAddress, err := NormalizeListenAddress(configuredListenAddress)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", addr, err)
+		return fmt.Errorf("invalid listen address %q: %w", configuredListenAddress, err)
+	}
+	s.listenAddress = listenAddress
+	bindAddr := socketAddress(listenAddress, s.port)
+	ln, err := net.Listen("tcp", bindAddr)
+	if err != nil {
+		displayAddr := net.JoinHostPort(listenAddress, strconv.Itoa(s.port))
+		return fmt.Errorf("listen on %s: %w", displayAddr, err)
 	}
 	s.listener = ln
-
-	log.Printf("Starting Explorer server on http://localhost:%d", s.ActualPort())
+	if s.startupLog {
+		s.logStartupSummaryBlock()
+	} else {
+		// Keep the security warnings fail-safe for any direct Server caller that
+		// opts out of the full CLI/desktop startup block.
+		if shouldWarnUnauthenticatedListener(listenAddress, s.authConfig.Enabled()) && !cloud.Mode() {
+			log.Printf("WARNING: Radar's HTTP listener is unauthenticated and reachable on %s", listenAddress)
+		}
+		if s.authConfig.Mode == "proxy" && !cloud.Mode() {
+			log.Printf("WARNING: Proxy auth trusts %s and %s; ensure the ingress strips client-supplied identity headers",
+				sanitizeForLog(s.authConfig.UserHeader), sanitizeForLog(s.authConfig.GroupsHeader))
+		}
+	}
+	s.broadcaster.Start()
 
 	if ready != nil {
 		close(ready)
 	}
 
 	return http.Serve(ln, localTCPHandler(s.router))
+}
+
+func shouldWarnUnauthenticatedListener(listenAddress string, authEnabled bool) bool {
+	return !authEnabled && !cloud.IsLoopbackHostname(listenAddress)
 }
 
 // localTCPHandler is the handler exposed on Radar's ordinary pod/host listener.

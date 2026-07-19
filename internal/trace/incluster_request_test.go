@@ -19,7 +19,13 @@ func TestGuessConcretePath(t *testing.T) {
 		{"/api/.*", "/api/", true}, // regex tail stripped to leading literal
 		{"/v1/[0-9]+", "/v1/", true},
 		{"/shop(/.*)?", "/shop", true},
-		{".*", "/", true}, // pure pattern → root guess
+		{".*", "/", true},                              // pure pattern → root guess
+		{"/api/v1.0/orders", "/api/v1.0/orders", false}, // literal dot is not a metacharacter
+		{"/health.json", "/health.json", false},         // literal file extension
+		{"Exact:/api/v1.0", "/api/v1.0", false},         // an exact match is concrete, dots literal
+		{"Exact:/foo", "/foo", false},
+		{"RegularExpression:/foo.*", "/foo", true}, // regex: dot hugging the quantifier trimmed
+		{"RegularExpression:/api/v.", "/api/v.", true},
 	}
 	for _, c := range cases {
 		p, g := guessConcretePath(c.in)

@@ -1861,38 +1861,52 @@ func concreteHost(host string) string {
 	return host
 }
 
-// pathMetachars are the characters that turn a path into a pattern (Ingress
-// ImplementationSpecific regex, nginx regex locations). Their presence means the
-// declared path is not a single concrete request.
-const pathMetachars = `.*+?()[]{}|^$\`
+// strongPathMetachars are the characters that unambiguously turn a path into a
+// pattern (Ingress ImplementationSpecific regex, nginx regex locations). A bare
+// '.' is deliberately NOT one of them: it is a common literal in real paths
+// (version numbers like /api/v1.0, file extensions), and is only a regex
+// metacharacter when it hugs a quantifier (the '.' of '.*'/'.+'), which is
+// handled by trimming it off the literal prefix below.
+const strongPathMetachars = `*+?()[]{}|^$\`
 
 // guessConcretePath returns a concrete path to request plus whether it was a
-// guess. A plain path is used verbatim; a pattern path is reduced to its leading
-// literal (everything before the first regex metacharacter), which still matches
-// the pattern, and flagged as a guess.
+// guess. An Exact match is a single literal path and is dialed verbatim (never a
+// guess); a pattern path is reduced to its leading literal (everything before the
+// first regex metacharacter), which still matches the pattern, and flagged as a
+// guess. A plain literal path is used verbatim.
 func guessConcretePath(path string) (string, bool) {
 	path = strings.TrimSpace(path)
-	// Gateway-API routes carry the match type as a display prefix
-	// ("Exact:/foo", "RegularExpression:/foo.*"). Strip it so the request path is
-	// the real URL, not "/Exact:/foo", and mark the result a guess - a typed
-	// match (exact/regex) isn't a plain prefix the direct dial necessarily
-	// exercises identically.
-	typed := false
+	// Gateway-API routes carry the match type as a display prefix ("Exact:/foo",
+	// "RegularExpression:/foo.*"). Strip it so the request path is the real URL,
+	// not "/Exact:/foo".
+	matchType := ""
 	if tag := leadingTypeTag(path); tag != "" {
+		matchType = strings.TrimSuffix(tag, ":")
 		path = path[len(tag):]
-		typed = true
 	}
-	if path == "" || path == "/" {
-		return "/", typed
+	if path == "" {
+		path = "/"
 	}
-	if i := strings.IndexAny(path, pathMetachars); i >= 0 {
-		lit := path[:i]
-		if lit == "" {
+	// An Exact match is one concrete literal path; the direct dial exercises the
+	// route identically, so it is faithful and its characters are all literal.
+	if matchType == "Exact" {
+		return ensureLeadingSlash(path), false
+	}
+	if path == "/" {
+		return "/", matchType == "RegularExpression"
+	}
+	if i := strings.IndexAny(path, strongPathMetachars); i >= 0 {
+		// A '.' immediately before the metacharacter is part of the pattern atom
+		// (the '.' of '.*'), not a literal, so trim it from the probed prefix.
+		lit := strings.TrimRight(path[:i], ".")
+		if lit == "" || lit == "/" {
 			return "/", true
 		}
 		return ensureLeadingSlash(lit), true
 	}
-	return ensureLeadingSlash(path), typed
+	// No strong metacharacter: a literal path. Only a RegularExpression match stays
+	// a guess (its value may use '.' as any-char); every other path is faithful.
+	return ensureLeadingSlash(path), matchType == "RegularExpression"
 }
 
 // leadingTypeTag returns a leading "Word:" match-type tag (e.g. "Exact:") when

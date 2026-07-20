@@ -16,12 +16,11 @@ import { AlertTriangle, RefreshCw } from 'lucide-react'
 
 export type { ActivityTypeFilter, ActivityFilterKey }
 
-// Cap on the list fetch — server-side for local (the /changes limit param),
-// client-side for retained (which streams the full window; applyClientFilters
-// slices). Generous so a busy query window isn't silently truncated; the list
-// is already bounded to the selection range, so this only caps pathological
-// bursts. Surfaced as `truncatedAt` so a window that hits it shows an
-// end-of-list note instead of dropping silently.
+// Cap on the list result — applied client-side in both modes over the loaded
+// window (applyClientFilters slices). Generous so a busy query window isn't
+// silently truncated; the list is already bounded to the selection range, so
+// this only caps pathological bursts. Surfaced as `truncatedAt` so a window
+// that hits it shows an end-of-list note instead of dropping silently.
 const LIST_FETCH_LIMIT = 2000
 const APP_SCOPED_FETCH_LIMIT = 10000
 
@@ -42,10 +41,11 @@ interface TimelineListProps {
   kindFilter: string[]
   onKindFilterChange: (kinds: string[]) => void
   // The shared scrubber selection [from,to]. When set (retained mode always;
-  // local mode once the scrubber owns the range), it drives the fetch window and
+  // local mode once the scrubber owns the range), it drives the query window and
   // hides the built-in range dropdown so the list can't drift from the
-  // swimlane/URL. Retained scopes server-side; local loads the ring and bounds it
-  // client-side (see useLocalEvents).
+  // swimlane/URL. In both modes a window the loaded ring covers slices it
+  // client-side with no fetch; a frozen selection older than a truncated ring's
+  // oldest row fetches its own server window (see createRingEventsHook).
   selectionWindow?: { fromMs: number; toMs: number }
   // Time span of the rows visible in the list's scrollport — the host renders
   // it as the scrubber lens so scrolling the list moves the lens.

@@ -18,6 +18,7 @@ import {
   runRetainedRingFetch,
   applyClientFilters,
   localOverviewFromEvents,
+  needsWindowFetch,
   type RetainedRing,
 } from './timelineSource'
 import type { TimelineEvent } from '../types'
@@ -214,6 +215,55 @@ describe('localOverviewFromEvents', () => {
     // Same hour → one hourly bucket, but two distinct 5-minute buckets.
     expect(localOverviewFromEvents(events).buckets).toHaveLength(1)
     expect(localOverviewFromEvents(events, FIVE_MIN).buckets).toHaveLength(2)
+  })
+})
+
+// The hook arms the frozen-window fetch on this predicate alone, so these pin
+// all three directions: ring-covered explicit windows stay zero-fetch, the
+// LIVE sliding selection (an explicit window ending at the clock) stays
+// zero-fetch, and a frozen selection below a truncated ring's oldest loaded
+// row escapes to the server.
+describe('needsWindowFetch (frozen-window coverage predicate)', () => {
+  const HOUR = 60 * 60 * 1000
+  const NOW = T0 + 24 * HOUR
+  const oldestMs = NOW - 2 * HOUR
+  const ringEvents: TimelineEvent[] = [
+    ev({ id: 'newer', timestamp: new Date(NOW - HOUR).toISOString() }),
+    ev({ id: 'oldest', timestamp: new Date(oldestMs).toISOString() }),
+  ]
+  // A frozen selection wholly below the ring's oldest loaded row — THE bug
+  // case: the ring slice for it is empty while the server holds rows.
+  const deepFromMs = NOW - 10 * HOUR
+  const deepToMs = NOW - 8 * HOUR
+
+  it('an untruncated ring answers every window — no fetch', () => {
+    // Even a from-edge far below the oldest loaded row: untruncated means the
+    // server sent everything it holds in the ring's depth.
+    expect(needsWindowFetch({ events: ringEvents, truncated: false }, deepFromMs, deepToMs, NOW)).toBe(false)
+  })
+
+  it('a truncated ring still answers windows at or after its oldest loaded row', () => {
+    expect(needsWindowFetch({ events: ringEvents, truncated: true }, oldestMs, NOW - HOUR, NOW)).toBe(false)
+    expect(needsWindowFetch({ events: ringEvents, truncated: true }, oldestMs + 1, NOW - HOUR, NOW)).toBe(false)
+  })
+
+  it('a truncated ring with a from-edge below its oldest loaded row needs the server window', () => {
+    expect(needsWindowFetch({ events: ringEvents, truncated: true }, deepFromMs, deepToMs, NOW)).toBe(true)
+    expect(needsWindowFetch({ events: ringEvents, truncated: true }, oldestMs - 1, NOW - HOUR, NOW)).toBe(true)
+  })
+
+  it('a window ending at the live edge stays on the ring, however deep its from-edge', () => {
+    // The ring IS the server's newest-ringLimit answer up to now; a window
+    // fetch for this selection would return the same rows, and arming it
+    // would re-key a full fetch on every live tick.
+    expect(needsWindowFetch({ events: ringEvents, truncated: true }, deepFromMs, NOW, NOW)).toBe(false)
+    // The live selection's to-edge lags the clock by its coarse tick; the
+    // slack band must absorb that lag.
+    expect(needsWindowFetch({ events: ringEvents, truncated: true }, deepFromMs, NOW - 60_000, NOW)).toBe(false)
+  })
+
+  it('an empty truncated ring fails toward fetching', () => {
+    expect(needsWindowFetch({ events: [], truncated: true }, deepFromMs, deepToMs, NOW)).toBe(true)
   })
 })
 
@@ -533,6 +583,28 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
     const to = Number(/to=(\d+)/.exec(url)?.[1])
     expect(to).toBeGreaterThan(NOW)
     expect(to - from).toBe(CAP)
+  })
+
+  // The frozen-window fetch reuses fetchRetainedWindow with the hook's exact
+  // arguments: the selection's [from,to], the source's ringLimit, and the
+  // server-side namespace scope.
+  it('a frozen-window fetch carries from/to/limit/namespaces on the wire and surfaces truncated', async () => {
+    mockApiFetch.mockResolvedValue(
+      streamResponse([
+        line(ev({ id: 'deep', timestamp: new Date(T0).toISOString() })),
+        end({ truncated: true }),
+      ]),
+    )
+    const res = await fetchRetainedWindow(T0, T0 + 60_000, undefined, 10_000, ['team-a', 'team-b'])
+    const url = String(mockApiFetch.mock.calls[0][0])
+    expect(url).toContain(`from=${T0}`)
+    expect(url).toContain(`to=${T0 + 60_000}`)
+    expect(url).toContain('limit=10000')
+    expect(url).toContain('namespaces=team-a%2Cteam-b')
+    expect(res.events.map((e) => e.id)).toEqual(['deep'])
+    // The window response's own truncated flag is what the hook surfaces while
+    // the window serves — a row-capped frozen window must not read as complete.
+    expect(res.truncated).toBe(true)
   })
 
   it('a non-400 delta failure propagates and keeps the cursor for the next poll', async () => {

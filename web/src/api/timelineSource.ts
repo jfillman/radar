@@ -2,7 +2,7 @@
 //
 // Radar's timeline can be backed by two stores:
 //   - 'local'    — the in-process event store the Radar binary keeps (default,
-//                  OSS standalone). Fetched via GET {apiBase}/changes.
+//                  OSS standalone). Fetched via GET {apiBase}/timeline/events.
 //   - 'retained' — a longer-horizon history store answered upstream of Radar
 //                  (relative to apiBase) as GET {apiBase}/timeline/events and
 //                  GET {apiBase}/timeline/overview. This is an extension point:
@@ -104,7 +104,9 @@ export interface TimelineEventsResult {
   // Do not drive user-visible loaders from this — they would flicker on every
   // poll; use isLoading (true only with no data at all) for loaders. Period
   // changes re-window the loaded ring client-side in both sources, so they
-  // never fetch and never signal either flag.
+  // never fetch and never signal either flag; the one exception is a frozen
+  // [from,to] selection reaching below a truncated ring, which fetches its
+  // own window once and signals both flags while it does.
   isFetching: boolean
   isError: boolean
   // The failure behind isError, when one is available. Surfaced so the UI can
@@ -114,9 +116,11 @@ export interface TimelineEventsResult {
   refetch: () => void
   // Present only for sources that report coverage (retained).
   coverage?: TimelineCoverageRecord[]
-  // Retained only: the ring load was row-capped, so the OLDEST part of the
-  // retention window is not loaded. Hosts must surface this — rendering a
-  // truncated ring without a note reads as "nothing older happened".
+  // The load serving the data was row-capped, so the OLDEST part of what it
+  // asked for is not loaded — the ring load when the ring serves, the window
+  // load when a frozen selection fetched its own window. Hosts must surface
+  // this — rendering a truncated result without a note reads as "nothing
+  // older happened".
   truncated?: boolean
 }
 
@@ -482,6 +486,51 @@ export interface RetainedRing {
   loadedAtMs: number
 }
 
+// A window whose to-edge sits within this band of the clock counts as ending
+// at the live edge. Generous: it only needs to absorb the LIVE selection's
+// coarse tick and clock jitter, and misclassifying a just-frozen window as
+// live-edged is harmless — at that moment the ring IS what the server would
+// return for it (see needsWindowFetch).
+const LIVE_EDGE_SLACK_MS = 5 * 60 * 1000
+
+// Whether an explicit [from,to] selection reaches below what the loaded ring
+// holds. A truncated ring kept only the NEWEST rows, so a selection whose
+// from-edge is older than the ring's oldest loaded event would render rows the
+// server still holds as empty — such a window must fetch itself. An
+// untruncated ring holds everything its depth covers, so every selection
+// slices it client-side with no fetch.
+//
+// A window ending at the live edge never fetches, however deep its from-edge:
+// the ring is the server's newest-ringLimit answer up to now, which is exactly
+// what a window fetch for it would return. This is what keeps the LIVE
+// sliding selection — which rides the query as an explicit [from,to] and
+// re-derives every tick — on the zero-fetch ring path instead of re-keying a
+// full-window fetch per tick.
+//
+// An empty truncated ring proves nothing about coverage, so it fails toward
+// fetching. Exported for unit tests; not re-exported publicly.
+export function needsWindowFetch(
+  ring: Pick<RetainedRing, 'events' | 'truncated'>,
+  fromMs: number,
+  toMs: number,
+  now: number,
+): boolean {
+  if (!ring.truncated) return false
+  if (toMs >= now - LIVE_EDGE_SLACK_MS) return false
+  let oldest = Number.POSITIVE_INFINITY
+  for (const e of ring.events) {
+    const t = new Date(e.timestamp).getTime()
+    if (Number.isFinite(t) && t < oldest) oldest = t
+  }
+  return fromMs < oldest
+}
+
+// A frozen window never slides and never polls, so it refetches only on a
+// genuinely new mount past this staleness. Not cached forever: a late-ingested
+// event CAN land inside an old window, so an aged cache entry may still
+// refresh.
+const FROZEN_WINDOW_STALE_MS = 10 * 60 * 1000
+
 // Ring keys whose next fetch must be a full reload (manual refresh). A side
 // flag, not a side cursor: consuming it only switches the PATH of the next
 // fetch — all sync state that must stay consistent with the data lives inside
@@ -622,7 +671,8 @@ function createRingEventsHook(opts: {
     // namespace-scoped consumer — an all-namespace ring could spend its whole
     // budget elsewhere). It does NOT carry the query's [from,to]: period
     // changes re-window the loaded ring client-side in applyClientFilters,
-    // issuing no fetch.
+    // issuing no fetch. A frozen window the ring cannot answer runs its own
+    // separately-keyed query below instead of widening the ring.
     const apiBase = getApiBase()
     const ringNamespacesKey = query.namespaces?.length ? [...query.namespaces].sort().join(',') : ''
     const queryKey = useMemo(
@@ -649,6 +699,46 @@ function createRingEventsHook(opts: {
       staleTime: 5000,
     })
 
+    // On a store holding more than ringLimit rows, an explicit frozen
+    // [from,to] older than the ring's oldest loaded event has NO rows in the
+    // ring even though the server holds them — slicing would render the deep
+    // past as empty. Such a window fetches itself: same endpoint, same wire
+    // contract in both modes. Ring-covered and live-edge windows never arm
+    // this query (see needsWindowFetch), so period changes and the live tick
+    // stay zero-fetch.
+    //
+    // The clock sample only refreshes when a dep changes, so on an IDLE ring a
+    // just-frozen live-edge window can stay ring-served past the slack band.
+    // That is coverage-correct: an idle ring accumulates nothing, drops
+    // nothing, and so keeps being the server's best answer for that window.
+    const windowFromMs = query.fromMs
+    const windowToMs = query.toMs
+    const windowNeeded = useMemo(
+      () =>
+        enabled && windowFromMs != null && windowToMs != null && ring.data != null &&
+        needsWindowFetch(ring.data, windowFromMs, windowToMs, Date.now()),
+      [enabled, windowFromMs, windowToMs, ring.data],
+    )
+    const windowQuery = useQuery<RetainedWindowResult>({
+      queryKey: ['timeline-window', apiBase, windowFromMs, windowToMs, ringNamespacesKey],
+      queryFn: ({ signal }) => {
+        if (windowFromMs == null || windowToMs == null) {
+          // Unreachable: `enabled` requires both bounds. Guards the invariant
+          // without a non-null assertion.
+          throw new Error('timeline window query ran without an explicit [from,to]')
+        }
+        return fetchRetainedWindow(
+          windowFromMs,
+          windowToMs,
+          signal,
+          ringLimit,
+          ringNamespacesKey ? ringNamespacesKey.split(',') : undefined,
+        )
+      },
+      enabled: windowNeeded,
+      staleTime: FROZEN_WINDOW_STALE_MS,
+    })
+
     const kindsKey = query.kinds?.join(',')
     const namespacesKey = query.namespaces?.join(',')
     // A preset-derived window slides with the clock; on an idle ring the memo
@@ -670,6 +760,12 @@ function createRingEventsHook(opts: {
       return () => clearInterval(id)
     }, [tickActive])
     const data = useMemo(() => {
+      if (windowNeeded) {
+        // Serving from the frozen-window fetch. Same client filters as the
+        // ring path so the two are indistinguishable to consumers; undefined
+        // while in flight so the host shows a loader, not an empty ring slice.
+        return windowQuery.data ? applyClientFilters(windowQuery.data.events, query) : undefined
+      }
       if (!ring.data) return undefined
       // A `timeRange` preset without an explicit [from,to] window resolves to
       // a client-side bound over the ring — the retained twin of the local
@@ -691,6 +787,8 @@ function createRingEventsHook(opts: {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
       ring.data,
+      windowNeeded,
+      windowQuery.data,
       namespacesKey,
       kindsKey,
       query.includeK8sEvents,
@@ -704,6 +802,24 @@ function createRingEventsHook(opts: {
       derivedWindow,
       presetTick,
     ])
+
+    if (windowNeeded) {
+      // Every signal follows the query that serves the data: the ring keeps
+      // polling in the background, but its flags describe data the consumer
+      // is not looking at.
+      return {
+        data,
+        isLoading: windowQuery.isLoading,
+        isFetching: windowQuery.isFetching,
+        isError: windowQuery.isError,
+        error: windowQuery.error,
+        refetch: () => {
+          windowQuery.refetch()
+        },
+        coverage: windowQuery.data?.coverage,
+        truncated: windowQuery.data?.truncated,
+      }
+    }
 
     return {
       data,

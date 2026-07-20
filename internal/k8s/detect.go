@@ -2050,18 +2050,10 @@ func scaledToZeroBackingWorkload(cache *ResourceCache, svc *corev1.Service) (sca
 	// background context is sufficient.
 	rollouts, err := cache.ListDynamicWithGroup(context.Background(), "Rollout", svc.Namespace, "argoproj.io")
 	if err != nil {
-		// CRD genuinely absent (kind not registered in discovery) = no Rollouts can
-		// exist, a clean conclusive no-match.
-		if errors.Is(err, ErrUnknownDynamicKind) {
+		// Absent CRD or dynamic support not wired = a clean no-match (Rollouts
+		// genuinely aren't in play).
+		if errors.Is(err, ErrUnknownDynamicKind) || errors.Is(err, ErrDynamicNotReady) {
 			return false, nonMatch(rolloutLookupConclusive)
-		}
-		// Dynamic support not initialized (discovery/cache not ready) means the
-		// Rollout leg COULDN'T RUN - not that no scaled-to-zero Rollout exists.
-		// Transient so a dormant Rollout isn't false-condemned as a routing outage
-		// during startup / in a context without a dynamic cache; it self-heals once
-		// the cache is ready.
-		if errors.Is(err, ErrDynamicNotReady) {
-			return false, nonMatch(rolloutLookupTransient)
 		}
 		log.Printf("[detect] scale-to-zero Rollout lookup failed for Service %s/%s: %v", svc.Namespace, svc.Name, err)
 		// RBAC denial is persistent - the SA lacks `list rollouts.argoproj.io`

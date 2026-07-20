@@ -2382,10 +2382,11 @@ function ApplicationHistoryView({
                 application activity in this range may not be included.
               </div>
             )}
-            {mode === "retained" && ringTruncated && (
+            {ringTruncated && (
               <div>
-                Event history may be incomplete: the retained window exceeded
-                its size limit, so the oldest activity is not loaded.
+                {mode === "retained"
+                  ? "Event history may be incomplete: the retained window exceeded its size limit, so the oldest activity is not loaded."
+                  : "Event history may be incomplete: the event store's ring is full, so the oldest activity is not loaded."}
               </div>
             )}
           </div>

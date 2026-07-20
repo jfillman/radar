@@ -275,7 +275,7 @@ const RETAINED_PRESET_TICK_MS = 5 * 60 * 1000
 // 'all'/unset falls back to the ring depth — clamping a preset wider than a
 // shallow host is the CALLER's job (Math.min at the use site). Exported for
 // unit tests; not re-exported publicly.
-export function rangeSpanMs(range: TimeRange | undefined, capMs: number): number {
+export function rangeSpanMs(range: TimeRange | undefined, capMs?: number): number | undefined {
   switch (range) {
     case '5m': return 5 * 60 * 1000
     case '30m': return 30 * 60 * 1000
@@ -498,7 +498,10 @@ export async function runRetainedRingFetch(deps: {
   ringKey: string
   cached: RetainedRing | undefined
   forceResync: Set<string>
-  capMs: number
+  // Retention depth of the backend. Undefined = unbounded (a local store may
+  // be configured to retain forever): the full load starts at epoch zero and
+  // delta merges never age-prune - the ring row cap is the only bound.
+  capMs?: number
   now: number
   signal?: AbortSignal
   // Ring row cap: the server's per-request ceiling for this source (the hub
@@ -557,8 +560,8 @@ export async function runRetainedRingFetch(deps: {
       // cap — accumulation past it drops the OLDEST rows, the same
       // semantics as the initial load and the local source's ring, and
       // flips `truncated` so the UI says so.
-      const floor = now - capMs - RETAINED_CLOCK_SKEW_SLACK_MS
-      const pruned = merged.filter((e) => new Date(e.timestamp).getTime() >= floor)
+      const floor = capMs != null ? now - capMs - RETAINED_CLOCK_SKEW_SLACK_MS : Number.NEGATIVE_INFINITY
+      const pruned = capMs != null ? merged.filter((e) => new Date(e.timestamp).getTime() >= floor) : merged
       const capped = pruned.length > ringLimit
       return {
         events: capped ? pruned.slice(0, ringLimit) : pruned,
@@ -582,7 +585,7 @@ export async function runRetainedRingFetch(deps: {
   // them). The window slides back by the same slack to stay within the hub's
   // maximum range.
   const to = now + RETAINED_CLOCK_SKEW_SLACK_MS
-  const full = await fetchRetainedWindow(to - capMs, to, signal, ringLimit, namespaces)
+  const full = await fetchRetainedWindow(capMs != null ? to - capMs : 0, to, signal, ringLimit, namespaces)
   // Consume the flag only while this fetch still owns the query. A resolved
   // load can still be discarded — a manual refresh cancels the in-flight poll
   // AFTER its network call finished — and deleting then would eat the flag
@@ -603,7 +606,8 @@ export async function runRetainedRingFetch(deps: {
 // (ringLimit). The endpoint path is identical (`{apiBase}/timeline/events`);
 // apiBase alone decides which server answers.
 function createRingEventsHook(opts: {
-  capMs: number
+  // Undefined = unbounded depth (the server's own retention is the bound).
+  capMs?: number
   ringLimit: number
   resyncMs: number
 }): (query: TimelineQuery) => TimelineEventsResult {
@@ -622,7 +626,7 @@ function createRingEventsHook(opts: {
     const apiBase = getApiBase()
     const ringNamespacesKey = query.namespaces?.length ? [...query.namespaces].sort().join(',') : ''
     const queryKey = useMemo(
-      () => ['timeline-ring', apiBase, capMs, ringNamespacesKey],
+      () => ['timeline-ring', apiBase, capMs ?? 'unbounded', ringNamespacesKey],
       [apiBase, ringNamespacesKey],
     )
 
@@ -674,7 +678,10 @@ function createRingEventsHook(opts: {
       // the whole ring.
       let effective = query
       if (derivedWindow) {
-        effective = { ...query, fromMs: Date.now() - Math.min(rangeSpanMs(query.timeRange, capMs), capMs) }
+        const span = rangeSpanMs(query.timeRange, capMs)
+        if (span != null) {
+          effective = { ...query, fromMs: Date.now() - (capMs != null ? Math.min(span, capMs) : span) }
+        }
       }
       return applyClientFilters(ring.data.events, effective)
       // Every filter is client-side here (the ring key carries none of them),
@@ -752,10 +759,9 @@ async function fetchRetainedOverview(range: TimelineRange): Promise<TimelineOver
 export const localSource: TimelineSource = {
   capabilities: { mode: 'local', ringLimit: LOCAL_RING_LIMIT },
   useEvents: createRingEventsHook({
-    // Depth is nominally unbounded locally (the server's own ring and
-    // retention are the real limits); the ceiling only bounds client-side
-    // pruning and 'all'-range resolution.
-    capMs: RETAINED_MAX_DEPTH_DAYS * DAY_MS,
+    // No depth cap: the binary's own ring size and --timeline-retention are
+    // the real bounds, and retention may legitimately be unlimited. The ring
+    // row ceiling still bounds client-side growth.
     ringLimit: LOCAL_RING_LIMIT,
     resyncMs: LOCAL_FULL_RESYNC_MS,
   }),

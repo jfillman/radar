@@ -301,6 +301,9 @@ describe("ApplicationDetail shell", () => {
 
     const local = renderDetail({ ...base, historyMode: 'local' })
     expect(local).not.toContain('the retained window exceeded')
+    // Local can be ring-truncated too (the binary's 10k ring) - same warning,
+    // source-appropriate copy.
+    expect(local).toContain('ring is full, so the oldest activity is not loaded')
   })
 
   it('shows a single honest error state when runtime history fails without source history', () => {

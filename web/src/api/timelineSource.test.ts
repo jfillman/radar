@@ -426,6 +426,21 @@ describe('retained ring fetch (the OSS-identical accumulate model)', () => {
     expect(mockApiFetch.mock.calls.at(-1)?.[0]).toContain('limit=3')
   })
 
+  // Unbounded depth (a local store configured to retain forever): the full
+  // load starts at epoch zero and delta merges never age-prune.
+  it('treats an unset capMs as unbounded depth', async () => {
+    const flags = new Set<string>()
+    mockApiFetch.mockResolvedValueOnce(streamResponse([end({ cursor: '5' })]))
+    await runRetainedRingFetch({ ringKey: 'k', cached: undefined, forceResync: flags, now: NOW })
+    expect(mockApiFetch.mock.calls.at(-1)?.[0]).toContain('from=0')
+
+    const ancient = ev({ id: 'e-ancient', timestamp: new Date(NOW - 400 * DAY).toISOString() })
+    const cached = ring([ancient])
+    mockApiFetch.mockResolvedValueOnce(streamResponse([line(ev({ id: 'e-new', timestamp: new Date(NOW).toISOString() })), end({ cursor: '9' })]))
+    const out = await runRetainedRingFetch({ ringKey: 'k', cached, forceResync: flags, now: NOW })
+    expect(out.events.some((e) => e.id === 'e-ancient')).toBe(true)
+  })
+
   // The local source keeps its historical 5-minute anti-entropy cadence; a
   // per-source resyncMs below the ring age must force a full reload.
   it('honors a per-source resync interval', async () => {

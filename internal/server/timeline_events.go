@@ -46,16 +46,21 @@ func (s *Server) handleTimelineEvents(w http.ResponseWriter, r *http.Request) {
 	if !s.requireConnected(w) {
 		return
 	}
+	// Store and epoch are captured once, together, and threaded through: a
+	// kubeconfig context switch resets the global store mid-request, and
+	// re-resolving it later could pair one store generation's rows with
+	// another's epoch (or dereference nil).
 	store := timeline.GetStore()
 	if store == nil {
 		s.writeError(w, http.StatusServiceUnavailable, "Timeline store not available")
 		return
 	}
+	epoch := timeline.ObservationStart().UnixNano()
 	if since := r.URL.Query().Get("since"); since != "" {
-		s.serveTimelineEventsDelta(w, r, since)
+		s.serveTimelineEventsDelta(w, r, store, epoch, since)
 		return
 	}
-	s.serveTimelineEventsWindow(w, r)
+	s.serveTimelineEventsWindow(w, r, store, epoch)
 }
 
 func timelineCursor(epoch, seq int64) string {
@@ -98,8 +103,7 @@ func (s *Server) timelineEventsQuery(r *http.Request, namespaces []string) timel
 	}
 }
 
-func (s *Server) serveTimelineEventsDelta(w http.ResponseWriter, r *http.Request, cursor string) {
-	epoch := timeline.ObservationStart().UnixNano()
+func (s *Server) serveTimelineEventsDelta(w http.ResponseWriter, r *http.Request, store timeline.EventStore, epoch int64, cursor string) {
 	seq, ok := parseTimelineCursor(cursor, epoch)
 	if !ok {
 		s.writeError(w, http.StatusBadRequest, "stale or invalid cursor")
@@ -116,7 +120,7 @@ func (s *Server) serveTimelineEventsDelta(w http.ResponseWriter, r *http.Request
 	opts.SinceSeq = seq
 	opts.SeqPaging = true
 
-	events, err := timeline.GetStore().Query(r.Context(), opts)
+	events, err := store.Query(r.Context(), opts)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -141,7 +145,7 @@ func (s *Server) serveTimelineEventsDelta(w http.ResponseWriter, r *http.Request
 	})
 }
 
-func (s *Server) serveTimelineEventsWindow(w http.ResponseWriter, r *http.Request) {
+func (s *Server) serveTimelineEventsWindow(w http.ResponseWriter, r *http.Request, store timeline.EventStore, epoch int64) {
 	q := r.URL.Query()
 	fromMs, errFrom := strconv.ParseInt(q.Get("from"), 10, 64)
 	toMs, errTo := strconv.ParseInt(q.Get("to"), 10, 64)
@@ -161,7 +165,6 @@ func (s *Server) serveTimelineEventsWindow(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	epoch := timeline.ObservationStart().UnixNano()
 	namespaces := s.parseNamespacesForUser(r)
 	if noNamespaceAccess(namespaces) {
 		writeTimelineStream(w, nil, timelineEndRecord{Type: "end", Cursor: timelineCursor(epoch, 0)})
@@ -173,7 +176,7 @@ func (s *Server) serveTimelineEventsWindow(w http.ResponseWriter, r *http.Reques
 	opts.Until = time.UnixMilli(toMs)
 	opts.Limit = limit
 
-	events, err := timeline.GetStore().Query(r.Context(), opts)
+	events, err := store.Query(r.Context(), opts)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return

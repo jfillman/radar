@@ -94,10 +94,12 @@ func TestScaledToZero_RolloutAboveZeroStaysCritical(t *testing.T) {
 	}
 }
 
-// TestScaledToZero_NoRolloutCRDIsNotABreak: when the Rollout CRD isn't installed,
-// the dynamic lookup returns ErrUnknownDynamicKind; absence must read as "no
-// match", never an error that flips the result.
-func TestScaledToZero_NoRolloutCRDIsNotABreak(t *testing.T) {
+// TestScaledToZero_DynamicNotReadyIsTransient: with NO dynamic cache wired, the
+// Rollout lookup returns ErrDynamicNotReady - the leg couldn't run. That is
+// "couldn't check", NOT "no Rollout exists", so it must soften to transient
+// (self-heals once the cache is ready), never a conclusive no-match that would
+// false-condemn a dormant Rollout as a critical outage.
+func TestScaledToZero_DynamicNotReadyIsTransient(t *testing.T) {
 	defer ResetTestState()
 	defer ResetTestDynamicState()
 	svc := &corev1.Service{
@@ -107,8 +109,8 @@ func TestScaledToZero_NoRolloutCRDIsNotABreak(t *testing.T) {
 	if err := InitTestResourceCache(fake.NewClientset(svc)); err != nil {
 		t.Fatalf("InitTestResourceCache: %v", err)
 	}
-	if zero, outcome := scaledToZeroBackingWorkload(GetResourceCache(), svc); zero || outcome != rolloutLookupConclusive {
-		t.Error("with no backing workload and no Rollout CRD, must not report scaled-to-zero or uncertain")
+	if zero, outcome := scaledToZeroBackingWorkload(GetResourceCache(), svc); zero || outcome != rolloutLookupTransient {
+		t.Errorf("no dynamic cache = couldn't check Rollouts → transient, got zero=%v outcome=%v", zero, outcome)
 	}
 }
 
@@ -197,10 +199,19 @@ func TestNoReadyEndpointsTruthTable(t *testing.T) {
 		},
 		{
 			name:            "no workload is a confirmed outage",
+			dynamic:         "empty", // CRD present, synced, zero rollouts = a genuine no-match
 			wantSeverity:    "critical",
 			wantReason:      "0/1 selected pods ready",
 			wantFingerprint: "svc:no-ready-endpoints",
 			wantEmptyMsg:    true,
+		},
+		{
+			name:            "rollout support not initialized softens to transient, not a false outage",
+			dynamic:         "notready",
+			wantSeverity:    "warning",
+			wantReason:      "0/1 selected pods ready",
+			wantFingerprint: "svc:no-ready-endpoints",
+			wantMsgSub:      "re-check shortly",
 		},
 		{
 			name:            "publishNotReadyAddresses is informational",
@@ -284,6 +295,26 @@ func TestNoReadyEndpointsTruthTable(t *testing.T) {
 				if err := InitTestDynamicResourceCache(dynClient, rolloutAPIResource); err != nil {
 					t.Fatalf("InitTestDynamicResourceCache: %v", err)
 				}
+			case "empty":
+				// The Rollout CRD IS present and the cache synced with NO rollouts -
+				// a genuine, conclusive no-match (we looked and found none).
+				dynClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+					runtime.NewScheme(),
+					map[schema.GroupVersionResource]string{rolloutGVR: "RolloutList"},
+				)
+				if err := InitTestDynamicResourceCache(dynClient, rolloutAPIResource); err != nil {
+					t.Fatalf("InitTestDynamicResourceCache: %v", err)
+				}
+				dynCache := GetDynamicResourceCache()
+				if err := dynCache.EnsureWatching(rolloutGVR); err != nil {
+					t.Fatalf("EnsureWatching rollouts: %v", err)
+				}
+				if !dynCache.WaitForSync(rolloutGVR, 2*time.Second) {
+					t.Fatal("rollout dynamic cache did not sync")
+				}
+			case "notready":
+				// No dynamic cache at all - the Rollout leg couldn't run. This is
+				// "couldn't check", NOT "no Rollout exists", so it must soften.
 			}
 
 			deadline := time.Now().Add(2 * time.Second)
@@ -424,6 +455,25 @@ func TestScaledToZero_CoveredNoWorkloadIsConclusive(t *testing.T) {
 			"deployments":  {Enabled: true},
 			"statefulsets": {Enabled: true},
 		})
+	// A ready-but-empty Rollout cache so the Rollout leg is ALSO a genuine no-match:
+	// with the CRD present and synced and zero rollouts, "no workload" is conclusive.
+	rolloutGVR := schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "rollouts"}
+	dynClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{rolloutGVR: "RolloutList"},
+	)
+	if err := InitTestDynamicResourceCache(dynClient, []APIResource{
+		{Group: "argoproj.io", Version: "v1alpha1", Kind: "Rollout", Name: "rollouts", Namespaced: true, Verbs: []string{"list", "watch"}},
+	}); err != nil {
+		t.Fatalf("InitTestDynamicResourceCache: %v", err)
+	}
+	dynCache := GetDynamicResourceCache()
+	if err := dynCache.EnsureWatching(rolloutGVR); err != nil {
+		t.Fatalf("EnsureWatching rollouts: %v", err)
+	}
+	if !dynCache.WaitForSync(rolloutGVR, 2*time.Second) {
+		t.Fatal("rollout dynamic cache did not sync")
+	}
 	zero, outcome := scaledToZeroBackingWorkload(cache, svc)
 	if zero {
 		t.Fatal("no backing workload must not report scaled-to-zero")

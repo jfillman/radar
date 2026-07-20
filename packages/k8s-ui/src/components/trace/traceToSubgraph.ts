@@ -168,13 +168,19 @@ function edgeReach(hop: Hop, route?: RouteResult): TopologyEdge['reachOutcome'] 
     }
   }
   // No route on this hop (e.g. the Service→Pods edge): the edge answers "did any
-  // traffic get through". If ANY non-skipped TRANSPORT probe reached, the edge
-  // reached - a multi-port pod where port 80 served 200 but 9090 refused is
-  // REACHED (the per-port failure shows in the node detail), never a hard-blocked
-  // red edge. A DNS success is NOT traffic-flow evidence (resolving a name
-  // reaches nothing), so it can neither mark the edge reached nor mask every
-  // transport port failing; a DNS failure IS a real break (the name doesn't
-  // resolve, no traffic can flow).
+  // traffic get through" from this hop's own probes.
+  return probeReach(hop)
+}
+
+// probeReach classifies an edge purely from a hop's OWN probe evidence, ignoring
+// findings. If ANY non-skipped TRANSPORT probe reached, the edge reached - a
+// multi-port pod where port 80 served 200 but 9090 refused is REACHED (the
+// per-port failure shows in the node detail), never a hard-blocked red edge. A
+// DNS success is NOT traffic-flow evidence (resolving a name reaches nothing), so
+// it can neither mark the edge reached nor mask every transport port failing; a
+// DNS failure IS a real break. Findings are deliberately NOT consulted so a
+// sibling route's break on the SAME entry never condemns this edge.
+function probeReach(hop: Hop): TopologyEdge['reachOutcome'] {
   const live = (hop.probes ?? []).filter((p) => !p.skipped)
   if (live.length === 0) return 'not-tested'
   const transport = live.filter((p) => p.layer !== 'dns')
@@ -364,19 +370,24 @@ export function traceToSubgraph(trace: Trace, probePath?: string): Topology {
     status: subjStatus,
     data: { ref: trace.subject, ...(subjType ? { type: subjType } : {}), subtitleOverride: nodeSubtitle(subjectHop, subjFallback), hop: subjectHop, routes },
   })
-  const subjReach: TopologyEdge['reachOutcome'] = allHardFail ? 'unreachable' : anyTrafficFlowed ? 'reached' : 'not-tested'
 
+  const subjReach: TopologyEdge['reachOutcome'] = allHardFail ? 'unreachable' : anyTrafficFlowed ? 'reached' : 'not-tested'
   // Entry paths converging on a Service subject. An upstream is an ENTRY that routes
   // here - we test the SUBJECT's reachability, not each upstream's path individually. So
   // the upstream NODE stays NEUTRAL: it is never colored by its own/other-route findings
   // (that was the over-attribution bug - e.g. `multi` painted red on echo's view because
   // of multi's UNRELATED /api→ghost break), and a neutral upstream also never triggers
   // the frontier block-cascade through the shared subject to its pods. RBAC-redacted
-  // upstreams keep their distinct "no access" label. The upstream→subject edge carries
-  // the subject's reach (the thing we actually tested).
+  // upstreams keep their distinct "no access" label.
   for (const up of trace.upstreams ?? []) {
     const id = add({ id: refId(up.resource), kind: up.resource.kind, name: up.resource.name, status: 'unknown', data: { ref: up.resource, subtitleOverride: isRbac(up) ? 'no access (RBAC)' : nodeSubtitle(up, ''), hop: up } })
-    edges.push({ id: `e:${id}->${subjectId}`, source: id, target: subjectId, type: 'routes-to', reachOutcome: subjReach })
+    // When this upstream WAS probed at its own front door, color the edge from its
+    // OWN probe evidence (findings ignored, so a sibling route's break never
+    // condemns it) - a genuinely-failed entry shows unreachable instead of
+    // inheriting the subject's reach. An unprobed upstream falls back to the
+    // subject's reach (the thing we actually tested).
+    const upProbed = (up.probes ?? []).some((p) => !p.skipped)
+    edges.push({ id: `e:${id}->${subjectId}`, source: id, target: subjectId, type: 'routes-to', reachOutcome: upProbed ? probeReach(up) : subjReach })
   }
 
   // Downstream - BRANCH: backends (X->Service) hang off the subject; Pods (Service->Pods)

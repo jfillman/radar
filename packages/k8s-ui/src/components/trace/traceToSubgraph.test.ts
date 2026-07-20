@@ -289,10 +289,38 @@ describe('traceToSubgraph - multi-upstream convergence (a broken sibling upstrea
     const svcToPods = topo.edges.find((e) => e.source === svc.id && e.target === pods.id)
     expect(svcToPods?.reachOutcome).toBe('reached')
     expect(svcToPods?.reachOutcome).not.toBe('blocked')
-    // both converging upstream→subject edges carry the subject's reach
+    // both UNPROBED converging upstream→subject edges fall back to the subject's reach
     const upEdges = topo.edges.filter((e) => e.target === svc.id)
     expect(upEdges).toHaveLength(2)
     expect(upEdges.every((e) => e.reachOutcome === 'reached')).toBe(true)
+  })
+
+  it('a PROBED-and-failed upstream entry shows unreachable, not the subject reach', () => {
+    // The Service itself is healthy, but this entry path was probed and every probe
+    // failed - the edge must reflect the failed entry, not inherit the subject's green.
+    const t = baseTrace({
+      subject: { kind: 'Service', namespace: 'prod', name: 'echo' },
+      upstreams: [
+        {
+          resource: { kind: 'Ingress', namespace: 'prod', name: 'down' },
+          edge: 'Ingress->Service',
+          findings: [],
+          probes: [{ layer: 'http', target: 'shop.example.com:80', vantage: 'in-cluster', ok: false }],
+        },
+      ],
+      downstream: [
+        { resource: { kind: 'Service', namespace: 'prod', name: 'echo' }, edge: 'entry:Service', findings: [], probes: [{ layer: 'http', target: 'echo:80', vantage: 'in-cluster', ok: true }] },
+        { resource: { kind: 'Pods', namespace: 'prod', name: '' }, edge: 'Service->Pods', findings: [] },
+      ],
+      verdict: 'broken',
+      reason: 'all entry paths into this resource are unreachable; the resource itself looks healthy',
+      routes: [{ route: 'echo', target: 'echo:80', outcome: 'verified', confidence: 'real' }],
+    })
+    const topo = traceToSubgraph(t)
+    const svc = topo.nodes.find((n) => n.kind === 'Service')!
+    const upEdge = topo.edges.find((e) => e.target === svc.id)
+    expect(upEdge?.reachOutcome).toBe('unreachable')
+    expect(upEdge?.reachOutcome).not.toBe('reached')
   })
 })
 

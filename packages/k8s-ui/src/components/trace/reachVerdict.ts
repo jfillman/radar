@@ -506,7 +506,11 @@ function reachVerdictBase(trace: Trace, probed?: boolean): ReachVerdictView {
     if (onlyIndirectUnreach && trace.verdict !== 'broken') {
       return { icon: '', tone: 'unknown', text: trace.headline || 'Unreachable via API server - real path not confirmed' }
     }
-    return { icon: '✗', tone: 'unhealthy', text: trace.headline || 'Unreachable - traffic can’t reach the backend' }
+    // Prefer the verdict reason for the headline: on an entry-path break the coverage
+    // headline can be optimistic ("Reachable - verified" from the healthy backend's
+    // own port probes) while the verdict is broken from the failed upstream entries -
+    // leading with trace.headline would put that green text beside the red ✗.
+    return { icon: '✗', tone: 'unhealthy', text: trace.reason || trace.headline || 'Unreachable - traffic can’t reach the backend' }
   }
   // Partial - some routes reachable, some REALLY unreachable (a real problem → ⚠
   // honest). A proxy-only (indirect) unreachable is excluded - its real path was

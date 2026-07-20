@@ -770,6 +770,12 @@ func buildNetworkDiagnoseResponse(tr *trace.Trace) networkDiagnoseResponse {
 	// test any route" headline).
 	if tr.Verdict == trace.VerdictUnknown && tr.UnknownClass != "" {
 		resp.Reason = tr.Reason
+	} else if (tr.Verdict == trace.VerdictBroken || tr.Verdict == trace.VerdictDegraded) && tr.Reason != "" {
+		// A broken/degraded verdict can come from probe evidence with no static
+		// finding - e.g. all entry paths unreachable while the subject itself is
+		// healthy. Without the reason an agent sees verdict=broken beside a
+		// "Reachable" headline with no cause; surface it.
+		resp.Reason = tr.Reason
 	}
 	if tr.Coverage != nil {
 		resp.Summary.Tested = tr.Coverage.Tested

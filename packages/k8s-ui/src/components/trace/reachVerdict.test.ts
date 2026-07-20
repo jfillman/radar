@@ -527,3 +527,23 @@ describe('reachVerdict - a 2xx host must not declare a sibling 3xx/4xx host conf
     expect(v.text).toContain('reached but not verified')
   })
 })
+
+describe('reachVerdict - a broken-from-upstream verdict headlines the reason, not optimistic probe text', () => {
+  it('leads with the verdict reason when there is no static finding (entry paths unreachable)', () => {
+    // Healthy Service, but every entry path failed: verdict=broken with a reason
+    // and NO finding. The banner must lead with the reason and a red icon, never
+    // keep the optimistic "Reachable - verified" headline beside the red mark.
+    const v = reachVerdict(
+      trace({
+        verdict: 'broken',
+        reason: 'all entry paths into this resource are unreachable; the resource itself looks healthy',
+        headline: 'Reachable - verified',
+        routes: [route({ outcome: 'verified', confidence: 'real' })],
+      }),
+      true,
+    )
+    expect(v.icon).toBe('✗')
+    expect(v.text).toContain('all entry paths')
+    expect(v.text).not.toBe('Reachable - verified')
+  })
+})

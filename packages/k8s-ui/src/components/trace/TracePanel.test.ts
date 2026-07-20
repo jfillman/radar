@@ -31,6 +31,13 @@ describe('coverageBannerTone - the single honest banner tone', () => {
   it('indirect-only all-pass is info, never green', () => {
     expect(coverageBannerTone(cov({ tested: 1, passed: 1 }), [indirect('verified')])).toBe('info')
   })
+  it('a real pass beside a SKIPPED (untested) sibling route is NOT green - partial coverage', () => {
+    // Mirrors the backend CoverageVerdict (skipped>0 → unknown) and the full-tab banner.
+    expect(coverageBannerTone(cov({ tested: 1, passed: 1, skipped: 1 }), [real('verified')])).toBe('info')
+  })
+  it('a real pass beside a proxy-only (indirect) unreachable sibling is NOT green', () => {
+    expect(coverageBannerTone(cov({ tested: 2, passed: 1 }), [real('verified'), indirect('unreachable')])).toBe('info')
+  })
   it('zero-tested is info, never green or red', () => {
     expect(coverageBannerTone(cov({ tested: 0, skipped: 2 }), [])).toBe('info')
   })

@@ -114,7 +114,14 @@ export function coverageBannerTone(coverage: Coverage, routes: RouteResult[]): A
   // confirmation; including it would overclaim a green headline while the coverage
   // strip below stays neutral.
   const realPass = routes.some((r) => r.confidence === 'real' && r.outcome === 'verified')
-  return realPass ? 'success' : 'info'
+  if (!realPass) return 'info'
+  // Green ONLY when coverage is complete. A skipped/not-tested route, or a
+  // proxy-only (indirect) unreachable route whose real path was never confirmed,
+  // is a coverage gap - down-rank to info so the drawer glance never greens a
+  // partial result (mirrors the backend CoverageVerdict and the full-tab banner).
+  const hasGap =
+    (coverage.skipped ?? 0) > 0 || routes.some((r) => r.outcome === 'unreachable' && r.confidence === 'indirect')
+  return hasGap ? 'info' : 'success'
 }
 
 // routeOutcomeRank sorts the matrix failures-first. Exported for the test.

@@ -156,3 +156,25 @@ func TestInClusterParam_SelfExplanatory(t *testing.T) {
 		}
 	}
 }
+
+// A broken/degraded verdict must carry its cause in Reason - an entry-path break
+// (all upstreams unreachable while the subject itself is healthy) is probe-derived
+// with no finding, so without Reason an agent sees verdict=broken beside a
+// "Reachable" headline and no cause.
+func TestBuildNetworkDiagnoseResponse_BrokenFromUpstreamIncludesReason(t *testing.T) {
+	tr := &trace.Trace{
+		Subject:  trace.ResourceRef{Kind: "Service", Name: "echo"},
+		Verdict:  trace.VerdictBroken,
+		Reason:   "all entry paths into this resource are unreachable; the resource itself looks healthy",
+		BrokenAt: -1,
+		Coverage: &trace.Coverage{Tested: 1, Passed: 1},
+		Routes: []trace.RouteResult{
+			{Route: "echo", Target: "echo:80", Outcome: trace.OutcomeVerified, Confidence: trace.ConfidenceReal},
+		},
+	}
+	tr.Headline = trace.CoverageHeadline(tr)
+	resp := buildNetworkDiagnoseResponse(tr)
+	if !strings.Contains(resp.Reason, "all entry paths") {
+		t.Errorf("a broken verdict must carry its cause in Reason, got %q (headline %q)", resp.Reason, resp.Summary.Headline)
+	}
+}

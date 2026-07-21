@@ -1410,7 +1410,7 @@ func filterAppReferences(ctx context.Context, refs *AppReferences, ac RefAccessC
 	if refs == nil {
 		return nil
 	}
-	out := &AppReferences{}
+	out := &AppReferences{DuplicateEnv: append([]DuplicateEnvVarReference(nil), refs.DuplicateEnv...)}
 	deniedAny := false
 	for _, ref := range refs.ServiceEnv {
 		if !checkRef(ctx, ac, &ref.Service) {
@@ -1422,7 +1422,7 @@ func filterAppReferences(ctx context.Context, refs *AppReferences, ac RefAccessC
 	if deniedAny {
 		omitted.add("appReferences.serviceEnv", OmittedRBACDenied)
 	}
-	if len(out.ServiceEnv) == 0 {
+	if len(out.ServiceEnv) == 0 && len(out.DuplicateEnv) == 0 {
 		return nil
 	}
 	return out

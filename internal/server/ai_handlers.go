@@ -426,11 +426,14 @@ func (s *Server) buildAIResourceContext(r *http.Request, obj runtime.Object, kin
 	auditSum := computeAuditSummaryForResource(cache, canonicalGroup, canonicalKind, namespace, name)
 
 	opts := resourcecontext.Options{
-		Tier:            resourcecontext.TierBasic,
-		AccessChecker:   s.newRequestScopedChecker(r),
-		IssueSummary:    issueSum,
-		AuditSummary:    auditSum,
-		AppReferences:   resourcecontextrefs.AppReferencesFromEnvServiceChecks(k8s.FindEnvServiceRefChecksForObject(cache, obj)),
+		Tier:          resourcecontext.TierBasic,
+		AccessChecker: s.newRequestScopedChecker(r),
+		IssueSummary:  issueSum,
+		AuditSummary:  auditSum,
+		AppReferences: resourcecontextrefs.AppReferencesFromEnvChecks(
+			k8s.FindEnvServiceRefChecksForObject(cache, obj),
+			k8s.FindDuplicateEnvVarsForObject(obj),
+		),
 		ServiceBackends: serviceBackendLookup{cache: cache},
 	}
 

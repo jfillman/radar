@@ -51,6 +51,7 @@ const (
 	CategoryCronJobFailed     Category = "cronjob_failed"
 
 	CategoryMissingConfigRef         Category = "missing_config_ref"
+	CategoryInvalidConfiguration     Category = "invalid_configuration"
 	CategoryPDBBlocksEvictions       Category = "pdb_blocks_evictions"
 	CategorySecretSyncFailed         Category = "secret_sync_failed"
 	CategoryServiceNoEndpoints       Category = "service_no_endpoints"
@@ -125,6 +126,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryJobFailed:                GroupRuntime,
 	CategoryCronJobFailed:            GroupRuntime,
 	CategoryMissingConfigRef:         GroupConfiguration,
+	CategoryInvalidConfiguration:     GroupConfiguration,
 	CategoryPDBBlocksEvictions:       GroupConfiguration,
 	CategorySecretSyncFailed:         GroupConfiguration,
 	CategoryServiceNoEndpoints:       GroupNetworking,

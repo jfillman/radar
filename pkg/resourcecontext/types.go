@@ -109,7 +109,8 @@ type UsesBlock struct {
 }
 
 type AppReferences struct {
-	ServiceEnv []ServiceEnvReference `json:"serviceEnv,omitempty"`
+	ServiceEnv   []ServiceEnvReference      `json:"serviceEnv,omitempty"`
+	DuplicateEnv []DuplicateEnvVarReference `json:"duplicateEnv,omitempty"`
 }
 
 type ServiceEnvReference struct {
@@ -121,6 +122,20 @@ type ServiceEnvReference struct {
 	ReferencedPort int32      `json:"referencedPort,omitempty"`
 	ServicePorts   []string   `json:"servicePorts,omitempty"`
 	Message        string     `json:"message,omitempty"`
+}
+
+type DuplicateEnvVarReference struct {
+	Container         string                      `json:"container"`
+	Env               string                      `json:"env"`
+	Count             int                         `json:"count"`
+	Occurrences       []DuplicateEnvVarOccurrence `json:"occurrences"`
+	LastDeclaredValue string                      `json:"lastDeclaredValue"`
+	Message           string                      `json:"message,omitempty"`
+}
+
+type DuplicateEnvVarOccurrence struct {
+	Position int    `json:"position"`
+	Value    string `json:"value"`
 }
 
 // ReferencedBy lists workload specs that directly reference the subject

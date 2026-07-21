@@ -6,13 +6,18 @@ import (
 	"github.com/skyhook-io/radar/pkg/resourcecontext"
 )
 
-func AppReferencesFromEnvServiceChecks(checks []k8s.EnvServiceRefCheck) *resourcecontext.AppReferences {
-	if len(checks) == 0 {
+const maxDuplicateEnvVarContextOccurrences = 5
+
+func AppReferencesFromEnvChecks(serviceChecks []k8s.EnvServiceRefCheck, duplicateChecks []k8s.DuplicateEnvVarCheck) *resourcecontext.AppReferences {
+	if len(serviceChecks) == 0 && len(duplicateChecks) == 0 {
 		return nil
 	}
-	out := make([]resourcecontext.ServiceEnvReference, 0, len(checks))
-	for _, check := range checks {
-		out = append(out, resourcecontext.ServiceEnvReference{
+	out := &resourcecontext.AppReferences{
+		ServiceEnv:   make([]resourcecontext.ServiceEnvReference, 0, len(serviceChecks)),
+		DuplicateEnv: make([]resourcecontext.DuplicateEnvVarReference, 0, len(duplicateChecks)),
+	}
+	for _, check := range serviceChecks {
+		out.ServiceEnv = append(out.ServiceEnv, resourcecontext.ServiceEnvReference{
 			Status:         check.Status,
 			Container:      check.Container,
 			Env:            check.EnvName,
@@ -23,5 +28,26 @@ func AppReferencesFromEnvServiceChecks(checks []k8s.EnvServiceRefCheck) *resourc
 			Message:        aicontext.RedactSecrets(check.Message),
 		})
 	}
-	return &resourcecontext.AppReferences{ServiceEnv: out}
+	for _, check := range duplicateChecks {
+		displayed := check.Occurrences
+		if len(displayed) > maxDuplicateEnvVarContextOccurrences {
+			displayed = displayed[:maxDuplicateEnvVarContextOccurrences]
+		}
+		occurrences := make([]resourcecontext.DuplicateEnvVarOccurrence, 0, len(displayed))
+		for _, occurrence := range displayed {
+			occurrences = append(occurrences, resourcecontext.DuplicateEnvVarOccurrence{
+				Position: occurrence.Position,
+				Value:    aicontext.RedactSecrets(occurrence.Value),
+			})
+		}
+		out.DuplicateEnv = append(out.DuplicateEnv, resourcecontext.DuplicateEnvVarReference{
+			Container:         check.Container,
+			Env:               check.EnvName,
+			Count:             len(check.Occurrences),
+			Occurrences:       occurrences,
+			LastDeclaredValue: aicontext.RedactSecrets(check.LastDeclaredValue),
+			Message:           aicontext.RedactSecrets(check.Message),
+		})
+	}
+	return out
 }

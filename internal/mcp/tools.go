@@ -1107,11 +1107,14 @@ func buildMCPResourceContext(ctx context.Context, obj runtime.Object, kind, name
 	auditSum := computeMCPAuditSummary(cache, canonicalGroup, canonicalKind, namespace, name)
 
 	opts := resourcecontext.Options{
-		Tier:            tier,
-		AccessChecker:   newMCPRequestScopedChecker(ctx),
-		IssueSummary:    issueSum,
-		AuditSummary:    auditSum,
-		AppReferences:   resourcecontextrefs.AppReferencesFromEnvServiceChecks(k8s.FindEnvServiceRefChecksForObject(cache, obj)),
+		Tier:          tier,
+		AccessChecker: newMCPRequestScopedChecker(ctx),
+		IssueSummary:  issueSum,
+		AuditSummary:  auditSum,
+		AppReferences: resourcecontextrefs.AppReferencesFromEnvChecks(
+			k8s.FindEnvServiceRefChecksForObject(cache, obj),
+			k8s.FindDuplicateEnvVarsForObject(obj),
+		),
 		ServiceBackends: mcpServiceBackendLookup{cache: cache},
 	}
 

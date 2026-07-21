@@ -149,6 +149,8 @@ func classifyProblem(in classifyInput) issuesapi.Category {
 	switch in.Reason {
 	case "CoreDNS NXDOMAIN override", "CoreDNS service DNS rewrite":
 		return issuesapi.CategoryDNSFailure
+	case "DuplicateEnvVar":
+		return issuesapi.CategoryInvalidConfiguration
 	case "Missing referenced Service":
 		return issuesapi.CategoryMissingConfigRef
 	case "Service port mismatch":

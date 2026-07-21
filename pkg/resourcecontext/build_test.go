@@ -786,6 +786,44 @@ func TestBuild_RBACDenied_AppReferences(t *testing.T) {
 	}
 }
 
+func TestBuild_RBACDenied_ServiceReferencePreservesDuplicateEnv(t *testing.T) {
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "frontend", Namespace: "prod"},
+	}
+	rc := Build(context.Background(), dep, Options{
+		Tier:          TierBasic,
+		AccessChecker: denyChecker{group: "", kind: "Service", namespace: "shared"},
+		AppReferences: &AppReferences{
+			ServiceEnv: []ServiceEnvReference{{
+				Status:  "port_mismatch",
+				Service: ContextRef{Kind: "Service", Namespace: "shared", Name: "product-catalog"},
+			}},
+			DuplicateEnv: []DuplicateEnvVarReference{{
+				Container:         "app",
+				Env:               "PRODUCT_CATALOG_URL",
+				Count:             2,
+				LastDeclaredValue: "http://localhost:8080",
+			}},
+		},
+	})
+	if rc.AppReferences == nil || len(rc.AppReferences.DuplicateEnv) != 1 {
+		t.Fatalf("duplicate env facts should survive Service RBAC deny; got %+v", rc.AppReferences)
+	}
+	if len(rc.AppReferences.ServiceEnv) != 0 {
+		t.Fatalf("Service env references should be removed after deny; got %+v", rc.AppReferences.ServiceEnv)
+	}
+	gotOmitted := false
+	for _, o := range rc.Omitted {
+		if o.Field == "appReferences.serviceEnv" && o.Reason == OmittedRBACDenied {
+			gotOmitted = true
+			break
+		}
+	}
+	if !gotOmitted {
+		t.Fatalf("expected omitted [appReferences.serviceEnv, rbac_denied]; got %+v", rc.Omitted)
+	}
+}
+
 func TestBuild_NilObj(t *testing.T) {
 	if rc := Build(context.Background(), nil, Options{}); rc != nil {
 		t.Errorf("Build(nil) = %+v, want nil", rc)

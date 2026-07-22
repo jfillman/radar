@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "corpus": "batch11-clean-slate-20260720-173948",
+  "expected_run": {
+    "status_file": {"file": "STATUS.txt", "sha256": "4db03f770761b988ecc9006138c7902ed9888ef39e6512d7800ef310871c77c3"},
+    "sregym_revision": "9b412c4",
+    "applications_revision": "18620ed",
+    "radar_revision": "699d9074"
+  },
+  "supporting_sources": [
+    {"file": "sregym/conductor/problems/registry.py", "sha256": "08c58d197b01c21b5d47f3cb0474719909eadfb40fb500a97f38da187c081f9b"},
+    {"file": "sregym/generators/fault/inject_virtual.py", "sha256": "d35e3cc9ac1cb1806a21b853c3733e8d76db6f966281c1223f88c06cbd9259ba"}
+  ],
+  "scenarios": [
+    {
+      "id": 1,
+      "name": "namespace_memory_limit",
+      "injector": {"file": "namespace_memory_limit.py", "sha256": "fcb3759b6004946333671ab7098188481abcbcb494ca2fdbeca964f234d32543"},
+      "exact": [
+        {"id": "quota", "description": "ResourceQuota that rejects pods without memory declarations", "any_of": [{"kind": "ResourceQuota", "namespace": "hotel-reservation", "name": "memory-limit-quota"}]}
+      ],
+      "causal": [
+        {"id": "search-victim", "description": "Deployment deliberately recreated to expose the quota admission failure", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "search"}]}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "wrong_dns_policy_social_network",
+      "injector": {"file": "wrong_dns_policy.py", "sha256": "bb8040028aea514091e9bd51790cdd8b45f5531091953a61f20fa8c0f3d6254a"},
+      "exact": [{"id": "user-service", "description": "Deployment with dnsPolicy None", "any_of": [{"kind": "Deployment", "namespace": "social-network", "name": "user-service"}]}]
+    },
+    {
+      "id": 3,
+      "name": "duplicate_pvc_mounts_social_network",
+      "injector": {"file": "duplicate_pvc_mounts.py", "sha256": "0cc5408d3a3cb922ebc8d22ebdd47b8d7579cd9ab1f530b3c287304c4c2a139a"},
+      "exact": [{"id": "jaeger", "description": "Deployment scaled onto one ReadWriteOnce PVC", "any_of": [{"kind": "Deployment", "namespace": "social-network", "name": "jaeger"}]}]
+    },
+    {
+      "id": 4,
+      "name": "resource_request_too_large",
+      "injector": {"file": "resource_request.py", "sha256": "faae98cd419b2bc564e2704df3ce96b3ef2ba99c59d12545dc74db8500552615"},
+      "exact": [{"id": "mongodb-rate", "description": "Deployment with an unschedulable memory request", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "mongodb-rate"}]}]
+    },
+    {
+      "id": 5,
+      "name": "rbac_misconfiguration",
+      "injector": {"file": "rbac_misconfiguration.py", "sha256": "b1f4d54847ced614391b7fe48a2c0bb78a7ba232b39ac842a0a1d447fd5baebb"},
+      "exact": [{"id": "frontend", "description": "Frontend init container deprived of ConfigMap read permission", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "frontend"}]}],
+      "known_decoys": [{"id": "product-catalog-startup", "description": "Recurring product-catalog startup crashloop", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "product-catalog"}]}]
+    },
+    {
+      "id": 6,
+      "name": "auth_miss_mongodb",
+      "injector": {"file": "auth_miss_mongodb.py", "sha256": "2585d32c43f2703f0fc293455114af1f0e8f3e3972cace806ccdb68387e7664e"},
+      "exact": [{"id": "url-shorten-mongodb", "description": "MongoDB workload and Service with an authentication mismatch", "any_of": [{"kind": "Deployment", "namespace": "social-network", "name": "url-shorten-mongodb"}, {"kind": "Service", "namespace": "social-network", "name": "url-shorten-mongodb"}]}]
+    },
+    {
+      "id": 7,
+      "name": "readiness_probe_misconfiguration_social_network",
+      "injector": {"file": "readiness_probe_misconfiguration.py", "sha256": "525887d7f552c5edc229c642eccf9a7339a39f059766934fc4b674f58c2a0981"},
+      "exact": [{"id": "user-service", "description": "Deployment with a readiness probe aimed at a nonexistent path", "any_of": [{"kind": "Deployment", "namespace": "social-network", "name": "user-service"}]}]
+    },
+    {
+      "id": 8,
+      "name": "rolling_update_misconfigured_social_network",
+      "injector": {"file": "rolling_update_misconfigured.py", "sha256": "661753532df22d20e1b341308dbb07940c9b9b536de929ffa9d70bd932d0e0ec"},
+      "exact": [{"id": "custom-service", "description": "Deployment with maxUnavailable 100% and maxSurge 0", "any_of": [{"kind": "Deployment", "namespace": "social-network", "name": "custom-service"}]}]
+    },
+    {
+      "id": 9,
+      "name": "wrong_service_selector_social_network",
+      "injector": {"file": "wrong_service_selector.py", "sha256": "40ced61a0fd7890d0e5a533839f56af2d6cf347829ddcf5bb44d88f876bb4338"},
+      "exact": [{"id": "user-service", "description": "Service with the injected wrong selector", "any_of": [{"kind": "Service", "namespace": "social-network", "name": "user-service"}]}]
+    },
+    {
+      "id": 10,
+      "name": "stale_coredns_config_social_network",
+      "injector": {"file": "stale_coredns_config.py", "sha256": "678dda265bf78f55575815f53047c889496707572d4fd293ad291ff12101c55f"},
+      "exact": [{"id": "coredns", "description": "CoreDNS ConfigMap with stale DNS configuration", "any_of": [{"kind": "ConfigMap", "namespace": "kube-system", "name": "coredns"}]}]
+    },
+    {
+      "id": 11,
+      "name": "mutating_webhook_resource_limits_social_network",
+      "injector": {"file": "mutating_webhook_resource_limits.py", "sha256": "1437508140b92b2a598e660ed5e99725bb8ba65b17a4584ac2a8fb3627da3889"},
+      "exact": [{"id": "mutating-webhook", "description": "Mutating webhook that overwrites pod memory resources", "any_of": [{"kind": "MutatingWebhookConfiguration", "name": "gatekeeper-mutating-webhook-configuration"}]}],
+      "causal": [{"id": "nginx-thrift", "description": "Deployment whose created pods are mutated and OOMKilled", "any_of": [{"kind": "Deployment", "namespace": "social-network", "name": "nginx-thrift"}]}]
+    },
+    {
+      "id": 12,
+      "name": "missing_env_variable_astronomy_shop",
+      "injector": {"file": "missing_env_variable.py", "sha256": "1b7bb1a3e69272db81996f93c84446738c9c9961e112439c694b59efc69fd291"},
+      "exact": [{"id": "frontend", "description": "Deployment missing the required service-address environment variable", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "frontend"}]}],
+      "known_decoys": [{"id": "product-catalog-startup", "description": "Recurring product-catalog startup crashloop", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "product-catalog"}]}]
+    },
+    {
+      "id": 13,
+      "name": "astronomy_shop_cart_service_failure",
+      "injector": {"file": "cart_service_failure.py", "sha256": "37f22822a090354bec395200cdd8876c2118988e19f24c356e292aa2a7cab490"},
+      "exact": [{"id": "flagd-config", "description": "Feature-flag ConfigMap carrying cartServiceFailure", "any_of": [{"kind": "ConfigMap", "namespace": "astronomy-shop", "name": "flagd-config"}]}],
+      "causal": [{"id": "cart", "description": "Cart workload affected by the feature flag", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "cart"}]}],
+      "known_decoys": [{"id": "product-catalog-startup", "description": "Recurring product-catalog startup crashloop", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "product-catalog"}]}]
+    },
+    {
+      "id": 14,
+      "name": "astronomy_shop_payment_service_unreachable",
+      "injector": {"file": "payment_service_unreachable.py", "sha256": "4dc8f77ca6fc00f76c66d251fa1d710b73ee6f2f0b36e2adb1a2da8f72f580d3"},
+      "exact": [{"id": "flagd-config", "description": "Feature-flag ConfigMap carrying paymentServiceUnreachable", "any_of": [{"kind": "ConfigMap", "namespace": "astronomy-shop", "name": "flagd-config"}]}],
+      "causal": [{"id": "checkout-payment", "description": "Checkout or payment workload on the injected request path", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "checkout"}, {"kind": "Deployment", "namespace": "astronomy-shop", "name": "payment"}]}],
+      "known_decoys": [{"id": "product-catalog-startup", "description": "Recurring product-catalog startup crashloop", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "product-catalog"}]}]
+    },
+    {
+      "id": 15,
+      "name": "env_variable_shadowing_astronomy_shop",
+      "injector": {"file": "env_variable_shadowing.py", "sha256": "17fb74e84a2d5756537a6203ba1c9d39c8ed081fdecb4d643876cd30b40f6da7"},
+      "exact": [{"id": "frontend-proxy", "description": "Deployment with the duplicate FRONTEND_HOST declaration", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "frontend-proxy"}]}],
+      "known_decoys": [{"id": "product-catalog-startup", "description": "Recurring product-catalog startup crashloop", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "product-catalog"}]}]
+    },
+    {
+      "id": 16,
+      "name": "wrong_service_selector_astronomy_shop",
+      "injector": {"file": "wrong_service_selector.py", "sha256": "40ced61a0fd7890d0e5a533839f56af2d6cf347829ddcf5bb44d88f876bb4338"},
+      "exact": [{"id": "frontend", "description": "Service with the injected wrong selector", "any_of": [{"kind": "Service", "namespace": "astronomy-shop", "name": "frontend"}]}],
+      "known_decoys": [{"id": "product-catalog-startup", "description": "Recurring product-catalog startup crashloop", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "product-catalog"}]}]
+    },
+    {
+      "id": 17,
+      "name": "sidecar_port_conflict_astronomy_shop",
+      "injector": {"file": "sidecar_port_conflict.py", "sha256": "c303c09eb25d48e23041ba2801d0bf2eb818a72e9c8ef354a12555170efb6654"},
+      "exact": [{"id": "frontend", "description": "Deployment with an injected sidecar port collision", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "frontend"}]}],
+      "known_decoys": [{"id": "product-catalog-startup", "description": "Recurring product-catalog startup crashloop", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "product-catalog"}]}]
+    },
+    {
+      "id": 18,
+      "name": "secret_rotation_stale_env_credentials_astronomy_shop",
+      "injector": {"file": "secret_rotation_stale_env_credentials.py", "sha256": "d7d72440f85f70d9c26d55b78aebd5f2fcd5a0f3a30a9385a1789fe25551e770"},
+      "exact": [{"id": "product-catalog-db-conn", "description": "Rotated Secret whose env value is stale in the running Pod", "any_of": [{"kind": "Secret", "namespace": "astronomy-shop", "name": "product-catalog-db-conn"}]}],
+      "causal": [{"id": "product-catalog", "description": "Deployment consuming the rotated Secret", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "product-catalog"}]}]
+    },
+    {
+      "id": 20,
+      "name": "astronomy_shop_ad_service_failure",
+      "injector": {"file": "ad_service_failure.py", "sha256": "faddb742693c809a88fb6fbfa72825c6a98285c1102c0bd6621249986e3e3d1a"},
+      "exact": [{"id": "flagd-config", "description": "Feature-flag ConfigMap carrying adServiceFailure", "any_of": [{"kind": "ConfigMap", "namespace": "astronomy-shop", "name": "flagd-config"}]}],
+      "causal": [{"id": "ad", "description": "Ad workload affected by the feature flag", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "ad"}]}],
+      "known_decoys": [{"id": "product-catalog-startup", "description": "Recurring product-catalog startup crashloop", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "product-catalog"}]}]
+    },
+    {
+      "id": 21,
+      "name": "service_wrong_pod_selection_hotel_reservation",
+      "injector": {"file": "service_wrong_pod_selection_hotel_reservation.py", "sha256": "6a9723a0304081cff56348c8cd9c744b498544f5769c3f7501549945d8fd00f2"},
+      "exact": [{"id": "frontend", "description": "Frontend Service deliberately selecting search Pods", "any_of": [{"kind": "Service", "namespace": "hotel-reservation", "name": "frontend"}]}],
+      "causal": [{"id": "search", "description": "Wrongly selected backend Deployment", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "search"}]}]
+    },
+    {
+      "id": 22,
+      "name": "finalizer_deadlock_controller_hotel_reservation",
+      "injector": {"file": "finalizer_deadlock_controller.py", "sha256": "348f83035532b21fe7bdd9d10bd43a15cac89130671fcee637a96d5af6c7706f"},
+      "exact": [
+        {"id": "cleanup-token", "description": "ConfigMap stuck terminating on the controller finalizer", "any_of": [{"kind": "ConfigMap", "namespace": "hotel-reservation", "name": "reservation-cleanup-token"}]},
+        {"id": "cleanup-role", "description": "ClusterRole missing the permission needed to clear the finalizer", "any_of": [{"kind": "ClusterRole", "name": "configmap-cleanup-controller"}]}
+      ],
+      "causal": [{"id": "cleanup-controller", "description": "Controller reporting Forbidden while clearing the finalizer", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "cleanup-controller"}]}]
+    },
+    {
+      "id": 23,
+      "name": "cronjob_sidecar_blocks_completion_hotel_reservation",
+      "injector": {"file": "cronjob_sidecar_blocks_completion.py", "sha256": "30cba396585fd2cfbc20da4a0f78497ee9e27810abc3420b03632df17acf62af"},
+      "exact": [{"id": "audit-log-archiver", "description": "CronJob using a legacy sidecar that never exits", "any_of": [{"kind": "CronJob", "namespace": "hotel-reservation", "name": "audit-log-archiver"}]}],
+      "causal": [{"id": "archiver-jobs", "description": "Accumulating non-completing Jobs", "any_of": [{"kind": "Job", "namespace": "hotel-reservation", "name_prefix": "audit-log-archiver-"}]}]
+    },
+    {
+      "id": 24,
+      "name": "admission_webhook_outage_hotel_reservation",
+      "injector": {"file": "admission_webhook_outage.py", "sha256": "948362209b465313c8e3798bb602962ff471ac342657ad66c9d3f1877595ccec"},
+      "exact": [{"id": "pod-policy", "description": "Fail-closed validating webhook whose missing backend rejects Pod admission", "any_of": [{"kind": "ValidatingWebhookConfiguration", "name": "pod-policy.validation.k8s.io"}]}],
+      "causal": [{"id": "recommendation-victim", "description": "Healthy Deployment deprived of replacement Pods by the webhook", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "recommendation"}]}]
+    },
+    {
+      "id": 25,
+      "name": "missing_service_hotel_reservation",
+      "injector": {"file": "missing_service.py", "sha256": "adf9a93aee8e016ca70d3aeb6270c94f5cc3bcf41aa36f00d538f6d6d9c8405f"},
+      "exact": [{"id": "mongodb-rate", "description": "Deleted mongodb-rate Service", "any_of": [{"kind": "Service", "namespace": "hotel-reservation", "name": "mongodb-rate"}]}],
+      "causal": [{"id": "rate", "description": "Downstream rate workload failing DNS/connection attempts", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "rate"}]}]
+    },
+    {
+      "id": 26,
+      "name": "liveness_probe_too_aggressive_hotel_reservation",
+      "injector": {"file": "liveness_probe_too_aggressive.py", "sha256": "76e6bbe7c384ff3dd161dde3df5fba4e9bbfca6aa61dc268ec6d65ec4117b641"},
+      "exact": [{"id": "aux-service", "description": "Deployment with an overly aggressive liveness probe", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "aux-service"}]}]
+    },
+    {
+      "id": 27,
+      "name": "valkey_auth_disruption",
+      "injector": {"file": "valkey_auth_disruption.py", "sha256": "31b54f7cbff7c54f970ad67be265136ed242beb1e75ddb8b2f832ff4f68a14f5"},
+      "exact": [{"id": "valkey-cart", "description": "Valkey service whose runtime authentication configuration is broken", "any_of": [{"kind": "Service", "namespace": "astronomy-shop", "name": "valkey-cart"}]}],
+      "causal": [{"id": "valkey-cart-workload", "description": "Workload behind the affected Service", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "valkey-cart"}, {"kind": "StatefulSet", "namespace": "astronomy-shop", "name": "valkey-cart"}]}],
+      "known_decoys": [{"id": "product-catalog-startup", "description": "Recurring product-catalog startup crashloop", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "product-catalog"}]}]
+    },
+    {
+      "id": 28,
+      "name": "kafka_poison_pill_hol_block",
+      "injector": {"file": "kafka_poison_pill_hol_block.py", "sha256": "c9adfc3655d662153723a786335ab096d4866e9a686e568e7b883b0381e22422"},
+      "exact": [{"id": "orders-fulfillment", "description": "Kafka topic containing the poison-pill record", "any_of": [{"kind": "KafkaTopic", "namespace": "astronomy-shop", "name": "orders-fulfillment"}]}],
+      "causal": [{"id": "orders-validator", "description": "Ready consumer workload blocked at the poison offset", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "orders-validator"}]}],
+      "known_decoys": [{"id": "product-catalog-startup", "description": "Recurring product-catalog startup crashloop", "any_of": [{"kind": "Deployment", "namespace": "astronomy-shop", "name": "product-catalog"}]}]
+    },
+    {
+      "id": 29,
+      "name": "faulty_image_correlated",
+      "injector": {"file": "faulty_image_correlated.py", "sha256": "2e581f9c0ea37d50c482a90bb92ed26bdfd7312a8a3de712a57ed715664bc239"},
+      "exact": [
+        {"id": "frontend", "description": "Deployment pinned to the correlated faulty image", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "frontend"}]},
+        {"id": "geo", "description": "Deployment pinned to the correlated faulty image", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "geo"}]},
+        {"id": "profile", "description": "Deployment pinned to the correlated faulty image", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "profile"}]},
+        {"id": "rate", "description": "Deployment pinned to the correlated faulty image", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "rate"}]},
+        {"id": "recommendation", "description": "Deployment pinned to the correlated faulty image", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "recommendation"}]},
+        {"id": "reservation", "description": "Deployment pinned to the correlated faulty image", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "reservation"}]},
+        {"id": "user", "description": "Deployment pinned to the correlated faulty image", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "user"}]},
+        {"id": "search", "description": "Deployment pinned to the correlated faulty image", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "search"}]}
+      ]
+    },
+    {
+      "id": 30,
+      "name": "wrong_bin_usage",
+      "injector": {"file": "wrong_bin_usage.py", "sha256": "988652617340aaf1a369ec2a59c99f2805162f61fa8e8eb7e80a3966262e73a3"},
+      "exact": [{"id": "profile", "description": "Deployment whose entrypoint runs the wrong binary", "any_of": [{"kind": "Deployment", "namespace": "hotel-reservation", "name": "profile"}]}]
+    }
+  ],
+  "excluded": [
+    {
+      "id": 19,
+      "name": "internal_traffic_policy_local_astronomy_shop",
+      "reason": "structurally incomplete transcript with no tool calls"
+    }
+  ]
+}

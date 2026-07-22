@@ -1,0 +1,2967 @@
+{
+  "schema_version": 1,
+  "source": "batch11-clean-slate-20260720-173948",
+  "run": {
+    "status_file": {
+      "file": "STATUS.txt",
+      "sha256": "4db03f770761b988ecc9006138c7902ed9888ef39e6512d7800ef310871c77c3"
+    },
+    "sregym_revision": "9b412c4",
+    "applications_revision": "18620ed",
+    "radar_revision": "699d9074"
+  },
+  "wire_fields": [
+    "action",
+    "affected",
+    "category",
+    "category_group",
+    "cause",
+    "change_context",
+    "correlated_changes",
+    "count",
+    "diagnostic_context",
+    "first_seen",
+    "group",
+    "grouping_scope",
+    "id",
+    "issue_timing",
+    "issue_timing_basis",
+    "kind",
+    "last_seen",
+    "last_terminated_reason",
+    "members",
+    "message",
+    "name",
+    "namespace",
+    "reason",
+    "restart_count",
+    "severity",
+    "source"
+  ],
+  "scenarios": [
+    {
+      "id": 1,
+      "name": "namespace_memory_limit",
+      "provenance": {
+        "file": "1-namespace_memory_limit-claudecode_radar.log",
+        "sha256": "522fea803dc3cfa4110f6f882b081131970275c19f6ee59c3551ee6e1cb3c541"
+      },
+      "stats": {
+        "lines": 1309,
+        "json_lines": 150,
+        "malformed_json_lines": 16,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T14:20:08.758Z",
+          "line": 629,
+          "tool_call_id": "toolu_01S78qDCmAgK8awkWY4DiCGs",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "scheduling",
+              "category": "quota_exceeded",
+              "category_group": "scheduling",
+              "id": "baf1a500e3b66216",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "search",
+              "reason": "QuotaExceeded",
+              "first_seen": "2026-07-21T17:19:53.26766+03:00",
+              "last_seen": "2026-07-21T17:20:08.26766+03:00",
+              "members": [
+                {
+                  "group": "apps",
+                  "kind": "ReplicaSet",
+                  "namespace": "hotel-reservation",
+                  "name": "search-5c64c8f5bc"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "5ea7e7679d0ca550",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "geo",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T17:18:11.26766+03:00",
+              "last_seen": "2026-07-21T17:20:08.26766+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "geo-84fbc958c7-hbgjr"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "134d96c1089fbcb1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T17:18:08.26766+03:00",
+              "last_seen": "2026-07-21T17:20:08.26766+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "frontend-7fc7ddc9db-kxzs4"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "ff8f3e0e7e22cd8e",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "search",
+              "reason": "Selector matches no pods",
+              "first_seen": "2026-07-21T17:18:50.26766+03:00",
+              "last_seen": "2026-07-21T17:20:08.26766+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "wrong_dns_policy_social_network",
+      "provenance": {
+        "file": "2-wrong_dns_policy_social_network-claudecode_radar.log",
+        "sha256": "4ef027d7d3fcf13530d6918a2623d57b4d3a9a883b3422c65a40bb43617af8dc"
+      },
+      "stats": {
+        "lines": 1326,
+        "json_lines": 145,
+        "malformed_json_lines": 12,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T16:00:54.619Z",
+          "line": 623,
+          "tool_call_id": "toolu_019ZqbBeTwG5gVhFvhJTybGb",
+          "issues": []
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "duplicate_pvc_mounts_social_network",
+      "provenance": {
+        "file": "3-duplicate_pvc_mounts_social_network-claudecode_radar.log",
+        "sha256": "36f01d2e35394ffe1a6eea2c61e7c1c8d564b95e1a4b9c196d0af78b598fd2a9"
+      },
+      "stats": {
+        "lines": 1199,
+        "json_lines": 124,
+        "malformed_json_lines": 14,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T18:45:34.530Z",
+          "line": 627,
+          "tool_call_id": "toolu_014eL8VkU49G9pDBCpBFcW6W",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "workload_degraded",
+              "category_group": "runtime",
+              "id": "5f03887ae04ada1b",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "social-network",
+              "name": "jaeger",
+              "reason": "1/2 available",
+              "first_seen": "2026-07-20T21:45:09.625792+03:00",
+              "last_seen": "2026-07-20T21:45:33.625792+03:00",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "condition"
+            },
+            {
+              "severity": "warning",
+              "source": "scheduling",
+              "category": "unschedulable",
+              "category_group": "scheduling",
+              "id": "c5f691c9a5757542",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "social-network",
+              "name": "jaeger",
+              "reason": "Unschedulable",
+              "first_seen": "2026-07-20T21:45:09.625792+03:00",
+              "last_seen": "2026-07-20T21:45:33.625792+03:00",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "social-network",
+                  "name": "jaeger-9fd7cdb7c-29bf6"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "volume_access_mode_conflict",
+              "category_group": "storage",
+              "id": "415cffefb3f91310",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "social-network",
+              "name": "jaeger",
+              "reason": "ReadWriteOnce volume shared across replicas",
+              "first_seen": "2026-07-20T21:45:09.625792+03:00",
+              "last_seen": "2026-07-20T21:45:33.625792+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "resource_request_too_large",
+      "provenance": {
+        "file": "4-resource_request_too_large-claudecode_radar.log",
+        "sha256": "8172aa05c9634271bbae0d09de5d700ef3cf0640f80eb43381a4a638274b0b32"
+      },
+      "stats": {
+        "lines": 1228,
+        "json_lines": 154,
+        "malformed_json_lines": 12,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T19:07:30.477Z",
+          "line": 627,
+          "tool_call_id": "toolu_01XR85HwkPPAPGQ9GA7vG6Jr",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "workload_degraded",
+              "category_group": "runtime",
+              "id": "04bbd049843a5d27",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "mongodb-rate",
+              "reason": "0/1 available",
+              "first_seen": "2026-07-20T22:07:03.172172+03:00",
+              "last_seen": "2026-07-20T22:07:30.172172+03:00",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "condition"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "94f33d36fc3ed911",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "mongodb-rate",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-20T22:06:17.172172+03:00",
+              "last_seen": "2026-07-20T22:07:30.172172+03:00"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "134d96c1089fbcb1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-20T22:06:07.172172+03:00",
+              "last_seen": "2026-07-20T22:07:30.172172+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "frontend-7fc7ddc9db-x2wp8"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "scheduling",
+              "category": "unschedulable",
+              "category_group": "scheduling",
+              "id": "1a8c6df46cc88211",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "mongodb-rate",
+              "reason": "Unschedulable",
+              "first_seen": "2026-07-20T22:07:03.172172+03:00",
+              "last_seen": "2026-07-20T22:07:30.172172+03:00",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "mongodb-rate-6855dc58c6-m2j6g"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "rbac_misconfiguration",
+      "provenance": {
+        "file": "5-rbac_misconfiguration-claudecode_radar.log",
+        "sha256": "0d119c15c8e0ef3a92c50e41f510f58a6d345e30f456995fdea3d536d6dd38d2"
+      },
+      "stats": {
+        "lines": 1346,
+        "json_lines": 147,
+        "malformed_json_lines": 15,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T19:34:54.832Z",
+          "line": 635,
+          "tool_call_id": "toolu_01FjVPsff6JcArghMN7Zjzop",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "674388976c1781b5",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-20T22:34:31.04801+03:00",
+              "last_seen": "2026-07-20T22:34:54.04801+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "owner_condition",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "frontend-f8d647fc5-m4d9g"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-20T22:32:39.04801+03:00",
+              "last_seen": "2026-07-20T22:34:54.04801+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-tt54k"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "fd14e8d241333272",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "astronomy-shop",
+              "name": "frontend",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-20T22:32:37.04801+03:00",
+              "last_seen": "2026-07-20T22:34:54.04801+03:00"
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-20T22:32:37.04801+03:00",
+              "last_seen": "2026-07-20T22:34:54.04801+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "auth_miss_mongodb",
+      "provenance": {
+        "file": "6-auth_miss_mongodb-claudecode_radar.log",
+        "sha256": "dd70eebe828356fc6076ed6e1d70683da8633ece1db4b1f1589ad8eeb9b66898"
+      },
+      "stats": {
+        "lines": 1177,
+        "json_lines": 120,
+        "malformed_json_lines": 14,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T20:01:32.032Z",
+          "line": 623,
+          "tool_call_id": "toolu_01BQn8sUwv8jbWNwbZHUac39",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "bfcbc1dcba3b16f3",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "social-network",
+              "name": "url-shorten-mongodb",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-20T23:01:07.016819+03:00",
+              "last_seen": "2026-07-20T23:01:31.016819+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "social-network",
+                  "name": "url-shorten-mongodb-6b486f55b8-c6fhg"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "769efddfb36b70d6",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "social-network",
+              "name": "url-shorten-mongodb",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-20T22:59:58.016819+03:00",
+              "last_seen": "2026-07-20T23:01:31.016819+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "readiness_probe_misconfiguration_social_network",
+      "provenance": {
+        "file": "7-readiness_probe_misconfiguration_social_network-claudecode_radar.log",
+        "sha256": "69ea8456174970620ca4437e60cccbb704dfbde8417941fc1c248c01e9c8eb26"
+      },
+      "stats": {
+        "lines": 1177,
+        "json_lines": 114,
+        "malformed_json_lines": 13,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T20:25:39.419Z",
+          "line": 627,
+          "tool_call_id": "toolu_013eHeFEEAttbVKS2qSEXibs",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "workload_degraded",
+              "category_group": "runtime",
+              "id": "167cd063faab0ba7",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "social-network",
+              "name": "user-service",
+              "reason": "0/1 available",
+              "first_seen": "2026-07-20T23:24:58.620845+03:00",
+              "last_seen": "2026-07-20T23:25:38.620845+03:00",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "condition"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "5dd23fa5de5859c6",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "social-network",
+              "name": "user-service",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-20T23:24:06.620845+03:00",
+              "last_seen": "2026-07-20T23:25:38.620845+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "name": "rolling_update_misconfigured_social_network",
+      "provenance": {
+        "file": "8-rolling_update_misconfigured_social_network-claudecode_radar.log",
+        "sha256": "69ba7fac03373e802fce2903a10d40aad4bb48a18dc68a66706138156751de85"
+      },
+      "stats": {
+        "lines": 1179,
+        "json_lines": 133,
+        "malformed_json_lines": 19,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T20:48:24.609Z",
+          "line": 624,
+          "tool_call_id": "toolu_01Hbb2SLVf4kELkVEUsTQX4J",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "workload_degraded",
+              "category_group": "runtime",
+              "id": "7b1fedb707360426",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "social-network",
+              "name": "custom-service",
+              "reason": "0/3 available",
+              "first_seen": "2026-07-20T23:47:58.755012+03:00",
+              "last_seen": "2026-07-20T23:48:23.755012+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "name": "wrong_service_selector_social_network",
+      "provenance": {
+        "file": "9-wrong_service_selector_social_network-claudecode_radar.log",
+        "sha256": "75ab4e3ca516c5cd5f8df30fc175e6058f5cc5a328649fe39d40c2f0018c17e6"
+      },
+      "stats": {
+        "lines": 1031,
+        "json_lines": 71,
+        "malformed_json_lines": 10,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T21:11:03.653Z",
+          "line": 620,
+          "tool_call_id": "toolu_019qbRtQCmEA4oWL846n4vFu",
+          "issues": [
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "128f720cd86943d1",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "social-network",
+              "name": "user-service",
+              "reason": "Selector matches no pods",
+              "first_seen": "2026-07-21T00:10:07.626749+03:00",
+              "last_seen": "2026-07-21T00:11:02.626749+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "name": "stale_coredns_config_social_network",
+      "provenance": {
+        "file": "10-stale_coredns_config_social_network-claudecode_radar.log",
+        "sha256": "0c1c456bc1fb67e74bec2f787f6dd18384892a2eab7f4e9874602ce096f4af1c"
+      },
+      "stats": {
+        "lines": 1198,
+        "json_lines": 116,
+        "malformed_json_lines": 16,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T21:32:02.594Z",
+          "line": 619,
+          "tool_call_id": "toolu_011Wq5mCePwP5N1Mivqc5qxf",
+          "issues": []
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "name": "mutating_webhook_resource_limits_social_network",
+      "provenance": {
+        "file": "11-mutating_webhook_resource_limits_social_network-claudecode_radar.log",
+        "sha256": "a2feb9142829beaf4c3825bc4bc59936e03472d8d84cd2f0d92ab20059b33fba"
+      },
+      "stats": {
+        "lines": 1218,
+        "json_lines": 214,
+        "malformed_json_lines": 13,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T22:07:33.457Z",
+          "line": 640,
+          "tool_call_id": "toolu_01Q3prPteYE9PKapEwcPkbos",
+          "issues": []
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-20T22:11:21.501Z",
+          "line": 883,
+          "tool_call_id": "toolu_017YHmwnJiDTNRkWyHzfNxYn",
+          "issues": []
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "name": "missing_env_variable_astronomy_shop",
+      "provenance": {
+        "file": "12-missing_env_variable_astronomy_shop-claudecode_radar.log",
+        "sha256": "f5ef7c6677040cd31b3ad918172eee532d573e6ecd00d9a713ba92161bc995f2"
+      },
+      "stats": {
+        "lines": 1335,
+        "json_lines": 256,
+        "malformed_json_lines": 9,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T23:02:22.831Z",
+          "line": 635,
+          "tool_call_id": "toolu_01EGtwy96tT95j3f2o3N1bZh",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T02:00:58.962718+03:00",
+              "last_seen": "2026-07-21T02:02:21.962718+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-ngnb9"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T02:00:55.962718+03:00",
+              "last_seen": "2026-07-21T02:02:21.962718+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "name": "astronomy_shop_cart_service_failure",
+      "provenance": {
+        "file": "13-astronomy_shop_cart_service_failure-claudecode_radar.log",
+        "sha256": "260476cba0651426d47ad7da69a85f257463ab006bdf4ab3eb127f5e72d2c67e"
+      },
+      "stats": {
+        "lines": 1322,
+        "json_lines": 198,
+        "malformed_json_lines": 19,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T23:30:06.643Z",
+          "line": 636,
+          "tool_call_id": "toolu_017uNYp2QazzFFZZWsMyMxj1",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T02:28:47.699248+03:00",
+              "last_seen": "2026-07-21T02:30:05.699248+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-2rjh9"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T02:28:47.699248+03:00",
+              "last_seen": "2026-07-21T02:30:05.699248+03:00"
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-20T23:30:46.827Z",
+          "line": 682,
+          "tool_call_id": "toolu_018bT7FrSRwg56en9cqmXsoH",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T02:28:47.992165+03:00",
+              "last_seen": "2026-07-21T02:30:45.992165+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-2rjh9"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T02:28:47.992165+03:00",
+              "last_seen": "2026-07-21T02:30:45.992165+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "name": "astronomy_shop_payment_service_unreachable",
+      "provenance": {
+        "file": "14-astronomy_shop_payment_service_unreachable-claudecode_radar.log",
+        "sha256": "c90c6e2d78af8d208b4894a9d2e7ccb98f8b4295b5fc313eb500ae9ddfcc1884"
+      },
+      "stats": {
+        "lines": 1203,
+        "json_lines": 219,
+        "malformed_json_lines": 13,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-20T23:57:41.777Z",
+          "line": 639,
+          "tool_call_id": "toolu_01WVRFzUoh3fVivWPKxWHrDQ",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T02:56:12.947226+03:00",
+              "last_seen": "2026-07-21T02:57:40.947226+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-ltfk5"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T02:56:12.947226+03:00",
+              "last_seen": "2026-07-21T02:57:40.947226+03:00"
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-20T23:59:21.528Z",
+          "line": 736,
+          "tool_call_id": "toolu_012xJCFYhYvapqUvywm4najc",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T02:56:12.698541+03:00",
+              "last_seen": "2026-07-21T02:59:20.698541+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-ltfk5"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T02:56:12.698541+03:00",
+              "last_seen": "2026-07-21T02:59:20.698541+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "name": "env_variable_shadowing_astronomy_shop",
+      "provenance": {
+        "file": "15-env_variable_shadowing_astronomy_shop-claudecode_radar.log",
+        "sha256": "3deb116e8bfdd3675dd3b5d26fcb49213b12d5effa33a8378cd427ad8760fe0d"
+      },
+      "stats": {
+        "lines": 1324,
+        "json_lines": 221,
+        "malformed_json_lines": 15,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T17:09:14.147Z",
+          "line": 636,
+          "tool_call_id": "toolu_01TW9twqEfBqRneRDjnT2bFD",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T20:07:50.274694+03:00",
+              "last_seen": "2026-07-21T20:09:13.274694+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-jxdgx"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "invalid_configuration",
+              "category_group": "configuration",
+              "id": "5a9de64cda0dae0c",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "frontend-proxy",
+              "reason": "DuplicateEnvVar",
+              "first_seen": "2026-07-21T20:07:49.274694+03:00",
+              "last_seen": "2026-07-21T20:09:13.274694+03:00"
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T20:07:49.274694+03:00",
+              "last_seen": "2026-07-21T20:09:13.274694+03:00"
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-21T17:11:37.151Z",
+          "line": 726,
+          "tool_call_id": "toolu_01NmFhK6Nr8cMaW8yxV2BXZd",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T20:07:50.258394+03:00",
+              "last_seen": "2026-07-21T20:11:36.258394+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-jxdgx"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "invalid_configuration",
+              "category_group": "configuration",
+              "id": "5a9de64cda0dae0c",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "frontend-proxy",
+              "reason": "DuplicateEnvVar",
+              "first_seen": "2026-07-21T20:07:49.258394+03:00",
+              "last_seen": "2026-07-21T20:11:36.258394+03:00"
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T20:07:49.258394+03:00",
+              "last_seen": "2026-07-21T20:11:36.258394+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "name": "wrong_service_selector_astronomy_shop",
+      "provenance": {
+        "file": "16-wrong_service_selector_astronomy_shop-claudecode_radar.log",
+        "sha256": "ad0ff6d9b7e86a9d96abcbd75ccc2e263ec0afa750506ce627dd054c99cf6e6d"
+      },
+      "stats": {
+        "lines": 1162,
+        "json_lines": 85,
+        "malformed_json_lines": 16,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T01:25:17.331Z",
+          "line": 637,
+          "tool_call_id": "toolu_01FN2CYgmLWNK5G2NMaCTszw",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T04:23:54.499569+03:00",
+              "last_seen": "2026-07-21T04:25:16.499569+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-xnfms"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T04:23:52.499569+03:00",
+              "last_seen": "2026-07-21T04:25:16.499569+03:00"
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "137636dc17d0053e",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "astronomy-shop",
+              "name": "frontend",
+              "reason": "Selector matches no pods",
+              "first_seen": "2026-07-21T04:23:51.499569+03:00",
+              "last_seen": "2026-07-21T04:25:16.499569+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "name": "sidecar_port_conflict_astronomy_shop",
+      "provenance": {
+        "file": "17-sidecar_port_conflict_astronomy_shop-claudecode_radar.log",
+        "sha256": "537edef11b3ad3572579b99127607f465bffe82380bfe87ef739cdf0693e85fd"
+      },
+      "stats": {
+        "lines": 1258,
+        "json_lines": 115,
+        "malformed_json_lines": 15,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T01:47:58.969Z",
+          "line": 644,
+          "tool_call_id": "toolu_01PiGFtnHHoccz1nZ6yJNxtT",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "674388976c1781b5",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T04:47:19.143726+03:00",
+              "last_seen": "2026-07-21T04:47:58.143726+03:00",
+              "restart_count": 3,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "owner_condition",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "frontend-6cdf77dbd6-q4srw"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T04:46:20.143726+03:00",
+              "last_seen": "2026-07-21T04:47:58.143726+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-fpb74"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "fd14e8d241333272",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "astronomy-shop",
+              "name": "frontend",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T04:46:18.143726+03:00",
+              "last_seen": "2026-07-21T04:47:58.143726+03:00"
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T04:46:19.143726+03:00",
+              "last_seen": "2026-07-21T04:47:58.143726+03:00"
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-21T01:48:25.549Z",
+          "line": 677,
+          "tool_call_id": "toolu_016UmuyAA8t4zsxaRWkUXD2v",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "674388976c1781b5",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T04:47:19.739861+03:00",
+              "last_seen": "2026-07-21T04:48:24.739861+03:00",
+              "restart_count": 4,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "owner_condition",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "frontend-6cdf77dbd6-q4srw"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T04:46:20.739861+03:00",
+              "last_seen": "2026-07-21T04:48:24.739861+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-fpb74"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "fd14e8d241333272",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "astronomy-shop",
+              "name": "frontend",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T04:46:18.739861+03:00",
+              "last_seen": "2026-07-21T04:48:24.739861+03:00"
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T04:46:19.739861+03:00",
+              "last_seen": "2026-07-21T04:48:24.739861+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "name": "secret_rotation_stale_env_credentials_astronomy_shop",
+      "provenance": {
+        "file": "18-secret_rotation_stale_env_credentials_astronomy_shop-claudecode_radar.log",
+        "sha256": "d46d45bac1636564039725e2dc9dfe3376765e314935898c0e068d99cf02199b"
+      },
+      "stats": {
+        "lines": 1269,
+        "json_lines": 231,
+        "malformed_json_lines": 21,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T17:23:58.729Z",
+          "line": 674,
+          "tool_call_id": "toolu_01YGxR4GjzzUmfBej3Pw1jTr",
+          "issues": [
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T20:21:33.114066+03:00",
+              "last_seen": "2026-07-21T20:23:58.114066+03:00"
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-21T17:27:34.072Z",
+          "line": 893,
+          "tool_call_id": "toolu_0199e1PLUU64EwgL9re4222A",
+          "issues": [
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T20:21:33.427314+03:00",
+              "last_seen": "2026-07-21T20:27:33.427314+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "name": "astronomy_shop_ad_service_failure",
+      "provenance": {
+        "file": "20-astronomy_shop_ad_service_failure-claudecode_radar.log",
+        "sha256": "14b17e5f919d82e8596ec1035e566d44465c4927b90833fa8177295bfd2b67fe"
+      },
+      "stats": {
+        "lines": 1373,
+        "json_lines": 232,
+        "malformed_json_lines": 16,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T03:48:11.492Z",
+          "line": 638,
+          "tool_call_id": "toolu_01HqtW1eNxvDSHeVNUyoQkCg",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T06:46:45.664282+03:00",
+              "last_seen": "2026-07-21T06:48:10.664282+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-v885x"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T06:46:45.664282+03:00",
+              "last_seen": "2026-07-21T06:48:10.664282+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "name": "service_wrong_pod_selection_hotel_reservation",
+      "provenance": {
+        "file": "21-service_wrong_pod_selection_hotel_reservation-claudecode_radar.log",
+        "sha256": "7f0b8756698c73bd152425aa5445fdf2789e4468f082eb472c53cc1ca021160b"
+      },
+      "stats": {
+        "lines": 1267,
+        "json_lines": 145,
+        "malformed_json_lines": 15,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T04:20:36.735Z",
+          "line": 629,
+          "tool_call_id": "toolu_01SGVwKfkajLBC8n5caMkAsQ",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "0b1ac402896dceca",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "rate",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T07:19:32.425174+03:00",
+              "last_seen": "2026-07-21T07:20:36.425174+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "rate-7bdc978679-d2ldm"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "5ea7e7679d0ca550",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "geo",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T07:19:23.425174+03:00",
+              "last_seen": "2026-07-21T07:20:36.425174+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "geo-84fbc958c7-d4cl6"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "name": "finalizer_deadlock_controller_hotel_reservation",
+      "provenance": {
+        "file": "22-finalizer_deadlock_controller_hotel_reservation-claudecode_radar.log",
+        "sha256": "c7722cb05a8c33915154cb207a41f8571607ac602e2785f9ff947f80cfc0372d"
+      },
+      "stats": {
+        "lines": 1186,
+        "json_lines": 150,
+        "malformed_json_lines": 16,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T04:58:37.548Z",
+          "line": 633,
+          "tool_call_id": "toolu_01P5GUR7uFEzqZqB3Wf2JEmj",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "134d96c1089fbcb1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T07:57:31.243848+03:00",
+              "last_seen": "2026-07-21T07:58:37.243848+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "frontend-7fc7ddc9db-6z9gp"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-21T05:01:22.274Z",
+          "line": 809,
+          "tool_call_id": "toolu_01M3BMsRuBYEhA2D4sxqEWth",
+          "issues": []
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "name": "cronjob_sidecar_blocks_completion_hotel_reservation",
+      "provenance": {
+        "file": "23-cronjob_sidecar_blocks_completion_hotel_reservation-claudecode_radar.log",
+        "sha256": "910f6006e2f44acab28184a8744145c3afe49f821ea6c06da87921863cf4e824"
+      },
+      "stats": {
+        "lines": 1234,
+        "json_lines": 289,
+        "malformed_json_lines": 12,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T16:24:19.817Z",
+          "line": 634,
+          "tool_call_id": "toolu_01TmT63XYWFmqGZEN8qcUN1j",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "a8adecdb22f2e09b",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "user",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T19:22:08.508497+03:00",
+              "last_seen": "2026-07-21T19:24:19.508497+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "user-66d5d6f874-9g2mr"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "134d96c1089fbcb1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T19:21:51.508497+03:00",
+              "last_seen": "2026-07-21T19:24:19.508497+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "frontend-7fc7ddc9db-bcwmx"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-21T16:26:47.137Z",
+          "line": 768,
+          "tool_call_id": "toolu_01XbaidyRsH5TVaZMZsqtUTr",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "a8adecdb22f2e09b",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "user",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T19:22:08.835934+03:00",
+              "last_seen": "2026-07-21T19:26:46.835934+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "user-66d5d6f874-9g2mr"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "134d96c1089fbcb1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T19:21:51.835934+03:00",
+              "last_seen": "2026-07-21T19:26:46.835934+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "frontend-7fc7ddc9db-bcwmx"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "name": "admission_webhook_outage_hotel_reservation",
+      "provenance": {
+        "file": "24-admission_webhook_outage_hotel_reservation-claudecode_radar.log",
+        "sha256": "fc515fe382d3279377dc0e74814816f22ff03d10a597610dd78a27834b324643"
+      },
+      "stats": {
+        "lines": 1175,
+        "json_lines": 186,
+        "malformed_json_lines": 10,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T16:50:33.389Z",
+          "line": 630,
+          "tool_call_id": "toolu_01RZ5CGeFfFvQtGpgNfz1CvR",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "rollout_stalled",
+              "category_group": "scaling",
+              "id": "efc62322f4b4f63b",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "recommendation",
+              "reason": "ReplicaFailure",
+              "first_seen": "2026-07-21T19:50:16.112516+03:00",
+              "last_seen": "2026-07-21T19:50:33.112516+03:00"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "134d96c1089fbcb1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T19:49:30.112516+03:00",
+              "last_seen": "2026-07-21T19:50:33.112516+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "frontend-7fc7ddc9db-qkk87"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "0e5777043c78b465",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "recommendation",
+              "reason": "Selector matches no pods",
+              "first_seen": "2026-07-21T19:49:42.112516+03:00",
+              "last_seen": "2026-07-21T19:50:33.112516+03:00"
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-21T16:54:15.129Z",
+          "line": 840,
+          "tool_call_id": "toolu_01HMkoHTgYjPkd2eLZk25Pfc",
+          "issues": []
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "name": "missing_service_hotel_reservation",
+      "provenance": {
+        "file": "25-missing_service_hotel_reservation-claudecode_radar.log",
+        "sha256": "f5f27628fc9d02eef2ea7fdbb0c4c9be7096ebafe90e639cd3a4a4540f0cb949"
+      },
+      "stats": {
+        "lines": 1212,
+        "json_lines": 202,
+        "malformed_json_lines": 14,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T11:35:06.812Z",
+          "line": 630,
+          "tool_call_id": "toolu_016oTHVsXJy6SJ5nMs8skvpE",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "0b1ac402896dceca",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "rate",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T14:33:51.436352+03:00",
+              "last_seen": "2026-07-21T14:35:06.436352+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "rate-7bdc978679-x5989"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "5ea7e7679d0ca550",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "geo",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T14:33:49.436352+03:00",
+              "last_seen": "2026-07-21T14:35:06.436352+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "geo-84fbc958c7-btl56"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "35d94b3cc25155c7",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "rate",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T14:32:57.436352+03:00",
+              "last_seen": "2026-07-21T14:35:06.436352+03:00"
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-21T11:35:57.075Z",
+          "line": 683,
+          "tool_call_id": "toolu_01WLJ8rC6X92V5X6acykDNtU",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "0b1ac402896dceca",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "rate",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T14:33:51.423786+03:00",
+              "last_seen": "2026-07-21T14:35:56.423786+03:00",
+              "restart_count": 3,
+              "last_terminated_reason": "Error",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "rate-7bdc978679-x5989"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "5ea7e7679d0ca550",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "geo",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T14:33:49.423786+03:00",
+              "last_seen": "2026-07-21T14:35:56.423786+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "geo-84fbc958c7-btl56"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "35d94b3cc25155c7",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "rate",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T14:32:57.423786+03:00",
+              "last_seen": "2026-07-21T14:35:56.423786+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "name": "liveness_probe_too_aggressive_hotel_reservation",
+      "provenance": {
+        "file": "26-liveness_probe_too_aggressive_hotel_reservation-claudecode_radar.log",
+        "sha256": "4d00175db4155f59d856d3f22d793dd27c1ffe4cebe4b719c0e9c32231baca6a"
+      },
+      "stats": {
+        "lines": 1085,
+        "json_lines": 96,
+        "malformed_json_lines": 11,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T12:01:05.006Z",
+          "line": 640,
+          "tool_call_id": "toolu_019M7VDG2tfZ5Yk4GsZJPtVH",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "liveness_probe_failed",
+              "category_group": "runtime",
+              "id": "b729ecc934cecd50",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "aux-service",
+              "reason": "LivenessProbeFailed",
+              "first_seen": "2026-07-21T15:00:44.701692+03:00",
+              "last_seen": "2026-07-21T15:01:04.701692+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "owner_condition",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "aux-service-9df4c6c8c-mdd4l"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "40bebd7d051990d0",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "recommendation",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T14:59:55.701692+03:00",
+              "last_seen": "2026-07-21T15:01:04.701692+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "recommendation-6879fb56bf-7gzw4"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "5ea7e7679d0ca550",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "geo",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T14:59:43.701692+03:00",
+              "last_seen": "2026-07-21T15:01:04.701692+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "geo-84fbc958c7-lh84g"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "134d96c1089fbcb1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T14:59:42.701692+03:00",
+              "last_seen": "2026-07-21T15:01:04.701692+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "frontend-7fc7ddc9db-s668r"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-21T12:02:40.502Z",
+          "line": 750,
+          "tool_call_id": "toolu_01E9rYTfXeYobT4uzd25YtPi",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "40bebd7d051990d0",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "recommendation",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T14:59:55.201742+03:00",
+              "last_seen": "2026-07-21T15:02:40.201742+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "recommendation-6879fb56bf-7gzw4"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "5ea7e7679d0ca550",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "geo",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T14:59:43.201742+03:00",
+              "last_seen": "2026-07-21T15:02:40.201742+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "geo-84fbc958c7-lh84g"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "134d96c1089fbcb1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T14:59:42.201742+03:00",
+              "last_seen": "2026-07-21T15:02:40.201742+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "frontend-7fc7ddc9db-s668r"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "name": "valkey_auth_disruption",
+      "provenance": {
+        "file": "27-valkey_auth_disruption-claudecode_radar.log",
+        "sha256": "27450e577bd4d5188371420bceeac48b37b25fdae5c562d1d2b6de71e0849d02"
+      },
+      "stats": {
+        "lines": 1407,
+        "json_lines": 294,
+        "malformed_json_lines": 14,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T17:38:16.156Z",
+          "line": 635,
+          "tool_call_id": "toolu_01MZiq4JmebEnPqLZdM9t3ru",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T20:36:48.411229+03:00",
+              "last_seen": "2026-07-21T20:38:15.411229+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-q9tbr"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T20:36:47.411229+03:00",
+              "last_seen": "2026-07-21T20:38:15.411229+03:00"
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-21T17:40:01.510Z",
+          "line": 739,
+          "tool_call_id": "toolu_01BTrZgkTfdHArV5dT5CLCmY",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "workload_degraded",
+              "category_group": "runtime",
+              "id": "9d2b007c72fb87cc",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "cart",
+              "reason": "0/1 available",
+              "first_seen": "2026-07-21T20:39:33.726041+03:00",
+              "last_seen": "2026-07-21T20:40:00.726041+03:00"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "unknown",
+              "category_group": "unknown",
+              "id": "fd876eb3f30a77b6",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "cart",
+              "reason": "Completed",
+              "first_seen": "2026-07-21T20:37:49.726041+03:00",
+              "last_seen": "2026-07-21T20:40:00.726041+03:00",
+              "restart_count": 3,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "cart-74587775fc-fsrmh"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T20:36:48.726041+03:00",
+              "last_seen": "2026-07-21T20:40:00.726041+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-q9tbr"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "22bd35c8e01292c5",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "astronomy-shop",
+              "name": "cart",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T20:36:47.726041+03:00",
+              "last_seen": "2026-07-21T20:40:00.726041+03:00"
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T20:36:47.726041+03:00",
+              "last_seen": "2026-07-21T20:40:00.726041+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "name": "kafka_poison_pill_hol_block",
+      "provenance": {
+        "file": "28-kafka_poison_pill_hol_block-claudecode_radar.log",
+        "sha256": "5cf1195b5b99001dbaae14649fd3d54058a1086808193bfafb8473ebe313a591"
+      },
+      "stats": {
+        "lines": 1300,
+        "json_lines": 202,
+        "malformed_json_lines": 19,
+        "issue_tool_calls": 2
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T13:04:56.911Z",
+          "line": 705,
+          "tool_call_id": "toolu_01VN7JaMZ6EfkRksVHvVChNU",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T16:03:00.918869+03:00",
+              "last_seen": "2026-07-21T16:04:55.918869+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-rzldq"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T16:02:59.918869+03:00",
+              "last_seen": "2026-07-21T16:04:55.918869+03:00"
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "captured_at": "2026-07-21T13:07:03.247Z",
+          "line": 818,
+          "tool_call_id": "toolu_012ojVherYbuWWCLUYUHc2je",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "e462909a4fbb9895",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "product-catalog",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T16:03:00.39225+03:00",
+              "last_seen": "2026-07-21T16:07:02.39225+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "astronomy-shop",
+                  "name": "product-catalog-77497fdc44-rzldq"
+                }
+              ]
+            },
+            {
+              "severity": "warning",
+              "source": "problem",
+              "category": "missing_config_ref",
+              "category_group": "configuration",
+              "id": "8bcf9c9ee6bae0d1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "astronomy-shop",
+              "name": "jaeger",
+              "reason": "Missing referenced Service",
+              "first_seen": "2026-07-21T16:02:59.39225+03:00",
+              "last_seen": "2026-07-21T16:07:02.39225+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "name": "faulty_image_correlated",
+      "provenance": {
+        "file": "29-faulty_image_correlated-claudecode_radar.log",
+        "sha256": "57c36927dc6fd9e6db7f6bbd4c6a03bc993be1cbd7cbd092528a3d89a340d160"
+      },
+      "stats": {
+        "lines": 1157,
+        "json_lines": 87,
+        "malformed_json_lines": 15,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T13:35:08.266Z",
+          "line": 639,
+          "tool_call_id": "toolu_01TCithV96yxGAnhXv4TF8LH",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "container_waiting",
+              "category_group": "startup",
+              "id": "11a71682973d403c",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "search",
+              "reason": "RunContainerError",
+              "first_seen": "2026-07-21T16:34:50.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "StartError",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "search-86857f7959-qq65l"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "container_waiting",
+              "category_group": "startup",
+              "id": "a67092eddeb2f9b9",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "user",
+              "reason": "RunContainerError",
+              "first_seen": "2026-07-21T16:34:50.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "StartError",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "user-5ccf7fc46b-5hpfc"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "59f9c4c0788bee9a",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "reservation",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T16:34:49.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "StartError",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "reservation-5cb8994d46-rhd7b"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "container_waiting",
+              "category_group": "startup",
+              "id": "2aeb7d462a44f1af",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "rate",
+              "reason": "RunContainerError",
+              "first_seen": "2026-07-21T16:34:48.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "StartError",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "rate-d7c78f795-9w8pd"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "container_waiting",
+              "category_group": "startup",
+              "id": "4a3d4582de216529",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "recommendation",
+              "reason": "RunContainerError",
+              "first_seen": "2026-07-21T16:34:48.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "StartError",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "recommendation-77b8878f6f-65hb2"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "container_waiting",
+              "category_group": "startup",
+              "id": "2750da5cc1e741d2",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "profile",
+              "reason": "RunContainerError",
+              "first_seen": "2026-07-21T16:34:47.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "StartError",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "profile-56fd487b79-9mwb8"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "container_waiting",
+              "category_group": "startup",
+              "id": "0d85c8d24e217bea",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "frontend",
+              "reason": "RunContainerError",
+              "first_seen": "2026-07-21T16:34:46.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "StartError",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "frontend-5bccf574b6-lrkdn"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "container_waiting",
+              "category_group": "startup",
+              "id": "e8951f633d53632b",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "geo",
+              "reason": "RunContainerError",
+              "first_seen": "2026-07-21T16:34:46.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "StartError",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "geo-767d8894bf-lcqhs"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "1c15fe8e518c2ecc",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "user",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T16:34:21.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "ea259213d3c0626d",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "search",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T16:34:18.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "37e4192ff6b5ad61",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "reservation",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T16:34:17.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "d8632a757e642a87",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "recommendation",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T16:34:14.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "35d94b3cc25155c7",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "rate",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T16:34:11.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "31e2c80630ec998a",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "profile",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T16:34:08.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "72c18dd8ce439ba8",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "geo",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T16:34:01.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00"
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "service_no_endpoints",
+              "category_group": "networking",
+              "id": "cded4fd4628ad80d",
+              "grouping_scope": "service",
+              "kind": "Service",
+              "namespace": "hotel-reservation",
+              "name": "frontend",
+              "reason": "0/1 selected pods ready",
+              "first_seen": "2026-07-21T16:34:00.931516+03:00",
+              "last_seen": "2026-07-21T16:35:07.931516+03:00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "name": "wrong_bin_usage",
+      "provenance": {
+        "file": "30-wrong_bin_usage-claudecode_radar.log",
+        "sha256": "3797ed4f8fda198ed6f63384f82f7e6daa157914ba591efd2c61797192b08f35"
+      },
+      "stats": {
+        "lines": 1325,
+        "json_lines": 150,
+        "malformed_json_lines": 23,
+        "issue_tool_calls": 1
+      },
+      "snapshots": [
+        {
+          "sequence": 1,
+          "captured_at": "2026-07-21T14:03:45.862Z",
+          "line": 631,
+          "tool_call_id": "toolu_01UjsFJ2GdxEkxebuW9J8dbV",
+          "issues": [
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "59f9c4c0788bee9a",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "reservation",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T17:02:05.476447+03:00",
+              "last_seen": "2026-07-21T17:03:45.476447+03:00",
+              "restart_count": 1,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "reservation-78c9f7976b-s6xbc"
+                }
+              ]
+            },
+            {
+              "severity": "critical",
+              "source": "problem",
+              "category": "crashloop",
+              "category_group": "runtime",
+              "id": "134d96c1089fbcb1",
+              "grouping_scope": "workload",
+              "kind": "Deployment",
+              "group": "apps",
+              "namespace": "hotel-reservation",
+              "name": "frontend",
+              "reason": "CrashLoopBackOff",
+              "first_seen": "2026-07-21T17:01:32.476447+03:00",
+              "last_seen": "2026-07-21T17:03:45.476447+03:00",
+              "restart_count": 2,
+              "last_terminated_reason": "Error",
+              "issue_timing": "started_at_resource_creation",
+              "issue_timing_basis": "pod_creation",
+              "members": [
+                {
+                  "kind": "Pod",
+                  "namespace": "hotel-reservation",
+                  "name": "frontend-7fc7ddc9db-46mrf"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

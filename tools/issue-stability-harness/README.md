@@ -5,28 +5,34 @@ This tool is the non-production Phase H of the stability/soft-sort proposal. It 
 and evaluates an explicitly annotated candidate plus a one-notch soft demotion against
 injector-derived ground truth.
 
-The investigation found that Phase A cannot be implemented truthfully from Radar's current Issue
-model, so this branch intentionally does not add a production classifier or change production
-ordering:
+The investigation found that Phase A cannot be implemented truthfully and that richer temporal
+capture would not resolve the core ambiguity, so the stability annotation and recovery-aware
+soft-sort are retired. This branch intentionally does not add a production classifier or change
+production ordering:
 
 - `last_seen` is refreshed whenever Radar composes the active issue list; it is not the last restart.
 - `restart_count` is a cumulative snapshot, not a delta over the issue window.
 - recovered Pods disappear from the active issue list.
+- Radar already drops a crashloop after the current container run remains continuous for five
+  minutes, so settled startup races are not the rows this proposal needs to demote.
 - the captured issues have no current readiness, readiness-probe presence, current-run start, last
   restart time, or observed restart delta.
 - the real scenario 6 auth fault and the recurring product-catalog decoy have the same available
   signature: `crashloop`, `CrashLoopBackOff`, restart count 2, at-creation timing, `pod_creation`
   basis.
 
-No restart bound, grace period, or acceptance-rate threshold is inferred from insufficient data.
-The harness instead fails closed and states exactly what a future live capture must prove.
+Fixed-cadence evidence could distinguish a settled recovery from an ongoing flapper, but Radar already
+handles the settled case. An ongoing benign flapper and a malignant intermittent fault remain the
+same observable class at richer resolution; scenario 6 is the decisive concrete counterexample. No
+restart bound, grace period, or acceptance-rate threshold is inferred. The harness remains as the
+fail-closed artifact that prevented an unsafe classifier from being made green.
 
 ## Inputs and semantics
 
 The extractor accepts only tool results paired with a direct `issues` MCP call. It does not mix in
 `get_dashboard.problems`: that is a detector-level view with a different schema and ordering contract,
-and treating it as an Issue list would corrupt the captured ranking baseline. Dashboard responses can
-be useful as auxiliary observations in a future live trace, but they are not replay rows.
+and treating it as an Issue list would corrupt the captured ranking baseline. Dashboard responses are
+not replay rows.
 
 Ground-truth targets have three distinct relations:
 
@@ -64,7 +70,8 @@ diff -u tools/issue-stability-harness/testdata/corpus.json /tmp/corpus.json
 ```
 
 The reduced fixture retains identities, original order, restart/timing fields, members, capture time,
-and any future stability evidence. It omits messages, manifests, logs, and unrelated tool results.
+and any candidate stability evidence present in the source. It omits messages, manifests, logs, and
+unrelated tool results.
 Extraction and evaluation reject missing or duplicate scenario IDs, snapshots, tool-call IDs,
 provenance, and vacuous matchers.
 
@@ -74,7 +81,7 @@ provenance, and vacuous matchers.
 # Diagnostic report. The go/no-go threshold is intentionally unset, so the gate stays red.
 go run ./tools/issue-stability-harness evaluate
 
-# A future human-approved go/no-go run must state its evidence-backed minimum explicitly.
+# A counterfactual candidate run must state its evidence-backed minimum explicitly.
 go run ./tools/issue-stability-harness evaluate \
   -min-decoy-rate <evidence-backed-rate> \
   -require-green
@@ -87,7 +94,7 @@ classified `self_healed`, and eligible occurrences that physically move. A class
 the end has no movement opportunity and is not counted in the last denominator. This prevents one
 successful snapshot from making a scenario with many untouched calls look fully effective.
 
-A future candidate fixture must include, for every restart-derived row:
+The counterfactual evaluator accepts a candidate fixture only when every restart-derived row includes:
 
 - a valid `stability` and nonempty `stability_basis`;
 - `current_ready` and `has_readiness_probe`;
@@ -128,9 +135,9 @@ restart-derived rows. The result is correctly red:
 - movement-only safety metrics are zero because no row moved: 0 protected-fault demotions, 0 pairwise
   regressions, 0 active inversions, 0 top-10 losses, and 0 membership changes.
 
-Therefore this corpus falsifies a wire-only classifier but cannot validate a production sort.
-Production Phases A and B remain blocked until a candidate is evaluated on fixed-cadence live traces
-that carry the missing per-container evidence and include permanent at-creation failures, probe-less
-between-crash Ready states, low-frequency flappers, trusted-probe recovery, OOM/liveness failures,
-rollout surge, mixed groups, Radar restarts, identity changes, and an over-200 issue set, with a held-out
-application family.
+Therefore this corpus falsifies a wire-only classifier, and richer capture does not supply a safe
+production boundary for the remaining ongoing flappers. Production Phases A and B are retired: Radar
+already removes settled recoveries after five minutes of continuous running, while benign and
+malignant intermittent faults can remain observably equivalent. Scenario 6 demonstrates that
+ambiguity in the benchmark itself. The checked-in harness and red report are the artifact of record;
+there is no annotation or recovery-aware soft-sort to build.

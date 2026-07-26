@@ -14,6 +14,7 @@
 // wrappers stay source-agnostic: pick the source from context, call useEvents.
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { LIVE_TICK_MS } from '@skyhook-io/k8s-ui'
 import { apiFetch, mergeDeltaEvents, ApiError, type UseChangesOptions } from './client'
 import { apiUrl, getApiBase } from './config'
 import type { TimelineEvent, TimeRange } from '../types'
@@ -486,13 +487,6 @@ export interface RetainedRing {
   loadedAtMs: number
 }
 
-// A window whose to-edge sits within this band of the clock counts as ending
-// at the live edge. Generous: it only needs to absorb the LIVE selection's
-// coarse tick and clock jitter, and misclassifying a just-frozen window as
-// live-edged is harmless — at that moment the ring IS what the server would
-// return for it (see needsWindowFetch).
-const LIVE_EDGE_SLACK_MS = 5 * 60 * 1000
-
 // Whether an explicit [from,to] selection reaches below what the loaded ring
 // holds. A truncated ring kept only the NEWEST rows, so a selection whose
 // from-edge is older than the ring's oldest loaded event would render rows the
@@ -500,15 +494,30 @@ const LIVE_EDGE_SLACK_MS = 5 * 60 * 1000
 // untruncated ring holds everything its depth covers, so every selection
 // slices it client-side with no fetch.
 //
-// A window ending at the live edge never fetches, however deep its from-edge:
-// the ring is the server's newest-ringLimit answer up to now, which is exactly
-// what a window fetch for it would return. This is what keeps the LIVE
-// sliding selection — which rides the query as an explicit [from,to] and
-// re-derives every tick — on the zero-fetch ring path instead of re-keying a
-// full-window fetch per tick.
+// The ring stays authoritative only while the window reaches to/past the
+// NEWEST loaded ring row: every ring row then falls inside the window, and
+// the ring being the server's globally-newest-ringLimit rows makes them the
+// newest-ringLimit rows within the window too — a server window fetch would
+// return the identical set. A window whose to-edge is BELOW the newest ring
+// row excludes the freshest rows, so a server fetch spends that budget on
+// older rows the truncated ring dropped — such a window must fetch itself.
+// The guard is ring-relative, not wall-clock: distance from the clock proves
+// nothing about coverage (under heavy churn the ring's whole budget can sit
+// inside the last few minutes, leaving a just-frozen window's slice empty).
 //
-// An empty truncated ring proves nothing about coverage, so it fails toward
-// fetching. Exported for unit tests; not re-exported publicly.
+// Two allowances keep the LIVE sliding selection — an explicit [from,to]
+// re-derived from the clock on a coarse tick — on the zero-fetch ring path:
+// the newest-row edge caps at `now` (a hub clock ahead of the client stamps
+// ring rows in the client's future; they must not outrun a to-edge that
+// tracks the client clock), and the comparison tolerates one tick of lag
+// (delta merges land fresh rows while the live to-edge waits for its next
+// re-derive; without the tolerance every merge would re-key a full-window
+// fetch until the tick catches up).
+//
+// An empty truncated ring (or one with no parseable timestamps) proves
+// nothing about coverage, so it fails toward fetching. Exported for unit
+// tests; not re-exported publicly.
+const LIVE_WINDOW_TICK_SLACK_MS = 2 * LIVE_TICK_MS
 export function needsWindowFetch(
   ring: Pick<RetainedRing, 'events' | 'truncated'>,
   fromMs: number,
@@ -516,12 +525,15 @@ export function needsWindowFetch(
   now: number,
 ): boolean {
   if (!ring.truncated) return false
-  if (toMs >= now - LIVE_EDGE_SLACK_MS) return false
   let oldest = Number.POSITIVE_INFINITY
+  let newest = Number.NEGATIVE_INFINITY
   for (const e of ring.events) {
     const t = new Date(e.timestamp).getTime()
-    if (Number.isFinite(t) && t < oldest) oldest = t
+    if (!Number.isFinite(t)) continue
+    if (t < oldest) oldest = t
+    if (t > newest) newest = t
   }
+  if (Number.isFinite(newest) && toMs >= Math.min(newest, now) - LIVE_WINDOW_TICK_SLACK_MS) return false
   return fromMs < oldest
 }
 
@@ -707,10 +719,10 @@ function createRingEventsHook(opts: {
     // this query (see needsWindowFetch), so period changes and the live tick
     // stay zero-fetch.
     //
-    // The clock sample only refreshes when a dep changes, so on an IDLE ring a
-    // just-frozen live-edge window can stay ring-served past the slack band.
-    // That is coverage-correct: an idle ring accumulates nothing, drops
-    // nothing, and so keeps being the server's best answer for that window.
+    // The clock sample only refreshes when a dep changes; that is safe here
+    // because the predicate is ring-relative — the clock only caps the
+    // newest-row comparison against skew-stamped future rows, and a stale
+    // sample makes that cap tighter (toward the ring), never looser.
     const windowFromMs = query.fromMs
     const windowToMs = query.toMs
     const windowNeeded = useMemo(

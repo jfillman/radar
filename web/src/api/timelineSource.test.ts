@@ -219,16 +219,19 @@ describe('localOverviewFromEvents', () => {
 })
 
 // The hook arms the frozen-window fetch on this predicate alone, so these pin
-// all three directions: ring-covered explicit windows stay zero-fetch, the
-// LIVE sliding selection (an explicit window ending at the clock) stays
-// zero-fetch, and a frozen selection below a truncated ring's oldest loaded
-// row escapes to the server.
+// all directions: ring-covered explicit windows stay zero-fetch, the LIVE
+// sliding selection (an explicit window ending at the clock) stays zero-fetch
+// even under hub-ahead clock skew and tick lag, and a frozen selection whose
+// to-edge sits below the newest loaded ring row (past the tick slack) with a
+// from-edge below the oldest escapes to the server — however close its
+// to-edge is to the clock.
 describe('needsWindowFetch (frozen-window coverage predicate)', () => {
   const HOUR = 60 * 60 * 1000
   const NOW = T0 + 24 * HOUR
+  const newestMs = NOW - HOUR
   const oldestMs = NOW - 2 * HOUR
   const ringEvents: TimelineEvent[] = [
-    ev({ id: 'newer', timestamp: new Date(NOW - HOUR).toISOString() }),
+    ev({ id: 'newer', timestamp: new Date(newestMs).toISOString() }),
     ev({ id: 'oldest', timestamp: new Date(oldestMs).toISOString() }),
   ]
   // A frozen selection wholly below the ring's oldest loaded row — THE bug
@@ -243,23 +246,57 @@ describe('needsWindowFetch (frozen-window coverage predicate)', () => {
   })
 
   it('a truncated ring still answers windows at or after its oldest loaded row', () => {
-    expect(needsWindowFetch({ events: ringEvents, truncated: true }, oldestMs, NOW - HOUR, NOW)).toBe(false)
-    expect(needsWindowFetch({ events: ringEvents, truncated: true }, oldestMs + 1, NOW - HOUR, NOW)).toBe(false)
+    expect(needsWindowFetch({ events: ringEvents, truncated: true }, oldestMs, newestMs, NOW)).toBe(false)
+    expect(needsWindowFetch({ events: ringEvents, truncated: true }, oldestMs + 1, newestMs, NOW)).toBe(false)
   })
 
-  it('a truncated ring with a from-edge below its oldest loaded row needs the server window', () => {
+  it('a from-edge below the oldest loaded row needs the server window when the to-edge is below the newest', () => {
     expect(needsWindowFetch({ events: ringEvents, truncated: true }, deepFromMs, deepToMs, NOW)).toBe(true)
-    expect(needsWindowFetch({ events: ringEvents, truncated: true }, oldestMs - 1, NOW - HOUR, NOW)).toBe(true)
+    expect(needsWindowFetch({ events: ringEvents, truncated: true }, oldestMs - 1, newestMs - 5 * 60_000, NOW)).toBe(true)
   })
 
-  it('a window ending at the live edge stays on the ring, however deep its from-edge', () => {
-    // The ring IS the server's newest-ringLimit answer up to now; a window
-    // fetch for this selection would return the same rows, and arming it
-    // would re-key a full fetch on every live tick.
+  it('a frozen window ending just below the newest ring row fetches even near the live edge', () => {
+    // Ring rows newer than the window's to-edge consume ring budget a server
+    // window fetch would spend on OLDER rows the truncated ring dropped —
+    // wall-clock proximity of the to-edge proves nothing about coverage.
+    const busyRing: TimelineEvent[] = [
+      ev({ id: 'fresh', timestamp: new Date(NOW - 30_000).toISOString() }),
+      ev({ id: 'oldest', timestamp: new Date(oldestMs).toISOString() }),
+    ]
+    expect(needsWindowFetch({ events: busyRing, truncated: true }, deepFromMs, NOW - 2 * 60_000, NOW)).toBe(true)
+  })
+
+  it('a window reaching to/past the newest ring row stays on the ring, however deep its from-edge', () => {
+    // Every ring row falls inside such a window, and the ring is the server's
+    // newest-ringLimit answer — a window fetch would return the identical set,
+    // and arming it would re-key a full fetch on every live tick.
     expect(needsWindowFetch({ events: ringEvents, truncated: true }, deepFromMs, NOW, NOW)).toBe(false)
-    // The live selection's to-edge lags the clock by its coarse tick; the
-    // slack band must absorb that lag.
+    expect(needsWindowFetch({ events: ringEvents, truncated: true }, deepFromMs, newestMs, NOW)).toBe(false)
+    // An idle ring whose newest row is old: the live selection's to-edge sits
+    // far above it and stays ring-served.
     expect(needsWindowFetch({ events: ringEvents, truncated: true }, deepFromMs, NOW - 60_000, NOW)).toBe(false)
+  })
+
+  it('rows stamped ahead of the client clock cannot re-arm the live selection', () => {
+    // Hub clock ahead: the newest ring row sits in the client's future. The
+    // newest-row edge caps at `now`, so a live to-edge at the clock still
+    // counts as reaching the ring's edge.
+    const skewedRing: TimelineEvent[] = [
+      ev({ id: 'future', timestamp: new Date(NOW + 3 * 60_000).toISOString() }),
+      ev({ id: 'oldest', timestamp: new Date(oldestMs).toISOString() }),
+    ]
+    expect(needsWindowFetch({ events: skewedRing, truncated: true }, deepFromMs, NOW, NOW)).toBe(false)
+  })
+
+  it('a delta row landing between live ticks cannot re-arm the live selection', () => {
+    // The live to-edge lags the clock by up to one coarse tick while delta
+    // merges keep pushing the newest ring row toward now; the tick-slack
+    // tolerance keeps that lag from re-keying a full-window fetch per merge.
+    const freshRing: TimelineEvent[] = [
+      ev({ id: 'justmerged', timestamp: new Date(NOW - 5_000).toISOString() }),
+      ev({ id: 'oldest', timestamp: new Date(oldestMs).toISOString() }),
+    ]
+    expect(needsWindowFetch({ events: freshRing, truncated: true }, deepFromMs, NOW - 30_000, NOW)).toBe(false)
   })
 
   it('an empty truncated ring fails toward fetching', () => {

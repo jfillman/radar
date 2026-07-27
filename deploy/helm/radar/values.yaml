@@ -327,6 +327,11 @@ cloud:
   # The Secret must contain a key matching existingSecretKey.
   existingSecret: ""
   existingSecretKey: "token"
+  # Skip TLS verification on the tunnel to the hub — for trials against a
+  # self-hosted hub that serves a self-signed certificate. The tunnel stays
+  # encrypted but is NOT authenticated (a network attacker could impersonate
+  # the hub), so leave false for any hub with a publicly trusted certificate.
+  insecureSkipVerify: false
   # Default ClusterRoleBindings for Radar Cloud identity groups.
   #
   # How it works: Cloud injects X-Forwarded-Groups: cloud:<role>,

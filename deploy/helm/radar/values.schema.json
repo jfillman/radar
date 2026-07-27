@@ -240,7 +240,8 @@
             "memberClusterRole": { "type": "string" },
             "viewerClusterRole": { "type": "string" }
           }
-        }
+        },
+        "insecureSkipVerify": { "type": "boolean" }
       }
     },
     "mcp": {

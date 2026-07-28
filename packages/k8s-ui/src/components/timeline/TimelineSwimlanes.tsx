@@ -1,5 +1,6 @@
 import { Fragment, useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { clsx } from 'clsx'
+import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import {
   AlertCircle,
   AlertTriangle,
@@ -795,6 +796,10 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
   const [searchInternal, setSearchInternal] = useState('')
   const searchTerm = searchProp ?? searchInternal
   const setSearchTerm = onSearchChange ?? setSearchInternal
+  // Filtering and re-ranking rebuild the whole lane board (tens of thousands
+  // of DOM mutations on a large timeline) — coalesce a typing burst into one
+  // rebuild instead of one per keystroke. Clearing flushes immediately.
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 300, (v) => v === '')
   const [activityFilterInternal, setActivityFilterInternal] = useState<ActivityFilterKey[]>([])
   const activityFilter = activityFilterProp ?? activityFilterInternal
   const setActivityFilter = onActivityFilterChange ?? setActivityFilterInternal
@@ -939,10 +944,10 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
       if (!showDeleted && e.eventType === 'delete') return false
       if (!matchesActivityFilter(e, activityFilter)) return false
       if (kindFilter.length > 0 && !kindFilter.includes(e.kind)) return false
-      if (!matchesTimelineSearch(e, searchTerm)) return false
+      if (!matchesTimelineSearch(e, debouncedSearchTerm)) return false
       return true
     })
-  }, [events, searchTerm, showDeleted, activityFilter, kindFilter])
+  }, [events, debouncedSearchTerm, showDeleted, activityFilter, kindFilter])
 
   // Kind dropdown options: seed set + every kind present in the (unfiltered)
   // events. The swimlane fetches all kinds, so deriving from events is stable.
@@ -1111,8 +1116,8 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
   // calm across it is the whole point. Inert when !isLive (local / WorkloadView).
   const laneOrderRef = useRef<string[] | null>(null)
   const rankResetKey = useMemo(
-    () => JSON.stringify([sort, grouping, searchTerm, showDeleted, activityFilter, kindFilter]),
-    [sort, grouping, searchTerm, showDeleted, activityFilter, kindFilter],
+    () => JSON.stringify([sort, grouping, debouncedSearchTerm, showDeleted, activityFilter, kindFilter]),
+    [sort, grouping, debouncedSearchTerm, showDeleted, activityFilter, kindFilter],
   )
   const rankResetKeyRef = useRef(rankResetKey)
   const wasLiveRef = useRef(false)

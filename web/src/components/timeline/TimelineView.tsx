@@ -17,6 +17,7 @@ import {
   type TimelineGrouping,
   type TimelineSort,
   type PinnedLaneRef,
+  useDebouncedValue,
 } from '@skyhook-io/k8s-ui'
 import { TimelineList } from './TimelineList'
 import type { ActivityFilterKey } from './TimelineList'
@@ -308,6 +309,17 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
   // Search / activity-type / kind lifted here too, so they survive the view
   // switch and drive both views through one source of truth.
   const [search, setSearch] = useState(() => searchParams.get('q') ?? '')
+  // The `q` URL write is debounced so typing doesn't navigate per keystroke
+  // (clearing applies immediately — a delayed clear makes the × feel broken).
+  // The URL therefore lags the input while typing, so the URL→state read below
+  // must not sync a `q` that is merely the echo of our own write — it would
+  // revert in-flight keystrokes. Echoes are recognized by value: they carry
+  // exactly the debounced search we wrote. Ref instead of a dep: the read
+  // effect keys on searchParams alone (see its comment) and only needs the
+  // written value at fire time.
+  const debouncedSearch = useDebouncedValue(search, 300, (v) => v === '')
+  const writtenSearchRef = useRef(debouncedSearch)
+  writtenSearchRef.current = debouncedSearch
   // Seed the multi-select from the URL `activity` csv, else the home-page
   // deep-link preset: 'all'/undefined means no chips selected (everything).
   const [activityFilter, setActivityFilter] = useState<ActivityFilterKey[]>(
@@ -621,7 +633,9 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
     const nextPinnedOnly = sp.get('pinnedOnly') === '1' && pinnedLanes.length > 0
     setPinnedOnly((prev) => (prev === nextPinnedOnly ? prev : nextPinnedOnly))
     const nextSearch = sp.get('q') ?? ''
-    setSearch((prev) => (prev === nextSearch ? prev : nextSearch))
+    if (nextSearch !== writtenSearchRef.current) {
+      setSearch((prev) => (prev === nextSearch ? prev : nextSearch))
+    }
     const nextActivity = parseActivity(sp) ?? []
     setActivityFilter((prev) => (arraysEqual(prev, nextActivity) ? prev : nextActivity))
     const nextKinds = parseKinds(sp)
@@ -638,7 +652,7 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
     const current = searchParamsRef.current
     const target = writeTimelineParams(
       current,
-      { viewMode, mode, showDeleted, pinnedOnly, search, activityFilter, kindFilter, grouping, sort, selectedEventId },
+      { viewMode, mode, showDeleted, pinnedOnly, search: debouncedSearch, activityFilter, kindFilter, grouping, sort, selectedEventId },
       { isRetained: isRetained || isLocal, requiresNamespaceFilter: scopeRequiresNamespaceFilter },
     )
     const targetStr = target.toString()
@@ -652,7 +666,7 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
     const replace = !didMountUrlSyncRef.current || onlyHighFreqDiffer(currentStr, targetStr)
     didMountUrlSyncRef.current = true
     setSearchParamsRef.current(target, { replace })
-  }, [viewMode, mode, showDeleted, pinnedOnly, search, activityFilter, kindFilter, grouping, sort, selectedEventId, isRetained, isLocal, scopeRequiresNamespaceFilter])
+  }, [viewMode, mode, showDeleted, pinnedOnly, debouncedSearch, activityFilter, kindFilter, grouping, sort, selectedEventId, isRetained, isLocal, scopeRequiresNamespaceFilter])
 
   // Fetch all activity - zoom controls what's visible in the UI. This ring feeds
   // the swimlanes and the local strip's histogram, so it also runs in list mode

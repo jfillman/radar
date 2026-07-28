@@ -1,5 +1,6 @@
-import React, { useState, useMemo, useEffect, useCallback, useRef, useContext, useId } from 'react'
+import React, { useState, useMemo, useEffect, useCallback, useDeferredValue, useRef, useContext, useId } from 'react'
 import { TableVirtuoso, type TableVirtuosoHandle } from 'react-virtuoso'
+import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { PaneLoader } from '../ui/PaneLoader'
 import { RestrictedState } from '../ui/RestrictedState'
 import { Input } from '../ui/Input'
@@ -2185,6 +2186,15 @@ export function ResourcesView({
     setBulkForceDelete(false)
   }, [selectedKind.name, selectedKind.group]) // eslint-disable-line react-hooks/exhaustive-deps
   const [searchTerm, setSearchTerm] = useState(initialFilters.search)
+  // Typing must never wait on the list or the router. The input renders raw
+  // searchTerm; filtering consumes the deferred copy (React yields to keep
+  // keystrokes responsive on large lists); the URL write consumes the
+  // debounced copy (one history entry per pause, not one per keystroke —
+  // per-keystroke navigations re-render the whole route tree and, when
+  // renders lag, the URL→state sync effect could revert in-flight input).
+  // Clearing skips the debounce so the × cleans the URL immediately.
+  const deferredSearchTerm = useDeferredValue(searchTerm)
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 300, (v) => v === '')
   const [regexMode, setRegexMode] = useState(initialFilters.regex)
   const [sortColumn, setSortColumn] = useState<string | null>(null)
   const [sortDirection, setSortDirection] = useState<SortDirection>(null)
@@ -2963,8 +2973,17 @@ export function ResourcesView({
       setOwnerName(newFilters.ownerName)
     }
 
-    // Update search if it changed
-    if (newFilters.search !== searchTerm) {
+    // Update search if it changed — unless this navigation is the echo of our
+    // own debounced URL write (its search equals the value we just wrote), or
+    // the user is mid-typing in the box. During typing the URL intentionally
+    // lags the input, so an un-guarded sync here would revert in-flight
+    // keystrokes whenever a write echo lands mid-burst. Genuinely external
+    // navigations (deep links, back/forward) carry a different search value
+    // and still sync.
+    const isOwnWriteEcho =
+      newFilters.search === debouncedSearchTerm ||
+      (typeof document !== 'undefined' && document.activeElement === searchInputRef.current)
+    if (!isOwnWriteEcho && newFilters.search !== searchTerm) {
       setSearchTerm(newFilters.search)
     }
 
@@ -3173,8 +3192,8 @@ export function ResourcesView({
     shouldPushHistory.current = false
     prevSelectedResourceRef.current = current
 
-    updateURL(selectedKind, searchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, selectedResource?.namespace, selectedResource?.name, pushHistory)
-  }, [selectedKind, searchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, selectedResource, updateURL, basePath, locationPathname])
+    updateURL(selectedKind, debouncedSearchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, selectedResource?.namespace, selectedResource?.name, pushHistory)
+  }, [selectedKind, debouncedSearchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, selectedResource, updateURL, basePath, locationPathname])
 
   // Handle resource click from URL on mount
   useEffect(() => {
@@ -3605,13 +3624,13 @@ export function ResourcesView({
   // rows shown) rather than zero results, so the table doesn't flash empty
   // while the user is mid-typing a pattern.
   const searchRegex = useMemo<{ re: RegExp | null; error: string | null }>(() => {
-    if (!regexMode || !searchTerm) return { re: null, error: null }
+    if (!regexMode || !deferredSearchTerm) return { re: null, error: null }
     try {
-      return { re: new RegExp(searchTerm, 'i'), error: null }
+      return { re: new RegExp(deferredSearchTerm, 'i'), error: null }
     } catch (e) {
       return { re: null, error: e instanceof Error ? e.message : 'Invalid regex' }
     }
-  }, [regexMode, searchTerm])
+  }, [regexMode, deferredSearchTerm])
 
   // Filter resources by search term, status, problems, and sort
   const filteredResources = useMemo(() => {
@@ -3620,7 +3639,7 @@ export function ResourcesView({
     let result = resources
 
     // Apply search filter
-    if (searchTerm) {
+    if (deferredSearchTerm) {
       if (regexMode) {
         const re = searchRegex.re
         if (re) {
@@ -3630,7 +3649,7 @@ export function ResourcesView({
           )
         }
       } else {
-        const term = searchTerm.toLowerCase()
+        const term = deferredSearchTerm.toLowerCase()
         result = result.filter((r: any) =>
           r.metadata?.name?.toLowerCase().includes(term) ||
           r.metadata?.namespace?.toLowerCase().includes(term)
@@ -3792,7 +3811,7 @@ export function ResourcesView({
     }
 
     return result
-  }, [resources, searchTerm, regexMode, searchRegex, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, labelSelector, ownerKind, ownerName, selectedKind.name, sortColumn, sortDirection, getSortValue, extraColumnsByKey, podMatchesProblemFilter])
+  }, [resources, deferredSearchTerm, regexMode, searchRegex, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, labelSelector, ownerKind, ownerName, selectedKind.name, sortColumn, sortDirection, getSortValue, extraColumnsByKey, podMatchesProblemFilter])
 
   // For nodes table: compute the majority minor version so outliers can be highlighted
   const majorityNodeMinorVersion = useMemo(() => {
@@ -3918,6 +3937,16 @@ export function ResourcesView({
   }, [allVisibleChecked, filteredResources, getResourceKey])
 
   const isCheckboxMode = canBulkSelect && bulkMode
+
+  // Stable row handlers so the memoized ResourceRowCells skips re-rendering
+  // rows whose data didn't change on a refetch (React Query's structural
+  // sharing keeps unchanged resources referentially identical).
+  const handleRowClick = useCallback((resource: any, isSelected: boolean) => {
+    if (compareMode) toggleComparePick(resource)
+    else if (isCheckboxMode) toggleChecked(resource)
+    else selectResource(resource, isSelected)
+  }, [compareMode, isCheckboxMode, toggleComparePick, toggleChecked, selectResource])
+  const handleRowMouseEnter = useCallback(() => setHighlightedIndex(-1), [])
 
   // Filter columns by visibility
   const columns = useMemo(() => {
@@ -5045,12 +5074,12 @@ export function ResourcesView({
                     isChecked={checkedResources.has(resourceKey)}
                     showCheckbox={isCheckboxMode}
                     majorityNodeMinorVersion={majorityNodeMinorVersion}
-                    onClick={() => compareMode ? toggleComparePick(resource) : isCheckboxMode ? toggleChecked(resource) : selectResource(resource, isSelected)}
-                    onMouseEnter={() => setHighlightedIndex(-1)}
+                    onRowClick={handleRowClick}
+                    onRowMouseEnter={handleRowMouseEnter}
                     compareMode={compareMode}
                     comparePickIndex={pickIdx}
                     rowHref={rowHrefFor?.(resource)}
-                    onCheckToggle={() => toggleChecked(resource)}
+                    onRowCheckToggle={toggleChecked}
                   />
                 )
               }}
@@ -5200,8 +5229,11 @@ interface ResourceRowCellsProps {
   isChecked?: boolean
   showCheckbox?: boolean
   majorityNodeMinorVersion?: string
-  onClick?: () => void
-  onMouseEnter?: () => void
+  // Row callbacks receive the resource so the parent can pass referentially
+  // stable handlers — per-row closures would defeat React.memo and re-render
+  // every visible row on each SSE-driven refetch.
+  onRowClick?: (resource: any, isSelected: boolean) => void
+  onRowMouseEnter?: () => void
   compareMode?: boolean
   /** -1 when not picked; 0 = pick A; 1 = pick B. */
   comparePickIndex?: number
@@ -5209,7 +5241,7 @@ interface ResourceRowCellsProps {
    *  data cells drop their click handlers. The compare-mode chip column
    *  is unaffected (still toggles picks). */
   rowHref?: string
-  onCheckToggle?: () => void
+  onRowCheckToggle?: (resource: any) => void
 }
 
 function rowHighlightClass(
@@ -5231,9 +5263,11 @@ function rowHighlightClass(
   return 'group-hover/row:bg-theme-surface/50'
 }
 
-function ResourceRowCells({ resource, kind, group, columns, extraColumnsByKey, hasSpacerColumn, isSelected, isHighlighted, isChecked, showCheckbox, majorityNodeMinorVersion, onClick, onMouseEnter, compareMode, comparePickIndex = -1, rowHref, onCheckToggle }: ResourceRowCellsProps) {
+const ResourceRowCells = React.memo(function ResourceRowCells({ resource, kind, group, columns, extraColumnsByKey, hasSpacerColumn, isSelected, isHighlighted, isChecked, showCheckbox, majorityNodeMinorVersion, onRowClick, onRowMouseEnter, compareMode, comparePickIndex = -1, rowHref, onRowCheckToggle }: ResourceRowCellsProps) {
   const rowHighlight = rowHighlightClass(compareMode, comparePickIndex, isSelected, isHighlighted, isChecked)
   const pickedSide = comparePickIndex === 0 ? 'a' : comparePickIndex === 1 ? 'b' : null
+  const onClick = onRowClick ? () => onRowClick(resource, !!isSelected) : undefined
+  const onMouseEnter = onRowMouseEnter
   // When the host supplies an anchor, drop per-cell onClick for the data
   // columns: the anchor is the only navigation surface. The compare-mode
   // chip column keeps its onClick so pick toggling still works.
@@ -5268,7 +5302,7 @@ function ResourceRowCells({ resource, kind, group, columns, extraColumnsByKey, h
       {showCheckbox && (
         <td
           className={clsx('border-b-subtle text-center px-0 py-3 w-10 cursor-pointer transition-colors', rowHighlight)}
-          onClick={(e) => { e.stopPropagation(); onCheckToggle?.() }}
+          onClick={(e) => { e.stopPropagation(); onRowCheckToggle?.(resource) }}
         >
           <input
             type="checkbox"
@@ -5304,7 +5338,7 @@ function ResourceRowCells({ resource, kind, group, columns, extraColumnsByKey, h
       {hasSpacerColumn && <td className="border-b-subtle p-0" />}
     </>
   )
-}
+})
 
 const VirtuosoTableRow = React.forwardRef<HTMLTableRowElement, React.HTMLAttributes<HTMLTableRowElement>>(
   function VirtuosoTableRow(props, ref) {

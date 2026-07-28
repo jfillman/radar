@@ -50,7 +50,7 @@ import { DiagnosticsOverlay } from './components/ui/DiagnosticsOverlay'
 import { useEventSource } from './hooks/useEventSource'
 import { debugNamespaceLog, useNamespaces, useNamespaceScope, useSetActiveNamespace, useSwitchContext, useAuthMe, useAudit } from './api/client'
 import { buildAuditSeverityMap } from './utils/auditBadges'
-import { routePath, apiUrl, getAuthHeaders, getCredentialsMode } from './api/config'
+import { routePath, apiUrl, getAuthHeaders, getCredentialsMode, stripBasename } from './api/config'
 import { KeyboardShortcutProvider, useRegisterShortcut, useRegisterShortcuts, useSuppressBaseShortcuts } from './hooks/useKeyboardShortcuts'
 import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
 import { useDocumentTitle } from './hooks/useDocumentTitle'
@@ -343,12 +343,19 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   // Auth check — detect if auth is enabled but user is not authenticated
   const { data: authMe, isPending: authMePending } = useAuthMe()
 
-  // Restore navigation path after session-expiry re-auth redirect
+  // Restore navigation path after session-expiry re-auth redirect.
+  // The stored value is basename-relative, but strip defensively anyway:
+  // sessionStorage outlives app upgrades, so a value written by an older
+  // version may still carry the basename — and navigate() re-applies the
+  // basename, which would double it (/c/abc/c/abc/...). Trade-off: if a host
+  // mounts the app at a basename that exactly equals an internal route (e.g.
+  // /topology), this second strip eats the route and re-auth lands on home —
+  // accepted, since a wrong-but-valid landing beats a doubled URL.
   useEffect(() => {
     const returnPath = sessionStorage.getItem('radar_return_path')
     if (returnPath) {
       sessionStorage.removeItem('radar_return_path')
-      navigate(returnPath, { replace: true })
+      navigate(stripBasename(returnPath), { replace: true })
     }
   }, [navigate])
 

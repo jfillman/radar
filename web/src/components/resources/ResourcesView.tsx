@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ApiError, debugNamespaceLog, fetchJSON, isForbiddenError, useCapabilities, useNamespaceCapabilities, useSecretCertExpiry, useTopPodMetrics, useTopNodeMetrics, useBulkDeleteResources, useBulkRestartWorkloads, useBulkScaleWorkloads, useAudit } from '../../api/client'
 import { isBadgeWorthy } from '../../utils/auditBadges'
 import type { AuditBadgeMessage } from '@skyhook-io/k8s-ui'
-import { apiUrl, getAuthHeaders, getCredentialsMode, getBasename } from '../../api/config'
+import { apiUrl, getAuthHeaders, getCredentialsMode, stripBasename } from '../../api/config'
 import { useAPIResources } from '../../api/apiResources'
 import { useConnection } from '../../context/ConnectionContext'
 import { initNavigationMap } from '@skyhook-io/k8s-ui'
@@ -295,13 +295,8 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   // any host that mounts RadarApp under a non-empty basename (Radar Cloud).
   // Strip the basename here so react-router can re-apply it cleanly.
   const handleNavigate = useMemo(() => {
-    const base = getBasename()
     return (path: string, options?: { replace?: boolean }) => {
-      let p = path
-      if (base && (p === base || p.startsWith(base + '/') || p.startsWith(base + '?'))) {
-        p = p.slice(base.length) || '/'
-      }
-      navigate(p, { replace: options?.replace })
+      navigate(stripBasename(path), { replace: options?.replace })
     }
   }, [navigate])
 

@@ -5850,6 +5850,80 @@ function GenericCell({ resource, column }: { resource: any; column: string }) {
 // KIND-SPECIFIC CELL RENDERERS
 // ============================================================================
 
+// A pod's summed request/limit is a meaningful ceiling for its summed usage
+// ONLY when every running container sets that field. If one container has no
+// memory limit (e.g. a JVM broker sized by -Xmx) while a sidecar sets a small
+// one, pod-usage / summed-limit compares the whole pod's usage against a limit
+// that bounds just the sidecar — reading as a false "over limit / OOM risk".
+// Native sidecars live in initContainers with restartPolicy: Always and consume
+// steady memory, so they count toward the running set too.
+function runningContainerFieldCount(
+  resource: any,
+  field: 'requests' | 'limits',
+  resourceName: 'cpu' | 'memory',
+): { withField: number; total: number } {
+  const regular = Array.isArray(resource?.spec?.containers) ? resource.spec.containers : []
+  const nativeSidecars = (Array.isArray(resource?.spec?.initContainers) ? resource.spec.initContainers : [])
+    .filter((c: any) => c?.restartPolicy === 'Always')
+  const running = [...regular, ...nativeSidecars]
+  const withField = running.filter((c: any) => Boolean(c?.resources?.[field]?.[resourceName])).length
+  return { withField, total: running.length }
+}
+
+function allRunningContainersHave(
+  resource: any,
+  field: 'requests' | 'limits',
+  resourceName: 'cpu' | 'memory',
+): boolean {
+  const { withField, total } = runningContainerFieldCount(resource, field, resourceName)
+  return total > 0 && withField === total
+}
+
+// Tooltip for the case where the pod's summed request/limit does NOT bound the
+// whole pod (some containers set neither). Keeps the same Usage/Request/Limit
+// grid as buildResourceTooltip — but shows the request/limit as partial (N of M
+// containers) and omits the % / OOM guidance, which would be misleading here.
+function buildPartialResourceTooltip(
+  usage: number,
+  request: number,
+  limit: number,
+  requestCount: { withField: number; total: number },
+  limitCount: { withField: number; total: number },
+  formatFn: (n: number) => string,
+) {
+  return (
+    <div className="whitespace-normal w-56 flex flex-col gap-1.5 py-0.5">
+      <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs font-mono">
+        <span className="text-theme-text-tertiary">Usage</span>
+        <span className="text-theme-text-primary">{formatFn(usage)}</span>
+        {request > 0 && (
+          <>
+            <span className="text-theme-text-tertiary">Request</span>
+            <span className="text-theme-text-primary">
+              {formatFn(request)}
+              {requestCount.withField < requestCount.total &&
+                ` (${requestCount.withField}/${requestCount.total} containers)`}
+            </span>
+          </>
+        )}
+        {limit > 0 && (
+          <>
+            <span className="text-theme-text-tertiary">Limit</span>
+            <span className="text-theme-text-primary">
+              {formatFn(limit)}
+              {limitCount.withField < limitCount.total &&
+                ` (${limitCount.withField}/${limitCount.total} containers)`}
+            </span>
+          </>
+        )}
+      </div>
+      <div className="text-[11px] text-theme-text-secondary border-t border-theme-border/50 pt-1">
+        Not all containers set a {limit > 0 ? 'limit' : 'request'} — pod-level % omitted
+      </div>
+    </div>
+  )
+}
+
 function PodCell({ resource, column }: { resource: any; column: string }) {
   const metrics = useContext(MetricsContext)
   const { onNavigate: navigate } = useContext(ResourcesViewDataContext)
@@ -6036,22 +6110,60 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
       const key = `${resource.metadata?.namespace}/${resource.metadata?.name}`
       const m = metrics.pods.get(key)
       if (!m || m.cpu === 0) return <span className="text-sm text-theme-text-tertiary">-</span>
-      const denom = m.cpuLimit || m.cpuRequest
-      if (!denom) return <span className="text-sm text-theme-text-secondary font-mono">{formatCPU(m.cpu)}</span>
+      const limitBounds = m.cpuLimit > 0 && allRunningContainersHave(resource, 'limits', 'cpu')
+      const requestBounds = m.cpuRequest > 0 && allRunningContainersHave(resource, 'requests', 'cpu')
+      const request = requestBounds ? m.cpuRequest : 0
+      const limit = limitBounds ? m.cpuLimit : 0
+      const denom = limit || request
+      if (!denom)
+        return (
+          <Tooltip
+            content={buildPartialResourceTooltip(
+              m.cpu,
+              m.cpuRequest,
+              m.cpuLimit,
+              runningContainerFieldCount(resource, 'requests', 'cpu'),
+              runningContainerFieldCount(resource, 'limits', 'cpu'),
+              formatCPU,
+            )}
+          >
+            <span className="text-sm text-theme-text-secondary font-mono">{formatCPU(m.cpu)}</span>
+          </Tooltip>
+        )
       const pct = (m.cpu / denom) * 100
-      const marker = m.cpuLimit > 0 && m.cpuRequest > 0 ? (m.cpuRequest / m.cpuLimit) * 100 : undefined
-      const tip = buildResourceTooltip('CPU', m.cpu, m.cpuRequest, m.cpuLimit, formatCPU)
+      const marker = limit > 0 && request > 0 ? (request / limit) * 100 : undefined
+      const tip = buildResourceTooltip('CPU', m.cpu, request, limit, formatCPU)
       return <ResourceBar used={formatCPU(m.cpu)} total={formatCPU(denom)} percent={pct} colorScheme={getBulletBarScheme(pct, marker)} markerPercent={marker} tooltip={tip} />
     }
     case 'memory': {
       const key = `${resource.metadata?.namespace}/${resource.metadata?.name}`
       const m = metrics.pods.get(key)
       if (!m || m.memory === 0) return <span className="text-sm text-theme-text-tertiary">-</span>
-      const denom = m.memoryLimit || m.memoryRequest
-      if (!denom) return <span className="text-sm text-theme-text-secondary font-mono">{formatMemoryShort(m.memory)}</span>
+      // A summed request/limit only bounds the pod when every running container
+      // sets it; otherwise usage/summed-limit is a false ratio (see helper).
+      const limitBounds = m.memoryLimit > 0 && allRunningContainersHave(resource, 'limits', 'memory')
+      const requestBounds = m.memoryRequest > 0 && allRunningContainersHave(resource, 'requests', 'memory')
+      const request = requestBounds ? m.memoryRequest : 0
+      const limit = limitBounds ? m.memoryLimit : 0
+      const denom = limit || request
+      if (!denom)
+        return (
+          <Tooltip
+            content={buildPartialResourceTooltip(
+              m.memory,
+              m.memoryRequest,
+              m.memoryLimit,
+              runningContainerFieldCount(resource, 'requests', 'memory'),
+              runningContainerFieldCount(resource, 'limits', 'memory'),
+              formatMemoryShort,
+            )}
+          >
+            <span className="text-sm text-theme-text-secondary font-mono">{formatMemoryShort(m.memory)}</span>
+          </Tooltip>
+        )
       const pct = (m.memory / denom) * 100
-      const marker = m.memoryLimit > 0 && m.memoryRequest > 0 ? (m.memoryRequest / m.memoryLimit) * 100 : undefined
-      const tip = buildResourceTooltip('Memory', m.memory, m.memoryRequest, m.memoryLimit, formatMemoryShort)
+      const marker = limit > 0 && request > 0 ? (request / limit) * 100 : undefined
+      const tip = buildResourceTooltip('Memory', m.memory, request, limit, formatMemoryShort)
       return <ResourceBar used={formatMemoryShort(m.memory)} total={formatMemoryShort(denom)} percent={pct} colorScheme={getBulletBarScheme(pct, marker)} markerPercent={marker} tooltip={tip} />
     }
     case 'gpu': {

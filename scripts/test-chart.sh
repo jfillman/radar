@@ -224,6 +224,8 @@ assert_contains 'name: radar-cloud-viewer-cluster-read$'        "viewer binding 
 assert_contains 'name: radar-cloud-member-cluster-read$'        "member binding rendered"
 assert_contains 'name: radar-cloud-owner-cluster-read$'         "owner binding rendered"
 assert_contains 'runtimeclasses'                                "runtimeclasses granted"
+assert_contains 'name: radar:viewer$'                           "canonical radar:* subject present"
+assert_contains 'name: cloud:viewer$'                           "legacy cloud:* subject present (deprecation window)"
 assert_contains 'priorityclasses'                               "priorityclasses granted"
 assert_not_contains 'name: radar-node-ops$'                     "node-ops absent by default"
 echo

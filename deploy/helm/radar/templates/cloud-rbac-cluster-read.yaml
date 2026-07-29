@@ -104,6 +104,10 @@ roleRef:
   name: {{ $fullname }}-cluster-read
 subjects:
   - kind: Group
+    name: radar:{{ $tier }}
+    apiGroup: rbac.authorization.k8s.io
+  # Legacy pre-rename vocabulary; kept for older hubs. Removed in v2.
+  - kind: Group
     name: cloud:{{ $tier }}
     apiGroup: rbac.authorization.k8s.io
 {{- end }}

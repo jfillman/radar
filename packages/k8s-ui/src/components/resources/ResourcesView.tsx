@@ -5870,27 +5870,33 @@ function runningContainerFieldCount(
   return { withField, total: running.length }
 }
 
-function allRunningContainersHave(
-  resource: any,
-  field: 'requests' | 'limits',
-  resourceName: 'cpu' | 'memory',
-): boolean {
-  const { withField, total } = runningContainerFieldCount(resource, field, resourceName)
-  return total > 0 && withField === total
-}
-
-// Tooltip for the case where the pod's summed request/limit does NOT bound the
-// whole pod (some containers set neither). Keeps the same Usage/Request/Limit
-// grid as buildResourceTooltip — but shows the request/limit as partial (N of M
-// containers) and omits the % / OOM guidance, which would be misleading here.
+// Tooltip for pods whose summed request/limit does NOT cleanly bound the whole
+// pod. Keeps the Usage/Request/Limit grid but annotates a partial field as
+// "(N/M containers)" and never claims a ceiling that isn't there. `barShown` is
+// true when a % bar is still drawn (against a complete request) — then the note
+// speaks to the missing limit rather than "% omitted"; false when no bar is
+// drawn (no field bounds the pod, or nothing is set at all).
 function buildPartialResourceTooltip(
   usage: number,
   request: number,
   limit: number,
   requestCount: { withField: number; total: number },
   limitCount: { withField: number; total: number },
+  barShown: boolean,
   formatFn: (n: number) => string,
 ) {
+  let note: string
+  if (barShown) {
+    // Bar is against a complete request; the limit (if any) is only partial, so
+    // don't assert either a ceiling or "unbounded".
+    note = limit > 0
+      ? 'Not all containers set a limit — no pod-wide ceiling'
+      : 'No limit set — can burst beyond request'
+  } else if (request === 0 && limit === 0) {
+    note = 'No request or limit set'
+  } else {
+    note = `Not all containers set a ${limit > 0 ? 'limit' : 'request'} — pod-level % omitted`
+  }
   return (
     <div className="whitespace-normal w-56 flex flex-col gap-1.5 py-0.5">
       <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs font-mono">
@@ -5918,7 +5924,7 @@ function buildPartialResourceTooltip(
         )}
       </div>
       <div className="text-[11px] text-theme-text-secondary border-t border-theme-border/50 pt-1">
-        Not all containers set a {limit > 0 ? 'limit' : 'request'} — pod-level % omitted
+        {note}
       </div>
     </div>
   )
@@ -6110,61 +6116,62 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
       const key = `${resource.metadata?.namespace}/${resource.metadata?.name}`
       const m = metrics.pods.get(key)
       if (!m || m.cpu === 0) return <span className="text-sm text-theme-text-tertiary">-</span>
-      const limitBounds = m.cpuLimit > 0 && allRunningContainersHave(resource, 'limits', 'cpu')
-      const requestBounds = m.cpuRequest > 0 && allRunningContainersHave(resource, 'requests', 'cpu')
-      const request = requestBounds ? m.cpuRequest : 0
-      const limit = limitBounds ? m.cpuLimit : 0
-      const denom = limit || request
-      if (!denom)
-        return (
-          <Tooltip
-            content={buildPartialResourceTooltip(
-              m.cpu,
-              m.cpuRequest,
-              m.cpuLimit,
-              runningContainerFieldCount(resource, 'requests', 'cpu'),
-              runningContainerFieldCount(resource, 'limits', 'cpu'),
-              formatCPU,
-            )}
-          >
-            <span className="text-sm text-theme-text-secondary font-mono">{formatCPU(m.cpu)}</span>
-          </Tooltip>
-        )
-      const pct = (m.cpu / denom) * 100
-      const marker = limit > 0 && request > 0 ? (request / limit) * 100 : undefined
-      const tip = buildResourceTooltip('CPU', m.cpu, request, limit, formatCPU)
-      return <ResourceBar used={formatCPU(m.cpu)} total={formatCPU(denom)} percent={pct} colorScheme={getBulletBarScheme(pct, marker)} markerPercent={marker} tooltip={tip} />
+      const requestCount = runningContainerFieldCount(resource, 'requests', 'cpu')
+      const limitCount = runningContainerFieldCount(resource, 'limits', 'cpu')
+      const limitComplete = m.cpuLimit > 0 && limitCount.withField === limitCount.total
+      const requestComplete = m.cpuRequest > 0 && requestCount.withField === requestCount.total
+      if (limitComplete) {
+        const pct = (m.cpu / m.cpuLimit) * 100
+        const marker = m.cpuRequest > 0 ? (m.cpuRequest / m.cpuLimit) * 100 : undefined
+        const tip = buildResourceTooltip('CPU', m.cpu, m.cpuRequest, m.cpuLimit, formatCPU)
+        return <ResourceBar used={formatCPU(m.cpu)} total={formatCPU(m.cpuLimit)} percent={pct} colorScheme={getBulletBarScheme(pct, marker)} markerPercent={marker} tooltip={tip} />
+      }
+      if (requestComplete) {
+        const pct = (m.cpu / m.cpuRequest) * 100
+        const tip = m.cpuLimit > 0
+          ? buildPartialResourceTooltip(m.cpu, m.cpuRequest, m.cpuLimit, requestCount, limitCount, true, formatCPU)
+          : buildResourceTooltip('CPU', m.cpu, m.cpuRequest, 0, formatCPU)
+        return <ResourceBar used={formatCPU(m.cpu)} total={formatCPU(m.cpuRequest)} percent={pct} colorScheme={getBulletBarScheme(pct, undefined)} tooltip={tip} />
+      }
+      return (
+        <Tooltip content={buildPartialResourceTooltip(m.cpu, m.cpuRequest, m.cpuLimit, requestCount, limitCount, false, formatCPU)}>
+          <span className="text-sm text-theme-text-secondary font-mono">{formatCPU(m.cpu)}</span>
+        </Tooltip>
+      )
     }
     case 'memory': {
       const key = `${resource.metadata?.namespace}/${resource.metadata?.name}`
       const m = metrics.pods.get(key)
       if (!m || m.memory === 0) return <span className="text-sm text-theme-text-tertiary">-</span>
-      // A summed request/limit only bounds the pod when every running container
-      // sets it; otherwise usage/summed-limit is a false ratio (see helper).
-      const limitBounds = m.memoryLimit > 0 && allRunningContainersHave(resource, 'limits', 'memory')
-      const requestBounds = m.memoryRequest > 0 && allRunningContainersHave(resource, 'requests', 'memory')
-      const request = requestBounds ? m.memoryRequest : 0
-      const limit = limitBounds ? m.memoryLimit : 0
-      const denom = limit || request
-      if (!denom)
-        return (
-          <Tooltip
-            content={buildPartialResourceTooltip(
-              m.memory,
-              m.memoryRequest,
-              m.memoryLimit,
-              runningContainerFieldCount(resource, 'requests', 'memory'),
-              runningContainerFieldCount(resource, 'limits', 'memory'),
-              formatMemoryShort,
-            )}
-          >
-            <span className="text-sm text-theme-text-secondary font-mono">{formatMemoryShort(m.memory)}</span>
-          </Tooltip>
-        )
-      const pct = (m.memory / denom) * 100
-      const marker = limit > 0 && request > 0 ? (request / limit) * 100 : undefined
-      const tip = buildResourceTooltip('Memory', m.memory, request, limit, formatMemoryShort)
-      return <ResourceBar used={formatMemoryShort(m.memory)} total={formatMemoryShort(denom)} percent={pct} colorScheme={getBulletBarScheme(pct, marker)} markerPercent={marker} tooltip={tip} />
+      // A summed request/limit only bounds the pod when EVERY running container
+      // sets it; a partial sum is not a valid denominator (see helper).
+      const requestCount = runningContainerFieldCount(resource, 'requests', 'memory')
+      const limitCount = runningContainerFieldCount(resource, 'limits', 'memory')
+      const limitComplete = m.memoryLimit > 0 && limitCount.withField === limitCount.total
+      const requestComplete = m.memoryRequest > 0 && requestCount.withField === requestCount.total
+      if (limitComplete) {
+        // Real ceiling → real % + OOM guidance.
+        const pct = (m.memory / m.memoryLimit) * 100
+        const marker = m.memoryRequest > 0 ? (m.memoryRequest / m.memoryLimit) * 100 : undefined
+        const tip = buildResourceTooltip('Memory', m.memory, m.memoryRequest, m.memoryLimit, formatMemoryShort)
+        return <ResourceBar used={formatMemoryShort(m.memory)} total={formatMemoryShort(m.memoryLimit)} percent={pct} colorScheme={getBulletBarScheme(pct, marker)} markerPercent={marker} tooltip={tip} />
+      }
+      if (requestComplete) {
+        // No pod-wide limit, but every container has a request → % of request.
+        // A non-zero summed limit here is only partial: keep it honest via the
+        // partial tooltip rather than letting buildResourceTooltip claim "no limit".
+        const pct = (m.memory / m.memoryRequest) * 100
+        const tip = m.memoryLimit > 0
+          ? buildPartialResourceTooltip(m.memory, m.memoryRequest, m.memoryLimit, requestCount, limitCount, true, formatMemoryShort)
+          : buildResourceTooltip('Memory', m.memory, m.memoryRequest, 0, formatMemoryShort)
+        return <ResourceBar used={formatMemoryShort(m.memory)} total={formatMemoryShort(m.memoryRequest)} percent={pct} colorScheme={getBulletBarScheme(pct, undefined)} tooltip={tip} />
+      }
+      // Neither field bounds the pod → plain usage + honest partial/none tooltip.
+      return (
+        <Tooltip content={buildPartialResourceTooltip(m.memory, m.memoryRequest, m.memoryLimit, requestCount, limitCount, false, formatMemoryShort)}>
+          <span className="text-sm text-theme-text-secondary font-mono">{formatMemoryShort(m.memory)}</span>
+        </Tooltip>
+      )
     }
     case 'gpu': {
       const count = getPodGpuCount(resource)

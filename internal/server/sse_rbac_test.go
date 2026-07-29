@@ -72,3 +72,43 @@ func TestClientCanSeeChange(t *testing.T) {
 		})
 	}
 }
+
+// The sensitive-kind gate: two users in the SAME namespace with different
+// grants must diverge on Secret/RBAC/webhook change frames. Being allowed a
+// namespace must never imply receiving privileged change metadata from it
+// (Secret key names, Role rules, webhook configs).
+func TestClientCanSeeChangeSensitiveKinds(t *testing.T) {
+	denySensitive := map[string]bool{
+		"Secret": true, "Role": true, "RoleBinding": true,
+		"ClusterRole": true, "ClusterRoleBinding": true,
+		"MutatingWebhookConfiguration": true, "ValidatingWebhookConfiguration": true,
+	}
+	// Both clients can see namespace "a"; only one holds cluster-wide reads.
+	privileged := ClientInfo{Namespaces: []string{"a"}}
+	restricted := ClientInfo{Namespaces: []string{"a"}, DeniedSensitiveKinds: denySensitive}
+
+	cases := []struct {
+		name      string
+		info      ClientInfo
+		namespace string
+		kind      string
+		want      bool
+	}{
+		{"privileged sees Secret change in allowed ns", privileged, "a", "Secret", true},
+		{"restricted does NOT see Secret change in ALLOWED ns", restricted, "a", "Secret", false},
+		{"restricted does NOT see Role change in allowed ns", restricted, "a", "Role", false},
+		{"restricted does NOT see RoleBinding change", restricted, "a", "RoleBinding", false},
+		{"restricted does NOT see ClusterRole change", restricted, "", "ClusterRole", false},
+		{"restricted does NOT see webhook change", restricted, "", "MutatingWebhookConfiguration", false},
+		{"restricted still sees ordinary kinds in allowed ns", restricted, "a", "Deployment", true},
+		{"restricted still sees ConfigMap (not in sensitive set)", restricted, "a", "ConfigMap", true},
+		{"privileged unaffected on cluster-scoped sensitive", privileged, "", "ClusterRole", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clientCanSeeChange(tc.info, tc.namespace, tc.kind); got != tc.want {
+				t.Fatalf("clientCanSeeChange(%q, %q) = %v, want %v", tc.namespace, tc.kind, got, tc.want)
+			}
+		})
+	}
+}

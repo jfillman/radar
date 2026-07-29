@@ -69,14 +69,25 @@ type ClientInfo struct {
 	// Resolved once at subscribe time (the request is available there) so the
 	// broadcast loop never runs a SAR. nil/empty for users with full access.
 	DeniedKinds map[topology.NodeKind]bool
+	// DeniedSensitiveKinds are kinds whose k8s_event change frames can carry
+	// privileged metadata (Secret data key names, RBAC rule contents, webhook
+	// configs) and which this user cannot read cluster-wide. Frames for these
+	// kinds are dropped regardless of namespace — including inside namespaces
+	// the user CAN see, closing the "list-pods-only viewer receives Secret
+	// key-name diffs" gap. Resolved once at subscribe time. Conservative
+	// interim: a user with only per-namespace secrets grants also loses these
+	// frames (REST reads are unaffected); the per-(resource,namespace) stream
+	// authorization that lifts this lives in docs/plans/sse-full-authz.md.
+	DeniedSensitiveKinds map[string]bool
 }
 
 type clientRegistration struct {
-	ch               chan SSEEvent
-	namespaces       []string
-	viewMode         string
-	showPolicyEffect bool
-	deniedKinds      map[topology.NodeKind]bool
+	ch                   chan SSEEvent
+	namespaces           []string
+	viewMode             string
+	showPolicyEffect     bool
+	deniedKinds          map[topology.NodeKind]bool
+	deniedSensitiveKinds map[string]bool
 }
 
 // SSEEvent represents an event to send to clients
@@ -388,7 +399,7 @@ func (b *SSEBroadcaster) run() {
 				close(reg.ch) // Signal rejection by closing the channel
 				continue
 			}
-			b.clients[reg.ch] = ClientInfo{Namespaces: reg.namespaces, ViewMode: reg.viewMode, ShowPolicyEffect: reg.showPolicyEffect, DeniedKinds: reg.deniedKinds}
+			b.clients[reg.ch] = ClientInfo{Namespaces: reg.namespaces, ViewMode: reg.viewMode, ShowPolicyEffect: reg.showPolicyEffect, DeniedKinds: reg.deniedKinds, DeniedSensitiveKinds: reg.deniedSensitiveKinds}
 			b.mu.Unlock()
 			log.Printf("SSE client connected (namespaces=%v, view=%s), total clients: %d", reg.namespaces, reg.viewMode, len(b.clients))
 
@@ -787,6 +798,12 @@ func (b *SSEBroadcaster) broadcastResourceChange(event SSEEvent, namespace, kind
 
 // clientCanSeeChange reports whether a client's RBAC allows a change frame.
 func clientCanSeeChange(info ClientInfo, namespace, kind string) bool {
+	// Sensitive kinds are gated independently of namespace access: being able
+	// to see a namespace must not imply receiving Secret/RBAC/webhook change
+	// metadata from it.
+	if info.DeniedSensitiveKinds[kind] {
+		return false
+	}
 	if namespace != "" {
 		// Namespaced change: deliver only if the client can see that namespace.
 		// nil Namespaces means all-namespace access (no RBAC restriction).
@@ -801,7 +818,7 @@ func clientCanSeeChange(info ClientInfo, namespace, kind string) bool {
 }
 
 // Subscribe adds a new SSE client. Returns nil if max clients reached.
-func (b *SSEBroadcaster) Subscribe(namespaces []string, viewMode string, deniedKinds map[topology.NodeKind]bool, showPolicyEffect ...bool) chan SSEEvent {
+func (b *SSEBroadcaster) Subscribe(namespaces []string, viewMode string, deniedKinds map[topology.NodeKind]bool, deniedSensitiveKinds map[string]bool, showPolicyEffect ...bool) chan SSEEvent {
 	// Check client count before creating the channel to fail fast
 	b.mu.RLock()
 	clientCount := len(b.clients)
@@ -823,7 +840,7 @@ func (b *SSEBroadcaster) Subscribe(namespaces []string, viewMode string, deniedK
 
 	policyEffect := len(showPolicyEffect) > 0 && showPolicyEffect[0]
 	ch := make(chan SSEEvent, 10)
-	b.register <- clientRegistration{ch: ch, namespaces: sortedNs, viewMode: viewMode, showPolicyEffect: policyEffect, deniedKinds: deniedKinds}
+	b.register <- clientRegistration{ch: ch, namespaces: sortedNs, viewMode: viewMode, showPolicyEffect: policyEffect, deniedKinds: deniedKinds, deniedSensitiveKinds: deniedSensitiveKinds}
 	return ch
 }
 
@@ -943,7 +960,7 @@ func buildFullTopology() (*topology.Topology, error) {
 }
 
 // HandleSSE is the HTTP handler for the SSE endpoint
-func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request, deniedKinds map[topology.NodeKind]bool) {
+func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request, deniedKinds map[topology.NodeKind]bool, deniedSensitiveKinds map[string]bool) {
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -966,7 +983,7 @@ func (b *SSEBroadcaster) HandleSSE(w http.ResponseWriter, r *http.Request, denie
 	}
 
 	// Subscribe to events
-	eventCh := b.Subscribe(namespaces, viewMode, deniedKinds, policyEffect)
+	eventCh := b.Subscribe(namespaces, viewMode, deniedKinds, deniedSensitiveKinds, policyEffect)
 	if eventCh == nil {
 		http.Error(w, "Too many SSE connections", http.StatusServiceUnavailable)
 		return

@@ -4311,7 +4311,44 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 		deny[topology.KindNamespace] = true
 	}
-	s.broadcaster.HandleSSE(w, r, deny)
+	s.broadcaster.HandleSSE(w, r, deny, s.deniedSensitiveChangeKinds(r))
+}
+
+// sensitiveChangeKinds are cached kinds whose change frames can carry
+// privileged metadata: Secret diffs expose data key names, Role/binding
+// diffs expose the authorization graph, webhook diffs expose the admission
+// plane. Static list — these are all typed cache kinds with fixed GVRs.
+var sensitiveChangeKinds = []struct{ kind, group, resource string }{
+	{"Secret", "", "secrets"},
+	{"Role", "rbac.authorization.k8s.io", "roles"},
+	{"RoleBinding", "rbac.authorization.k8s.io", "rolebindings"},
+	{"ClusterRole", "rbac.authorization.k8s.io", "clusterroles"},
+	{"ClusterRoleBinding", "rbac.authorization.k8s.io", "clusterrolebindings"},
+	{"MutatingWebhookConfiguration", "admissionregistration.k8s.io", "mutatingwebhookconfigurations"},
+	{"ValidatingWebhookConfiguration", "admissionregistration.k8s.io", "validatingwebhookconfigurations"},
+}
+
+// deniedSensitiveChangeKinds resolves, per authenticated user, which
+// sensitive kinds must be stripped from their k8s_event stream. Cluster-wide
+// list SAR per kind, memoized on the user's permission cache — a deliberate
+// conservative interim: per-namespace secret grants don't unlock the stream
+// (REST reads honor them; the stream doesn't carry enough GVR context yet —
+// see docs/plans/sse-full-authz.md for the full per-(resource,namespace)
+// design). Fail-closed via canRead. Returns nil when auth is off.
+func (s *Server) deniedSensitiveChangeKinds(r *http.Request) map[string]bool {
+	if auth.UserFromContext(r.Context()) == nil {
+		return nil
+	}
+	var denied map[string]bool
+	for _, k := range sensitiveChangeKinds {
+		if !s.canRead(r, k.group, k.resource, "", "list") {
+			if denied == nil {
+				denied = make(map[string]bool, len(sensitiveChangeKinds))
+			}
+			denied[k.kind] = true
+		}
+	}
+	return denied
 }
 
 // Settings handlers

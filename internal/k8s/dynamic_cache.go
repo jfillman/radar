@@ -107,7 +107,7 @@ func InitDynamicResourceCache(changeCh chan k8score.ResourceChange) error {
 				)
 			},
 			OnDrop: func(kind, ns, name, reason, op string) {
-				timeline.RecordDrop(kind, ns, name, reason, op)
+				timeline.RecordDrop(kind, ns, name, reason, op, recordClusterContext)
 			},
 			OnRecorded: func(kind string) {
 				timeline.IncrementRecorded(kind)

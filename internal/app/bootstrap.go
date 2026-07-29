@@ -211,7 +211,12 @@ func BuildTimelineStoreConfig(cfg AppConfig) timeline.StoreConfig {
 func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) {
 	k8s.RegisterHelmFuncs(helm.ResetClient, helm.ReinitClient)
 
-	k8s.RegisterTimelineFuncs(timeline.ResetStore, func() error {
+	k8s.RegisterTimelineFuncs(func() {
+		// Reset the store AND the per-cluster event-pipeline metrics: RecentDrops
+		// name resources from the previous cluster and must not survive the switch.
+		timeline.ResetStore()
+		timeline.ResetMetricsForContextSwitch()
+	}, func() error {
 		return timeline.ReinitStore(timelineStoreCfg)
 	})
 

@@ -11,7 +11,7 @@ import (
 func TestGetDiagnosis_RecommendationsRespectRBAC(t *testing.T) {
 	m := GetMetrics()
 	m.Reset()
-	RecordDrop("Secret", "team-a", "db-creds", DropReasonNoisyFilter, "update")
+	RecordDrop("Secret", "team-a", "db-creds", DropReasonNoisyFilter, "update", "")
 
 	hasNoisyTip := func(recs []string) bool {
 		for _, r := range recs {

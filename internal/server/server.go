@@ -4777,7 +4777,10 @@ func (s *Server) handleApplyPrometheusURL(w http.ResponseWriter, r *http.Request
 // RBAC gate.
 func (s *Server) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
 	response := timeline.GetDebugEventsResponse()
-	response.RecentDrops = s.filterDropsByRBAC(r, response.RecentDrops)
+	// Compose both protections: scope to the active cluster (a straggler drop from
+	// a previous cluster, recorded in the async informer-shutdown window, must not
+	// surface here) AND per-user RBAC (drop records name resources).
+	response.RecentDrops = s.filterDropsByRBAC(r, timeline.DropsForCluster(response.RecentDrops, k8s.ActiveClusterContext()))
 	s.writeJSON(w, response)
 }
 
@@ -4816,13 +4819,12 @@ func (s *Server) handleDebugEventsDiagnose(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// RBAC: diagnose returns a specific resource's timeline rows (with diffs),
-	// drop history, and recommendations derived from them. The query matches by
-	// kind string only (not group), so authorize each returned row per-kind using
-	// its own apiVersion — disambiguating a Kind that collides with a builtin (a
-	// namespaced CRD Kind=Node must not ride the caller's `list nodes`). The gate
-	// runs inside GetDiagnosis, BEFORE recommendations, so tips can't describe a
-	// row the caller can't read. Auth off → nil filter → no-op.
+	// RBAC + cluster scoping both run inside GetDiagnosis before recommendations:
+	// ActiveClusterContext scopes the store query and the stamped drop history to
+	// the current cluster, and `allow` authorizes each returned row per-kind using
+	// its own apiVersion (disambiguating a Kind that collides with a builtin — a
+	// namespaced CRD Kind=Node must not ride the caller's `list nodes`). Auth off →
+	// nil filter → no-op.
 	var allow func(kind, apiVersion, namespace string) bool
 	if user := auth.UserFromContext(r.Context()); user != nil && s.permCache != nil {
 		authz := s.changeAuthorizerForCtx(r.Context())

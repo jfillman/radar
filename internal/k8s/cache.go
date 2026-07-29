@@ -404,7 +404,7 @@ func InitResourceCache(ctx context.Context) error {
 			},
 
 			OnDrop: func(kind, ns, name, reason, op string) {
-				timeline.RecordDrop(kind, ns, name, reason, op)
+				timeline.RecordDrop(kind, ns, name, reason, op, recordClusterContext)
 				if DebugEvents {
 					log.Printf("[DEBUG] Change dropped: %s/%s/%s reason=%s op=%s", kind, ns, name, reason, op)
 				}
@@ -679,7 +679,7 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 
 	if op == "add" {
 		if store.IsResourceSeen(clusterContext, kind, namespace, name) {
-			timeline.RecordDrop(kind, namespace, name, timeline.DropReasonAlreadySeen, op)
+			timeline.RecordDrop(kind, namespace, name, timeline.DropReasonAlreadySeen, op, clusterContext)
 			if DebugEvents {
 				log.Printf("[DEBUG] Already seen, skipping: %s/%s/%s", kind, namespace, name)
 			}
@@ -760,7 +760,7 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 					Summary: fmt.Sprintf("spec changed (gen %d→%d, fields not specifically tracked)", oldGen, newGen),
 				}
 			} else {
-				timeline.RecordDrop(kind, namespace, name, timeline.DropReasonNoDiff, op)
+				timeline.RecordDrop(kind, namespace, name, timeline.DropReasonNoDiff, op, clusterContext)
 				if DebugEvents {
 					log.Printf("[DEBUG] No-diff update, skipping: %s/%s/%s", kind, namespace, name)
 				}
@@ -853,7 +853,7 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 				ctx := context.Background()
 				if err := timeline.RecordEventsWithBroadcast(ctx, events); err != nil {
 					log.Printf("Warning: failed to record historical events: %v", err)
-					timeline.RecordDrop(kind, namespace, name, timeline.DropReasonStoreFailed, op)
+					timeline.RecordDrop(kind, namespace, name, timeline.DropReasonStoreFailed, op, clusterContext)
 					return
 				}
 			}
@@ -867,7 +867,7 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 	ctx := context.Background()
 	if err := timeline.RecordEventsWithBroadcast(ctx, events); err != nil {
 		log.Printf("Warning: failed to record to timeline store: %v", err)
-		timeline.RecordDrop(kind, namespace, name, timeline.DropReasonStoreFailed, op)
+		timeline.RecordDrop(kind, namespace, name, timeline.DropReasonStoreFailed, op, clusterContext)
 		return
 	}
 

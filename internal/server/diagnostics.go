@@ -343,8 +343,8 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 			Received: snapshot.Counters.Received,
 			Dropped:  snapshot.Counters.Dropped,
 			Recorded: snapshot.Counters.Recorded,
-			// Drop records name individual resources; gate them like /api/debug/events.
-			RecentDrops: s.filterDropsByRBAC(r, snapshot.RecentDrops),
+			// Compose cluster-scope + per-user RBAC on the drop records (see handleDebugEvents).
+			RecentDrops: s.filterDropsByRBAC(r, timeline.DropsForCluster(snapshot.RecentDrops, k8s.ActiveClusterContext())),
 			Uptime:      snapshot.Uptime,
 		}
 	})

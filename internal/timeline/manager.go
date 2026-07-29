@@ -389,8 +389,7 @@ func broadcastEvent(event TimelineEvent) {
 		case ch <- event:
 		default:
 			// Channel full, skip (subscriber not keeping up)
-			RecordDrop(event.Kind, event.Namespace, event.Name,
-				DropReasonSubscriberFull, string(event.EventType))
+			RecordDrop(event.Kind, event.Namespace, event.Name, DropReasonSubscriberFull, string(event.EventType), event.ClusterContext)
 		}
 	}
 }

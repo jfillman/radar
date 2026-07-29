@@ -4815,30 +4815,21 @@ func (s *Server) handleDebugEventsDiagnose(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	response := timeline.GetDiagnosis(kind, namespace, name, k8s.ActiveClusterContext())
-
 	// RBAC: diagnose returns a specific resource's timeline rows (with diffs),
-	// drop history, and existence-revealing recommendations. The query matches by
-	// kind string only (not group), so filter the returned rows per-kind using
-	// EACH row's own apiVersion — that disambiguates a Kind that collides with a
-	// builtin (a namespaced CRD Kind=Node must not ride the caller's `list nodes`).
-	// When the caller can see nothing for this resource, neutralize the
-	// recommendations too so they don't confirm its existence. Auth off → no-op.
+	// drop history, and recommendations derived from them. The query matches by
+	// kind string only (not group), so authorize each returned row per-kind using
+	// its own apiVersion — disambiguating a Kind that collides with a builtin (a
+	// namespaced CRD Kind=Node must not ride the caller's `list nodes`). The gate
+	// runs inside GetDiagnosis, BEFORE recommendations, so tips can't describe a
+	// row the caller can't read. Auth off → nil filter → no-op.
+	var allow func(kind, apiVersion, namespace string) bool
 	if user := auth.UserFromContext(r.Context()); user != nil && s.permCache != nil {
 		authz := s.changeAuthorizerForCtx(r.Context())
-		events := response.TimelineEvents[:0]
-		for _, e := range response.TimelineEvents {
-			if k8s.ChangeReadAllowed(e.Kind, e.APIVersion, e.Namespace, authz) {
-				events = append(events, e)
-			}
-		}
-		response.TimelineEvents = events
-		response.DropHistory = s.filterDropsByRBAC(r, response.DropHistory)
-		if len(response.TimelineEvents) == 0 && len(response.DropHistory) == 0 {
-			response.Recommendations = []string{"No diagnostic data available for this resource."}
+		allow = func(kind, apiVersion, namespace string) bool {
+			return k8s.ChangeReadAllowed(kind, apiVersion, namespace, authz)
 		}
 	}
-
+	response := timeline.GetDiagnosis(kind, namespace, name, k8s.ActiveClusterContext(), allow)
 	s.writeJSON(w, response)
 }
 

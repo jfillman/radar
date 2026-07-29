@@ -487,12 +487,11 @@ func BuildPodContainerMetrics(pod *corev1.Pod, usage map[string]ContainerResourc
 	if runningCount <= 1 {
 		return nil
 	}
-	for name := range usage {
-		if _, seen := specs[name]; !seen {
-			order = append(order, name)
-			specs[name] = corev1.ResourceRequirements{}
-		}
-	}
+	// Only the pod's declared long-running containers (regular + native
+	// sidecars) are reported. A name that appears in the usage map but not
+	// here is a completed init container or a removed ephemeral container whose
+	// per-container buffer was never pruned — including it would add a phantom
+	// zero-limit row and inflate the unbounded count.
 
 	result := make([]ContainerResourceMetrics, 0, len(order))
 	for _, name := range order {

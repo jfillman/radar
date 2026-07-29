@@ -113,22 +113,25 @@ func TestBuildPodContainerMetrics(t *testing.T) {
 		byName[c.Name] = c
 	}
 
-	// Regular container + native sidecar + usage-only container are present;
-	// the excluded regular init container is not.
+	// Only the pod's declared long-running containers are reported: the regular
+	// container and the native sidecar. The regular init container is excluded,
+	// and so is the usage-only "extra" — a name present only in the metrics
+	// buffer (a completed init / removed ephemeral container whose buffer was
+	// never pruned) must not surface as a phantom row.
 	if _, ok := byName["app"]; !ok {
 		t.Error("regular container app missing from breakdown")
 	}
 	if _, ok := byName["istio-proxy"]; !ok {
 		t.Error("native sidecar istio-proxy missing from breakdown")
 	}
-	if _, ok := byName["extra"]; !ok {
-		t.Error("usage-only container extra missing from breakdown")
+	if _, ok := byName["extra"]; ok {
+		t.Error("usage-only container extra (not in spec) should be excluded as stale")
 	}
 	if _, ok := byName["setup"]; ok {
 		t.Error("regular init container setup should be excluded from breakdown")
 	}
-	if len(got) != 3 {
-		t.Fatalf("len(breakdown) = %d, want 3", len(got))
+	if len(got) != 2 {
+		t.Fatalf("len(breakdown) = %d, want 2", len(got))
 	}
 
 	// app carries both usage (from map) and request/limit (from spec).
@@ -141,15 +144,6 @@ func TestBuildPodContainerMetrics(t *testing.T) {
 	}
 	if app.MemoryRequest != 64*1024*1024 {
 		t.Errorf("app.MemoryRequest = %d, want %d", app.MemoryRequest, 64*1024*1024)
-	}
-
-	// usage-only container has usage but zero request/limit.
-	extra := byName["extra"]
-	if extra.CPU != 5*1_000_000 {
-		t.Errorf("extra.CPU = %d, want %d", extra.CPU, 5*1_000_000)
-	}
-	if extra.CPURequest != 0 || extra.CPULimit != 0 || extra.MemoryRequest != 0 || extra.MemoryLimit != 0 {
-		t.Errorf("usage-only container should have zero request/limit, got %+v", extra)
 	}
 }
 

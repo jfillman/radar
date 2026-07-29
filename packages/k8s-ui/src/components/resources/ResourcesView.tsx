@@ -6090,7 +6090,20 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
       const { mode, totalUsage, denom, markerPct, unlimitedCount } = podAggregate(list, kind)
       if (totalUsage === 0) return <span className="text-sm text-theme-text-tertiary">-</span>
 
-      const tip = buildContainerResourceTooltip(label, list, kind, format)
+      // Pod-vs-node context: how full the pod's node is (the risk signal) and
+      // how much of it this pod takes. Only when node metrics are loaded.
+      const nodeName = resource.spec?.nodeName as string | undefined
+      const node = nodeName ? metrics.nodes.get(nodeName) : undefined
+      const nodeAlloc = node ? (isCPU ? node.cpuAllocatable : node.memoryAllocatable) : 0
+      const nodeCtx = node && nodeAlloc > 0
+        ? {
+            name: nodeName!,
+            usedPct: ((isCPU ? node.cpu : node.memory) / nodeAlloc) * 100,
+            podSharePct: (totalUsage / nodeAlloc) * 100,
+          }
+        : undefined
+
+      const tip = buildContainerResourceTooltip(label, list, kind, format, nodeCtx)
 
       // Every container is limited → aggregate bar against the summed limit; a
       // real pod-level ceiling, so it may go red.
@@ -6752,11 +6765,29 @@ export function podAggregate(list: ContainerResourceMetrics[], kind: 'cpu' | 'me
 // by pct descending, intermixing limited and request-only. Containers with
 // neither render the words "no limit". Capped at CONTAINER_TOOLTIP_CAP rows,
 // with a final "+N more" line pointing at the pod.
+// NodeContext answers "is this pod at risk from its node?" — how full the node
+// is (the risk signal) and how much of the node this pod takes (attribution).
+interface NodeContext {
+  name: string
+  usedPct: number
+  podSharePct: number
+}
+
+// A node this full puts every pod on it at risk (eviction / OOM / throttling),
+// regardless of the pod's own limit headroom — so the line goes amber here.
+const NODE_PRESSURE_PCT = 85
+
+function formatSharePct(pct: number): string {
+  if (pct > 0 && pct < 1) return '<1%'
+  return `${Math.round(pct)}%`
+}
+
 function buildContainerResourceTooltip(
   label: 'CPU' | 'Memory',
   containers: ContainerResourceMetrics[],
   kind: 'cpu' | 'memory',
   formatFn: (n: number) => string,
+  nodeCtx?: NodeContext,
 ) {
   const rows = [...containers].sort((a, b) => {
     const diff = readContainer(b, kind).pct - readContainer(a, kind).pct
@@ -6791,6 +6822,21 @@ function buildContainerResourceTooltip(
       {remaining > 0 && (
         <div className="text-[11px] text-theme-text-tertiary border-t border-theme-border/50 pt-1">
           +{remaining} more → open pod
+        </div>
+      )}
+      {nodeCtx && (
+        <div className="flex flex-col leading-snug border-t border-theme-border/50 pt-1">
+          <span className="text-[11px] text-theme-text-tertiary truncate">Node {nodeCtx.name}</span>
+          <span
+            className={clsx(
+              'text-[11px]',
+              nodeCtx.usedPct >= NODE_PRESSURE_PCT
+                ? 'text-amber-500 font-medium'
+                : 'text-theme-text-secondary',
+            )}
+          >
+            {formatSharePct(nodeCtx.usedPct)} used · this pod {formatSharePct(nodeCtx.podSharePct)}
+          </span>
         </div>
       )}
     </div>

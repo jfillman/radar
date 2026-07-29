@@ -198,7 +198,13 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   const podCountAllowsBulkMetrics = countsData != null && podCountKnown && !podCountUnavailable && (podCount ?? 0) <= LARGE_RESOURCE_LIST_LIMIT
   const selectedKindName = selectedKind?.name.toLowerCase() ?? ''
   const topPodMetricsEnabled = selectedKindName === 'pods' && podCountAllowsBulkMetrics
-  const topNodeMetricsEnabled = selectedKindName === 'nodes' && namespaces.length === 0 && podCountAllowsBulkMetrics
+  // Node metrics back the Nodes table and, for the Pods table, the pod-vs-node
+  // context line in the CPU/Memory tooltip (a pod can be fine against its own
+  // limit yet at risk from a saturated node). Nodes are cluster-wide, so the
+  // pods case is not gated on the namespace filter.
+  const topNodeMetricsEnabled =
+    ((selectedKindName === 'nodes' && namespaces.length === 0) || selectedKindName === 'pods') &&
+    podCountAllowsBulkMetrics
   const largeListGuard = selectedKind && largeListBlocked
     ? {
         kind: selectedKind.name,

@@ -1032,15 +1032,28 @@ export type ChartSource = 'local' | 'artifacthub'
 // ============================================================================
 
 // Top metrics types (bulk, for resource table view)
+export interface ContainerResourceMetrics {
+  name: string
+  cpu: number           // nanocores (usage)
+  cpuRequest: number    // nanocores
+  cpuLimit: number      // nanocores
+  memory: number        // bytes (usage)
+  memoryRequest: number // bytes
+  memoryLimit: number   // bytes
+}
+
 export interface TopPodMetrics {
   namespace: string
   name: string
   cpu: number           // nanocores (usage)
   memory: number        // bytes (usage)
-  cpuRequest: number    // nanocores (sum across containers)
-  cpuLimit: number      // nanocores (sum across containers)
-  memoryRequest: number // bytes (sum across containers)
-  memoryLimit: number   // bytes (sum across containers)
+  cpuRequest: number    // nanocores (sum across running containers)
+  cpuLimit: number      // nanocores (sum across running containers)
+  memoryRequest: number // bytes (sum across running containers)
+  memoryLimit: number   // bytes (sum across running containers)
+  // Per-container breakdown; present only for pods with more than one running
+  // container (regular + native sidecars). Absent for single-container pods.
+  containers?: ContainerResourceMetrics[]
 }
 
 export interface TopNodeMetrics {

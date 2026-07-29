@@ -2692,11 +2692,13 @@ func (s *Server) handleTopPods(w http.ResponseWriter, r *http.Request) {
 
 	// Build metrics lookup (may be empty if metrics-server is unavailable)
 	metricsMap := make(map[string]*k8s.TopPodMetrics)
+	var containerUsage map[string]map[string]k8s.ContainerResourceMetrics
 	if store := k8s.GetMetricsHistory(); store != nil {
 		raw := store.GetAllPodMetricsLatest()
 		for i := range raw {
 			metricsMap[raw[i].Namespace+"/"+raw[i].Name] = &raw[i]
 		}
+		containerUsage = store.GetAllPodContainerMetricsLatest()
 	}
 
 	// Get pod lister from cache to enrich with requests/limits
@@ -2749,21 +2751,20 @@ func (s *Server) handleTopPods(w http.ResponseWriter, r *http.Request) {
 			entry.Memory = m.Memory
 		}
 
-		// Sum requests and limits across all containers
-		for _, c := range pod.Spec.Containers {
-			if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
-				entry.CPURequest += req.MilliValue() * 1000000 // millicores to nanocores
-			}
-			if lim, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
-				entry.CPULimit += lim.MilliValue() * 1000000
-			}
-			if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
-				entry.MemoryRequest += req.Value()
-			}
-			if lim, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
-				entry.MemoryLimit += lim.Value()
-			}
-		}
+		// Sum requests and limits over the pod's running containers (regular
+		// containers plus native sidecars) so they align with how usage is
+		// summed — otherwise a native sidecar's usage inflates the pod's
+		// over-limit percentage.
+		totals := k8s.SumRunningContainerResources(pod)
+		entry.CPURequest = totals.CPURequest
+		entry.CPULimit = totals.CPULimit
+		entry.MemoryRequest = totals.MemoryRequest
+		entry.MemoryLimit = totals.MemoryLimit
+
+		// Per-container breakdown drives the table's per-container display.
+		// Nil for single-running-container pods, where the client falls back
+		// to the pod-level sums above.
+		entry.Containers = k8s.BuildPodContainerMetrics(pod, containerUsage[key])
 
 		result = append(result, entry)
 	}

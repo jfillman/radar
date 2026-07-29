@@ -106,6 +106,9 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 			}
 			return s.canRead(r, gvrGroup, gvrResource, "", "list")
 		},
+		CanRead: func(group, resource, namespace string) bool {
+			return s.canRead(r, group, resource, namespace, "list")
+		},
 	}
 	if expr := q.Get("filter"); expr != "" {
 		f, err := filter.CachedIssueFilter(expr)
@@ -251,7 +254,7 @@ func (s *Server) handleResourceIssues(w http.ResponseWriter, r *http.Request) {
 		namespaces = []string{namespace}
 	}
 
-	related := issues.RelatedIssues(provider, namespaces, group, kind, namespace, name)
+	related := issues.RelatedIssues(provider, namespaces, group, kind, namespace, name, func(g, res, ns string) bool { return s.canRead(r, g, res, ns, "list") })
 	if related == nil {
 		related = []issues.Issue{}
 	}

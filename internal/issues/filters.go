@@ -51,6 +51,30 @@ func applyClusterScopedAccess(in []Issue, f Filters) []Issue {
 	return out
 }
 
+// applyCrossKindEvidenceAccess gates issues whose evidence exposes a kind the
+// subject-reader may not be able to read. Issues are otherwise namespace-gated
+// only, so a Pod-reader receives evidence a detector derived (as the cache SA)
+// from a Secret / Node / etc. it references. Runs on flat rows after
+// applyClusterScopedAccess. nil CanRead disables it (auth off / tests).
+//
+// StaleSecretEnv is entirely derived from a referenced Secret's change history
+// (the Secret's existence, its data key names for envFrom consumers, and the
+// rotation timing) — none of which is in the Pod's own readable spec. Drop it
+// for callers who can't read Secrets in the issue's namespace.
+func applyCrossKindEvidenceAccess(in []Issue, f Filters) []Issue {
+	if f.CanRead == nil {
+		return in
+	}
+	out := in[:0]
+	for _, i := range in {
+		if i.Reason == "StaleSecretEnv" && !f.CanRead("", "secrets", i.Namespace) {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
 // SeverityRank orders the normalized issue severity, higher = worse. Shared by
 // the grouping comparators here and by the per-resource summary rollups in the
 // server/MCP layers, so all three rank off one function.

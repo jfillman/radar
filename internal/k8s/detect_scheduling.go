@@ -306,13 +306,19 @@ func resolveUnsatisfiableNodeSelector(p PodPlacement, nodes []NodeFacts) []strin
 	return out
 }
 
+// explainMissingLabel and explainMissingExpr report only the pod's OWN
+// unsatisfiable requirement — never the label values the fleet's nodes carry.
+// Those values are cluster-scoped Node content, and scheduling issues are served
+// to namespaced readers who may lack node RBAC; enumerating what the fleet
+// carries would leak node topology (zones, instance types, tenancy/internal
+// labels). `present` gates only the "no node carries the label at all" wording;
+// its values are never emitted.
 func explainMissingLabel(key, val string, nodes []NodeFacts) string {
 	present := distinctLabelValues(nodes, key)
 	if len(present) == 0 {
 		return fmt.Sprintf("no node carries label %s (pod requires %s=%s)", key, key, val)
 	}
-	return fmt.Sprintf("no node has %s=%s — %d node(s) carry %s: [%s]",
-		key, val, countNodesWithLabelKey(nodes, key), key, strings.Join(present, ", "))
+	return fmt.Sprintf("no node has %s=%s", key, val)
 }
 
 func explainMissingExpr(e MatchExpr, nodes []NodeFacts) string {
@@ -322,7 +328,7 @@ func explainMissingExpr(e MatchExpr, nodes []NodeFacts) string {
 		if len(present) == 0 {
 			return fmt.Sprintf("no node carries label %s (pod requires %s in [%s])", e.Key, e.Key, strings.Join(e.Values, ", "))
 		}
-		return fmt.Sprintf("no node has %s in [%s] — fleet %s: [%s]", e.Key, strings.Join(e.Values, ", "), e.Key, strings.Join(present, ", "))
+		return fmt.Sprintf("no node has %s in [%s]", e.Key, strings.Join(e.Values, ", "))
 	case "Exists":
 		return fmt.Sprintf("no node carries label %s (pod requires it to exist)", e.Key)
 	case "DoesNotExist":

@@ -13,11 +13,14 @@ import (
 // may pass the K8s Kind or a normalized form); group is exact, including the
 // empty core API group, so core/CRD kind collisions cannot bleed into each
 // other's resourceContext.
-func RelatedIssues(p Provider, namespaces []string, group, kind, namespace, name string) []Issue {
+// canRead gates cross-kind evidence (e.g. StaleSecretEnv, derived from a
+// referenced Secret's history) the same way the /api/issues path does; pass nil
+// when auth is off.
+func RelatedIssues(p Provider, namespaces []string, group, kind, namespace, name string, canRead func(group, resource, namespace string) bool) []Issue {
 	// Compose FLAT (uncapped) then group: matching against the flat evidence —
 	// not the grouped issue's inline Members (capped at maxInlineMembers) — is
 	// what makes member #11..#N in a large fan-out resolve correctly.
-	flat := Compose(p, Filters{Namespaces: namespaces, Limit: NoLimit})
+	flat := Compose(p, Filters{Namespaces: namespaces, Limit: NoLimit, CanRead: canRead})
 	grouped := GroupIssues(flat)
 	// Run the grouped-mode enrichment (mirrors the cluster path) so the grouped
 	// issues get coverage-gated incident_parent pointers — GroupIssues alone only

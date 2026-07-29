@@ -160,11 +160,15 @@ func TestResolveUnsatisfiableNodeSelector_ArchMismatch(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d explanations, want 1: %+v", len(got), got)
 	}
-	// Must name the offending key, the required value, and the fleet's actual value.
-	for _, want := range []string{"kubernetes.io/arch", "arm64", "amd64"} {
+	// Names the offending key + the pod's OWN required value; must NOT enumerate
+	// the fleet's actual node label values (cluster-scoped Node content).
+	for _, want := range []string{"kubernetes.io/arch", "arm64"} {
 		if !strings.Contains(got[0], want) {
 			t.Errorf("explanation %q missing %q", got[0], want)
 		}
+	}
+	if strings.Contains(got[0], "amd64") {
+		t.Errorf("explanation leaks the fleet's node label value: %q", got[0])
 	}
 }
 
@@ -177,8 +181,13 @@ func TestResolveUnsatisfiableNodeSelector_ZoneViaAffinity(t *testing.T) {
 		{Expressions: []MatchExpr{{Key: "topology.kubernetes.io/zone", Operator: "In", Values: []string{"us-east-1b"}}}},
 	}}
 	got := resolveUnsatisfiableNodeSelector(p, nodes)
-	if len(got) != 1 || !strings.Contains(got[0], "topology.kubernetes.io/zone") || !strings.Contains(got[0], "us-east-1a") {
-		t.Fatalf("want zone explanation naming the key + fleet value, got %+v", got)
+	// Names the key + the pod's OWN required value (us-east-1b); must NOT leak the
+	// fleet's actual zone (us-east-1a).
+	if len(got) != 1 || !strings.Contains(got[0], "topology.kubernetes.io/zone") || !strings.Contains(got[0], "us-east-1b") {
+		t.Fatalf("want zone explanation naming the key + pod's required value, got %+v", got)
+	}
+	if strings.Contains(got[0], "us-east-1a") {
+		t.Fatalf("explanation leaks the fleet's node zone value: %+v", got)
 	}
 }
 
@@ -246,10 +255,13 @@ func TestDescribeUnschedulable_ArchMismatchNamesLabel(t *testing.T) {
 		{Name: "n2", Labels: map[string]string{"kubernetes.io/arch": "amd64"}},
 	}
 	msg := describeUnschedulable(pod, "0/2 nodes are available: 2 node(s) didn't match Pod's node affinity/selector.", nodes)
-	for _, want := range []string{"kubernetes.io/arch", "arm64", "amd64", "0/2 nodes available"} {
+	for _, want := range []string{"kubernetes.io/arch", "arm64", "0/2 nodes available"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message %q missing %q", msg, want)
 		}
+	}
+	if strings.Contains(msg, "amd64") {
+		t.Errorf("message leaks the fleet's node label value: %q", msg)
 	}
 	// The resolved label supersedes the generic clause — don't double-report.
 	if strings.Contains(msg, "node affinity/selector mismatch") {

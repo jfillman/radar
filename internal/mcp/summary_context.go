@@ -30,12 +30,12 @@ import (
 // per-hit between a namespaced and a cluster-wide index — search
 // returns mixed kinds in one response, so a single index can't get
 // both right.
-func newResourceSummaryContextBuilder(namespaces []string) summarycontext.Builder {
+func newResourceSummaryContextBuilder(namespaces []string, canRead func(group, resource, namespace string) bool) summarycontext.Builder {
 	provider := issues.NewCacheProvider()
 	if provider == nil {
 		return nil
 	}
-	idx := summarycontext.BuildIssueIndex(provider, namespaces)
+	idx := summarycontext.BuildIssueIndex(provider, namespaces, canRead)
 	return summarycontext.BuilderFromIndexes(buildSummaryContextTopology(namespaces), idx, idx)
 }
 
@@ -46,15 +46,15 @@ func newResourceSummaryContextBuilder(namespaces []string) summarycontext.Builde
 // canReadClusterScopedKind) already gates which cluster-scoped kinds
 // are reachable, so composing the cluster-wide index doesn't leak
 // rows the user can't see.
-func newSearchSummaryContextBuilder(scanNamespaces []string) summarycontext.Builder {
+func newSearchSummaryContextBuilder(scanNamespaces []string, canRead func(group, resource, namespace string) bool) summarycontext.Builder {
 	provider := issues.NewCacheProvider()
 	if provider == nil {
 		return nil
 	}
-	namespacedIdx := summarycontext.BuildIssueIndex(provider, scanNamespaces)
+	namespacedIdx := summarycontext.BuildIssueIndex(provider, scanNamespaces, canRead)
 	clusterIdx := namespacedIdx
 	if scanNamespaces != nil {
-		clusterIdx = summarycontext.BuildIssueIndex(provider, nil)
+		clusterIdx = summarycontext.BuildIssueIndex(provider, nil, canRead)
 	}
 	return summarycontext.BuilderFromIndexes(buildSummaryContextTopology(scanNamespaces), namespacedIdx, clusterIdx)
 }

@@ -178,7 +178,7 @@ func (s *Server) handleGitOpsInsights(w http.ResponseWriter, r *http.Request) {
 	canAccess := func(group, kind, namespace, name string) bool {
 		return s.canAccessGitOpsRef(r, req, group, kind, namespace, name, false)
 	}
-	resolver := newInsightsResolver(r.Context(), req.Cache, req.AllowedNamespaces, canAccess)
+	resolver := newInsightsResolver(r.Context(), req.Cache, req.AllowedNamespaces, canAccess, func(g, res, ns string) bool { return s.canRead(r, g, res, ns, "list") })
 	resolver.prefetchLive(gitopsinsights.ManagedResourceRows(root), gitopsinsights.OperationPhase(root))
 	insight := gitopsinsights.Build(root, tree, resolver)
 	insight.Warnings = appendWarnings(insight.Warnings, tree.Warnings...)
@@ -671,6 +671,10 @@ type insightsResolver struct {
 	cache             *k8s.ResourceCache
 	allowedNamespaces []string
 	canAccess         func(group, kind, namespace, name string) bool
+	// canRead gates cross-kind issue evidence (e.g. StaleSecretEnv, derived from
+	// a referenced Secret's history) when composing ResourceProblems — canAccess
+	// only gates the target resource, not the evidence's source kind.
+	canRead func(group, resource, namespace string) bool
 
 	// The cluster-wide issue set is composed at most once per insights request
 	// (lazily, only if a degraded managed resource asks for it) and reused
@@ -696,8 +700,8 @@ type insightsResolver struct {
 	eventIndex map[string][]*corev1.Event
 }
 
-func newInsightsResolver(ctx context.Context, cache *k8s.ResourceCache, allowed []string, canAccess func(group, kind, namespace, name string) bool) *insightsResolver {
-	return &insightsResolver{ctx: ctx, cache: cache, allowedNamespaces: allowed, canAccess: canAccess}
+func newInsightsResolver(ctx context.Context, cache *k8s.ResourceCache, allowed []string, canAccess func(group, kind, namespace, name string) bool, canRead func(group, resource, namespace string) bool) *insightsResolver {
+	return &insightsResolver{ctx: ctx, cache: cache, allowedNamespaces: allowed, canAccess: canAccess, canRead: canRead}
 }
 
 // gitopsLiveGETConcurrency bounds process-wide concurrency of the drift
@@ -855,7 +859,7 @@ func (r *insightsResolver) ResourceProblems(group, kind, namespace, name string)
 		return nil
 	}
 	r.composeOnce.Do(func() {
-		r.composedFlat = issues.Compose(issues.NewCacheProvider(), issues.Filters{Namespaces: r.allowedNamespaces, Limit: issues.NoLimit})
+		r.composedFlat = issues.Compose(issues.NewCacheProvider(), issues.Filters{Namespaces: r.allowedNamespaces, Limit: issues.NoLimit, CanRead: r.canRead})
 		r.composedGrouped = issues.GroupIssues(r.composedFlat)
 	})
 	related := issues.RelatedIssuesFrom(r.composedFlat, r.composedGrouped, group, kind, namespace, name)

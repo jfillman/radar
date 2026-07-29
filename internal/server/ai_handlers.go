@@ -190,7 +190,7 @@ func (s *Server) handleAIListResources(w http.ResponseWriter, r *http.Request) {
 	// so we pass nil here to compose cluster-wide.
 	if !skipContext && level == aicontext.LevelSummary {
 		idxNamespaces := issueIndexNamespaces(namespaces, kind, group)
-		if builder := s.newResourceSummaryContextBuilder(idxNamespaces); builder != nil {
+		if builder := s.newResourceSummaryContextBuilder(idxNamespaces, func(g, res, ns string) bool { return s.canRead(r, g, res, ns, "list") }); builder != nil {
 			// Typed list resolves group from each object's TypeMeta —
 			// MinifyList sets it via SetTypeMeta before producing rows,
 			// so we can trust apiVersion on the typed source.
@@ -251,7 +251,7 @@ func (s *Server) aiListDynamic(w http.ResponseWriter, r *http.Request, cache *k8
 
 	if !skipContext && level == aicontext.LevelSummary {
 		idxNamespaces := issueIndexNamespaces(namespaces, kind, group)
-		if builder := s.newResourceSummaryContextBuilder(idxNamespaces); builder != nil {
+		if builder := s.newResourceSummaryContextBuilder(idxNamespaces, func(g, res, ns string) bool { return s.canRead(r, g, res, ns, "list") }); builder != nil {
 			summarycontext.AttachToUnstructuredList(results, allItems, builder)
 		}
 	}
@@ -422,7 +422,7 @@ func (s *Server) buildAIResourceContext(r *http.Request, obj runtime.Object, kin
 	}
 	canonicalGroup := gvk.Group
 
-	issueSum := computeIssueSummaryForResource(cache, canonicalGroup, canonicalKind, namespace, name)
+	issueSum := computeIssueSummaryForResource(cache, canonicalGroup, canonicalKind, namespace, name, func(g, res, ns string) bool { return s.canRead(r, g, res, ns, "list") })
 	auditSum := computeAuditSummaryForResource(cache, canonicalGroup, canonicalKind, namespace, name)
 
 	opts := resourcecontext.Options{
@@ -505,15 +505,15 @@ func (s *Server) topologyForContext(namespace string) (*topology.Topology, topol
 // summary silently collapses to nil.
 //
 // Returns nil when no issues match — Build then omits the IssueSummary field.
-func computeIssueSummaryForResource(cache *k8s.ResourceCache, group, kind, namespace, name string) *resourcecontext.IssueSummary {
-	sum, _ := computeIssueSummaryAndRows(cache, group, kind, namespace, name)
+func computeIssueSummaryForResource(cache *k8s.ResourceCache, group, kind, namespace, name string, canRead func(group, resource, namespace string) bool) *resourcecontext.IssueSummary {
+	sum, _ := computeIssueSummaryAndRows(cache, group, kind, namespace, name, canRead)
 	return sum
 }
 
 // computeIssueSummaryAndRows additionally returns the matched rows sorted by
 // (severity desc, reason asc) — the diagnose health frame shows the actual
 // lines, not just the rollup.
-func computeIssueSummaryAndRows(cache *k8s.ResourceCache, group, kind, namespace, name string) (*resourcecontext.IssueSummary, []issues.Issue) {
+func computeIssueSummaryAndRows(cache *k8s.ResourceCache, group, kind, namespace, name string, canRead func(group, resource, namespace string) bool) (*resourcecontext.IssueSummary, []issues.Issue) {
 	if cache == nil {
 		return nil, nil
 	}
@@ -529,7 +529,7 @@ func computeIssueSummaryAndRows(cache *k8s.ResourceCache, group, kind, namespace
 	// surfaces the grouped issues its pods are evidence for, and on a pod beyond
 	// the inline-Members cap too. The old flat-by-exact-resource match missed
 	// both (a Deployment matched no Kind=Pod evidence rows → empty summary).
-	matched := issues.RelatedIssues(provider, namespaces, group, kind, namespace, name)
+	matched := issues.RelatedIssues(provider, namespaces, group, kind, namespace, name, canRead)
 	if len(matched) == 0 {
 		return nil, nil
 	}

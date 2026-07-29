@@ -103,7 +103,7 @@ func buildMutationVerification(ctx context.Context, dynClient dynamic.Interface,
 		out["pods"] = pods
 		cacheSnapshot = true
 	}
-	if related := relatedIssuesForObject(post); len(related) > 0 {
+	if related := relatedIssuesForObject(post, func(g, res, ns string) bool { return canReadInNamespace(ctx, g, res, ns, "list") }); len(related) > 0 {
 		out["currentIssues"] = related
 		cacheSnapshot = true
 	}
@@ -747,7 +747,7 @@ func podContainerStatus(pod *corev1.Pod) (bool, int32, string) {
 	return allReady, restarts, waiting
 }
 
-func relatedIssuesForObject(obj *unstructured.Unstructured) []map[string]any {
+func relatedIssuesForObject(obj *unstructured.Unstructured, canRead func(group, resource, namespace string) bool) []map[string]any {
 	if obj == nil {
 		return nil
 	}
@@ -764,7 +764,7 @@ func relatedIssuesForObject(obj *unstructured.Unstructured) []map[string]any {
 	if obj.GetNamespace() != "" {
 		namespaces = []string{obj.GetNamespace()}
 	}
-	matched := issues.RelatedIssues(provider, namespaces, gvk.Group, kind, obj.GetNamespace(), obj.GetName())
+	matched := issues.RelatedIssues(provider, namespaces, gvk.Group, kind, obj.GetNamespace(), obj.GetName(), canRead)
 	if len(matched) == 0 {
 		return nil
 	}

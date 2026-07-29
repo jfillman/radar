@@ -27,12 +27,12 @@ import (
 // Use newSearchSummaryContextBuilder for search, which routes per-hit
 // between a namespaced and a cluster-wide index — search returns mixed
 // kinds in one response, so a single index can't get both right.
-func (s *Server) newResourceSummaryContextBuilder(namespaces []string) summarycontext.Builder {
+func (s *Server) newResourceSummaryContextBuilder(namespaces []string, canRead func(group, resource, namespace string) bool) summarycontext.Builder {
 	provider := issues.NewCacheProvider()
 	if provider == nil {
 		return nil
 	}
-	idx := summarycontext.BuildIssueIndex(provider, namespaces)
+	idx := summarycontext.BuildIssueIndex(provider, namespaces, canRead)
 	return summarycontext.BuilderFromIndexes(s.broadcaster.GetCachedTopology(), idx, idx)
 }
 
@@ -56,15 +56,15 @@ func (s *Server) newResourceSummaryContextBuilder(namespaces []string) summaryco
 // The cluster-wide index is skipped when scanNamespaces is already nil
 // (cluster-wide user) — both indexes would be identical, so one pass
 // suffices.
-func (s *Server) newSearchSummaryContextBuilder(scanNamespaces []string) summarycontext.Builder {
+func (s *Server) newSearchSummaryContextBuilder(scanNamespaces []string, canRead func(group, resource, namespace string) bool) summarycontext.Builder {
 	provider := issues.NewCacheProvider()
 	if provider == nil {
 		return nil
 	}
-	namespacedIdx := summarycontext.BuildIssueIndex(provider, scanNamespaces)
+	namespacedIdx := summarycontext.BuildIssueIndex(provider, scanNamespaces, canRead)
 	clusterIdx := namespacedIdx
 	if scanNamespaces != nil {
-		clusterIdx = summarycontext.BuildIssueIndex(provider, nil)
+		clusterIdx = summarycontext.BuildIssueIndex(provider, nil, canRead)
 	}
 	return summarycontext.BuilderFromIndexes(s.broadcaster.GetCachedTopology(), namespacedIdx, clusterIdx)
 }

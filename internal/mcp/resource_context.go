@@ -64,7 +64,7 @@ func (l mcpServiceBackendLookup) PodsForServiceSelector(namespace string, select
 // Pascal-singular kind required: the composer's Filters.Kinds matcher
 // case-folds both sides but doesn't plural-to-singular convert. Callers
 // pass canonicalKind from obj's TypeMeta.
-func computeMCPIssueSummary(cache *k8s.ResourceCache, group, kind, namespace, name string) *resourcecontext.IssueSummary {
+func computeMCPIssueSummary(cache *k8s.ResourceCache, group, kind, namespace, name string, canRead func(group, resource, namespace string) bool) *resourcecontext.IssueSummary {
 	if cache == nil {
 		return nil
 	}
@@ -80,7 +80,7 @@ func computeMCPIssueSummary(cache *k8s.ResourceCache, group, kind, namespace, na
 	// surfaces the GROUPED issues its pods are evidence for (was empty — the
 	// old flat-by-exact-resource match looked for Kind=Deployment rows, but the
 	// evidence is Kind=Pod), and on a pod past the inline-Members cap too.
-	matched := issues.RelatedIssues(provider, namespaces, group, kind, namespace, name)
+	matched := issues.RelatedIssues(provider, namespaces, group, kind, namespace, name, canRead)
 	if len(matched) == 0 {
 		return nil
 	}

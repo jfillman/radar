@@ -48,10 +48,13 @@ func TestDetectSchedulingProblems_BindTime(t *testing.T) {
 	}
 	for _, p := range problems {
 		if p.Name == "web" {
-			for _, want := range []string{"kubernetes.io/arch", "arm64", "amd64"} {
+			for _, want := range []string{"kubernetes.io/arch", "arm64"} {
 				if !strings.Contains(p.Message, want) {
 					t.Errorf("message %q should name the offending label %q", p.Message, want)
 				}
+			}
+			if strings.Contains(p.Message, "amd64") {
+				t.Errorf("message leaks the fleet's node label value: %q", p.Message)
 			}
 		}
 	}

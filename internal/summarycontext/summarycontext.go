@@ -186,10 +186,14 @@ func CanonicalSingular(kind string) string {
 // engine emits "Application", silently zeroing issueCount on every CRD
 // row. Bucketing is O(N) over the at-most-namespace-bounded issue set,
 // which the consumer materialises anyway.
-func BuildIssueIndex(p issues.Provider, namespaces []string) IssueIndex {
+// canRead gates cross-kind evidence (e.g. StaleSecretEnv counts, derived from a
+// referenced Secret's history) so the issue COUNT can't side-channel an issue
+// the caller couldn't read directly; pass nil when auth is off.
+func BuildIssueIndex(p issues.Provider, namespaces []string, canRead func(group, resource, namespace string) bool) IssueIndex {
 	filters := issues.Filters{
 		Namespaces: namespaces,
 		Limit:      issues.NoLimit,
+		CanRead:    canRead,
 	}
 	// Compose FLAT (uncapped): every evidence row carries the grouped issue ID
 	// (enrichIdentity keys it on owner-else-self + category) and its resolved

@@ -31,6 +31,12 @@ type Filters struct {
 	// nil preserves auth-mode=none and tests where the provider's own
 	// permissions are the only gate.
 	CanReadClusterScoped func(kind, group string) bool
+	// CanRead authorizes a namespaced per-kind read (group, resource, namespace)
+	// for issue evidence that derives from a DIFFERENT kind than the subject —
+	// e.g. a StaleSecretEnv issue on a Pod is built from a referenced Secret's
+	// change history. Handlers provide a per-user SAR-backed predicate; nil
+	// disables the cross-kind evidence gate (auth-mode=none, tests).
+	CanRead func(group, resource, namespace string) bool
 	// Grouped folds the flat rows into the public grouped model
 	// (GroupIssues) before the cap, so the limit counts issue groups, not
 	// replica fan-out. The public /api/issues + MCP issues set this; flat

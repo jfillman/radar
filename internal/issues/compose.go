@@ -147,6 +147,7 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 	// symptoms against parent rollups across member pods — both need the flat
 	// rows, so they run BEFORE grouping and BEFORE the public filters.
 	out = applyClusterScopedAccess(out, f)
+	out = applyCrossKindEvidenceAccess(out, f)
 	out = dedupePodSchedulingOverProblem(out)
 	// Same-resource structural-root → symptom: fold a pod's runtime symptom into
 	// the dangling-ref that caused it, and an autoscaler's condition into its

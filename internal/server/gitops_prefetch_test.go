@@ -76,7 +76,7 @@ func outOfSyncRow() gitopsinsights.ManagedResourceRow {
 
 func TestPrefetchLiveFetchesOutOfSyncRow(t *testing.T) {
 	dyn := prefetchTestEnv(t)
-	r := newInsightsResolver(context.Background(), resolverCache(), nil, nil)
+	r := newInsightsResolver(context.Background(), resolverCache(), nil, nil, nil)
 	r.prefetchLive([]gitopsinsights.ManagedResourceRow{outOfSyncRow()}, "")
 
 	if got := countGets(dyn); got != 1 {
@@ -101,7 +101,7 @@ func TestPrefetchLiveFetchesOutOfSyncRow(t *testing.T) {
 func TestPrefetchLiveSkipsAllFetchesWhileOperationRuns(t *testing.T) {
 	dyn := prefetchTestEnv(t)
 	for _, phase := range []string{"Running", "Terminating"} {
-		r := newInsightsResolver(context.Background(), resolverCache(), nil, nil)
+		r := newInsightsResolver(context.Background(), resolverCache(), nil, nil, nil)
 		r.prefetchLive([]gitopsinsights.ManagedResourceRow{outOfSyncRow()}, phase)
 		if got := countGets(dyn); got != 0 {
 			t.Fatalf("phase %s: prefetch issued %d GETs, want 0", phase, got)
@@ -116,7 +116,7 @@ func TestPrefetchLiveSkipsAllFetchesWhileOperationRuns(t *testing.T) {
 // — Argo's own normalization suppresses what a last-applied diff would show.
 func TestPrefetchLiveSkipsCleanlySyncedRows(t *testing.T) {
 	dyn := prefetchTestEnv(t)
-	r := newInsightsResolver(context.Background(), resolverCache(), nil, nil)
+	r := newInsightsResolver(context.Background(), resolverCache(), nil, nil, nil)
 	r.prefetchLive([]gitopsinsights.ManagedResourceRow{{
 		Ref:  gitopsinsights.Ref{Group: "apps", Kind: "Deployment", Namespace: "prod", Name: "billing"},
 		Sync: "Synced",
@@ -126,7 +126,7 @@ func TestPrefetchLiveSkipsCleanlySyncedRows(t *testing.T) {
 	}
 
 	// A Synced row that recorded a sync error is still worth the fetch.
-	r2 := newInsightsResolver(context.Background(), resolverCache(), nil, nil)
+	r2 := newInsightsResolver(context.Background(), resolverCache(), nil, nil, nil)
 	r2.prefetchLive([]gitopsinsights.ManagedResourceRow{{
 		Ref:          gitopsinsights.Ref{Group: "apps", Kind: "Deployment", Namespace: "prod", Name: "billing"},
 		Sync:         "Synced",
@@ -143,7 +143,7 @@ func TestPrefetchLiveHonorsRBACGatesBeforeFetching(t *testing.T) {
 	dyn := prefetchTestEnv(t)
 
 	denyAll := func(group, kind, namespace, name string) bool { return false }
-	r := newInsightsResolver(context.Background(), resolverCache(), nil, denyAll)
+	r := newInsightsResolver(context.Background(), resolverCache(), nil, denyAll, nil)
 	r.prefetchLive([]gitopsinsights.ManagedResourceRow{outOfSyncRow()}, "")
 	if got := countGets(dyn); got != 0 {
 		t.Fatalf("prefetch issued %d GETs for access-denied ref, want 0", got)
@@ -153,7 +153,7 @@ func TestPrefetchLiveHonorsRBACGatesBeforeFetching(t *testing.T) {
 	}
 
 	// Namespace allowlist gate: ref outside the allowed set is not fetched.
-	r2 := newInsightsResolver(context.Background(), resolverCache(), []string{"other"}, nil)
+	r2 := newInsightsResolver(context.Background(), resolverCache(), []string{"other"}, nil, nil)
 	r2.prefetchLive([]gitopsinsights.ManagedResourceRow{outOfSyncRow()}, "")
 	if got := countGets(dyn); got != 0 {
 		t.Fatalf("prefetch issued %d GETs for ref outside namespace allowlist, want 0", got)

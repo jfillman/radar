@@ -113,6 +113,10 @@ func correlateIssue(ctx context.Context, iss *issuesapi.Issue, window time.Durat
 		log.Printf("[mcp] issue change correlation failed for %s %s/%s: %v", iss.Kind, iss.Namespace, iss.Name, err)
 		return // marker omitted = unknown, never a false "no changes"
 	}
+	// Per-kind RBAC: a workload subject's correlated changes include its consumed
+	// ConfigMaps, which the caller may not be able to read even when authorized on
+	// the workload. Drop what they can't read before building the marker.
+	changes = filterRecentChangesRBAC(ctx, changes)
 	// The marker's contract is non-status evidence: status churn on a
 	// failing workload is the SYMPTOM, not a change that could explain it
 	// — including it would make every failing issue read as "correlated".

@@ -1041,7 +1041,7 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 		if err != nil {
 			changesErr = err.Error()
 		} else {
-			recentChanges = changes
+			recentChanges = filterRecentChangesRBAC(ctx, changes)
 		}
 	}
 
@@ -1193,7 +1193,7 @@ func attachResourceExtras(ctx context.Context, cache *k8s.ResourceCache, result 
 		_, hasChangesErr := result["recentChangesError"]
 		if !hasChanges && !hasChangesErr {
 			if changes, _, err := meaningfulchanges.RecentForResource(ctx, kind, namespace, name, meaningfulchanges.DefaultSince, meaningfulchanges.ResourceLimit, meaningfulchanges.DefaultFieldLimit); err == nil {
-				result["recentChanges"] = changes
+				result["recentChanges"] = filterRecentChangesRBAC(ctx, changes)
 			} else {
 				result["recentChangesError"] = err.Error()
 			}
@@ -1271,24 +1271,6 @@ func isPodKind(kind string) bool {
 	return kind == "pod" || kind == "pods"
 }
 
-// filterChangesByClusterScopedRBAC drops change entries for cluster-scoped
-// kinds the user lacks RBAC to read. The change feed namespace-filters but did
-// not honor per-kind cluster-scoped RBAC — fine while every tracked kind was
-// namespaced, but now that cluster-scoped kinds (admission webhook configs) are
-// in the feed it would be a side channel around the SAR that gates every other
-// read. No-op when no per-user RBAC is on context: canReadClusterScopedKind
-// returns true (the radar-SA / benchmark case), and it short-circuits true for
-// namespaced kinds, so only cluster-scoped denials are dropped.
-func filterChangesByClusterScopedRBAC(ctx context.Context, changes []issuesapi.RecentChange) []issuesapi.RecentChange {
-	filtered := changes[:0]
-	for _, c := range changes {
-		if canReadClusterScopedKind(ctx, c.Kind, "", "list") {
-			filtered = append(filtered, c)
-		}
-	}
-	return filtered
-}
-
 func handleGetChanges(ctx context.Context, req *mcp.CallToolRequest, input getChangesInput) (*mcp.CallToolResult, any, error) {
 	since := 1 * time.Hour
 	if input.Since != "" {
@@ -1345,7 +1327,7 @@ func handleGetChanges(ctx context.Context, req *mcp.CallToolRequest, input getCh
 	} else {
 		changes = append(changes, helmChanges...)
 	}
-	changes = filterChangesByClusterScopedRBAC(ctx, changes)
+	changes = filterRecentChangesRBAC(ctx, changes)
 	totalMatched := len(changes)
 	meaningfulchanges.RankAndCap(&changes, limit)
 
@@ -2631,6 +2613,9 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 			log.Printf("[mcp] Failed to query timeline for dashboard changes: %v", err)
 		}
 		if err == nil {
+			// Per-kind RBAC: correlation gates by problem match + namespace, not
+			// by whether the caller can read the changed kind in that namespace.
+			changes = filterTimelineEventsRBAC(ctx, changes)
 			for _, c := range changes {
 				key := fmt.Sprintf("%s/%s/%s", c.Kind, c.Namespace, c.Name)
 				// Also check owner chain (e.g. Pod problem → Deployment change)
@@ -2789,6 +2774,8 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 				Limit:      meaningfulchanges.IssueChangesFetchLimit(recentChangesReason),
 				FieldLimit: meaningfulchanges.DefaultFieldLimit,
 			}); err == nil && len(recentResult.Changes) > 0 {
+				// Per-kind RBAC before ranking, so priority/recap see the visible set.
+				recentResult.Changes = filterRecentChangesRBAC(ctx, recentResult.Changes)
 				changes, guidance, recapped := meaningfulchanges.PrioritizeIssueChanges(
 					recentResult.Changes, out, meaningfulchanges.IssueChangePriorityOptions{
 						Reason:             recentChangesReason,

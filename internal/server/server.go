@@ -1215,14 +1215,31 @@ func (s *Server) canRead(r *http.Request, group, resource, namespace, verb strin
 	if user == nil || s.permCache == nil {
 		return true
 	}
-	perms := s.permCache.Get(user.Username)
-	if perms == nil {
+	if s.permCache.Get(user.Username) == nil {
 		// Trigger namespace discovery so SAR cache has a parent UserPermissions
 		// entry. parseNamespacesForUser is the canonical path that populates
-		// this; if it hasn't run yet, fall through to a fresh SAR every time.
+		// this; if it hasn't run yet, canReadUser falls through to a fresh SAR.
 		_ = s.getUserNamespaces(r, []string{})
-		perms = s.permCache.Get(user.Username)
 	}
+	return s.canReadUser(r.Context(), user, group, resource, namespace, verb)
+}
+
+// canReadUser is the request-free core of canRead: it authorizes a single
+// (verb, group, resource, namespace) tuple for an already-resolved user via
+// SubjectAccessReview, memoizing on the user's UserPermissions.canI cache.
+//
+// Split out so the SSE broadcast loop — a background goroutine with no
+// *http.Request — can authorize per-client change frames with the same gate
+// REST uses. The caller captures the user at subscribe time (where the request
+// is available) and passes a long-lived context for SAR cancellation.
+//
+// Fail-closed: no apiserver / SAR error → deny. Returns true only when auth is
+// disabled (nil user) or the SAR allows it.
+func (s *Server) canReadUser(ctx context.Context, user *auth.User, group, resource, namespace, verb string) bool {
+	if user == nil || s.permCache == nil {
+		return true
+	}
+	perms := s.permCache.Get(user.Username)
 	if perms != nil {
 		if v, ok := perms.CanI(verb, group, resource, namespace); ok {
 			return v
@@ -1232,13 +1249,13 @@ func (s *Server) canRead(r *http.Request, group, resource, namespace, verb strin
 	if client == nil {
 		// Fail-closed: no apiserver to ask, refuse rather than quietly
 		// serving from the cache.
-		log.Printf("[auth] canRead: K8s client unavailable, denying %s on %s/%s for %s", k8s.SanitizeForLog(verb), k8s.SanitizeForLog(group), k8s.SanitizeForLog(resource), k8s.SanitizeForLog(user.Username))
+		log.Printf("[auth] canReadUser: K8s client unavailable, denying %s on %s/%s for %s", k8s.SanitizeForLog(verb), k8s.SanitizeForLog(group), k8s.SanitizeForLog(resource), k8s.SanitizeForLog(user.Username))
 		return false
 	}
-	allowed, err := auth.SubjectCanI(r.Context(), client, user.Username, user.Groups, namespace, group, resource, verb)
+	allowed, err := auth.SubjectCanI(ctx, client, user.Username, user.Groups, namespace, group, resource, verb)
 	if err != nil {
 		// Fail-closed on SAR error — apiserver said something we don't trust.
-		log.Printf("[auth] canRead SAR failed for %s on %s/%s in ns=%q: %v", k8s.SanitizeForLog(user.Username), k8s.SanitizeForLog(group), k8s.SanitizeForLog(resource), k8s.SanitizeForLog(namespace), err)
+		log.Printf("[auth] canReadUser SAR failed for %s on %s/%s in ns=%q: %v", k8s.SanitizeForLog(user.Username), k8s.SanitizeForLog(group), k8s.SanitizeForLog(resource), k8s.SanitizeForLog(namespace), err)
 		return false
 	}
 	if perms != nil {
@@ -3101,7 +3118,7 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 			maxSeq = e.Seq
 		}
 	}
-	events = s.filterChangesByClusterScopedRBAC(r, events)
+	events = s.filterEventsByRBAC(r, events)
 
 	// The store epoch validates delta cursors: seq restarts from 1 when the
 	// store is re-created (process restart, context switch), so a client
@@ -3114,29 +3131,142 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, events)
 }
 
-// filterChangesByClusterScopedRBAC drops timeline events for cluster-scoped
-// kinds the user lacks RBAC to read. Namespace-restricted users never reach
-// cluster-scoped events (namespace IN(...) excludes namespace==""), but a
-// cluster-wide user with no per-kind RBAC for, say, admission webhook configs
-// (now tracked) would otherwise see them here — a side channel around the SAR
-// that gates every other read. canRead memoizes per request, so the per-event
-// check is cheap and only fires for cluster-scoped kinds.
-func (s *Server) filterChangesByClusterScopedRBAC(r *http.Request, events []timeline.TimelineEvent) []timeline.TimelineEvent {
-	filtered := events[:0]
-	for _, e := range events {
-		if clusterScoped, group, resource := k8s.ClassifyKindScope(e.Kind, ""); clusterScoped && !s.canRead(r, group, resource, "", "list") {
-			continue
+// filterEventsByRBAC drops timeline events the calling user lacks RBAC to read,
+// authorizing each event's exact kind via SubjectAccessReview.
+//
+// Namespace membership (parseNamespacesForUser) is the upstream gate, but it is
+// not sufficient on its own: within a namespace the user CAN see, they may lack
+// read on a specific kind (e.g. `list pods` but not `list secrets`) — the event
+// still carries the resource name, labels, owner and a change summary, so a
+// namespace-only gate leaks the existence of resources the user can't read.
+// This closes that gap on both axes:
+//   - namespaced events → require (group, resource) read in that namespace;
+//   - cluster-scoped events (namespace=="") → require the cluster-scoped read.
+//
+// canRead memoizes per request on UserPermissions.canI, so repeated kinds are a
+// map hit. Events whose kind can't be resolved (unknown CRD mid-discovery) fail
+// closed. Auth disabled → canReadUser short-circuits to allow, so this is a
+// no-op for the local single-user case.
+func (s *Server) filterEventsByRBAC(r *http.Request, events []timeline.TimelineEvent) []timeline.TimelineEvent {
+	user := auth.UserFromContext(r.Context())
+	if user == nil || s.permCache == nil {
+		// Auth off → nothing to filter; skip GVR resolution entirely.
+		return events
+	}
+
+	// Resolve each event's GVR once and collect the distinct
+	// (group, resource, namespace) tuples to authorize.
+	type key struct{ group, resource, namespace string }
+	type resolution struct {
+		ok bool
+		k  key
+	}
+	resolved := make([]resolution, len(events))
+	distinct := make(map[key]struct{})
+	for i, e := range events {
+		g, res, clusterScoped, ok := k8s.ResolveChangeGVR(e.Kind, k8s.GroupFromAPIVersion(e.APIVersion))
+		// Cluster-scoped kinds authorize at namespace "": the event row may carry
+		// a namespace (a K8s Event about a Node stores the Event's own namespace),
+		// and a namespaced SAR is strictly broader than the cluster-scoped read.
+		ns := e.Namespace
+		if clusterScoped {
+			ns = ""
 		}
-		filtered = append(filtered, e)
+		resolved[i] = resolution{ok: ok, k: key{g, res, ns}}
+		if ok {
+			distinct[key{g, res, ns}] = struct{}{}
+		}
+	}
+
+	// Prime the parent UserPermissions entry once so the parallel canReadUser
+	// calls below share its SAR memo instead of racing to populate it.
+	if s.permCache.Get(user.Username) == nil {
+		_ = s.getUserNamespaces(r, []string{})
+	}
+
+	// Authorize distinct tuples in bounded parallel — a broad timeline load can
+	// span many (kind, namespace) pairs and a serial SAR loop would stack the
+	// round-trips. Mirrors filterNamespacesByCanRead / capabilities probing.
+	allow := make(map[key]bool, len(distinct))
+	var mu sync.Mutex
+	const maxConcurrent = 16
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+	ctx := r.Context()
+	for k := range distinct {
+		wg.Add(1)
+		go func(k key) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			ok := s.canReadUser(ctx, user, k.group, k.resource, k.namespace, "list")
+			mu.Lock()
+			allow[k] = ok
+			mu.Unlock()
+		}(k)
+	}
+	wg.Wait()
+
+	filtered := events[:0]
+	for i, e := range events {
+		// Unresolvable kind → fail closed (drop). Otherwise keep only if the
+		// per-kind SAR for this namespace (or cluster scope) allowed it.
+		if resolved[i].ok && allow[resolved[i].k] {
+			filtered = append(filtered, e)
+		}
 	}
 	return filtered
 }
 
+// changeAuthorizerForCtx returns a per-kind authorizer bound to the ctx user, for
+// the shared k8s.ChangeReadAllowed gate. Callers on a request path have already
+// primed the permission cache via parseNamespacesForUser, so canReadUser hits the
+// memo. Nil user (auth off) is handled by canReadUser (returns true).
+func (s *Server) changeAuthorizerForCtx(ctx context.Context) func(group, resource, namespace string) bool {
+	user := auth.UserFromContext(ctx)
+	return func(group, resource, namespace string) bool {
+		return s.canReadUser(ctx, user, group, resource, namespace, "list")
+	}
+}
+
+// filterTimelineEventsByRBAC drops timeline events the ctx user can't read, via
+// the shared per-kind gate. For the low-volume secondary surfaces (dashboard,
+// diagnose); the high-volume /api/changes path uses filterEventsByRBAC with its
+// dedupe+parallel SAR. Auth off → returned unchanged.
+func (s *Server) filterTimelineEventsByRBAC(ctx context.Context, events []timeline.TimelineEvent) []timeline.TimelineEvent {
+	if auth.UserFromContext(ctx) == nil {
+		return events
+	}
+	authz := s.changeAuthorizerForCtx(ctx)
+	out := events[:0]
+	for _, e := range events {
+		if k8s.ChangeReadAllowed(e.Kind, e.APIVersion, e.Namespace, authz) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // handleChangeChildren returns child resource changes for a given parent workload
 func (s *Server) handleChangeChildren(w http.ResponseWriter, r *http.Request) {
+	if !s.requireConnected(w) {
+		return
+	}
 	ownerKind := chi.URLParam(r, "kind")
 	namespace := chi.URLParam(r, "namespace")
 	ownerName := chi.URLParam(r, "name")
+
+	// Gate on the owner's namespace before touching the store: a user who can't
+	// see this namespace must not read change history for workloads in it. The
+	// per-kind SAR below (filterEventsByRBAC) is the authoritative gate; this is
+	// the cheap RBAC-ceiling pre-check. getUserNamespaces (not
+	// parseNamespacesForUser) so the header's namespace *view* pick can't hide a
+	// namespace the user has real access to.
+	if allowed := s.getUserNamespaces(r, nil); !namespaceInAllowed(allowed, namespace) {
+		s.writeJSON(w, []timeline.TimelineEvent{})
+		return
+	}
+
 	sinceStr := r.URL.Query().Get("since")
 
 	var since time.Time
@@ -3161,7 +3291,20 @@ func (s *Server) handleChangeChildren(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	children = s.filterEventsByRBAC(r, children)
+
 	s.writeJSON(w, children)
+}
+
+// namespaceInAllowed reports whether `namespace` is within an allowed set.
+// nil allowed means cluster-wide access (all namespaces); an empty non-nil
+// slice means no access. Mirrors the nil-vs-empty convention used throughout
+// the per-user namespace filtering.
+func namespaceInAllowed(allowed []string, namespace string) bool {
+	if allowed == nil {
+		return true
+	}
+	return slices.Contains(allowed, namespace)
 }
 
 // handleApplyResource creates or updates a Kubernetes resource from YAML.
@@ -4311,7 +4454,20 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 		deny[topology.KindNamespace] = true
 	}
-	s.broadcaster.HandleSSE(w, r, deny)
+	// Per-kind authorizer for change (k8s_event) frames, bound to this request's
+	// user + context so the broadcast goroutine can SAR-gate diff-bearing frames
+	// without a request. Prime the permission cache once here (the request is
+	// available) so the closure's canReadUser calls hit the memo. When auth is
+	// off, UserFromContext is nil and canReadUser short-circuits to allow.
+	user := auth.UserFromContext(r.Context())
+	if user != nil && s.permCache != nil && s.permCache.Get(user.Username) == nil {
+		_ = s.getUserNamespaces(r, []string{})
+	}
+	ctx := r.Context()
+	authorize := func(group, resource, namespace, verb string) bool {
+		return s.canReadUser(ctx, user, group, resource, namespace, verb)
+	}
+	s.broadcaster.HandleSSE(w, r, deny, authorize)
 }
 
 // Settings handlers
@@ -4613,10 +4769,39 @@ func (s *Server) handleApplyPrometheusURL(w http.ResponseWriter, r *http.Request
 
 // Debug handlers for event pipeline diagnostics
 
-// handleDebugEvents returns event pipeline metrics and recent drops
+// handleDebugEvents returns event pipeline metrics and recent drops. The
+// aggregate counters/stats carry no resource identity, but RecentDrops name
+// individual resources (kind/namespace/name) — filter those to what the caller
+// may read so this diagnostic endpoint isn't a side channel around the timeline
+// RBAC gate.
 func (s *Server) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
 	response := timeline.GetDebugEventsResponse()
+	response.RecentDrops = s.filterDropsByRBAC(r, response.RecentDrops)
 	s.writeJSON(w, response)
+}
+
+// filterDropsByRBAC drops records for resources the caller can't read, using the
+// same per-kind SAR as the timeline gate. Auth off → returned unchanged. canRead
+// memoizes, and the drop ring is small, so a serial loop is cheap.
+func (s *Server) filterDropsByRBAC(r *http.Request, drops []timeline.DropRecord) []timeline.DropRecord {
+	if auth.UserFromContext(r.Context()) == nil {
+		return drops
+	}
+	out := drops[:0]
+	for _, d := range drops {
+		group, resource, clusterScoped, ok := k8s.ResolveChangeGVR(d.Kind, "")
+		if !ok {
+			continue // unresolved kind → fail closed
+		}
+		ns := d.Namespace
+		if clusterScoped {
+			ns = ""
+		}
+		if s.canRead(r, group, resource, ns, "list") {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // handleDebugEventsDiagnose diagnoses why events for a specific resource might be missing
@@ -4630,7 +4815,30 @@ func (s *Server) handleDebugEventsDiagnose(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	response := timeline.GetDiagnosis(kind, namespace, name)
+	response := timeline.GetDiagnosis(kind, namespace, name, k8s.ActiveClusterContext())
+
+	// RBAC: diagnose returns a specific resource's timeline rows (with diffs),
+	// drop history, and existence-revealing recommendations. The query matches by
+	// kind string only (not group), so filter the returned rows per-kind using
+	// EACH row's own apiVersion — that disambiguates a Kind that collides with a
+	// builtin (a namespaced CRD Kind=Node must not ride the caller's `list nodes`).
+	// When the caller can see nothing for this resource, neutralize the
+	// recommendations too so they don't confirm its existence. Auth off → no-op.
+	if user := auth.UserFromContext(r.Context()); user != nil && s.permCache != nil {
+		authz := s.changeAuthorizerForCtx(r.Context())
+		events := response.TimelineEvents[:0]
+		for _, e := range response.TimelineEvents {
+			if k8s.ChangeReadAllowed(e.Kind, e.APIVersion, e.Namespace, authz) {
+				events = append(events, e)
+			}
+		}
+		response.TimelineEvents = events
+		response.DropHistory = s.filterDropsByRBAC(r, response.DropHistory)
+		if len(response.TimelineEvents) == 0 && len(response.DropHistory) == 0 {
+			response.Recommendations = []string{"No diagnostic data available for this resource."}
+		}
+	}
+
 	s.writeJSON(w, response)
 }
 

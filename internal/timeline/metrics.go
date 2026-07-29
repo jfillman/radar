@@ -265,7 +265,7 @@ type ResourceInfo struct {
 }
 
 // GetDiagnosis diagnoses why events for a specific resource might be missing
-func GetDiagnosis(kind, namespace, name string) DiagnoseResponse {
+func GetDiagnosis(kind, namespace, name, clusterContext string) DiagnoseResponse {
 	resp := DiagnoseResponse{
 		Resource: ResourceInfo{
 			Kind:      kind,
@@ -281,13 +281,16 @@ func GetDiagnosis(kind, namespace, name string) DiagnoseResponse {
 	resp.StorePresent = store != nil
 
 	if store != nil {
-		// Query for events matching this resource
+		// Query for events matching this resource. Scope to the active cluster
+		// context — the persistent store outlives context switches, so an
+		// unscoped query would return a previously-connected cluster's rows.
 		events, err := store.Query(context.Background(), QueryOptions{
 			Namespaces:       []string{namespace},
 			Kinds:            []string{kind},
 			Limit:            50,
 			IncludeManaged:   true,
 			IncludeK8sEvents: true,
+			ClusterContext:   clusterContext,
 		})
 		if err == nil {
 			// Filter to just this resource

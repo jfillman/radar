@@ -136,7 +136,7 @@ func (s *Server) serveTimelineEventsDelta(w http.ResponseWriter, r *http.Request
 		}
 	}
 	full := len(events) == timelineEventsPageLimit
-	events = s.filterChangesByClusterScopedRBAC(r, events)
+	events = s.filterEventsByRBAC(r, events)
 
 	writeTimelineStream(w, events, timelineEndRecord{
 		Type:   "end",
@@ -192,7 +192,7 @@ func (s *Server) serveTimelineEventsWindow(w http.ResponseWriter, r *http.Reques
 	// `truncated` banner reports. An exactly-limit-sized range over-reports;
 	// harmless, the same heuristic every consumer of this flag uses.
 	truncated := len(events) == limit
-	events = s.filterChangesByClusterScopedRBAC(r, events)
+	events = s.filterEventsByRBAC(r, events)
 
 	writeTimelineStream(w, events, timelineEndRecord{
 		Type:      "end",

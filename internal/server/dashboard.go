@@ -1161,6 +1161,9 @@ func (s *Server) getDashboardRecentChanges(ctx context.Context, namespaces []str
 	if err != nil || len(events) == 0 {
 		return []DashboardChange{}
 	}
+	// Per-kind RBAC: the store namespace-filters, but a workload change the user
+	// can see the namespace of but not read the kind of would still surface here.
+	events = s.filterTimelineEventsByRBAC(ctx, events)
 
 	result := make([]DashboardChange, 0, len(events))
 	for _, e := range events {

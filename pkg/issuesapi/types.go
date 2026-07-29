@@ -294,8 +294,14 @@ const (
 )
 
 type RecentChange struct {
-	Source         string         `json:"source,omitempty"`
-	Kind           string         `json:"kind"`
+	Source string `json:"source,omitempty"`
+	Kind   string `json:"kind"`
+	// APIVersion disambiguates CRD kind collisions when authorizing this change
+	// for per-kind RBAC (a CRD Kind that shadows a builtin resolves to the wrong
+	// GVR without it). Populated from the source timeline event's apiVersion;
+	// may be empty for synthesized rows (e.g. Helm), which carry no builtin
+	// cluster-scoped collision.
+	APIVersion     string         `json:"apiVersion,omitempty"`
 	Namespace      string         `json:"namespace,omitempty"`
 	Name           string         `json:"name"`
 	ChangeType     string         `json:"changeType"`

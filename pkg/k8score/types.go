@@ -65,6 +65,15 @@ type ResourceChange struct {
 	UID       string
 	Operation string    // "add", "update", "delete"
 	Diff      *DiffInfo // Diff details for updates (optional)
+
+	// Group and Resource carry the GVR coordinates for per-kind RBAC
+	// authorization of change frames. Populated by the dynamic cache (which
+	// knows the exact GVR, disambiguating CRD kind collisions like
+	// EC2NodeClass vs a synthesized NodeClass); left empty by the typed cache,
+	// whose kinds are well-known and unambiguously resolvable from Kind alone.
+	// Resource is the plural REST name (e.g. "secrets", "deployments").
+	Group    string
+	Resource string
 }
 
 // DiffInfo contains the diff details for an update operation.

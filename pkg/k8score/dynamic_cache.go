@@ -682,6 +682,8 @@ func (d *DynamicResourceCache) enqueueDynamicChange(kind string, gvr schema.Grou
 		UID:       uid,
 		Operation: op,
 		Diff:      diff,
+		Group:     gvr.Group,
+		Resource:  gvr.Resource,
 	}
 
 	// Always fire OnChange (even during sync adds — Radar uses this for timeline)

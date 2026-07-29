@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,7 +15,26 @@ import (
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/meaningfulchanges"
+	"github.com/skyhook-io/radar/pkg/issuesapi"
 )
+
+// filterRecentChangesByRBAC drops RecentChange rows the ctx user can't read, via
+// the shared per-kind gate (RecentChange.APIVersion disambiguates CRD kind
+// collisions). Auth off → returned unchanged. Used by both the /api/issues
+// recent_changes enrichment and per-issue change correlation.
+func (s *Server) filterRecentChangesByRBAC(ctx context.Context, changes []issuesapi.RecentChange) []issuesapi.RecentChange {
+	if auth.UserFromContext(ctx) == nil {
+		return changes
+	}
+	authz := s.changeAuthorizerForCtx(ctx)
+	out := changes[:0]
+	for _, c := range changes {
+		if k8s.ChangeReadAllowed(c.Kind, c.APIVersion, c.Namespace, authz) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 // handleIssues serves GET /api/issues — "what's broken right now."
 // Composes the curated operational sources (workload/pod problems,
@@ -115,6 +135,10 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 				Limit:      meaningfulchanges.IssueChangesFetchLimit(recentChangesReason),
 				FieldLimit: meaningfulchanges.DefaultFieldLimit,
 			}); err == nil && len(recentResult.Changes) > 0 {
+				// Per-kind RBAC: recent_changes is namespace-filtered but not
+				// per-kind — drop changes for kinds the caller can't read before
+				// ranking, so priority/recap logic operates on the visible set.
+				recentResult.Changes = s.filterRecentChangesByRBAC(r.Context(), recentResult.Changes)
 				changes, guidance, recapped := meaningfulchanges.PrioritizeIssueChanges(
 					recentResult.Changes, out, meaningfulchanges.IssueChangePriorityOptions{
 						Reason:             recentChangesReason,

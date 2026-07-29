@@ -758,6 +758,7 @@ func fromEvent(e timeline.TimelineEvent, fieldLimit int) issuesapi.RecentChange 
 	}
 	change := issuesapi.RecentChange{
 		Kind:           e.Kind,
+		APIVersion:     e.APIVersion,
 		Namespace:      e.Namespace,
 		Name:           e.Name,
 		ChangeType:     string(e.EventType),

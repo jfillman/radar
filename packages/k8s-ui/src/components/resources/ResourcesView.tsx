@@ -6678,7 +6678,7 @@ const CONTAINER_TOOLTIP_CAP = 3
 // no ceiling, so usage above request is normal and the bar stays neutral.
 type Yardstick = 'limit' | 'request' | 'none'
 
-function readContainer(c: ContainerResourceMetrics, kind: 'cpu' | 'memory') {
+export function readContainer(c: ContainerResourceMetrics, kind: 'cpu' | 'memory') {
   const isCPU = kind === 'cpu'
   const usage = isCPU ? c.cpu : c.memory
   const limit = isCPU ? c.cpuLimit : c.memoryLimit
@@ -6711,7 +6711,7 @@ interface CellConstraint {
 // LIMITED container if any container sets a limit, else the most-constrained
 // REQUEST-ONLY container, else nothing. Within a mode the pick maximizes pct;
 // tie-break is deterministic — higher pct, then lexicographic container name.
-function pickConstraint(containers: ContainerResourceMetrics[], kind: 'cpu' | 'memory'): CellConstraint {
+export function pickConstraint(containers: ContainerResourceMetrics[], kind: 'cpu' | 'memory'): CellConstraint {
   let limited: ContainerResourceMetrics | null = null
   let limitedR = { denom: 0, request: 0, pct: -1 }
   let reqOnly: ContainerResourceMetrics | null = null

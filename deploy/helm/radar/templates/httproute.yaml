@@ -1,4 +1,10 @@
 {{- if .Values.httpRoute.enabled -}}
+{{- if .Values.ingress.enabled -}}
+{{- fail "Enable only ONE of ingress.enabled or httpRoute.enabled, not both." -}}
+{{- end -}}
+{{- if not .Values.httpRoute.parentRefs -}}
+{{- fail "httpRoute.enabled=true requires at least one httpRoute.parentRefs entry (the Gateway to attach to)." -}}
+{{- end -}}
 {{- $fullName := include "radar.fullname" . -}}
 {{- $svcPort := .Values.service.port -}}
 {{- $labels := mergeOverwrite (include "radar.labels" . | fromYaml) .Values.httpRoute.labels -}}
@@ -15,8 +21,10 @@ metadata:
 spec:
   parentRefs:
     {{- toYaml .Values.httpRoute.parentRefs | nindent 4 }}
+  {{- with .Values.httpRoute.hostnames }}
   hostnames:
-    {{- toYaml .Values.httpRoute.hostnames | nindent 4 }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   rules:
     {{- if .Values.httpRoute.rules }}
     {{- toYaml .Values.httpRoute.rules | nindent 4 }}

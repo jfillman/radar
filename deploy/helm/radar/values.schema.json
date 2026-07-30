@@ -159,7 +159,7 @@
     },
     "httpRoute": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
         "apiVersion": { "type": "string", "minLength": 1 },
@@ -167,7 +167,12 @@
         "labels": { "type": "object", "additionalProperties": { "type": "string" } },
         "parentRefs": {
           "type": "array",
-          "items": { "type": "object", "additionalProperties": true }
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["name"],
+            "properties": { "name": { "type": "string", "minLength": 1 } }
+          }
         },
         "hostnames": {
           "type": "array",

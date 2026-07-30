@@ -97,6 +97,11 @@ Override `httpRoute.apiVersion` when cluster Gateway API support requires a
 different version, for example `gateway.networking.k8s.io/v1beta1`. Custom
 rules can define their own `timeouts` independently.
 
+`httpRoute` and `ingress` are mutually exclusive - enabling both fails the
+render. `httpRoute.enabled` requires at least one `parentRefs` entry (the
+Gateway to attach to), otherwise the render fails rather than emit a route
+bound to no Gateway.
+
 ### Connecting to Radar Cloud
 
 To connect Radar to Radar Cloud (hosted SaaS), follow the install wizard at

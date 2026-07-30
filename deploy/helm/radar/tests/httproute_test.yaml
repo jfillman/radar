@@ -7,11 +7,12 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: renders default route to Radar Service with empty hostnames
+  - it: renders default route to Radar Service and omits empty hostnames
     set:
       httpRoute:
         enabled: true
-        parentRefs: []
+        parentRefs:
+          - name: public-gateway
         hostnames: []
     asserts:
       - isKind:
@@ -22,12 +23,11 @@ tests:
       - equal:
           path: metadata.name
           value: RELEASE-NAME-radar
-      - equal:
+      - notExists:
           path: spec.hostnames
-          value: []
       - equal:
-          path: spec.parentRefs
-          value: []
+          path: spec.parentRefs[0].name
+          value: public-gateway
       - equal:
           path: spec.rules[0].matches[0].path
           value:
@@ -45,6 +45,8 @@ tests:
     set:
       httpRoute:
         enabled: true
+        parentRefs:
+          - name: public-gateway
         defaultTimeout: 30s
     asserts:
       - equal:
@@ -83,6 +85,8 @@ tests:
     set:
       httpRoute:
         enabled: true
+        parentRefs:
+          - name: public-gateway
         hostnames:
           - radar.example.com
         rules:
@@ -127,3 +131,24 @@ tests:
       - equal:
           path: spec.rules[1].backendRefs[0].name
           value: radar-admin
+
+  - it: fails when enabled without parentRefs
+    set:
+      httpRoute:
+        enabled: true
+        parentRefs: []
+    asserts:
+      - failedTemplate:
+          errorMessage: httpRoute.enabled=true requires at least one httpRoute.parentRefs entry (the Gateway to attach to).
+
+  - it: fails when both ingress and httpRoute are enabled
+    set:
+      ingress:
+        enabled: true
+      httpRoute:
+        enabled: true
+        parentRefs:
+          - name: public-gateway
+    asserts:
+      - failedTemplate:
+          errorMessage: Enable only ONE of ingress.enabled or httpRoute.enabled, not both.

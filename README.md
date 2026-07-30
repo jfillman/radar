@@ -139,7 +139,9 @@ path prefixes, per-route timeouts, filters, or custom backends. `hostnames`
 defaults to an empty list, and `apiVersion` can be overridden for older Gateway
 API installations. The generated default route has no chart-imposed timeout,
 so the Gateway deployment default applies. Set `httpRoute.defaultTimeout` for
-an explicit timeout; custom rules can define their own `timeouts`.
+an explicit timeout; custom rules can define their own `timeouts`. `httpRoute`
+and `ingress` are mutually exclusive, and `parentRefs` is required when enabled -
+the render fails otherwise.
 
 ```yaml
 httpRoute:

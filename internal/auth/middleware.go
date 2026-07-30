@@ -130,6 +130,7 @@ func Authenticate(cfg Config) func(http.Handler) http.Handler {
 					}
 
 					user := &User{Username: username, Groups: groups}
+					logAcceptedForwardedIdentity(user)
 					if !cloudProxyMode {
 						cookies := CreateSessionCookie(user, NewSessionID(), "", cfg.Secret, cfg.CookieTTL, secure)
 						for _, c := range cookies {

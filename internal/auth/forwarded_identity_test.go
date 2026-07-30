@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"log"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -105,16 +106,37 @@ func TestLogAcceptedForwardedIdentity_NilOrEmptyUsernameNoOp(t *testing.T) {
 func TestForwardedIdentityLogger_BoundedEviction(t *testing.T) {
 	l := &forwardedIdentityLogger{seen: make(map[uint64]struct{})}
 
-	// Fill well past the cap and confirm the set never grows unbounded.
-	for i := 0; i < forwardedIdentityLogCap+10; i++ {
-		key := forwardedIdentityKey("user", []string{string(rune('a' + i%26))})
-		l.shouldLog(key)
+	// Fill with forwardedIdentityLogCap+10 DISTINCT keys (one per iteration, via a
+	// unique group per i) so the FIFO eviction branch actually runs; a key that
+	// repeats would just hit the "already seen" short-circuit and never touch cap.
+	const overfill = 10
+	keys := make([]uint64, forwardedIdentityLogCap+overfill)
+	for i := range keys {
+		keys[i] = forwardedIdentityKey("user", []string{strconv.Itoa(i)})
+		if !l.shouldLog(keys[i]) {
+			t.Fatalf("key %d: expected first sighting to log", i)
+		}
 	}
 
-	if len(l.seen) > forwardedIdentityLogCap {
-		t.Errorf("dedup set grew to %d entries, want <= %d", len(l.seen), forwardedIdentityLogCap)
+	if len(l.seen) != forwardedIdentityLogCap {
+		t.Errorf("dedup set has %d entries, want exactly %d", len(l.seen), forwardedIdentityLogCap)
 	}
-	if len(l.order) > forwardedIdentityLogCap {
-		t.Errorf("order slice grew to %d entries, want <= %d", len(l.order), forwardedIdentityLogCap)
+	if len(l.order) != forwardedIdentityLogCap {
+		t.Errorf("order slice has %d entries, want exactly %d", len(l.order), forwardedIdentityLogCap)
+	}
+
+	// The oldest keys must have been evicted...
+	for i := 0; i < overfill; i++ {
+		if _, ok := l.seen[keys[i]]; ok {
+			t.Errorf("key %d should have been evicted (oldest), still present", i)
+		}
+		if !l.shouldLog(keys[i]) {
+			t.Errorf("key %d should log again after eviction (treated as new)", i)
+		}
+	}
+	// ...while the most recently inserted key must survive.
+	newest := keys[len(keys)-1]
+	if l.shouldLog(newest) {
+		t.Error("newest key should still be present (not evicted), but was treated as new")
 	}
 }

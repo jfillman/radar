@@ -6095,10 +6095,14 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
       const nodeName = resource.spec?.nodeName as string | undefined
       const node = nodeName ? metrics.nodes.get(nodeName) : undefined
       const nodeAlloc = node ? (isCPU ? node.cpuAllocatable : node.memoryAllocatable) : 0
-      const nodeCtx = node && nodeAlloc > 0
+      const nodeUsage = node ? (isCPU ? node.cpu : node.memory) : 0
+      // Zero usage means metrics-server has no sample for the node (down, or not
+      // yet scraped) — the same "no data" NodeCell renders blank — so skip the
+      // line rather than assert a misleading "0% used" that reads as safe.
+      const nodeCtx = node && nodeAlloc > 0 && nodeUsage > 0
         ? {
             name: nodeName!,
-            usedPct: ((isCPU ? node.cpu : node.memory) / nodeAlloc) * 100,
+            usedPct: (nodeUsage / nodeAlloc) * 100,
             podSharePct: (totalUsage / nodeAlloc) * 100,
           }
         : undefined

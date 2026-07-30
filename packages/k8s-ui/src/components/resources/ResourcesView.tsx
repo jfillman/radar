@@ -3578,8 +3578,7 @@ export function ResourcesView({
       case 'cpu': {
         if (kindLower === 'pods') {
           const key = `${meta.namespace}/${meta.name}`
-          const m = metricsLookup.pods.get(key)
-          return m ? podMostConstrainedPct(m, 'cpu') : 0
+          return metricsLookup.pods.get(key)?.cpu ?? 0
         }
         if (kindLower === 'nodes') {
           return metricsLookup.nodes.get(meta.name)?.cpu ?? 0
@@ -3589,8 +3588,7 @@ export function ResourcesView({
       case 'memory': {
         if (kindLower === 'pods') {
           const key = `${meta.namespace}/${meta.name}`
-          const m = metricsLookup.pods.get(key)
-          return m ? podMostConstrainedPct(m, 'memory') : 0
+          return metricsLookup.pods.get(key)?.memory ?? 0
         }
         if (kindLower === 'nodes') {
           return metricsLookup.nodes.get(meta.name)?.memory ?? 0
@@ -6089,32 +6087,34 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
             memory: m.memory, memoryRequest: m.memoryRequest, memoryLimit: m.memoryLimit,
           }]
 
-      const totalUsage = list.reduce((sum, c) => sum + (isCPU ? c.cpu : c.memory), 0)
+      const { mode, totalUsage, denom, markerPct, unlimitedCount } = podAggregate(list, kind)
       if (totalUsage === 0) return <span className="text-sm text-theme-text-tertiary">-</span>
 
-      const { mode, container, denom, request, pct, unlimitedCount } = pickConstraint(list, kind)
       const tip = buildContainerResourceTooltip(label, list, kind, format)
 
-      // Nothing set anywhere → plain usage number with a faint "no limit" tag.
-      if (mode === 'none' || !container) {
+      // Every container is limited → aggregate bar against the summed limit; a
+      // real pod-level ceiling, so it may go red.
+      if (mode === 'limit') {
+        const pct = denom > 0 ? (totalUsage / denom) * 100 : 0
         return (
-          <Tooltip content={tip} delay={200} position="top" wrapperClassName="w-full min-w-0">
-            <span className="inline-flex items-center gap-1.5 min-w-0">
-              <span className="text-sm text-theme-text-secondary font-mono">{format(totalUsage)}</span>
-              <span className="text-[10px] text-theme-text-tertiary shrink-0">no limit</span>
-            </span>
-          </Tooltip>
+          <ResourceBar
+            used={format(totalUsage)}
+            total={format(denom)}
+            percent={pct}
+            colorScheme={getBulletBarScheme(pct, markerPct)}
+            markerPercent={markerPct}
+            tooltip={tip}
+          />
         )
       }
 
-      const usage = isCPU ? container.cpu : container.memory
-
-      // Request-only headline: neutral bar (no ceiling → never red), measured
-      // against the request, no marker and no tag.
+      // No limits but some requests → neutral bar against the summed request
+      // (no ceiling → never red), no marker.
       if (mode === 'request') {
+        const pct = denom > 0 ? (totalUsage / denom) * 100 : 0
         return (
           <ResourceBar
-            used={format(usage)}
+            used={format(totalUsage)}
             total={format(denom)}
             percent={pct}
             colorScheme="quiet"
@@ -6123,29 +6123,17 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
         )
       }
 
-      // Limited headline: utilization bar (red-capable) against the limit, with
-      // the request marker; append the "N unbounded" tag when other containers
-      // have no limit.
-      const marker = denom > 0 && request > 0 ? (request / denom) * 100 : undefined
-      const bar = (
-        <ResourceBar
-          used={format(usage)}
-          total={format(denom)}
-          percent={pct}
-          colorScheme={getBulletBarScheme(pct, marker)}
-          markerPercent={marker}
-          tooltip={tip}
-        />
+      // partial (some limited, some not — the sum is not a real ceiling) or none
+      // (nothing set) → plain usage number plus a faint tag.
+      const tag = mode === 'partial' ? `${unlimitedCount} unbounded` : 'no limit'
+      return (
+        <Tooltip content={tip} delay={200} position="top" wrapperClassName="w-full min-w-0">
+          <span className="inline-flex items-center gap-1.5 min-w-0">
+            <span className="text-sm text-theme-text-secondary font-mono">{format(totalUsage)}</span>
+            <span className="text-[10px] text-theme-text-tertiary shrink-0">{tag}</span>
+          </span>
+        </Tooltip>
       )
-      if (unlimitedCount > 0) {
-        return (
-          <div className="flex items-center gap-1.5 min-w-0">
-            <div className="min-w-0 flex-1">{bar}</div>
-            <span className="text-[10px] text-theme-text-tertiary shrink-0">{unlimitedCount} unbounded</span>
-          </div>
-        )
-      }
-      return bar
     }
     case 'gpu': {
       const count = getPodGpuCount(resource)
@@ -6696,61 +6684,67 @@ export function readContainer(c: ContainerResourceMetrics, kind: 'cpu' | 'memory
   return { usage, limit, request, yardstick, denom, pct }
 }
 
-interface CellConstraint {
-  /** Which container the compact cell headline shows, and against what. */
-  mode: Yardstick
-  container: ContainerResourceMetrics | null
+interface PodAggregate {
+  // limit: every container is limited → a real ceiling exists (bar vs summed
+  // limit). partial: some containers limited, some not → the sum is not a true
+  // ceiling, so plain usage + an "unbounded" tag. request: no limits but some
+  // requests → neutral bar vs summed request. none: nothing set → plain usage.
+  mode: 'limit' | 'partial' | 'request' | 'none'
+  totalUsage: number
+  /** summed limit (limit mode) or summed request (request mode); 0 otherwise. */
   denom: number
-  request: number
-  pct: number
-  /** Containers with no limit set (request-only or nothing). */
+  /** request marker as % of summed limit; limit mode only. */
+  markerPct?: number
+  /** number of containers with no limit set. */
   unlimitedCount: number
 }
 
-// pickConstraint chooses what the compact cell renders: the most-constrained
-// LIMITED container if any container sets a limit, else the most-constrained
-// REQUEST-ONLY container, else nothing. Within a mode the pick maximizes pct;
-// tie-break is deterministic — higher pct, then lexicographic container name.
-export function pickConstraint(containers: ContainerResourceMetrics[], kind: 'cpu' | 'memory'): CellConstraint {
-  let limited: ContainerResourceMetrics | null = null
-  let limitedR = { denom: 0, request: 0, pct: -1 }
-  let reqOnly: ContainerResourceMetrics | null = null
-  let reqOnlyR = { denom: 0, request: 0, pct: -1 }
+// podAggregate reduces a pod's containers to the aggregate the compact cell
+// headline renders — total usage measured against a pod-level yardstick. It
+// keeps the dominant consumer visible instead of demoting it behind a small
+// limited container, and stays honest about partial limits (which don't form a
+// real ceiling).
+export function podAggregate(list: ContainerResourceMetrics[], kind: 'cpu' | 'memory'): PodAggregate {
+  const isCPU = kind === 'cpu'
+  let totalUsage = 0
+  let limitedCount = 0
+  let requestedCount = 0
   let unlimitedCount = 0
-  for (const c of containers) {
-    const r = readContainer(c, kind)
-    if (r.yardstick === 'limit') {
-      if (limited === null || r.pct > limitedR.pct || (r.pct === limitedR.pct && c.name < limited.name)) {
-        limited = c
-        limitedR = { denom: r.denom, request: r.request, pct: r.pct }
-      }
+  let summedLimit = 0
+  let summedRequest = 0
+  for (const c of list) {
+    const usage = isCPU ? c.cpu : c.memory
+    const limit = isCPU ? c.cpuLimit : c.memoryLimit
+    const request = isCPU ? c.cpuRequest : c.memoryRequest
+    totalUsage += usage
+    if (limit > 0) {
+      limitedCount++
+      summedLimit += limit
     } else {
       unlimitedCount++
-      if (r.yardstick === 'request') {
-        if (reqOnly === null || r.pct > reqOnlyR.pct || (r.pct === reqOnlyR.pct && c.name < reqOnly.name)) {
-          reqOnly = c
-          reqOnlyR = { denom: r.denom, request: r.request, pct: r.pct }
-        }
-      }
+    }
+    if (request > 0) {
+      requestedCount++
+      summedRequest += request
     }
   }
-  if (limited) return { mode: 'limit', container: limited, denom: limitedR.denom, request: limitedR.request, pct: limitedR.pct, unlimitedCount }
-  if (reqOnly) return { mode: 'request', container: reqOnly, denom: reqOnlyR.denom, request: reqOnlyR.request, pct: reqOnlyR.pct, unlimitedCount }
-  return { mode: 'none', container: null, denom: 0, request: 0, pct: -1, unlimitedCount }
-}
-
-// podMostConstrainedPct returns the percentage the compact cell renders, used
-// for column sorting: pod pressure = max(usage/limit) over limited containers
-// if any, else max(usage/request) over request-only containers if any, else 0.
-function podMostConstrainedPct(m: TopPodMetrics, kind: 'cpu' | 'memory'): number {
-  const list: ContainerResourceMetrics[] = (m.containers && m.containers.length > 0)
-    ? m.containers
-    : [{
-        name: '', cpu: m.cpu, cpuRequest: m.cpuRequest, cpuLimit: m.cpuLimit,
-        memory: m.memory, memoryRequest: m.memoryRequest, memoryLimit: m.memoryLimit,
-      }]
-  const { mode, pct } = pickConstraint(list, kind)
-  return mode === 'none' ? 0 : pct
+  const allLimited = list.length > 0 && limitedCount === list.length
+  if (allLimited) {
+    return {
+      mode: 'limit',
+      totalUsage,
+      denom: summedLimit,
+      markerPct: summedRequest > 0 ? (summedRequest / summedLimit) * 100 : undefined,
+      unlimitedCount,
+    }
+  }
+  if (limitedCount > 0) {
+    return { mode: 'partial', totalUsage, denom: 0, unlimitedCount }
+  }
+  if (requestedCount > 0) {
+    return { mode: 'request', totalUsage, denom: summedRequest, unlimitedCount }
+  }
+  return { mode: 'none', totalUsage, denom: 0, unlimitedCount }
 }
 
 // buildContainerResourceTooltip renders one row per container — usage against

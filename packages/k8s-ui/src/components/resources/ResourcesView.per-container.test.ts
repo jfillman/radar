@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ContainerResourceMetrics } from '../../types'
-import { pickConstraint, readContainer } from './ResourcesView'
+import { podAggregate, readContainer } from './ResourcesView'
 
 // Build a CPU-only container fixture; memory fields default to 0.
 function cpu(name: string, usage: number, request: number, limit: number): ContainerResourceMetrics {
@@ -47,71 +47,65 @@ describe('readContainer', () => {
   })
 })
 
-describe('pickConstraint', () => {
-  it('prefers a limited container even when a request-only container has a higher ratio', () => {
+describe('podAggregate', () => {
+  it("reports mode 'limit' with the summed limit and request marker when every container is limited", () => {
     const containers = [
-      cpu('app', 60, 50, 100),   // limited, 60% of limit
-      cpu('sidecar', 200, 100, 0), // request-only, 200% of request
+      cpu('app', 30, 50, 100),
+      cpu('sidecar', 40, 50, 200),
     ]
-    const result = pickConstraint(containers, 'cpu')
+    const result = podAggregate(containers, 'cpu')
     expect(result.mode).toBe('limit')
-    expect(result.container?.name).toBe('app')
-    expect(result.pct).toBe(60)
-    expect(result.denom).toBe(100)
-    expect(result.unlimitedCount).toBe(1) // the request-only sidecar
-  })
-
-  it('picks the most-constrained LIMITED container among several', () => {
-    const containers = [
-      cpu('a', 30, 0, 100), // 30%
-      cpu('b', 90, 0, 100), // 90%
-      cpu('c', 50, 0, 100), // 50%
-    ]
-    const result = pickConstraint(containers, 'cpu')
-    expect(result.mode).toBe('limit')
-    expect(result.container?.name).toBe('b')
-    expect(result.pct).toBe(90)
+    expect(result.totalUsage).toBe(70)
+    expect(result.denom).toBe(300) // summed limit
+    expect(result.markerPct).toBeCloseTo((100 / 300) * 100) // summed request / summed limit
     expect(result.unlimitedCount).toBe(0)
   })
 
-  it('falls back to the most-constrained REQUEST-ONLY container when nothing is limited', () => {
-    const containers = [
-      cpu('a', 50, 100, 0), // 50% of request
-      cpu('b', 90, 100, 0), // 90% of request
-    ]
-    const result = pickConstraint(containers, 'cpu')
-    expect(result.mode).toBe('request')
-    expect(result.container?.name).toBe('b')
-    expect(result.pct).toBe(90)
-    expect(result.denom).toBe(100)
-    expect(result.unlimitedCount).toBe(2)
-  })
-
-  it("returns mode 'none' when no container sets a request or limit", () => {
-    const containers = [cpu('a', 10, 0, 0), cpu('b', 20, 0, 0)]
-    const result = pickConstraint(containers, 'cpu')
-    expect(result.mode).toBe('none')
-    expect(result.container).toBeNull()
-    expect(result.unlimitedCount).toBe(2)
-  })
-
-  it('breaks ties deterministically — equal pct picks the lexicographically lower name', () => {
-    const containers = [
-      cpu('zzz', 50, 0, 100), // 50%
-      cpu('aaa', 50, 0, 100), // 50%
-    ]
-    const result = pickConstraint(containers, 'cpu')
-    expect(result.container?.name).toBe('aaa')
-  })
-
-  it('counts every limit==0 container in unlimitedCount (request-only and unset)', () => {
-    const containers = [
-      cpu('limited', 50, 0, 100),
-      cpu('reqonly', 50, 100, 0),
-      cpu('unset', 10, 0, 0),
-    ]
-    const result = pickConstraint(containers, 'cpu')
+  it("omits the marker in 'limit' mode when no container sets a request", () => {
+    const containers = [cpu('a', 30, 0, 100), cpu('b', 40, 0, 200)]
+    const result = podAggregate(containers, 'cpu')
     expect(result.mode).toBe('limit')
+    expect(result.markerPct).toBeUndefined()
+  })
+
+  it("reports mode 'partial' with usage and unbounded count when only some containers are limited", () => {
+    const containers = [
+      cpu('app', 80, 0, 0),   // dominant, unbounded
+      cpu('sidecar', 5, 0, 100), // small, limited
+    ]
+    const result = podAggregate(containers, 'cpu')
+    expect(result.mode).toBe('partial')
+    expect(result.totalUsage).toBe(85)
+    expect(result.denom).toBe(0) // a partial limit sum is not a real ceiling
+    expect(result.unlimitedCount).toBe(1)
+  })
+
+  it("reports mode 'request' with the summed request when there are no limits but some requests", () => {
+    const containers = [
+      cpu('a', 50, 100, 0),
+      cpu('b', 40, 200, 0),
+    ]
+    const result = podAggregate(containers, 'cpu')
+    expect(result.mode).toBe('request')
+    expect(result.totalUsage).toBe(90)
+    expect(result.denom).toBe(300) // summed request
     expect(result.unlimitedCount).toBe(2)
+  })
+
+  it("reports mode 'none' when no container sets a request or limit", () => {
+    const containers = [cpu('a', 10, 0, 0), cpu('b', 20, 0, 0)]
+    const result = podAggregate(containers, 'cpu')
+    expect(result.mode).toBe('none')
+    expect(result.totalUsage).toBe(30)
+    expect(result.denom).toBe(0)
+    expect(result.unlimitedCount).toBe(2)
+  })
+
+  it('aggregates the memory fields for the memory kind', () => {
+    const containers = [mem('a', 64, 32, 128), mem('b', 96, 64, 256)]
+    const result = podAggregate(containers, 'memory')
+    expect(result.mode).toBe('limit')
+    expect(result.totalUsage).toBe(160)
+    expect(result.denom).toBe(384) // summed memory limit
   })
 })

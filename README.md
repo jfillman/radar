@@ -141,6 +141,12 @@ API installations. The generated default route has no chart-imposed timeout,
 so the Gateway deployment default applies. Set `httpRoute.defaultTimeout` for
 an explicit timeout; custom rules can define their own `timeouts`.
 
+`ingress` and `httpRoute` are mutually exclusive: enabling both stops the
+install with an error, so enable only one. When `httpRoute` is enabled you must
+set at least one `parentRefs` entry (the Gateway the route attaches to);
+otherwise the install fails instead of creating an HTTPRoute that is attached to
+no Gateway.
+
 ```yaml
 httpRoute:
   enabled: true

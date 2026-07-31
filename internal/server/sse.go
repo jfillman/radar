@@ -70,12 +70,14 @@ type ClientInfo struct {
 	// broadcast loop never runs a SAR. nil/empty for users with full access.
 	DeniedKinds map[topology.NodeKind]bool
 	// Authorize authorizes a per-resource change frame for this client's user
-	// via SubjectAccessReview (memoized on the user's permission cache). Bound
-	// at subscribe time to the request's user + a connection-lived context, so
-	// the broadcast goroutine can gate diff-bearing k8s_event frames per kind
-	// without holding a request. nil when no authorizer was wired (defensive /
-	// tests) — clientCanSeeChange then falls back to the namespace + denied-kind
-	// gate. When auth is disabled the closure is still set and returns true.
+	// via SubjectAccessReview, memoized in a connection-lived TTL cache
+	// (context-scoped, independent of the shared permission cache) so a
+	// long-lived stream doesn't re-SAR every frame. Bound at subscribe time to
+	// the request's user + a connection-lived context, so the broadcast
+	// goroutine can gate diff-bearing k8s_event frames per kind without holding a
+	// request. nil when no authorizer was wired (defensive / tests) —
+	// clientCanSeeChange then falls back to the namespace + denied-kind gate.
+	// When auth is disabled the closure is still set and returns true.
 	Authorize func(group, resource, namespace, verb string) bool
 }
 

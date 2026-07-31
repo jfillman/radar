@@ -1245,21 +1245,36 @@ func (s *Server) canReadUser(ctx context.Context, user *auth.User, group, resour
 			return v
 		}
 	}
+	allowed := s.canReadUserSAR(ctx, user, group, resource, namespace, verb)
+	if perms != nil {
+		perms.SetCanI(verb, group, resource, namespace, allowed)
+	}
+	return allowed
+}
+
+// canReadUserSAR runs a single fresh SubjectAccessReview for (group, resource,
+// namespace, verb) against the current apiserver, bypassing the shared
+// permission cache entirely. Fail-closed on a missing client or SAR error.
+//
+// canReadUser wraps this behind the shared cache. The SSE change authorizer
+// calls it directly instead: reusing the shared cache there would let a decision
+// already up to the cache TTL old be re-cached under the SSE memo's own TTL,
+// stacking staleness — and the shared entry's context stamping wouldn't help,
+// because the SSE memo, not the shared cache, is what a long-lived stream reads.
+// A fresh SAR keeps the SSE staleness bounded to that memo's TTL alone.
+func (s *Server) canReadUserSAR(ctx context.Context, user *auth.User, group, resource, namespace, verb string) bool {
 	client := k8s.GetClient()
 	if client == nil {
 		// Fail-closed: no apiserver to ask, refuse rather than quietly
 		// serving from the cache.
-		log.Printf("[auth] canReadUser: K8s client unavailable, denying %s on %s/%s for %s", k8s.SanitizeForLog(verb), k8s.SanitizeForLog(group), k8s.SanitizeForLog(resource), k8s.SanitizeForLog(user.Username))
+		log.Printf("[auth] canReadUserSAR: K8s client unavailable, denying %s on %s/%s for %s", k8s.SanitizeForLog(verb), k8s.SanitizeForLog(group), k8s.SanitizeForLog(resource), k8s.SanitizeForLog(user.Username))
 		return false
 	}
 	allowed, err := auth.SubjectCanI(ctx, client, user.Username, user.Groups, namespace, group, resource, verb)
 	if err != nil {
 		// Fail-closed on SAR error — apiserver said something we don't trust.
-		log.Printf("[auth] canReadUser SAR failed for %s on %s/%s in ns=%q: %v", k8s.SanitizeForLog(user.Username), k8s.SanitizeForLog(group), k8s.SanitizeForLog(resource), k8s.SanitizeForLog(namespace), err)
+		log.Printf("[auth] canReadUserSAR failed for %s on %s/%s in ns=%q: %v", k8s.SanitizeForLog(user.Username), k8s.SanitizeForLog(group), k8s.SanitizeForLog(resource), k8s.SanitizeForLog(namespace), err)
 		return false
-	}
-	if perms != nil {
-		perms.SetCanI(verb, group, resource, namespace, allowed)
 	}
 	return allowed
 }
@@ -4464,11 +4479,85 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if user != nil && s.permCache != nil && s.permCache.Get(user.Username) == nil {
 		_ = s.getUserNamespaces(r, []string{})
 	}
-	ctx := r.Context()
-	authorize := func(group, resource, namespace, verb string) bool {
-		return s.canReadUser(ctx, user, group, resource, namespace, verb)
+	s.broadcaster.HandleSSE(w, r, deny, s.newSSEChangeAuthorizer(r.Context(), user))
+}
+
+const (
+	// sseChangeAuthTTL bounds how long an SSE client's per-frame authorization
+	// decision is cached before re-checking, so a revoked grant propagates within
+	// the window (matching the REST permission cache's cadence).
+	sseChangeAuthTTL = 2 * time.Minute
+	// sseChangeAuthSARTimeout caps a single authorization SAR issued from the
+	// broadcast goroutine, so one hung apiserver call can't stall broadcasts.
+	sseChangeAuthSARTimeout = 5 * time.Second
+)
+
+// newSSEChangeAuthorizer returns the per-kind authorizer for one SSE client's
+// change frames, backed by a connection-lived memo.
+//
+// Without the memo, every qualifying change frame for a long-lived client would
+// run a fresh, UNCACHED SubjectAccessReview serially inside the single broadcast
+// goroutine (canReadUser only writes back to the shared permission cache when
+// that entry exists, and the SSE path primes it only once at subscribe, so it
+// TTLs out): stalling every client and multiplying apiserver SAR load by
+// client × (kind, namespace). The memo survives that cache expiry; its own TTL
+// preserves RBAC-change propagation; and the bounded SAR context stops a hung
+// apiserver call from wedging the broadcast loop.
+//
+// The memo keys on the current context name so a kubeconfig context switch —
+// which leaves SSE connections open (they receive a context_changed frame, not
+// a disconnect) — can't authorize new-cluster frames with the previous
+// cluster's decisions; post-switch keys miss and re-run against the new
+// apiserver, mirroring the shared cache's own context stamping. nil user
+// (auth off) is a passthrough.
+func (s *Server) newSSEChangeAuthorizer(ctx context.Context, user *auth.User) func(group, resource, namespace, verb string) bool {
+	if user == nil || s.permCache == nil {
+		return func(_, _, _, _ string) bool { return true }
 	}
-	s.broadcaster.HandleSSE(w, r, deny, authorize)
+	base := func(group, resource, namespace, verb string) bool {
+		sarCtx, cancel := context.WithTimeout(ctx, sseChangeAuthSARTimeout)
+		defer cancel()
+		return s.canReadUserSAR(sarCtx, user, group, resource, namespace, verb)
+	}
+	return memoizedAuthorizer(base, sseChangeAuthTTL, k8s.GetContextName, time.Now)
+}
+
+// memoizedAuthorizer wraps an authorization predicate with a per-(context, verb,
+// group, resource, namespace) TTL memo so repeated lookups don't re-issue the
+// SAR. Keying on contextName scopes decisions to the cluster they were made
+// against. contextName and now are injectable for tests.
+func memoizedAuthorizer(base func(group, resource, namespace, verb string) bool, ttl time.Duration, contextName func() string, now func() time.Time) func(group, resource, namespace, verb string) bool {
+	type entry struct {
+		allowed bool
+		expires time.Time
+	}
+	var mu sync.Mutex
+	memo := make(map[string]entry)
+	return func(group, resource, namespace, verb string) bool {
+		ctxName := ""
+		if contextName != nil {
+			ctxName = contextName()
+		}
+		key := ctxName + "\x00" + verb + "\x00" + group + "\x00" + resource + "\x00" + namespace
+		t := now()
+		mu.Lock()
+		if e, ok := memo[key]; ok && t.Before(e.expires) {
+			mu.Unlock()
+			return e.allowed
+		}
+		mu.Unlock()
+		allowed := base(group, resource, namespace, verb)
+		// If the cluster context changed while base() was in flight, the result
+		// may have been decided against a different apiserver than `key` names —
+		// caching it would let a later switch-back within the TTL serve the wrong
+		// cluster's decision. Drop it; the next frame re-evaluates cleanly.
+		if contextName == nil || contextName() == ctxName {
+			mu.Lock()
+			memo[key] = entry{allowed: allowed, expires: t.Add(ttl)}
+			mu.Unlock()
+		}
+		return allowed
+	}
 }
 
 // Settings handlers

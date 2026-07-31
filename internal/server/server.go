@@ -1245,8 +1245,11 @@ func (s *Server) canReadUser(ctx context.Context, user *auth.User, group, resour
 			return v
 		}
 	}
-	allowed := s.canReadUserSAR(ctx, user, group, resource, namespace, verb)
-	if perms != nil {
+	allowed, authoritative := s.canReadUserSAR(ctx, user, group, resource, namespace, verb)
+	// Cache only a real apiserver verdict. A transient failure (no client, SAR
+	// error, timeout) fails closed for this call but must NOT be memoized, or a
+	// momentary blip would deny the tuple for the whole cache TTL.
+	if authoritative && perms != nil {
 		perms.SetCanI(verb, group, resource, namespace, allowed)
 	}
 	return allowed
@@ -1254,7 +1257,10 @@ func (s *Server) canReadUser(ctx context.Context, user *auth.User, group, resour
 
 // canReadUserSAR runs a single fresh SubjectAccessReview for (group, resource,
 // namespace, verb) against the current apiserver, bypassing the shared
-// permission cache entirely. Fail-closed on a missing client or SAR error.
+// permission cache entirely. It returns (allowed, authoritative): authoritative
+// is false when the apiserver couldn't be consulted (no client, SAR error,
+// timeout), in which case allowed is a fail-closed false that callers must not
+// cache — the next call retries.
 //
 // canReadUser wraps this behind the shared cache. The SSE change authorizer
 // calls it directly instead: reusing the shared cache there would let a decision
@@ -1262,21 +1268,21 @@ func (s *Server) canReadUser(ctx context.Context, user *auth.User, group, resour
 // stacking staleness — and the shared entry's context stamping wouldn't help,
 // because the SSE memo, not the shared cache, is what a long-lived stream reads.
 // A fresh SAR keeps the SSE staleness bounded to that memo's TTL alone.
-func (s *Server) canReadUserSAR(ctx context.Context, user *auth.User, group, resource, namespace, verb string) bool {
+func (s *Server) canReadUserSAR(ctx context.Context, user *auth.User, group, resource, namespace, verb string) (allowed bool, authoritative bool) {
 	client := k8s.GetClient()
 	if client == nil {
 		// Fail-closed: no apiserver to ask, refuse rather than quietly
 		// serving from the cache.
 		log.Printf("[auth] canReadUserSAR: K8s client unavailable, denying %s on %s/%s for %s", k8s.SanitizeForLog(verb), k8s.SanitizeForLog(group), k8s.SanitizeForLog(resource), k8s.SanitizeForLog(user.Username))
-		return false
+		return false, false
 	}
 	allowed, err := auth.SubjectCanI(ctx, client, user.Username, user.Groups, namespace, group, resource, verb)
 	if err != nil {
 		// Fail-closed on SAR error — apiserver said something we don't trust.
 		log.Printf("[auth] canReadUserSAR failed for %s on %s/%s in ns=%q: %v", k8s.SanitizeForLog(user.Username), k8s.SanitizeForLog(group), k8s.SanitizeForLog(resource), k8s.SanitizeForLog(namespace), err)
-		return false
+		return false, false
 	}
-	return allowed
+	return allowed, true
 }
 
 // filterNamespacesByCanRead returns the subset of `namespaces` where the
@@ -4514,7 +4520,7 @@ func (s *Server) newSSEChangeAuthorizer(ctx context.Context, user *auth.User) fu
 	if user == nil || s.permCache == nil {
 		return func(_, _, _, _ string) bool { return true }
 	}
-	base := func(group, resource, namespace, verb string) bool {
+	base := func(group, resource, namespace, verb string) (bool, bool) {
 		sarCtx, cancel := context.WithTimeout(ctx, sseChangeAuthSARTimeout)
 		defer cancel()
 		return s.canReadUserSAR(sarCtx, user, group, resource, namespace, verb)
@@ -4525,8 +4531,11 @@ func (s *Server) newSSEChangeAuthorizer(ctx context.Context, user *auth.User) fu
 // memoizedAuthorizer wraps an authorization predicate with a per-(context, verb,
 // group, resource, namespace) TTL memo so repeated lookups don't re-issue the
 // SAR. Keying on contextName scopes decisions to the cluster they were made
-// against. contextName and now are injectable for tests.
-func memoizedAuthorizer(base func(group, resource, namespace, verb string) bool, ttl time.Duration, contextName func() string, now func() time.Time) func(group, resource, namespace, verb string) bool {
+// against. base returns (allowed, authoritative); a non-authoritative result
+// (transient SAR failure) is returned to the caller fail-closed but not cached,
+// so a momentary apiserver blip can't deny a tuple for the whole TTL.
+// contextName and now are injectable for tests.
+func memoizedAuthorizer(base func(group, resource, namespace, verb string) (bool, bool), ttl time.Duration, contextName func() string, now func() time.Time) func(group, resource, namespace, verb string) bool {
 	type entry struct {
 		allowed bool
 		expires time.Time
@@ -4546,12 +4555,14 @@ func memoizedAuthorizer(base func(group, resource, namespace, verb string) bool,
 			return e.allowed
 		}
 		mu.Unlock()
-		allowed := base(group, resource, namespace, verb)
-		// If the cluster context changed while base() was in flight, the result
-		// may have been decided against a different apiserver than `key` names —
-		// caching it would let a later switch-back within the TTL serve the wrong
-		// cluster's decision. Drop it; the next frame re-evaluates cleanly.
-		if contextName == nil || contextName() == ctxName {
+		allowed, authoritative := base(group, resource, namespace, verb)
+		// Cache only an authoritative verdict, and only if the cluster context
+		// didn't change while base() was in flight — otherwise the result may
+		// reflect a different apiserver than `key` names, and a later switch-back
+		// within the TTL would serve the wrong cluster's decision. In either
+		// skip case the fail-closed result is still returned; the next frame
+		// re-evaluates cleanly.
+		if authoritative && (contextName == nil || contextName() == ctxName) {
 			mu.Lock()
 			memo[key] = entry{allowed: allowed, expires: t.Add(ttl)}
 			mu.Unlock()

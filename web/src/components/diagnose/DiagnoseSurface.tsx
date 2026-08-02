@@ -372,7 +372,7 @@ export function DiagnoseSurface({ topInset = 0 }: { topInset?: number }) {
           only appears when expanded; keys keep the detail node identity-stable
           as it comes and goes. */}
       <div className="flex min-h-0 flex-1">
-        {showHistory && (
+        {showHistory && (!setupPending || d.runs.length > 0) && (
           <aside
             key="recent"
             className="w-72 shrink-0 overflow-y-auto border-r border-theme-border px-3 py-3"

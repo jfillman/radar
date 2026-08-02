@@ -116,11 +116,13 @@ export function IssueDiagnoseButton({
   return (
     <Tooltip
       content={
-        !ready
-          ? "Set up AI diagnosis — install a local agent to investigate"
-          : d.hosted
-            ? `Sends this resource's context to ${d.agentLabel} to find the root cause`
-            : `Runs ${d.agentLabel} on your machine and sends it this resource's context to find the root cause`
+        d.setupState === "needs-restart"
+          ? "Restart Radar to enable AI diagnosis — a supported agent is installed"
+          : !ready
+            ? "Set up AI diagnosis — install a local agent to investigate"
+            : d.hosted
+              ? `Sends this resource's context to ${d.agentLabel} to find the root cause`
+              : `Runs ${d.agentLabel} on your machine and sends it this resource's context to find the root cause`
       }
       position="left"
     >

@@ -56,7 +56,11 @@ function AgentRow({ agent }: { agent: AgentInstall }) {
 // but not runnable yet — either no agent CLI is installed ("needs-install") or a
 // supported one appeared after Radar booted ("needs-restart"). Radar decides the
 // engine once at startup, so a fresh install needs a restart to take effect.
-export function AgentSetupNotice({ setupState }: { setupState: DiagnoseSetup }) {
+export function AgentSetupNotice({
+  setupState,
+}: {
+  setupState: DiagnoseSetup;
+}) {
   const needsRestart = setupState === "needs-restart";
   return (
     <div className="mx-auto max-w-md px-1 py-6">
@@ -72,8 +76,8 @@ export function AgentSetupNotice({ setupState }: { setupState: DiagnoseSetup }) 
         {needsRestart ? (
           <>
             A supported agent CLI is now installed, but Radar started before it
-            was — restart Radar to pick it up. Investigations then run locally on
-            your machine, keyless, using your own agent.
+            was — restart Radar to pick it up. Investigations then run locally
+            on your machine, keyless, using your own agent.
           </>
         ) : (
           <>
@@ -84,22 +88,25 @@ export function AgentSetupNotice({ setupState }: { setupState: DiagnoseSetup }) 
         )}
       </p>
 
-      {needsRestart ? (
-        <button
-          type="button"
-          onClick={() => window.location.reload()}
-          className="btn-brand mt-4 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm"
-        >
-          <RotateCw className="h-3.5 w-3.5" />
-          Reload after restarting
-        </button>
-      ) : (
+      {!needsRestart && (
         <div className="mt-4 flex flex-col gap-2.5">
           {SUPPORTED_AGENTS.map((a) => (
             <AgentRow key={a.name} agent={a} />
           ))}
         </div>
       )}
+
+      {/* The panel only re-reads /api/agents on load, so after installing or
+          restarting the user needs a way to refresh in place rather than
+          hunting for a manual browser reload. */}
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        className="btn-brand mt-4 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm"
+      >
+        <RotateCw className="h-3.5 w-3.5" />
+        {needsRestart ? "Reload after restarting" : "Reload after installing"}
+      </button>
 
       <p className="mt-4 text-xs text-theme-text-tertiary">
         The agent reads this cluster through Radar and finds the root cause. It

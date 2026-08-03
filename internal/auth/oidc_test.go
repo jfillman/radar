@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -599,6 +601,53 @@ func TestResolveOIDCProviderMetadata_ExplicitEndpointsSeedSigningAlgorithms(t *t
 		if !got[want] {
 			t.Errorf("explicit-endpoint algorithms %v missing %q", metadata.ProviderConfig.Algorithms, want)
 		}
+	}
+}
+
+func TestNewOIDCHandler_ExplicitEndpointsVerifyES256Token(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issuer := "https://auth.example.com"
+	provider := &oidctest.Server{
+		PublicKeys: []oidctest.PublicKey{{
+			PublicKey: priv.Public(),
+			KeyID:     "es-key",
+			Algorithm: oidc.ES256,
+		}},
+	}
+	provider.SetIssuer(issuer)
+	srv := httptest.NewServer(provider)
+	defer srv.Close()
+
+	// Explicit-endpoint mode (no internalIssuer) skips discovery, so without the
+	// seeded algorithm set go-oidc would narrow the verifier to RS256 and reject
+	// this valid ES256 token.
+	h, err := NewOIDCHandler(context.Background(), Config{
+		Mode:                 "oidc",
+		OIDCIssuer:           issuer,
+		OIDCAuthorizationURL: issuer + "/auth",
+		OIDCTokenURL:         srv.URL + "/token",
+		OIDCJWKSURL:          srv.URL + "/keys",
+		OIDCClientID:         "radar",
+		OIDCClientSecret:     "secret",
+		OIDCRedirectURL:      "http://localhost/callback",
+	})
+	if err != nil {
+		t.Fatalf("expected explicit-endpoint init to succeed: %v", err)
+	}
+
+	claims := fmt.Sprintf(`{
+		"iss": %q,
+		"aud": "radar",
+		"sub": "alice",
+		"exp": %d
+	}`, issuer, time.Now().Add(time.Hour).Unix())
+	rawIDToken := oidctest.SignIDToken(priv, "es-key", oidc.ES256, claims)
+	if _, err := h.verifier.Verify(context.Background(), rawIDToken); err != nil {
+		t.Fatalf("expected ES256 token verification to succeed in explicit-endpoint mode: %v", err)
 	}
 }
 

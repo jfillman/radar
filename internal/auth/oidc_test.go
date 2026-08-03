@@ -727,6 +727,11 @@ func (f *fakeIDP) newHandler(t *testing.T, cfg Config) *OIDCHandler {
 	if cfg.OIDCGroupsClaim == "" {
 		cfg.OIDCGroupsClaim = "groups"
 	}
+	if cfg.CookieTTL == 0 {
+		// Without a TTL the session cookie expires at the current second, so a
+		// clock tick between issue and parse would flake the callback asserts.
+		cfg.CookieTTL = time.Hour
+	}
 	h, err := NewOIDCHandler(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewOIDCHandler: %v", err)

@@ -74,6 +74,51 @@ describe('buildGraph lanes', () => {
   })
 })
 
+// The single most damaging failure this view can have: rendering one vantage's
+// success as another vantage's proof. RouteResult holds ONE merged outcome, so
+// the graph must gate on the selected origin's own evidence.
+describe('evidence is scoped to the selected origin', () => {
+  it('an origin that never ran shows its own mark, not another origin\'s success', () => {
+    // A local (laptop) probe verified the route. The in-cluster probe never ran.
+    const t = trace([pod('a', true, '10.0.0.1')], [p({ vantage: 'local', path: 'data', ok: true, tone: 'healthy' })])
+    const g = buildGraph({ trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: pick(t, 'incluster') })
+    const entry = g.edges.find((e) => e.id === 'e:origin-subject')!
+    expect(entry.mark).toBe('untested')
+    expect(entry.mark).not.toBe('proved')
+    expect(entry.label).toMatch(/not tested from here/)
+  })
+
+  it('does not paint a solid dataplane line for a probe that never ran', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({ vantage: 'local', path: 'data', ok: true })])
+    const g = buildGraph({ trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: pick(t, 'incluster') })
+    // 'proved' is the only solid green mark; nothing on this canvas may carry it.
+    expect(g.edges.some((e) => e.mark === 'proved')).toBe(false)
+    expect(g.nodes.find((n) => n.id === 'n:endpoints')!.podRows!.every((r) => r.mark !== 'proved')).toBe(true)
+  })
+
+  it('endpoint rows read only the selected origin\'s probes', () => {
+    // in-cluster succeeded; the apiserver relay never probed this endpoint.
+    const t = trace([pod('a', true, '10.0.0.1')], [p({ vantage: 'in-cluster', path: 'data', target: '10.0.0.1:8080', ok: true })])
+    const viaProxy = buildGraph({ trace: t, route: route(), origin: pick(t, 'apiserver') })
+    expect(viaProxy.nodes.find((n) => n.id === 'n:endpoints')!.podRows![0].mark).toBe('untested')
+    const inCluster = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    expect(inCluster.nodes.find((n) => n.id === 'n:endpoints')!.podRows![0].mark).toBe('proved')
+  })
+
+  it('an origin WITH evidence still renders the route outcome', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({ vantage: 'in-cluster', path: 'data', target: '10.0.0.1:8080', ok: true })])
+    const g = buildGraph({ trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: pick(t, 'incluster') })
+    expect(g.edges.find((e) => e.id === 'e:origin-subject')!.mark).toBe('proved')
+  })
+
+  it('anomalies are not attributed to an origin that produced none', () => {
+    const many = Array.from({ length: 7 }, (_, i) => pod(`p${i}`, true, `10.0.0.${i}`))
+    const t = trace(many, many.map((x, i) => p({ vantage: 'in-cluster', path: 'data', target: `${x.ip}:8080`, ok: i !== 2, tone: i === 2 ? 'unhealthy' : 'healthy' })))
+    const viaProxy = buildGraph({ trace: t, route: route(), origin: pick(t, 'apiserver') })
+    expect(viaProxy.nodes.find((n) => n.id === 'n:endpoints')!.anomalies?.some((a) => a.mark === 'failed')).toBe(false)
+  })
+})
+
 describe('buildGraph edges', () => {
   it('service to endpoint membership is always config — no packet traverses it', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [p({})])

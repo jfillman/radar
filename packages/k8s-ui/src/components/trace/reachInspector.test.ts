@@ -50,6 +50,22 @@ describe('inspector caveats', () => {
     expect(insp.notProve.join(' ')).toMatch(/mesh mTLS|AuthorizationPolicy|identity/i)
   })
 
+  it('does not claim a front-door gap on a resource that has no front door', () => {
+    // The external origin is always unsupported, so an ungated check appended
+    // this caveat to every ClusterIP Service that has no entry point at all.
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    expect(t.upstreams).toHaveLength(0)
+    const insp = buildInspector('e:origin-subject', ctx(t, 'incluster'))
+    expect(insp.notProve.join(' ')).not.toMatch(/front door/i)
+  })
+
+  it('does name the front-door gap when an entry point exists', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    t.upstreams = [{ resource: { kind: 'Gateway', name: 'gw', namespace: 'store' }, edge: 'gateway->service', findings: [] }]
+    const insp = buildInspector('e:origin-subject', ctx(t, 'incluster'))
+    expect(insp.notProve.join(' ')).toMatch(/front door/i)
+  })
+
   it('never claims complete evidence — a proved result still carries caveats', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({})])
     const insp = buildInspector('e:origin-subject', ctx(t, 'incluster'))

@@ -64,6 +64,11 @@ export const MARK_LEGEND: { mark: Mark; text: string }[] = [
   { mark: 'excluded', text: 'excluded from routing' },
   { mark: 'untested', text: 'not tested' },
   { mark: 'stale', text: 'stale evidence' },
+  // These three render (slow via node anomalies, running/denied via origins) and
+  // were absent, so a symbol could appear on screen with no legend entry.
+  { mark: 'slow', text: 'answered, far outside the normal latency band' },
+  { mark: 'running', text: 'test in flight' },
+  { mark: 'denied', text: 'not permitted' },
 ]
 
 export function markStyle(m: Mark): MarkStyle {

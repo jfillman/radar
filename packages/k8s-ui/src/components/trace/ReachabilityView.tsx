@@ -186,8 +186,14 @@ function ReachabilityBoard(props: BoardProps) {
       {/* The board fills the pane. Each column scrolls on its own so a long
           origin list or inspector never pushes the graph out of view. */}
       <div className="grid min-h-0 flex-1 items-stretch grid-cols-[minmax(200px,232px)_minmax(0,1fr)] xl:grid-cols-[minmax(232px,258px)_minmax(0,1fr)_minmax(310px,23%)]">
+        {/* Picking a vantage re-routes the graph and returns the inspector to
+            the PATH result from there. It used to select the origin itself,
+            which answered "define this vantage" when the user asked "show me
+            the result from it" - and, for an unusable vantage, replaced a
+            working graph with a blocked one. The origin's own detail is still
+            one click away on its capsule in the graph. */}
         <div className="min-h-0 overflow-y-auto border-r border-theme-border">
-          <OriginRail origins={origins} active={origin?.id} onPick={(id) => { setOriginId(id); setSelection(`origin:${id}`) }} />
+          <OriginRail origins={origins} active={origin?.id} onPick={(id) => { setOriginId(id); setSelection(undefined) }} />
         </div>
         <div className="min-h-0 min-w-0">
           <ReachabilityGraph model={model} selected={selection} onSelect={setSelection} />

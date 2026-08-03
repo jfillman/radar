@@ -1,7 +1,7 @@
 import type { Trace, Hop, ResourceRef, RouteResult, PodStatus, ProbeResult } from './types'
 import type { Mark, SevTone } from './reachMarks'
 import { routeMark, isSlow, formatLatency } from './reachMarks'
-import type { Origin } from './reachOrigins'
+import { originOf, type Origin } from './reachOrigins'
 import { podProbeKey } from './podReach'
 
 /**
@@ -164,12 +164,32 @@ function probesForPod(pod: PodStatus, probes: ProbeResult[]): ProbeResult[] {
 }
 
 /**
+ * Marks that mean this origin actually produced evidence for the scenario.
+ * Anything else (untested / denied / blocked / excluded / config) means it did
+ * not run, and must not inherit another origin's result.
+ */
+const EVIDENCE_MARKS: Mark[] = ['proved', 'failed', 'answered', 'proxied', 'stale', 'running', 'slow']
+
+export function originProducedEvidence(origin: Origin): boolean {
+  return EVIDENCE_MARKS.includes(origin.mark)
+}
+
+/**
+ * A hop's probes belong to whichever origin produced them. The graph renders
+ * ONE origin at a time, so it must read only that origin's probes - otherwise a
+ * vantage that never ran inherits another's result and a laptop's success is
+ * painted as a solid proved line inside the dataplane lane.
+ */
+function probesFromOrigin(probes: ProbeResult[], origin: Origin): ProbeResult[] {
+  return probes.filter((p) => originOf(p) === origin.id)
+}
+
+/**
  * Anomalies held out of a population aggregate. Averaging them away is exactly
  * how a single refusing endpoint that real users hit becomes invisible, so each
  * category is counted and named rather than folded into a percentage.
  */
-function populationAnomalies(hop: Hop, roster: PodStatus[], total: number): { mark: Mark; text: string }[] {
-  const probes = hop.probes ?? []
+function populationAnomalies(roster: PodStatus[], total: number, probes: ProbeResult[]): { mark: Mark; text: string }[] {
   const out: { mark: Mark; text: string }[] = []
   const failing = roster.filter((p) => p.ready && probesForPod(p, probes).some((x) => !x.skipped && (!x.ok || x.tone === 'unhealthy')))
   if (failing.length > 0) {
@@ -300,12 +320,13 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const selected = typeof podsHop?.meta?.selected === 'number' ? (podsHop.meta.selected as number) : total
   const publishNotReady = !!podsHop?.meta?.publishNotReadyAddresses
   const aggregated = roster.length > POD_DETAIL_MAX || total > roster.length
-  const anomalies = podsHop ? populationAnomalies(podsHop, roster, total) : []
+  const originProbes = podsHop ? probesFromOrigin(podsHop.probes ?? [], origin) : []
+  const anomalies = podsHop ? populationAnomalies(roster, total, originProbes) : []
 
   const deliveryBlocked = (route ? routeMark(route, { stale, running }) : 'untested') === 'failed'
   const podRows: PodRow[] = []
   if (podsHop) {
-    const probes = podsHop.probes ?? []
+    const probes = originProbes
     for (const p of roster.slice(0, POD_ROW_MAX)) {
       const mine = probesForPod(p, probes).filter((x) => !x.skipped)
       const failed = mine.find((x) => !x.ok || x.tone === 'unhealthy')
@@ -448,8 +469,15 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   }
 
   const originNodeId = `origin:${origin.id}`
-  const entryMark: Mark = route ? routeMark(route, { stale, running }) : 'untested'
+  // The route outcome is MERGED across origins (RouteResult holds one outcome).
+  // An origin that produced nothing for this scenario must show its own mark,
+  // not another vantage's success - otherwise the dataplane lane renders a
+  // solid "proved" line for a probe that never ran.
+  const hasEvidence = originProducedEvidence(origin)
+  const entryMark: Mark = !hasEvidence ? origin.mark : route ? routeMark(route, { stale, running }) : 'untested'
   const originBlocked = !!origin.unavailable && origin.mark === 'blocked'
+  const noEvidenceLabel =
+    origin.mark === 'denied' ? 'not permitted from here' : origin.mark === 'blocked' ? 'not routable from here' : 'not tested from here'
 
   if (originIsControl) {
     // A clean relay can never read as `proved`: it bypassed the dataplane.
@@ -458,14 +486,14 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       originNodeId,
       `n:${subjectId}`,
       originBlocked ? 'blocked' : entryMark === 'proved' ? 'proxied' : entryMark,
-      originBlocked ? origin.unavailable! : route?.evidence || 'relayed, bypassing the dataplane',
+      originBlocked ? noEvidenceLabel : !hasEvidence ? noEvidenceLabel : route?.evidence || 'relayed by the apiserver',
     )
   } else if (isFront && entryHop) {
     const entryNodeId = `n:${refId(entryHop.resource)}`
-    connect('e:origin-entry', originNodeId, entryNodeId, entryMark, route?.evidence || 'entry point')
+    connect('e:origin-entry', originNodeId, entryNodeId, entryMark, !hasEvidence ? noEvidenceLabel : route?.evidence || 'entry point')
     connect('e:entry-subject', entryNodeId, `n:${subjectId}`, entryMark === 'failed' ? 'blocked' : entryMark, route?.target ? `backendRef · ${route.target}` : 'backendRef')
   } else {
-    connect('e:origin-subject', originNodeId, `n:${subjectId}`, originBlocked ? 'blocked' : entryMark, originBlocked ? origin.unavailable! : route?.evidence || 'request to the Service')
+    connect('e:origin-subject', originNodeId, `n:${subjectId}`, originBlocked ? 'blocked' : entryMark, !hasEvidence ? noEvidenceLabel : route?.evidence || 'request to the Service')
   }
 
   if (podsHop) {

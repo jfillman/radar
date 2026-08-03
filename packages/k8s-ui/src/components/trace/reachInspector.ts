@@ -78,7 +78,7 @@ function originScope(o: Origin, trace: Trace): { k: string; v: string }[] {
  * stated underneath as a caveat instead of being offered as an action - a
  * button that can never be pressed is not a next step.
  */
-function gapNext(origins: Origin[], current: Origin): Inspector['next'] {
+function gapNext(origins: Origin[], current: Origin, namespace?: string): Inspector['next'] {
   const actionable = actionableGap(origins)
   const ceiling = strongestGap(origins)
   // Named only when it is genuinely out of reach, so it reads as a limit on the
@@ -87,11 +87,15 @@ function gapNext(origins: Origin[], current: Origin): Inspector['next'] {
 
   const denied = origins.find((o) => o.mark === 'denied')
   if (!actionable && denied) {
+    const ns = namespace || '<namespace>'
     return {
-      header: 'GRANT OR DELEGATE',
-      body: 'Radar is not permitted to run this test. Grant the permission, or run the check from a workload you already control.',
+      header: 'ASK FOR THIS PERMISSION',
+      // The permission is NAMED, and the command is one that actually runs.
+      // The button previously carried no command at all, so the only control on
+      // screen in the state where the user is most stuck did nothing.
+      body: `Running an in-cluster probe needs \`create\` on \`jobs\` in ${ns}. Grant it, or run the check from a workload you already control.`,
       blocked: denied.unavailable,
-      ctas: [{ text: 'Copy the RBAC request', action: 'copy-command' }],
+      ctas: [{ text: 'Copy the permission check', action: 'copy-command', command: `kubectl auth can-i create jobs -n ${ns}` }],
     }
   }
   if (!actionable || actionable.id === current.id) {
@@ -122,9 +126,6 @@ interface Ctx {
   edges: GraphEdge[]
   stale?: boolean
   running?: boolean
-  /** True when the selected scenario enters through a front door, so the
-   *  "external clients untested" caveat would be redundant. */
-  originIsFront?: boolean
 }
 
 function originInspector(o: Origin, ctx: Ctx): Inspector {
@@ -147,7 +148,7 @@ function originInspector(o: Origin, ctx: Ctx): Inspector {
     scope: originScope(o, ctx.trace),
     evidence: [{ mark: o.mark, text: o.unavailable ? 'this origin produced no evidence' : 'this origin’s latest result for the selected scenario' }],
     notProve: o.kind === 'synthetic' ? [SYNTHETIC_IDENTITY] : o.kind === 'relayed' ? [NOT_DATAPLANE] : [],
-    next: gapNext(ctx.origins, o),
+    next: gapNext(ctx.origins, o, ctx.trace.subject.namespace),
   }
 }
 
@@ -258,7 +259,7 @@ function edgeInspector(edge: GraphEdge, ctx: Ctx): Inspector {
       ],
       evidence: [{ mark: 'config', text: 'membership is intent, not observed traffic' }],
       notProve: ['That kube-proxy actually delivered a request to any endpoint — read the delivery edges below it.'],
-      next: gapNext(ctx.origins, origin),
+      next: gapNext(ctx.origins, origin, ctx.trace.subject.namespace),
     }
   }
 
@@ -288,7 +289,7 @@ function edgeInspector(edge: GraphEdge, ctx: Ctx): Inspector {
       scope: [{ k: 'ORIGIN', v: origin.name }, { k: 'SCENARIO', v: route?.route ?? '—' }],
       evidence: [{ mark: 'blocked', text: 'never executed' }],
       notProve: ['Anything about this segment — it was not exercised.'],
-      next: gapNext(ctx.origins, origin),
+      next: gapNext(ctx.origins, origin, ctx.trace.subject.namespace),
     }
   }
 
@@ -303,9 +304,14 @@ function edgeInspector(edge: GraphEdge, ctx: Ctx): Inspector {
   const notProve: string[] = []
   if (origin.kind === 'synthetic') notProve.push(SYNTHETIC_IDENTITY)
   if (origin.kind === 'relayed') notProve.push(NOT_DATAPLANE)
-  const untestedFront = ctx.origins.find((o) => o.id === 'external')
-  if (untestedFront?.unsupported && !ctx.originIsFront) {
-    notProve.push('That external clients can reach this Service — no request has entered through the front door.')
+  // Only meaningful when the resource actually HAS a front door. The external
+  // origin is always unsupported, so an ungated check appended this caveat to
+  // every resource - including plain ClusterIP Services with no entry point,
+  // where it is simply untrue and dilutes the caveats that matter.
+  const hasFrontDoor = (ctx.trace.upstreams ?? []).length > 0
+  const externalOrigin = ctx.origins.find((o) => o.id === 'external')
+  if (hasFrontDoor && externalOrigin?.unsupported && origin.id !== 'external') {
+    notProve.push('That external clients can reach it — no request has entered through the front door.')
   }
 
   const evidence: { mark: Mark; text: string }[] = []

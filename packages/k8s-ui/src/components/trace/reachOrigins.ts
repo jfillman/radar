@@ -218,7 +218,14 @@ export function strongestGap(origins: Origin[]): Origin | undefined {
  * The unreachable ceiling belongs in the caveats; the prompt belongs here.
  */
 export function actionableGap(origins: Origin[]): Origin | undefined {
-  return origins.find((o) => isGap(o) && !o.unsupported && o.mark !== 'denied')
+  // ORIGIN_STRENGTH is an evidence ranking, and a gap is only worth proposing
+  // if it is STRONGER than what has already been proven. Without this the
+  // panel told you your laptop (control lane) was "the strongest evidence
+  // Radar can still collect" about in-cluster reachability, after the
+  // in-cluster probe had already succeeded.
+  const provenAt = origins.findIndex((o) => o.mark === 'proved')
+  const ceiling = provenAt === -1 ? origins.length : provenAt
+  return origins.slice(0, ceiling).find((o) => isGap(o) && !o.unsupported && o.mark !== 'denied')
 }
 
 /** True when the only thing left is something Radar cannot do - the point at

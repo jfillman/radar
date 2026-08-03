@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,7 +15,26 @@ import (
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/meaningfulchanges"
+	"github.com/skyhook-io/radar/pkg/issuesapi"
 )
+
+// filterRecentChangesByRBAC drops RecentChange rows the ctx user can't read, via
+// the shared per-kind gate (RecentChange.APIVersion disambiguates CRD kind
+// collisions). Auth off → returned unchanged. Used by both the /api/issues
+// recent_changes enrichment and per-issue change correlation.
+func (s *Server) filterRecentChangesByRBAC(ctx context.Context, changes []issuesapi.RecentChange) []issuesapi.RecentChange {
+	if auth.UserFromContext(ctx) == nil {
+		return changes
+	}
+	authz := s.changeAuthorizerForCtx(ctx)
+	out := changes[:0]
+	for _, c := range changes {
+		if k8s.ChangeReadAllowed(c.Kind, c.APIVersion, c.Namespace, authz) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 // handleIssues serves GET /api/issues — "what's broken right now."
 // Composes the curated operational sources (workload/pod problems,
@@ -75,17 +95,9 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 		// Grouped is the product default — one row per subject+category.
 		// ?view=flat returns the raw pre-fold evidence rows for debugging
 		// ("what folded into this group?") and internal inspection.
-		Grouped: q.Get("view") != "flat",
-		CanReadClusterScoped: func(kind, group string) bool {
-			if auth.UserFromContext(r.Context()) == nil {
-				return true
-			}
-			clusterScoped, gvrGroup, gvrResource := k8s.ClassifyKindScope(kind, group)
-			if !clusterScoped {
-				return false
-			}
-			return s.canRead(r, gvrGroup, gvrResource, "", "list")
-		},
+		Grouped:              q.Get("view") != "flat",
+		CanReadClusterScoped: s.issueClusterScopedAccess(r),
+		CanReadRelated:       s.issueRelatedResourceAccess(r),
 	}
 	if expr := q.Get("filter"); expr != "" {
 		f, err := filter.CachedIssueFilter(expr)
@@ -98,6 +110,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 
 	composeFilters := filters
 	composeFilters.Limit = issues.NoLimit
+	composeFilters.Filter = nil
 	out, stats := issues.ComposeWithStats(provider, composeFilters)
 	out, stats = issues.MergeExternalIssues(out, stats, filters, s.nativeHelmIssuesForRequest(r, namespaces, filters))
 	// Shared base response shape (issues.ListResponse); surfaces add their
@@ -108,14 +121,28 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	})
 	if len(namespaces) == 1 && stats.TotalMatched == len(out) && meaningfulchanges.IssueChangesQueryEligible(q.Get("kind"), q.Get("filter"), q.Get("severity")) {
 		if recentChangesReason := meaningfulchanges.IssueChangesReason(out); recentChangesReason != "" {
-			if changes, _, err := meaningfulchanges.Recent(r.Context(), meaningfulchanges.Query{
+			if recentResult, err := meaningfulchanges.Recent(r.Context(), meaningfulchanges.Query{
 				Namespaces: []string{namespaces[0]},
 				Since:      meaningfulchanges.DefaultSince,
-				Limit:      meaningfulchanges.IssueChangesLimit,
+				Limit:      meaningfulchanges.IssueChangesFetchLimit(recentChangesReason),
 				FieldLimit: meaningfulchanges.DefaultFieldLimit,
-			}); err == nil && len(changes) > 0 {
+			}); err == nil && len(recentResult.Changes) > 0 {
+				// Per-kind RBAC: recent_changes is namespace-filtered but not
+				// per-kind — drop changes for kinds the caller can't read before
+				// ranking, so priority/recap logic operates on the visible set.
+				recentResult.Changes = s.filterRecentChangesByRBAC(r.Context(), recentResult.Changes)
+				changes, guidance, recapped := meaningfulchanges.PrioritizeIssueChanges(
+					recentResult.Changes, out, meaningfulchanges.IssueChangePriorityOptions{
+						Reason:             recentChangesReason,
+						Limit:              meaningfulchanges.IssueChangesLimit,
+						UnfilteredIssueSet: meaningfulchanges.IssueSeveritySetComplete(severities),
+						FetchSaturated:     recentResult.FetchSaturated,
+					},
+				)
 				resp.RecentChanges = changes
 				resp.RecentChangesReason = recentChangesReason
+				resp.RecentChangesGuidance = guidance
+				resp.RecentChangesTruncated = recentResult.OutputCapped || recentResult.FetchSaturated || recapped
 			}
 		}
 	}
@@ -125,6 +152,33 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.writeJSON(w, resp)
+}
+
+func (s *Server) issueClusterScopedAccess(r *http.Request) func(kind, group string) bool {
+	return func(kind, group string) bool {
+		if auth.UserFromContext(r.Context()) == nil {
+			return true
+		}
+		clusterScoped, gvrGroup, gvrResource := k8s.ClassifyKindScope(kind, group)
+		if !clusterScoped {
+			return false
+		}
+		return s.canRead(r, gvrGroup, gvrResource, "", "list")
+	}
+}
+
+func (s *Server) issueRelatedResourceAccess(r *http.Request) func(issues.Ref) bool {
+	return func(ref issues.Ref) bool {
+		if auth.UserFromContext(r.Context()) == nil {
+			return true
+		}
+		if ref.Namespace != "" || strings.EqualFold(ref.Kind, "Namespace") {
+			_, _, ok := s.preflightResourceGet(r, normalizeKind(ref.Kind), ref.Namespace, ref.Name, ref.Group)
+			return ok
+		}
+		clusterScoped, group, resource := k8s.ClassifyKindScope(ref.Kind, ref.Group)
+		return clusterScoped && s.canRead(r, group, resource, "", "get")
+	}
 }
 
 func (s *Server) nativeHelmIssuesForRequest(r *http.Request, namespaces []string, filters issues.Filters) []issues.Issue {
@@ -216,7 +270,11 @@ func (s *Server) handleResourceIssues(w http.ResponseWriter, r *http.Request) {
 		namespaces = []string{namespace}
 	}
 
-	related := issues.RelatedIssues(provider, namespaces, group, kind, namespace, name)
+	related := issues.RelatedIssues(provider, issues.RelatedIssueOptions{
+		Namespaces:           namespaces,
+		CanReadClusterScoped: s.issueClusterScopedAccess(r),
+		CanReadRelated:       s.issueRelatedResourceAccess(r),
+	}, group, kind, namespace, name)
 	if related == nil {
 		related = []issues.Issue{}
 	}

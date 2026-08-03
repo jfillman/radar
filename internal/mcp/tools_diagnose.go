@@ -45,13 +45,15 @@ type diagnoseInput struct {
 // NarrowHint is set when the resolved pod set was capped for log fan-out
 // — see capDiagnosePods.
 type diagnoseResponse struct {
-	Resource        any                              `json:"resource"`
-	ResourceContext *resourcecontext.ResourceContext `json:"resourceContext,omitempty"`
-	LogsCurrent     []podLogEntry                    `json:"logsCurrent,omitempty"`
-	LogsPrevious    []podLogEntry                    `json:"logsPrevious,omitempty"`
-	LogsError       string                           `json:"logsError,omitempty"`
-	Events          []aicontext.DeduplicatedEvent    `json:"events,omitempty"`
-	EventsError     string                           `json:"eventsError,omitempty"`
+	Resource            any                              `json:"resource"`
+	ResourceContext     *resourcecontext.ResourceContext `json:"resourceContext,omitempty"`
+	LogsCurrent         []podLogEntry                    `json:"logsCurrent,omitempty"`
+	LogsPrevious        []podLogEntry                    `json:"logsPrevious,omitempty"`
+	CrashCause          []diagnoseCrashCause             `json:"crashCause,omitempty"`
+	CrashCauseTruncated bool                             `json:"crashCauseTruncated,omitempty"`
+	LogsError           string                           `json:"logsError,omitempty"`
+	Events              []aicontext.DeduplicatedEvent    `json:"events,omitempty"`
+	EventsError         string                           `json:"eventsError,omitempty"`
 	// StartupBlockers carries why the workload can't reach Running when that's
 	// the failure mode, spanning the whole pre-Running path: unschedulable pods
 	// (offending node constraint named), admission rejections (quota/
@@ -185,7 +187,7 @@ func handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, input diagnoseI
 
 	cache := k8s.GetResourceCache()
 	if cache == nil {
-		return nil, nil, fmt.Errorf("not connected to cluster")
+		return nil, nil, errNotConnected()
 	}
 
 	obj, err := k8s.FetchResource(cache, kindNorm, input.Namespace, input.Name)
@@ -204,12 +206,19 @@ func handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, input diagnoseI
 		return nil, nil, fmt.Errorf("failed to minify: %w", err)
 	}
 
-	resCtx := buildMCPResourceContext(ctx, obj, kindNorm, input.Namespace, input.Name, resourcecontext.TierDiagnostic)
-
 	pods, err := resolveDiagnosePods(cache, kindNorm, input.Namespace, input.Name, obj)
 	if err != nil {
 		return nil, nil, err
 	}
+	resCtx := buildMCPResourceContextWithStaleChecks(
+		ctx,
+		obj,
+		kindNorm,
+		input.Namespace,
+		input.Name,
+		resourcecontext.TierDiagnostic,
+		k8s.FindStaleSecretEnvChecksForPods(ctx, cache, pods),
+	)
 
 	tailLines := int64(100)
 	if input.TailLines > 0 {
@@ -231,7 +240,11 @@ func handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, input diagnoseI
 		// Surface the issues Radar already classified for this object (subject
 		// or affected member), scoped to its namespace — so the agent sees
 		// "crashloop + missing ConfigMap" up front, not just raw logs.
-		RelatedIssues: issues.RelatedIssues(issues.NewCacheProvider(), []string{input.Namespace}, canonicalGroup, canonicalKind, input.Namespace, input.Name),
+		RelatedIssues: issues.RelatedIssues(issues.NewCacheProvider(), issues.RelatedIssueOptions{
+			Namespaces:           issueNamespacesForResource(input.Namespace),
+			CanReadClusterScoped: issueClusterScopedAccess(ctx),
+			CanReadRelated:       issueRelatedResourceAccess(ctx),
+		}, canonicalGroup, canonicalKind, input.Namespace, input.Name),
 	}
 
 	// Cap the log fan-out so a DaemonSet with 50 nodes doesn't trigger
@@ -270,6 +283,7 @@ func handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, input diagnoseI
 			wg.Wait()
 			resp.LogsCurrent = current
 			resp.LogsPrevious = previous
+			resp.CrashCause, resp.CrashCauseTruncated = crashCauseForDiagnose(logPods, current, previous, time.Now())
 		}
 	}
 	if logsTruncated {
@@ -297,10 +311,26 @@ func handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, input diagnoseI
 		}
 	}
 	if changes, _, err := meaningfulchanges.RecentForWorkloadAndConfigMaps(ctx, obj, kindNorm, input.Namespace, input.Name, meaningfulchanges.DefaultSince, meaningfulchanges.ResourceLimit, meaningfulchanges.DefaultFieldLimit); err == nil && len(changes) > 0 {
-		resp.RecentChanges = changes
+		// Per-kind RBAC: the result includes consumed ConfigMaps the caller may
+		// not be able to read even when authorized on the workload subject.
+		resp.RecentChanges = filterRecentChangesRBAC(ctx, changes)
 	}
 	resp.DNSContext = dnsContextForDiagnose(ctx, cache, obj, pods, resp.LogsCurrent, resp.LogsPrevious, resp.Events)
 	resp.Warnings = k8score.EnrichRuntimeObjectWarnings(obj)
+	capped, capStats := capMultiPodLogBundles(resp.LogsCurrent, resp.LogsPrevious)
+	resp.LogsCurrent = capped[0]
+	resp.LogsPrevious = capped[1]
+	if capStats.Truncated {
+		capHint := multiPodLogBundleNarrowHint(input.Namespace, capStats, capStats.FirstOmittedBundle == 1)
+		if logsTruncated {
+			resp.NarrowHint = fmt.Sprintf(
+				"workload has %d pods; sampled top %d by restart count for logs — for a pod outside the sample, call diagnose with kind=pod and its name; %s",
+				len(pods), len(logPods), capHint,
+			)
+		} else {
+			resp.NarrowHint = capHint
+		}
+	}
 	return toJSONResult(resp)
 }
 
@@ -362,7 +392,7 @@ func handleGitOpsDiagnose(ctx context.Context, input diagnoseInput, canonicalKin
 	}
 	cache := k8s.GetResourceCache()
 	if cache == nil {
-		return nil, nil, fmt.Errorf("not connected to cluster")
+		return nil, nil, errNotConnected()
 	}
 	u, err := cache.GetDynamicWithGroup(ctx, canonicalKind, input.Namespace, input.Name, group)
 	if err != nil {
@@ -392,8 +422,12 @@ func handleGitOpsDiagnose(ctx context.Context, input diagnoseInput, canonicalKin
 	resp := diagnoseResponse{
 		Resource:        minified,
 		GitOpsDiagnosis: gd,
-		RelatedIssues:   issues.RelatedIssues(issues.NewCacheProvider(), []string{input.Namespace}, group, canonicalKind, input.Namespace, input.Name),
-		Warnings:        k8score.EnrichRuntimeObjectWarnings(u),
+		RelatedIssues: issues.RelatedIssues(issues.NewCacheProvider(), issues.RelatedIssueOptions{
+			Namespaces:           issueNamespacesForResource(input.Namespace),
+			CanReadClusterScoped: issueClusterScopedAccess(ctx),
+			CanReadRelated:       issueRelatedResourceAccess(ctx),
+		}, group, canonicalKind, input.Namespace, input.Name),
+		Warnings: k8score.EnrichRuntimeObjectWarnings(u),
 	}
 	return toJSONResult(resp)
 }
@@ -631,10 +665,10 @@ func fetchEventsForResource(cache *k8s.ResourceCache, kind, namespace, name stri
 	if len(matched) == 0 {
 		return nil, nil
 	}
-	dedup := aicontext.DeduplicateEvents(matched)
-	if limit > 0 && len(dedup) > limit {
-		dedup = dedup[:limit]
-	}
+	// Deliberately a fixed-size evidence sample with silent truncation: this
+	// feeds one section of a composite diagnosis, where a hint would be
+	// noise. get_events is the exhaustive, truncation-signaled path.
+	dedup, _ := aicontext.DeduplicateEventsN(matched, limit)
 	return dedup, nil
 }
 

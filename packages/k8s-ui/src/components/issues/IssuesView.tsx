@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
 import { AlertOctagon, AlertTriangle, ArrowRight, ChevronRight, CircleCheck, Clock, ExternalLink, Layers, Terminal, Workflow } from 'lucide-react';
 import { CardBody, CardSection, ClusterName, EmptyState, KIND_CHIP_CLASS, TerminalBlock } from '../ui';
+import { Tooltip } from '../ui/Tooltip';
 import { formatCompactAge, formatRelativeAgeTime } from '../../utils/format';
 import { diagnosticRoleLabel, diagnosticFactLabel, confidenceTitle, incidentParentLabel } from './diagnostic';
 import { issueTiming } from './issue-timing';
@@ -61,12 +62,15 @@ export interface IssuesViewProps {
   clusterLabel?: (issue: Issue) => string | undefined;
   /** Empty-state CTA shown when there's no data. */
   emptyAction?: ReactNode;
+  /** Per-row trailing action, rendered after the severity badge — e.g. the
+   *  "Diagnose with AI" button in OSS. Omit to render no per-row action. */
+  renderActions?: (ctx: IssueRowSlotContext) => ReactNode;
 }
 
 // The queue list. Filtering/faceting is the host page's job (FleetPageShell on
 // the hub, a thin wrapper in OSS) — this renders the rows + the healthy /
 // no-data terminal states only.
-export function IssuesView({ issues, anyData, resourceHref, onResourceClick, clusterLabel, emptyAction }: IssuesViewProps) {
+export function IssuesView({ issues, anyData, resourceHref, onResourceClick, clusterLabel, emptyAction, renderActions }: IssuesViewProps) {
   // Single-open accordion: opening a row collapses the previous one, so the
   // queue stays scannable and you never lose your place to a wall of expansions.
   const [openId, setOpenId] = useState<string | null>(null);
@@ -105,6 +109,7 @@ export function IssuesView({ issues, anyData, resourceHref, onResourceClick, clu
             onToggle={() => setOpenId((cur) => (cur === rowKey ? null : rowKey))}
             resourceHref={resourceHref}
             onResourceClick={onResourceClick}
+            renderActions={renderActions}
           />
         );
       })}
@@ -127,6 +132,10 @@ export interface IssueRowProps {
   as?: 'li' | 'div';
   className?: string;
   dimmed?: boolean;
+  /** Suppress the "Subject" deep-link in the expanded body — set by hosts that
+   *  embed the row under the very resource that IS the subject (the drawer header
+   *  already names it), so it doesn't echo back redundantly. */
+  hideSubject?: boolean;
   renderBadges?: (ctx: IssueRowSlotContext) => ReactNode;
   renderMeta?: (ctx: IssueRowSlotContext) => ReactNode;
   renderActions?: (ctx: IssueRowSlotContext) => ReactNode;
@@ -143,6 +152,7 @@ export function IssueRow({
   as = 'li',
   className,
   dimmed,
+  hideSubject,
   renderBadges,
   renderMeta,
   renderActions,
@@ -157,6 +167,36 @@ export function IssueRow({
   const SeverityIcon = ISSUE_SEVERITY_ICON[severity];
   const slotCtx = { issue, open };
   const timing = issueTiming(issue);
+
+  // Severity pill + age + timing chip. Rendered in two positions the container
+  // query toggles: inline at the row's right edge on a wide container, and on a
+  // line of its own below the resource line once the row is too narrow to hold
+  // it beside the title — so the title never has to truncate to make room.
+  const metaChips = (wrapperClass: string) => (
+    <div className={`items-center gap-3 ${wrapperClass}`}>
+      <span className={`badge-sm shrink-0 px-2.5 py-0.5 text-xs font-semibold ${open ? ISSUE_SEVERITY_SOLID_CLASS[severity] : ISSUE_SEVERITY_BADGE_CLASS[severity]}`}>
+        {ISSUE_SEVERITY_LABEL[severity]}
+      </span>
+      {issue.first_seen ? (
+        <>
+          <Tooltip content={ageTitle(issue)} delay={200} wrapperClassName="shrink-0">
+            <time
+              dateTime={issue.first_seen}
+              className="flex items-center gap-1 text-xs tabular-nums text-theme-text-tertiary"
+            >
+              <Clock className="h-3 w-3" aria-hidden />
+              {formatCompactAge(issue.first_seen)}
+            </time>
+          </Tooltip>
+          {timing ? (
+            <Tooltip content={timing.tooltip} delay={200}>
+              <span className="badge-sm text-[10px] text-theme-text-secondary">{timing.chip}</span>
+            </Tooltip>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
 
   useEffect(() => {
     if (open) {
@@ -201,13 +241,13 @@ export function IssueRow({
             onToggle();
           }
         }}
-        className={`group flex cursor-pointer items-center gap-3 border-l-[3px] py-3 pl-3 pr-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-radar-accent)]/40 ${open ? ISSUE_SEVERITY_HEADER_BAND_CLASS[severity] : ISSUE_SEVERITY_RAIL_CLASS[severity]}`}
+        className={`group @container/issue flex cursor-pointer items-center gap-3 border-l-[3px] py-3 pl-3 pr-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-radar-accent)]/40 ${open ? ISSUE_SEVERITY_HEADER_BAND_CLASS[severity] : ISSUE_SEVERITY_RAIL_CLASS[severity]}`}
       >
         <SeverityIcon className={`h-[18px] w-[18px] shrink-0 ${ISSUE_SEVERITY_TEXT_CLASS[severity]}`} aria-hidden />
 
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex min-w-0 items-baseline gap-2">
-            <span className="shrink-0 text-sm font-medium text-theme-text-primary">{categoryLabel(issue.category)}</span>
+            <span className="min-w-0 truncate text-sm font-medium text-theme-text-primary">{categoryLabel(issue.category)}</span>
             <span className={`shrink-0 self-center ${groupBadgeClass(issue.category_group)}`}>{groupLabel(issue.category_group)}</span>
             {renderBadges?.(slotCtx)}
             {/* The detector reason rides the title row while COLLAPSED so the
@@ -250,35 +290,26 @@ export function IssueRow({
                 <span aria-hidden>·</span>
                 {/* Non-interactive signal (the header is the toggle — a nested
                     button would be invalid); the clickable link lives in the body. */}
-                <span className="min-w-0 truncate text-theme-text-tertiary" title={confidenceTitle(issue.incident_parent.confidence ?? '')}>
-                  ↳ {incidentParentLabel(issue.incident_parent.fact_type, issue.incident_parent.confidence)}{' '}
-                  <span className="font-medium text-theme-text-secondary">{issue.incident_parent.ref.kind} / {issue.incident_parent.ref.name}</span>
-                </span>
+                <Tooltip content={confidenceTitle(issue.incident_parent.confidence ?? '')} delay={200} wrapperClassName="min-w-0">
+                  <span className="truncate text-theme-text-tertiary">
+                    ↳ {incidentParentLabel(issue.incident_parent.fact_type, issue.incident_parent.confidence)}{' '}
+                    <span className="font-medium text-theme-text-secondary">{issue.incident_parent.ref.kind} / {issue.incident_parent.ref.name}</span>
+                  </span>
+                </Tooltip>
               </>
             ) : null}
             {renderMeta?.(slotCtx)}
           </div>
+          {/* Narrow container: the meta chips drop to their own line here rather
+              than stealing width from the title on the row above. Hidden once the
+              row is wide enough to hold them inline in the right cluster. */}
+          {metaChips('flex @2xl/issue:hidden')}
         </div>
 
-        {/* Right cluster — severity pill THEN age, vertically centered as a group. */}
+        {/* Right cluster — the always-visible affordances (per-row action +
+            chevron) plus, on a wide container, the inline meta chips. */}
         <div className="flex shrink-0 items-center gap-3">
-          <span className={`badge-sm shrink-0 px-2.5 py-0.5 text-xs font-semibold ${open ? ISSUE_SEVERITY_SOLID_CLASS[severity] : ISSUE_SEVERITY_BADGE_CLASS[severity]}`}>
-            {ISSUE_SEVERITY_LABEL[severity]}
-          </span>
-          {/* Age chip: keep recency visible; the deployment-start signal rides as a secondary tag. */}
-          {issue.first_seen ? (
-            <time
-              dateTime={issue.first_seen}
-              title={ageTitle(issue)}
-              className="flex shrink-0 items-center gap-1 text-xs tabular-nums text-theme-text-tertiary"
-            >
-              <Clock className="h-3 w-3" aria-hidden />
-              {formatCompactAge(issue.first_seen)}
-              {timing ? (
-                <span className="badge-sm ml-1 text-[10px] text-theme-text-secondary" title={timing.tooltip}>{timing.chip}</span>
-              ) : null}
-            </time>
-          ) : null}
+          {metaChips('hidden @2xl/issue:flex')}
           {renderActions?.(slotCtx)}
           <ChevronRight className={`h-4 w-4 shrink-0 text-theme-text-tertiary transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
         </div>
@@ -304,9 +335,11 @@ export function IssueRow({
                     <h4 className="text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">
                       {incidentParentLabel(issue.incident_parent.fact_type, issue.incident_parent.confidence)}
                       {issue.incident_parent.confidence ? (
-                        <span className="ml-2 badge-sm text-[10px] font-normal text-theme-text-tertiary" title={confidenceTitle(issue.incident_parent.confidence)}>
-                          {issue.incident_parent.confidence} confidence
-                        </span>
+                        <Tooltip content={confidenceTitle(issue.incident_parent.confidence)} delay={200}>
+                          <span className="ml-2 badge-sm text-[10px] font-normal text-theme-text-tertiary">
+                            {issue.incident_parent.confidence} confidence
+                          </span>
+                        </Tooltip>
                       ) : null}
                     </h4>
                     <ul className="flex flex-col gap-px">
@@ -315,7 +348,7 @@ export function IssueRow({
                   </section>
                 ) : null}
                 <DiagnosticContext issue={issue} resourceHref={resourceHref} onResourceClick={onResourceClick} ResourceLinkIcon={ResourceLinkIcon} />
-                <AffectedResources issue={issue} resourceHref={resourceHref} onResourceClick={onResourceClick} ResourceLinkIcon={ResourceLinkIcon} />
+                <AffectedResources issue={issue} hideSubject={hideSubject} resourceHref={resourceHref} onResourceClick={onResourceClick} ResourceLinkIcon={ResourceLinkIcon} />
               </div>
             </div>
           </div>
@@ -449,12 +482,11 @@ function DiagnosticContext({
             <div className="flex min-w-0 items-baseline gap-2">
               <span className="shrink-0 text-xs font-medium text-theme-text-secondary">{diagnosticFactLabel(fact.type)}</span>
               {fact.confidence ? (
-                <span
-                  className="shrink-0 badge-sm text-[10px] text-theme-text-tertiary"
-                  title={confidenceTitle(fact.confidence)}
-                >
-                  {fact.confidence} confidence
-                </span>
+                <Tooltip content={confidenceTitle(fact.confidence)} delay={200}>
+                  <span className="shrink-0 badge-sm text-[10px] text-theme-text-tertiary">
+                    {fact.confidence} confidence
+                  </span>
+                </Tooltip>
               ) : null}
               {fact.message ? <span className="min-w-0 break-words text-xs leading-relaxed text-theme-text-tertiary">{fact.message}</span> : null}
             </div>
@@ -506,11 +538,13 @@ function ageTitle(issue: Issue): string {
 
 function AffectedResources({
   issue,
+  hideSubject,
   resourceHref,
   onResourceClick,
   ResourceLinkIcon,
 }: {
   issue: Issue;
+  hideSubject?: boolean;
   resourceHref?: (ref: IssueResourceRef) => string;
   onResourceClick?: (ref: IssueResourceRef) => void;
   ResourceLinkIcon: ComponentType<{ className?: string }>;
@@ -519,14 +553,19 @@ function AffectedResources({
   // count is the backend fan-out size (members, subject excluded — see
   // grouping.go); fall back to the inline member count, not +1.
   const total = issue.count ?? members.length;
+  // With the subject suppressed and no fanned-out members, this section has
+  // nothing to show — return null so the divider row above it doesn't render empty.
+  if (hideSubject && members.length === 0) return null;
   return (
     <section className="flex flex-col gap-3">
       {/* The subject (the grouped thing — e.g. the Deployment) is always the
           first deep-link; members (the folded pods) follow. ResourceLine emits
           an <li>, so it needs a list parent of its own. */}
-      <ul className="flex flex-col gap-px">
-        <ResourceLine label="Subject" compact refForLink={subjectRef(issue)} resourceHref={resourceHref} onResourceClick={onResourceClick} ResourceLinkIcon={ResourceLinkIcon} />
-      </ul>
+      {!hideSubject && (
+        <ul className="flex flex-col gap-px">
+          <ResourceLine label="Subject" compact refForLink={subjectRef(issue)} resourceHref={resourceHref} onResourceClick={onResourceClick} ResourceLinkIcon={ResourceLinkIcon} />
+        </ul>
+      )}
       {members.length > 0 && (
         <CardSection icon={Layers} label="Affected resources" labelExtra={`· ${total}`}>
           <ul className="flex flex-col gap-px">
@@ -587,7 +626,9 @@ function ResourceLine({
         {r.name}
       </span>
       {count && count > 1 ? (
-        <span className="shrink-0 text-[10px] text-theme-text-tertiary tabular-nums" title={`${count} affected resources grouped under this issue`}>{count} affected</span>
+        <Tooltip content={`${count} affected resources grouped under this issue`} delay={200}>
+          <span className="shrink-0 text-[10px] text-theme-text-tertiary tabular-nums">{count} affected</span>
+        </Tooltip>
       ) : null}
       {linkable && <ResourceLinkIcon className="h-3 w-3 shrink-0 text-theme-text-tertiary opacity-0 transition-opacity group-hover/r:opacity-100" />}
     </>

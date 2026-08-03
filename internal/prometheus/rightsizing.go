@@ -4,16 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/skyhook-io/radar/internal/errorlog"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/prom"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 // Sentinel errors distinguish the cache-loading failure modes so handlers can
@@ -26,46 +32,91 @@ var (
 	errWorkloadMissing = errors.New("workload not found")
 )
 
-// Tone is the recommendation severity used by the rightsizing UI.
-// Deliberately mild vocabulary: most over/under-provisioning isn't a "problem,"
-// it's a tuning opportunity. We reserve "alert" for actual throttling/OOM risk.
-type Tone string
+type RightsizingFit string
 
 const (
-	ToneOK       Tone = "ok"
-	ToneInfo     Tone = "info"
-	ToneWarning  Tone = "warning"
-	ToneAlert    Tone = "alert"
-	ToneCritical Tone = "critical"
+	FitBalanced            RightsizingFit = "balanced"
+	FitOversized           RightsizingFit = "oversized"
+	FitUnderRequested      RightsizingFit = "under_requested"
+	FitMissingRequest      RightsizingFit = "missing_request"
+	FitInsufficientHistory RightsizingFit = "insufficient_history"
 )
 
-// RightsizingRow is one row of the rightsizing recommendation: a container × resource.
-type RightsizingRow struct {
-	Container      string  `json:"container"`
-	Resource       string  `json:"resource"` // "cpu" | "memory"
-	CurrentRequest *string `json:"currentRequest,omitempty"`
-	CurrentLimit   *string `json:"currentLimit,omitempty"`
-	P95            *string `json:"p95,omitempty"`
-	RecommendedReq *string `json:"recommendedRequest,omitempty"`
-	Tone           Tone    `json:"tone"`
-	Message        string  `json:"message"`
+type RightsizingConfidence string
+
+const (
+	ConfidenceLow    RightsizingConfidence = "low"
+	ConfidenceMedium RightsizingConfidence = "medium"
+	ConfidenceHigh   RightsizingConfidence = "high"
+)
+
+type OwnerCoverage string
+
+const (
+	OwnerCoverageKSMHistory  OwnerCoverage = "ksm_history"
+	OwnerCoverageCurrentPods OwnerCoverage = "current_pods"
+)
+
+type ObservedStatistic struct {
+	Name      string  `json:"name"`
+	Value     float64 `json:"value"`
+	Formatted string  `json:"formatted"`
 }
 
-// RightsizingResponse is the rightsizing endpoint response.
+type RightsizingRow struct {
+	Container               string               `json:"container"`
+	Resource                string               `json:"resource"`
+	Fit                     RightsizingFit        `json:"fit"`
+	Confidence              RightsizingConfidence `json:"confidence"`
+	CurrentRequest          *string              `json:"currentRequest,omitempty"`
+	CurrentRequestValue     *float64             `json:"currentRequestValue,omitempty"`
+	CurrentLimit            *string              `json:"currentLimit,omitempty"`
+	CurrentLimitValue       *float64             `json:"currentLimitValue,omitempty"`
+	Observed                *ObservedStatistic   `json:"observed,omitempty"`
+	Peak                    *ObservedStatistic   `json:"peak,omitempty"`
+	CalculatedReq           *string              `json:"calculatedRequest,omitempty"`
+	CalculatedRequestValue  *float64             `json:"calculatedRequestValue,omitempty"`
+	RecommendedReq          *string              `json:"recommendedRequest,omitempty"`
+	RecommendedRequestValue *float64             `json:"recommendedRequestValue,omitempty"`
+	ReductionLimited        bool                 `json:"reductionLimited,omitempty"`
+	Bursty                  bool                 `json:"bursty,omitempty"`
+	RecommendationReason    string               `json:"recommendationReason,omitempty"`
+	SampleCount             int                  `json:"sampleCount"`
+	ExpectedSamples         int                  `json:"expectedSamples"`
+	Coverage                float64              `json:"coverage"`
+	HPAManaged              bool                 `json:"hpaManaged"`
+	HPAEvidenceAvailable    bool                 `json:"hpaEvidenceAvailable"`
+	ThrottleAvailable       bool                 `json:"throttleAvailable,omitempty"`
+	ThrottleRatio           *float64             `json:"throttleRatio,omitempty"`
+	CurrentPodOOM           bool                 `json:"currentPodOOM,omitempty"`
+	WindowOOMEvidence       bool                 `json:"windowOomEvidence,omitempty"`
+	OOMEvidenceAvailable    bool                 `json:"oomEvidenceAvailable"`
+	LimitConflict           bool                 `json:"limitConflict,omitempty"`
+	QueryError              string               `json:"queryError,omitempty"`
+}
+
 type RightsizingResponse struct {
 	Kind            string           `json:"kind"`
 	Namespace       string           `json:"namespace"`
 	Name            string           `json:"name"`
-	Window          string           `json:"window"` // e.g. "24h"
+	Window          string           `json:"window"`
+	Source          string           `json:"source"`
+	OwnerCoverage   OwnerCoverage    `json:"ownerCoverage"`
+	ScaledToZero    bool             `json:"scaledToZero"`
 	SampleAvailable bool             `json:"sampleAvailable"`
 	Rows            []RightsizingRow `json:"rows"`
-	Reason          string           `json:"reason,omitempty"` // populated when sampleAvailable=false
+	Reason          string           `json:"reason,omitempty"`
 }
 
 const (
-	rightsizingWindow         = 24 * time.Hour
-	rightsizingHeadroomCPU    = 1.15 // 15% headroom above P95
-	rightsizingHeadroomMemory = 1.10 // memory P95 is already conservative
+	rightsizingWindow       = 7 * 24 * time.Hour
+	rightsizingStep         = 5 * time.Minute
+	rightsizingHeadroom     = 1.15
+	rightsizingCPUMin       = 0.01
+	rightsizingMemoryMin    = 64 * 1024 * 1024
+	rightsizingMinSamples   = 72
+	rightsizingHighCoverage = 0.8
+	rightsizingMedCoverage  = 0.14
 )
 
 // handleRightsizing returns rightsizing recommendations for a workload's containers.
@@ -96,7 +147,7 @@ func handleRightsizing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	containers, err := loadWorkloadContainers(kind, namespace, name)
+	workload, err := loadRightsizingWorkload(kind, namespace, name)
 	if err != nil {
 		switch {
 		case errors.Is(err, errCacheNotReady):
@@ -111,45 +162,19 @@ func handleRightsizing(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if len(containers) == 0 {
+	if len(workload.containers) == 0 {
 		writeJSON(w, http.StatusOK, RightsizingResponse{
 			Kind: kind, Namespace: namespace, Name: name,
-			Window: "24h", SampleAvailable: false,
+			Window: "7d", Source: "radar", SampleAvailable: false,
 			Rows:   []RightsizingRow{},
 			Reason: "Workload has no runtime containers (init-only or empty spec).",
 		})
 		return
 	}
 
-	resp := RightsizingResponse{
-		Kind: kind, Namespace: namespace, Name: name,
-		Window:          "24h",
-		SampleAvailable: true,
-		Rows:            make([]RightsizingRow, 0, len(containers)*2),
-	}
-
-	anyData := false
-	anyQueryErr := false
-	for _, c := range containers {
-		cpuRow, cpuErr := computeRightsizingRow(r.Context(), client, namespace, name, c, "cpu")
-		memRow, memErr := computeRightsizingRow(r.Context(), client, namespace, name, c, "memory")
-		if cpuRow.P95 != nil || memRow.P95 != nil {
-			anyData = true
-		}
-		if cpuErr || memErr {
-			anyQueryErr = true
-		}
-		resp.Rows = append(resp.Rows, cpuRow, memRow)
-	}
-
-	if !anyData {
-		resp.SampleAvailable = false
-		if anyQueryErr {
-			resp.Reason = "Prometheus query failed — see server logs."
-		} else {
-			resp.Reason = "No usage samples in the last 24h — workload may be too new, or Prometheus retention is short."
-		}
-	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	resp := computeRightsizing(ctx, client, kind, namespace, name, workload)
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -170,52 +195,142 @@ type containerSpec struct {
 	memLim *resource.Quantity
 }
 
-// loadWorkloadContainers reads runtime container specs (excluding pure init,
-// including native sidecars) from the K8s cache. Returns sentinel errors so
-// the handler can map cache-not-ready to 503, RBAC-denied to 403, and only
-// genuine misses to 404.
-func loadWorkloadContainers(kind, namespace, name string) ([]containerSpec, error) {
+type rightsizingWorkload struct {
+	containers    []containerSpec
+	podNames      []string
+	currentPodOOM map[string]bool
+	hpaManaged    map[string]bool
+	hpaAvailable  bool
+	scaledToZero  bool
+}
+
+func loadRightsizingWorkload(kind, namespace, name string) (rightsizingWorkload, error) {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
-		return nil, errCacheNotReady
+		return rightsizingWorkload{}, errCacheNotReady
 	}
 
 	var podTemplate *corev1.PodSpec
+	scaledToZero := false
 	switch strings.ToLower(kind) {
 	case "deployment":
 		if cache.Deployments() == nil {
-			return nil, fmt.Errorf("%w: deployments", errKindRBACDenied)
+			return rightsizingWorkload{}, fmt.Errorf("%w: deployments", errKindRBACDenied)
 		}
 		d, err := cache.Deployments().Deployments(namespace).Get(name)
 		if err != nil {
-			return nil, fmt.Errorf("%w: deployment %s/%s", errWorkloadMissing, namespace, name)
+			return rightsizingWorkload{}, fmt.Errorf("%w: deployment %s/%s", errWorkloadMissing, namespace, name)
 		}
 		podTemplate = &d.Spec.Template.Spec
+		scaledToZero = d.Spec.Replicas != nil && *d.Spec.Replicas == 0
 	case "statefulset":
 		if cache.StatefulSets() == nil {
-			return nil, fmt.Errorf("%w: statefulsets", errKindRBACDenied)
+			return rightsizingWorkload{}, fmt.Errorf("%w: statefulsets", errKindRBACDenied)
 		}
 		ss, err := cache.StatefulSets().StatefulSets(namespace).Get(name)
 		if err != nil {
-			return nil, fmt.Errorf("%w: statefulset %s/%s", errWorkloadMissing, namespace, name)
+			return rightsizingWorkload{}, fmt.Errorf("%w: statefulset %s/%s", errWorkloadMissing, namespace, name)
 		}
 		podTemplate = &ss.Spec.Template.Spec
+		scaledToZero = ss.Spec.Replicas != nil && *ss.Spec.Replicas == 0
 	case "daemonset":
 		if cache.DaemonSets() == nil {
-			return nil, fmt.Errorf("%w: daemonsets", errKindRBACDenied)
+			return rightsizingWorkload{}, fmt.Errorf("%w: daemonsets", errKindRBACDenied)
 		}
 		ds, err := cache.DaemonSets().DaemonSets(namespace).Get(name)
 		if err != nil {
-			return nil, fmt.Errorf("%w: daemonset %s/%s", errWorkloadMissing, namespace, name)
+			return rightsizingWorkload{}, fmt.Errorf("%w: daemonset %s/%s", errWorkloadMissing, namespace, name)
 		}
 		podTemplate = &ds.Spec.Template.Spec
+		scaledToZero = ds.Status.DesiredNumberScheduled == 0
 	}
 
 	if podTemplate == nil {
-		return nil, errCacheNotReady
+		return rightsizingWorkload{}, errCacheNotReady
 	}
 
-	return extractRuntimeContainers(podTemplate), nil
+	hpaManaged, hpaAvailable := loadHPAManagedResources(cache, kind, namespace, name)
+	workload := rightsizingWorkload{
+		containers:    extractRuntimeContainers(podTemplate),
+		currentPodOOM: map[string]bool{},
+		hpaManaged:    hpaManaged,
+		hpaAvailable:  hpaAvailable,
+		scaledToZero:  scaledToZero,
+	}
+	if cache.Pods() == nil {
+		return workload, nil
+	}
+	pods, err := cache.Pods().Pods(namespace).List(labels.Everything())
+	if err != nil {
+		return workload, nil
+	}
+	for _, pod := range pods {
+		if !podOwnedByWorkload(cache, pod, kind, name) {
+			continue
+		}
+		workload.podNames = append(workload.podNames, pod.Name)
+		collectCurrentPodOOM(workload.currentPodOOM, pod.Status.ContainerStatuses)
+		collectCurrentPodOOM(workload.currentPodOOM, pod.Status.InitContainerStatuses)
+	}
+	sort.Strings(workload.podNames)
+	return workload, nil
+}
+
+func podOwnedByWorkload(cache *k8s.ResourceCache, pod *corev1.Pod, kind, name string) bool {
+	owner := metav1.GetControllerOf(pod)
+	if owner == nil {
+		return false
+	}
+	if strings.EqualFold(owner.Kind, kind) {
+		return owner.Name == name
+	}
+	if !strings.EqualFold(kind, "Deployment") || owner.Kind != "ReplicaSet" || cache.ReplicaSets() == nil {
+		return false
+	}
+	rs, err := cache.ReplicaSets().ReplicaSets(pod.Namespace).Get(owner.Name)
+	if err != nil {
+		return false
+	}
+	rsOwner := metav1.GetControllerOf(rs)
+	return rsOwner != nil && rsOwner.Kind == "Deployment" && rsOwner.Name == name
+}
+
+func collectCurrentPodOOM(dst map[string]bool, statuses []corev1.ContainerStatus) {
+	for _, status := range statuses {
+		if status.State.Terminated != nil && status.State.Terminated.Reason == "OOMKilled" {
+			dst[status.Name] = true
+		}
+		if status.LastTerminationState.Terminated != nil && status.LastTerminationState.Terminated.Reason == "OOMKilled" {
+			dst[status.Name] = true
+		}
+	}
+}
+
+func loadHPAManagedResources(cache *k8s.ResourceCache, kind, namespace, name string) (map[string]bool, bool) {
+	managed := map[string]bool{}
+	if !cache.IsDeferredSynced() || cache.HorizontalPodAutoscalers() == nil {
+		return managed, false
+	}
+	hpas, err := cache.HorizontalPodAutoscalers().HorizontalPodAutoscalers(namespace).List(labels.Everything())
+	if err != nil {
+		return managed, false
+	}
+	for _, hpa := range hpas {
+		ref := hpa.Spec.ScaleTargetRef
+		if !strings.EqualFold(ref.Kind, kind) || ref.Name != name {
+			continue
+		}
+		for _, metric := range hpa.Spec.Metrics {
+			if metric.Type != autoscalingv2.ResourceMetricSourceType || metric.Resource == nil || metric.Resource.Target.AverageUtilization == nil {
+				continue
+			}
+			resourceName := string(metric.Resource.Name)
+			if resourceName == "cpu" || resourceName == "memory" {
+				managed[resourceName] = true
+			}
+		}
+	}
+	return managed, true
 }
 
 // extractRuntimeContainers returns containers + native-sidecar init containers
@@ -256,195 +371,376 @@ func extractContainerSpec(c corev1.Container) containerSpec {
 	return out
 }
 
-// computeRightsizingRow returns the row plus whether the Prometheus query
-// errored (distinct from genuine empty data, so the handler can compose an
-// accurate Reason instead of telling the user their workload is "too new").
-func computeRightsizingRow(ctx context.Context, client *Client, namespace, workload string, c containerSpec, resKind string) (RightsizingRow, bool) {
-	row := RightsizingRow{
-		Container: c.name,
-		Resource:  resKind,
-		Tone:      ToneOK,
-		Message:   "",
-	}
+type rightsizingQuerier interface {
+	Query(context.Context, string) (*prom.QueryResult, error)
+}
 
-	var req, lim *resource.Quantity
-	switch resKind {
-	case "cpu":
-		req, lim = c.cpuReq, c.cpuLim
-	case "memory":
-		req, lim = c.memReq, c.memLim
+type queryOutcome struct {
+	values       map[string]float64
+	terminations map[string]terminationEvidence
+	err          error
+}
+
+type terminationEvidence struct {
+	Any bool
+	OOM bool
+}
+
+func computeRightsizing(ctx context.Context, client rightsizingQuerier, kind, namespace, name string, workload rightsizingWorkload) RightsizingResponse {
+	selection, coverage := workloadSelection(ctx, client, kind, namespace, name, workload.podNames)
+	queries := buildRightsizingQueries(namespace, selection)
+	results := runRightsizingQueries(ctx, client, queries)
+	expected := int(rightsizingWindow / rightsizingStep)
+	resp := RightsizingResponse{
+		Kind: kind, Namespace: namespace, Name: name, Window: "7d", Source: "radar",
+		OwnerCoverage: coverage, ScaledToZero: workload.scaledToZero,
+		Rows: make([]RightsizingRow, 0, len(workload.containers)*2),
 	}
+	for _, container := range workload.containers {
+		for _, resourceName := range []string{"cpu", "memory"} {
+			row := buildRightsizingRow(container, resourceName, expected, coverage, workload, results)
+			resp.Rows = append(resp.Rows, row)
+		}
+	}
+	for _, row := range resp.Rows {
+		if row.Observed != nil {
+			resp.SampleAvailable = true
+			break
+		}
+	}
+	if !resp.SampleAvailable {
+		if results["cpu_stat"].err != nil || results["cpu_coverage"].err != nil || results["memory_stat"].err != nil || results["memory_coverage"].err != nil {
+			resp.Reason = "Prometheus rightsizing queries failed."
+		} else if len(workload.podNames) == 0 && coverage == OwnerCoverageCurrentPods {
+			resp.Reason = "No current or retained workload ownership samples are available."
+		} else {
+			resp.Reason = "No workload usage samples are available in the last 7d."
+		}
+	}
+	return resp
+}
+
+type metricSelection struct {
+	join       string
+	podPattern string
+}
+
+func workloadSelection(ctx context.Context, client rightsizingQuerier, kind, namespace, name string, podNames []string) (metricSelection, OwnerCoverage) {
+	owner := ownerSelection(kind, namespace, name)
+	if owner != "" {
+		probe := fmt.Sprintf(`sum(count_over_time((%s)[7d:5m]))`, owner)
+		if result, err := client.Query(ctx, probe); err == nil && firstValue(result) != nil && *firstValue(result) > 0 {
+			return metricSelection{join: fmt.Sprintf(`* on (namespace,pod) group_left() (%s)`, owner)}, OwnerCoverageKSMHistory
+		}
+	}
+	if len(podNames) == 0 {
+		return metricSelection{podPattern: "a^"}, OwnerCoverageCurrentPods
+	}
+	escaped := make([]string, 0, len(podNames))
+	for _, podName := range podNames {
+		escaped = append(escaped, prom.EscapeRegexMeta(prom.SanitizeLabelValue(podName)))
+	}
+	return metricSelection{podPattern: fmt.Sprintf("^(%s)$", strings.Join(escaped, "|"))}, OwnerCoverageCurrentPods
+}
+
+func ownerSelection(kind, namespace, name string) string {
+	ns := prom.SanitizeLabelValue(namespace)
+	workload := prom.SanitizeLabelValue(name)
+	switch strings.ToLower(kind) {
+	case "deployment":
+		return fmt.Sprintf(`label_replace(max by (namespace,pod,owner_name) (kube_pod_owner{namespace="%s",owner_kind="ReplicaSet",owner_is_controller="true"}), "replicaset", "$1", "owner_name", "(.*)") * on (namespace,replicaset) group_left() max by (namespace,replicaset) (kube_replicaset_owner{namespace="%s",owner_kind="Deployment",owner_name="%s",owner_is_controller="true"})`, ns, ns, workload)
+	case "statefulset", "daemonset":
+		ownerKind := "StatefulSet"
+		if strings.EqualFold(kind, "DaemonSet") {
+			ownerKind = "DaemonSet"
+		}
+		return fmt.Sprintf(`max by (namespace,pod) (kube_pod_owner{namespace="%s",owner_kind="%s",owner_name="%s",owner_is_controller="true"})`, ns, ownerKind, workload)
+	}
+	return ""
+}
+
+func buildRightsizingQueries(namespace string, selection metricSelection) map[string]string {
+	ns := prom.SanitizeLabelValue(namespace)
+	podMatcher := ""
+	if selection.podPattern != "" {
+		podMatcher = fmt.Sprintf(`,pod=~"%s"`, selection.podPattern)
+	}
+	cpu := fmt.Sprintf(`max by (container) (rate(container_cpu_usage_seconds_total{namespace="%s"%s,container!="",container!="POD"}[5m]) %s)`, ns, podMatcher, selection.join)
+	memory := fmt.Sprintf(`max by (container) (container_memory_working_set_bytes{namespace="%s"%s,container!="",container!="POD"} %s)`, ns, podMatcher, selection.join)
+	throttled := fmt.Sprintf(`sum by (container) (rate(container_cpu_cfs_throttled_periods_total{namespace="%s"%s,container!="",container!="POD"}[5m]) %s)`, ns, podMatcher, selection.join)
+	periods := fmt.Sprintf(`sum by (container) (rate(container_cpu_cfs_periods_total{namespace="%s"%s,container!="",container!="POD"}[5m]) %s)`, ns, podMatcher, selection.join)
+	restarts := fmt.Sprintf(`max by (namespace,pod,container) (kube_pod_container_status_restarts_total{namespace="%s"%s,container!=""} %s)`, ns, podMatcher, selection.join)
+	terminations := fmt.Sprintf(`max by (namespace,pod,container,reason) (kube_pod_container_status_last_terminated_timestamp{namespace="%s"%s,container!=""} * on (namespace,pod,container) group_left(reason) max by (namespace,pod,container,reason) (kube_pod_container_status_last_terminated_reason{namespace="%s"%s,container!=""}) %s)`, ns, podMatcher, ns, podMatcher, selection.join)
+	return map[string]string{
+		"cpu_stat":            fmt.Sprintf(`quantile_over_time(0.95, (%s)[7d:5m])`, cpu),
+		"cpu_peak":            fmt.Sprintf(`quantile_over_time(0.99, (%s)[7d:5m])`, cpu),
+		"cpu_coverage":        fmt.Sprintf(`count_over_time((%s)[7d:5m])`, cpu),
+		"memory_stat":         fmt.Sprintf(`max_over_time((%s)[7d:5m])`, memory),
+		"memory_coverage":     fmt.Sprintf(`count_over_time((%s)[7d:5m])`, memory),
+		"throttle":            fmt.Sprintf(`max_over_time(((%s) / (%s))[7d:5m])`, throttled, periods),
+		"restart_activity":    fmt.Sprintf(`sum by (container) (increase((%s)[7d:5m]))`, restarts),
+		"termination_history": fmt.Sprintf(`max by (container,reason) (max_over_time((%s)[7d:5m])) > (time() - 604800)`, terminations),
+	}
+}
+
+func runRightsizingQueries(ctx context.Context, client rightsizingQuerier, queries map[string]string) map[string]queryOutcome {
+	results := make(map[string]queryOutcome, len(queries))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 3)
+	for key, query := range queries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			result, err := client.Query(ctx, query)
+			<-sem
+			outcome := queryOutcome{values: resultByContainer(result), err: err}
+			if key == "termination_history" {
+				outcome.terminations = terminationEvidenceByContainer(result)
+			}
+			if err != nil {
+				errorlog.Record("prometheus", "warning", "rightsizing query %s failed: %v", key, err)
+			}
+			mu.Lock()
+			results[key] = outcome
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return results
+}
+
+func resultByContainer(result *prom.QueryResult) map[string]float64 {
+	values := map[string]float64{}
+	if result == nil {
+		return values
+	}
+	for _, series := range result.Series {
+		if len(series.DataPoints) == 0 || math.IsNaN(series.DataPoints[0].Value) || math.IsInf(series.DataPoints[0].Value, 0) {
+			continue
+		}
+		if container := series.Labels["container"]; container != "" {
+			values[container] = series.DataPoints[0].Value
+		}
+	}
+	return values
+}
+
+func terminationEvidenceByContainer(result *prom.QueryResult) map[string]terminationEvidence {
+	values := map[string]terminationEvidence{}
+	if result == nil {
+		return values
+	}
+	for _, series := range result.Series {
+		if len(series.DataPoints) == 0 || series.DataPoints[0].Value <= 0 {
+			continue
+		}
+		container := series.Labels["container"]
+		if container == "" {
+			continue
+		}
+		evidence := values[container]
+		evidence.Any = true
+		evidence.OOM = evidence.OOM || series.Labels["reason"] == "OOMKilled"
+		values[container] = evidence
+	}
+	return values
+}
+
+func buildRightsizingRow(container containerSpec, resourceName string, expected int, ownerCoverage OwnerCoverage, workload rightsizingWorkload, results map[string]queryOutcome) RightsizingRow {
+	row := RightsizingRow{Container: container.name, Resource: resourceName, Fit: FitInsufficientHistory, Confidence: ConfidenceLow, ExpectedSamples: expected, HPAManaged: workload.hpaManaged[resourceName], HPAEvidenceAvailable: workload.hpaAvailable}
+	var req, lim *resource.Quantity
+	statistic := "P95"
+	if resourceName == "cpu" {
+		req, lim = container.cpuReq, container.cpuLim
+	} else {
+		req, lim = container.memReq, container.memLim
+		statistic = "Max"
+		row.CurrentPodOOM = workload.currentPodOOM[container.name]
+		restarts := results["restart_activity"]
+		terminations := results["termination_history"]
+		if restarts.err == nil && terminations.err == nil {
+			restartActivity, restartAvailable := restarts.values[container.name]
+			termination := terminations.terminations[container.name]
+			row.WindowOOMEvidence = termination.OOM
+			row.OOMEvidenceAvailable = termination.OOM || (restartAvailable && (restartActivity <= 0 || termination.Any))
+		}
+	}
+	setCurrentQuantities(&row, req, lim, resourceName)
+	stat := results[resourceName+"_stat"]
+	coverage := results[resourceName+"_coverage"]
+	if stat.err != nil {
+		row.QueryError = "usage query failed"
+		return row
+	}
+	if coverage.err != nil {
+		row.QueryError = "sample coverage query failed"
+		return row
+	}
+	observed, ok := stat.values[container.name]
+	if !ok {
+		return row
+	}
+	row.Observed = &ObservedStatistic{Name: statistic, Value: observed, Formatted: formatObservedValue(observed, resourceName)}
+	if resourceName == "cpu" {
+		peak := results["cpu_peak"]
+		if peak.err == nil {
+			if value, present := peak.values[container.name]; present {
+				row.Peak = &ObservedStatistic{Name: "P99", Value: value, Formatted: formatObservedValue(value, resourceName)}
+				row.Bursty = isBurstyCPU(observed, value)
+			}
+		}
+	}
+	row.SampleCount = int(coverage.values[container.name])
+	row.Coverage = math.Min(float64(row.SampleCount)/float64(expected), 1)
+	row.Confidence = confidenceFor(row.SampleCount, row.Coverage, ownerCoverage)
+	if resourceName == "cpu" {
+		throttle := results["throttle"]
+		if throttle.err == nil {
+			if value, present := throttle.values[container.name]; present {
+				row.ThrottleAvailable = true
+				row.ThrottleRatio = &value
+			}
+		}
+	}
+	if row.SampleCount < rightsizingMinSamples {
+		row.RecommendationReason = "insufficient_history"
+		return row
+	}
+	classifyRightsizingFit(&row, observed, req, lim, resourceName)
+	return row
+}
+
+func setCurrentQuantities(row *RightsizingRow, req, lim *resource.Quantity, resourceName string) {
 	if req != nil {
-		s := req.String()
-		row.CurrentRequest = &s
+		value := quantityToFloat(*req, resourceName)
+		formatted := req.String()
+		row.CurrentRequest = &formatted
+		row.CurrentRequestValue = &value
 	}
 	if lim != nil {
-		s := lim.String()
-		row.CurrentLimit = &s
+		value := quantityToFloat(*lim, resourceName)
+		formatted := lim.String()
+		row.CurrentLimit = &formatted
+		row.CurrentLimitValue = &value
 	}
-
-	p95, err := queryContainerP95(ctx, client, namespace, workload, c.name, resKind)
-	if err != nil {
-		// Mark the row so the UI can distinguish it from genuinely-healthy rows.
-		// Otherwise a partial failure (some containers query OK, others error) would
-		// render the errored containers as well-sized with no signal of the failure.
-		row.Tone = ToneInfo
-		row.Message = "Prometheus query failed"
-		return row, true
-	}
-	if p95 == nil {
-		return row, false
-	}
-
-	p95Str := formatRightsizingValue(*p95, resKind)
-	row.P95 = &p95Str
-
-	classifyRightsizing(&row, *p95, req, lim, resKind)
-	return row, false
 }
 
-// queryContainerP95 returns the P95 of a container's CPU/memory usage over the
-// rightsizing window. Returns nil (no error) when there's no data.
-func queryContainerP95(ctx context.Context, client *Client, namespace, workload, container, resKind string) (*float64, error) {
-	ns := prom.SanitizeLabelValue(namespace)
-	podPattern := fmt.Sprintf("%s-.*", prom.EscapeRegexMeta(prom.SanitizeLabelValue(workload)))
-	cn := prom.SanitizeLabelValue(container)
-	windowSec := int64(rightsizingWindow.Seconds())
-
-	var query string
-	switch resKind {
-	case "cpu":
-		// P95 over 24h of 5min rates, max across pods (worst-case for sizing).
-		query = fmt.Sprintf(
-			`quantile_over_time(0.95, max by (container) (rate(container_cpu_usage_seconds_total{namespace='%s',pod=~'%s',container='%s'}[5m]))[%ds:5m])`,
-			ns, podPattern, cn, windowSec)
-	case "memory":
-		// Memory is a gauge — straight P95 of working set, max across pods.
-		query = fmt.Sprintf(
-			`quantile_over_time(0.95, max by (container) (container_memory_working_set_bytes{namespace='%s',pod=~'%s',container='%s'})[%ds:])`,
-			ns, podPattern, cn, windowSec)
-	default:
-		return nil, fmt.Errorf("unsupported resource: %s", resKind)
+func confidenceFor(samples int, coverage float64, ownerCoverage OwnerCoverage) RightsizingConfidence {
+	if samples < rightsizingMinSamples {
+		return ConfidenceLow
 	}
-
-	res, err := client.Query(ctx, query)
-	if err != nil {
-		errorlog.Record("prometheus", "warning", "rightsizing P95 query failed for %s/%s/%s/%s: %v", namespace, workload, container, resKind, err)
-		return nil, err
+	if coverage >= rightsizingHighCoverage && ownerCoverage == OwnerCoverageKSMHistory {
+		return ConfidenceHigh
 	}
-	if len(res.Series) == 0 || len(res.Series[0].DataPoints) == 0 {
-		return nil, nil
+	if coverage >= rightsizingMedCoverage {
+		return ConfidenceMedium
 	}
-	v := res.Series[0].DataPoints[0].Value
-	// Prom returns NaN as a float; treat as no data.
-	if v != v {
-		return nil, nil
-	}
-	return &v, nil
+	return ConfidenceLow
 }
 
-// classifyRightsizing applies the tone + message + recommended request based
-// on P95 vs current request/limit. Deliberately mild — most workloads are
-// over-provisioned by 2-3x and we don't want to nag them about it.
-func classifyRightsizing(row *RightsizingRow, p95 float64, req, lim *resource.Quantity, resKind string) {
-	// Hard rule: memory P95 ≥ limit is an active OOM risk regardless of headroom math.
-	if resKind == "memory" && lim != nil {
-		limVal := quantityToFloat(*lim, resKind)
-		if limVal > 0 && p95 >= limVal*0.95 {
-			row.Tone = ToneCritical
-			row.Message = "P95 near memory limit — active OOM risk"
-			if rec := recommendRequest(p95, resKind); rec != "" {
-				row.RecommendedReq = &rec
-			}
+func classifyRightsizingFit(row *RightsizingRow, observed float64, req, lim *resource.Quantity, resourceName string) {
+	calculated := calculatedRequest(observed, resourceName)
+	calculatedValue := quantityToFloat(resource.MustParse(calculated), resourceName)
+	minimum := float64(rightsizingMemoryMin)
+	if resourceName == "cpu" {
+		minimum = rightsizingCPUMin
+	}
+	candidate := max(observed*rightsizingHeadroom, minimum)
+	if req == nil || quantityToFloat(*req, resourceName) <= 0 {
+		row.Fit = FitMissingRequest
+	} else {
+		requestValue := quantityToFloat(*req, resourceName)
+		switch {
+		case candidate <= requestValue*0.7:
+			row.Fit = FitOversized
+		case candidate > requestValue:
+			row.Fit = FitUnderRequested
+		default:
+			row.Fit = FitBalanced
+		}
+	}
+	if row.Fit == FitBalanced {
+		row.RecommendationReason = "request_within_fit_range"
+		return
+	}
+	recommended, reductionLimited := recommendRequest(observed, req, resourceName, row.Bursty || (row.ThrottleRatio != nil && *row.ThrottleRatio >= 0.1))
+	recommendedValue := quantityToFloat(resource.MustParse(recommended), resourceName)
+	row.CalculatedReq = &calculated
+	row.CalculatedRequestValue = &calculatedValue
+	if req != nil {
+		requestValue := quantityToFloat(*req, resourceName)
+		if (row.Fit == FitOversized && recommendedValue >= requestValue) ||
+			(row.Fit == FitUnderRequested && recommendedValue <= requestValue) {
+			row.Fit = FitBalanced
+			row.RecommendationReason = "request_within_fit_range"
 			return
 		}
 	}
-
-	// No request set — informational nudge, not an alarm.
-	if req == nil {
-		row.Tone = ToneWarning
-		row.Message = fmt.Sprintf("No %s request set — consider setting one based on observed usage", resKind)
-		if rec := recommendRequest(p95, resKind); rec != "" {
-			row.RecommendedReq = &rec
-		}
+	if row.HPAManaged {
+		row.RecommendationReason = "hpa_managed"
 		return
 	}
-
-	reqVal := quantityToFloat(*req, resKind)
-	if reqVal <= 0 {
+	if row.Fit == FitOversized && !row.HPAEvidenceAvailable {
+		row.RecommendationReason = "hpa_evidence_unavailable"
 		return
 	}
-
-	// p95 == 0 (idle container, or all-zero rate over the window) — ratio would
-	// be +Inf and render as "Over-provisioned by +Infx". An idle container with
-	// a request set is "well-sized" by definition (it's reserving its quota),
-	// and there's no useful recommendation we can derive from a zero sample.
-	if p95 <= 0 {
-		row.Tone = ToneOK
-		row.Message = "Idle — no usage in window"
+	if resourceName == "memory" && row.Fit == FitOversized && (row.CurrentPodOOM || row.WindowOOMEvidence) {
+		row.RecommendationReason = "oom_evidence"
 		return
 	}
-
-	// CPU-specific: P95 exceeds limit = active throttling.
-	if resKind == "cpu" && lim != nil {
-		limVal := quantityToFloat(*lim, resKind)
-		if limVal > 0 && p95 > limVal {
-			row.Tone = ToneAlert
-			row.Message = "P95 exceeds CPU limit — throttling likely"
-			if rec := recommendRequest(p95, resKind); rec != "" {
-				row.RecommendedReq = &rec
-			}
-			return
-		}
-	}
-
-	ratio := reqVal / p95
-
-	// P95 exceeds request (but within limit) → throttled occasionally / no burst headroom.
-	if ratio < 1.0 {
-		row.Tone = ToneWarning
-		row.Message = fmt.Sprintf("P95 usage exceeds request (%.0f%% over)", (1.0/ratio-1.0)*100.0)
-		if rec := recommendRequest(p95, resKind); rec != "" {
-			row.RecommendedReq = &rec
-		}
+	if resourceName == "memory" && row.Fit == FitOversized && !row.OOMEvidenceAvailable {
+		row.RecommendationReason = "oom_evidence_unavailable"
 		return
 	}
-
-	// Sensible headroom (1x-3x) — well-sized. No nag.
-	if ratio <= 3.0 {
-		row.Tone = ToneOK
-		row.Message = "Well-sized"
+	if lim != nil && recommendedValue > quantityToFloat(*lim, resourceName) {
+		row.LimitConflict = true
+		row.RecommendationReason = "recommended_request_exceeds_limit"
 		return
 	}
-
-	// Significant over-provisioning thresholds chosen to avoid nagging the common
-	// "I requested 256Mi and use 100Mi" pattern (~2.5x — that's fine).
-	// CPU is bursty so we tolerate more headroom there than memory.
-	overThreshold := 5.0
-	if resKind == "cpu" {
-		overThreshold = 8.0
-	}
-
-	if ratio > overThreshold {
-		row.Tone = ToneInfo
-		row.Message = fmt.Sprintf("Over-provisioned by %.1fx — could reduce", ratio)
-		if rec := recommendRequest(p95, resKind); rec != "" {
-			row.RecommendedReq = &rec
-		}
-		return
-	}
-
-	// Between 3x and threshold — informational only, no recommendation.
-	row.Tone = ToneOK
-	row.Message = fmt.Sprintf("%.1fx headroom", ratio)
+	row.RecommendedReq = &recommended
+	row.RecommendedRequestValue = &recommendedValue
+	row.ReductionLimited = reductionLimited
 }
 
-func recommendRequest(p95 float64, resKind string) string {
-	headroom := rightsizingHeadroomCPU
-	if resKind == "memory" {
-		headroom = rightsizingHeadroomMemory
+func calculatedRequest(observed float64, resourceName string) string {
+	minimum := float64(rightsizingMemoryMin)
+	if resourceName == "cpu" {
+		minimum = rightsizingCPUMin
 	}
-	return formatRightsizingValue(p95*headroom, resKind)
+	return formatRightsizingValue(max(observed*rightsizingHeadroom, minimum), resourceName)
+}
+
+func recommendRequest(observed float64, current *resource.Quantity, resourceName string, conservative bool) (string, bool) {
+	calculated := calculatedRequest(observed, resourceName)
+	calculatedValue := quantityToFloat(resource.MustParse(calculated), resourceName)
+	if current == nil {
+		return calculated, false
+	}
+	currentValue := quantityToFloat(*current, resourceName)
+	if calculatedValue >= currentValue {
+		return calculated, false
+	}
+	floor := reductionFloor(currentValue, resourceName, conservative)
+	if calculatedValue >= floor {
+		return calculated, false
+	}
+	return formatRightsizingValue(floor, resourceName), true
+}
+
+func reductionFloor(current float64, resourceName string, conservative bool) float64 {
+	if resourceName == "memory" || conservative || current >= 1 {
+		return current * 0.5
+	}
+	if current >= 0.1 {
+		return current * 0.25
+	}
+	return rightsizingCPUMin
+}
+
+func isBurstyCPU(p95, p99 float64) bool {
+	return p99-p95 >= 0.05 && p99 >= p95*3
 }
 
 // quantityToFloat converts a K8s Quantity to a float in the same units as
@@ -465,16 +761,22 @@ func quantityToFloat(q resource.Quantity, resKind string) float64 {
 func formatRightsizingValue(v float64, resKind string) string {
 	switch resKind {
 	case "cpu":
-		if v < 0.001 {
-			return "1m"
+		millis := int64(math.Ceil(v * 1000))
+		millis = max(millis, 10)
+		switch {
+		case millis < 100:
+			millis = roundUp(millis, 10)
+		case millis < 1000:
+			millis = roundUp(millis, 50)
+		case millis < 4000:
+			millis = roundUp(millis, 500)
+		default:
+			millis = roundUp(millis, 1000)
 		}
-		// Round to the nearest 10m to avoid noisy recommendations like 137m.
-		millis := max(int64(v*1000.0+5)/10*10, 10)
 		if millis < 1000 {
 			return fmt.Sprintf("%dm", millis)
 		}
 		cores := float64(millis) / 1000.0
-		// Trim trailing .0
 		if cores == float64(int64(cores)) {
 			return fmt.Sprintf("%d", int64(cores))
 		}
@@ -482,12 +784,48 @@ func formatRightsizingValue(v float64, resKind string) string {
 	case "memory":
 		const Mi = 1024 * 1024
 		const Gi = 1024 * Mi
-		if v >= float64(Gi) {
-			return fmt.Sprintf("%.1fGi", v/float64(Gi))
+		mib := int64(math.Ceil(v / float64(Mi)))
+		preferred := []int64{64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192}
+		for _, candidate := range preferred {
+			if mib <= candidate {
+				if candidate >= 1024 {
+					gib := float64(candidate) / 1024
+					if gib == float64(int64(gib)) {
+						return fmt.Sprintf("%dGi", int64(gib))
+					}
+					return fmt.Sprintf("%.1fGi", gib)
+				}
+				return fmt.Sprintf("%dMi", candidate)
+			}
 		}
-		// Round up to next 16Mi to give a clean recommendation.
-		mib := max(int64(v/float64(Mi)+15)/16*16, 16)
-		return fmt.Sprintf("%dMi", mib)
+		gib := roundUp(mib, 2*1024) / 1024
+		return fmt.Sprintf("%dGi", gib)
+	}
+	return ""
+}
+
+func roundUp(value, step int64) int64 {
+	return (value + step - 1) / step * step
+}
+
+func formatObservedValue(v float64, resourceName string) string {
+	switch resourceName {
+	case "cpu":
+		millis := v * 1000
+		if millis < 1 {
+			return "<1m"
+		}
+		if millis < 1000 {
+			return fmt.Sprintf("%.0fm", millis)
+		}
+		return fmt.Sprintf("%.2f", v)
+	case "memory":
+		const Mi = 1024 * 1024
+		const Gi = 1024 * Mi
+		if v >= float64(Gi) {
+			return fmt.Sprintf("%.2fGi", v/float64(Gi))
+		}
+		return fmt.Sprintf("%.0fMi", v/float64(Mi))
 	}
 	return ""
 }

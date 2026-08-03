@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { X, Package, ChevronRight, ChevronLeft, Play, Loader2, AlertTriangle, CheckCircle, User, BookOpen, Link as LinkIcon, Star, BadgeCheck, Shield, Globe, Building2, Plus, Minus, Terminal } from 'lucide-react'
-import { PaneLoader } from '@skyhook-io/k8s-ui'
+import { PaneLoader, Input } from '@skyhook-io/k8s-ui'
 import { clsx } from 'clsx'
 import yaml from 'yaml'
 import { createPatch } from 'diff'
@@ -28,7 +28,6 @@ function deepMerge(base: Record<string, unknown>, overrides: Record<string, unkn
   }
   return result
 }
-
 interface InstallWizardProps {
   repo: string
   chartName: string
@@ -561,8 +560,7 @@ function InfoStep({
         <label className="block text-sm font-medium text-theme-text-secondary mb-2">
           Release Name
         </label>
-        <input
-          type="text"
+        <Input
           value={releaseName}
           onChange={(e) => setReleaseName(e.target.value)}
           placeholder="my-release"
@@ -591,8 +589,7 @@ function InfoStep({
         <label className="block text-sm font-medium text-theme-text-secondary mb-2">
           Namespace
         </label>
-        <input
-          type="text"
+        <Input
           list="namespace-suggestions"
           value={namespace}
           onChange={(e) => setNamespace(e.target.value)}
@@ -759,6 +756,7 @@ function ValuesStep({ valuesYaml, setValuesYaml, yamlError, setYamlError, chartD
               <YamlEditor
                 value={valuesYaml}
                 onChange={setValuesYaml}
+                showProblems={false}
                 height="300px"
                 onValidate={(isValid, errors) => {
                   setYamlError(isValid ? null : errors[0] || 'Invalid YAML')

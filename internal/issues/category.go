@@ -13,6 +13,7 @@ type classifyInput struct {
 	APIGroup             string // the resource's API group (Issue.Group)
 	Kind                 string
 	Reason               string
+	Message              string
 	LastTerminatedReason string
 }
 
@@ -71,6 +72,14 @@ func Classify(in classifyInput) issuesapi.Category {
 		return issuesapi.CategoryMissingConfigRef
 
 	case SourceCondition:
+		switch in.Reason {
+		case ReasonKarpenterNodePoolNotReady,
+			ReasonKarpenterNodeClassNotReady,
+			ReasonKarpenterNodeClassNotFound,
+			ReasonKarpenterNodeClassKindNotInstalled,
+			ReasonKarpenterNodeClaimProvisioningFailed:
+			return issuesapi.CategoryNodeProvisioningFail
+		}
 		// Generic CRD .status.conditions[]=False fallback. Discriminate the
 		// well-known controller families by API group.
 		g := strings.ToLower(in.APIGroup)
@@ -137,13 +146,26 @@ func classifyProblem(in classifyInput) issuesapi.Category {
 	if in.Reason == "Terminating stuck" || in.Reason == "Namespace terminating stuck" {
 		return issuesapi.CategoryTerminationStuck
 	}
+	// GitOps controller-staleness reasons are emitted on the controller workload
+	// subject (StatefulSet/Deployment/Pod) as well as per-Application, so they
+	// must be classified by reason before the kind switch below routes a
+	// StatefulSet subject into workload_degraded.
+	switch in.Reason {
+	case "GitOpsControllerStalled", "GitOpsComparisonsStale", "ComparisonStale":
+		return issuesapi.CategoryGitOpsStale
+	}
 	switch in.Reason {
 	case "CoreDNS NXDOMAIN override", "CoreDNS service DNS rewrite":
 		return issuesapi.CategoryDNSFailure
+	case "DuplicateEnvVar", "StaleSecretEnv":
+		return issuesapi.CategoryInvalidConfiguration
 	case "Missing referenced Service":
 		return issuesapi.CategoryMissingConfigRef
 	case "Service port mismatch":
 		return issuesapi.CategoryMissingConfigRef
+	}
+	if isForbiddenMessage(in.Message) && !isBatchFailureProblem(in.Kind, in.Reason) {
+		return issuesapi.CategoryRBACForbidden
 	}
 	switch in.Kind {
 	case "Pod":
@@ -259,6 +281,12 @@ func classifyProblem(in classifyInput) issuesapi.Category {
 		}
 		return issuesapi.CategoryUnknown
 
+	case "Workflow", "CronWorkflow":
+		if strings.Contains(strings.ToLower(in.APIGroup), "argoproj.io") && isForbiddenMessage(in.Message) {
+			return issuesapi.CategoryRBACForbidden
+		}
+		return issuesapi.CategoryUnknown
+
 	case "Application":
 		// ArgoCD Application health/sync failure from DetectGitOpsProblems.
 		// Gate on group so a same-named CRD from another controller can't be
@@ -300,6 +328,18 @@ func classifyProblem(in classifyInput) issuesapi.Category {
 	return issuesapi.CategoryUnknown
 }
 
+func isForbiddenMessage(message string) bool {
+	m := strings.ToLower(message)
+	return strings.Contains(m, " is forbidden: user ") && strings.Contains(m, " cannot ")
+}
+
+func isBatchFailureProblem(kind, reason string) bool {
+	if kind == "Job" {
+		return true
+	}
+	return kind == "CronJob" && (reason == "stale" || reason == "never-scheduled")
+}
+
 // classifyGitOpsReason maps a GitOps detector/condition reason to a specific
 // GitOps failure category. Shared by the Argo + Flux arms of both Classify
 // (conditions) and classifyProblem (DetectGitOpsProblems) so the two paths
@@ -317,8 +357,10 @@ func classifyGitOpsReason(reason string, fallback issuesapi.Category) issuesapi.
 		return issuesapi.CategoryGitOpsSpecInvalid
 	case "OperationFailed", "SyncError", "StuckDriftLoop":
 		return issuesapi.CategoryGitOpsOperationFailed
-	case "OutOfSync":
+	case "OutOfSync", "OutOfSyncManual":
 		return issuesapi.CategoryGitOpsOutOfSync
+	case "GitOpsControllerStalled", "GitOpsComparisonsStale", "ComparisonStale":
+		return issuesapi.CategoryGitOpsStale
 	// Flux: couldn't fetch/build the source or render manifests.
 	case "BuildFailed", "ArtifactFailed", "ArtifactFetchFailed", "SourceNotReady", "GitOperationFailed", "ChartNotReady", "ChartPullFailed", "ChartPullError":
 		return issuesapi.CategoryGitOpsRenderFailed

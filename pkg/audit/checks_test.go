@@ -599,6 +599,56 @@ func TestSingleReplica_SkippedWithHPA(t *testing.T) {
 	}
 }
 
+func TestRolloutAvailabilityRisk(t *testing.T) {
+	input := &CheckInput{Deployments: []*appsv1.Deployment{
+		rolloutAuditDeployment("risky", 3, appsv1.RollingUpdateDeploymentStrategyType, intstr.FromInt32(0), intstr.FromString("100%")),
+		rolloutAuditDeployment("safe-defaults", 3, "", intstr.IntOrString{}, intstr.IntOrString{}),
+		rolloutAuditDeployment("explicit-recreate", 3, appsv1.RecreateDeploymentStrategyType, intstr.FromInt32(0), intstr.FromString("100%")),
+		rolloutAuditDeployment("single-replica", 1, appsv1.RollingUpdateDeploymentStrategyType, intstr.FromInt32(0), intstr.FromString("100%")),
+	}}
+	input.Deployments[1].Spec.Strategy.RollingUpdate = nil
+
+	results := RunChecks(input)
+	var matching []Finding
+	for _, finding := range results.Findings {
+		if finding.CheckID == "rolloutAvailabilityRisk" {
+			matching = append(matching, finding)
+		}
+	}
+	if len(matching) != 1 {
+		t.Fatalf("rolloutAvailabilityRisk findings = %+v, want exactly one", matching)
+	}
+	finding := matching[0]
+	if finding.Name != "risky" || finding.Namespace != "prod" || finding.Group != "apps" || finding.Severity != SeverityWarning {
+		t.Errorf("finding identity = %+v", finding)
+	}
+	if !strings.Contains(finding.Message, "maxUnavailable=100%") || !strings.Contains(finding.Message, "can drop to zero available pods") {
+		t.Errorf("finding message = %q", finding.Message)
+	}
+	if got, want := results.CheckCounts["rolloutAvailabilityRisk"], (CheckCount{Evaluated: 2, Passed: 1}); got != want {
+		t.Errorf("CheckCounts[rolloutAvailabilityRisk] = %+v, want %+v", got, want)
+	}
+	if got := results.EvaluatedByNamespace["rolloutAvailabilityRisk"]["prod"]; got != 2 {
+		t.Errorf("namespace evaluation count = %d, want 2", got)
+	}
+}
+
+func rolloutAuditDeployment(name string, replicas int32, strategyType appsv1.DeploymentStrategyType, maxSurge, maxUnavailable intstr.IntOrString) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "prod"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{
+				Type: strategyType,
+				RollingUpdate: &appsv1.RollingUpdateDeployment{
+					MaxSurge:       &maxSurge,
+					MaxUnavailable: &maxUnavailable,
+				},
+			},
+		},
+	}
+}
+
 func TestEfficiencyChecks(t *testing.T) {
 	input := &CheckInput{
 		LimitRanges: []*corev1.LimitRange{},
@@ -1945,48 +1995,6 @@ func TestDeprecatedAPIVersion_NoServedAPIs(t *testing.T) {
 	for _, f := range results.Findings {
 		if f.CheckID == "deprecatedAPIVersion" {
 			t.Error("deprecatedAPIVersion should not fire when ServedAPIs is empty")
-		}
-	}
-}
-
-func TestResourceUtilization(t *testing.T) {
-	input := &CheckInput{
-		PodMetrics: []PodMetricsInput{
-			{Namespace: "default", Name: "waste-pod", CPUUsage: 5, CPURequest: 1000, MemoryUsage: 10 * 1024 * 1024, MemoryRequest: 512 * 1024 * 1024},     // 0.5% CPU, 2% memory — waste
-			{Namespace: "default", Name: "hot-pod", CPUUsage: 950, CPURequest: 1000, MemoryUsage: 480 * 1024 * 1024, MemoryRequest: 512 * 1024 * 1024},    // 95% CPU, 94% memory — risk
-			{Namespace: "default", Name: "normal-pod", CPUUsage: 500, CPURequest: 1000, MemoryUsage: 256 * 1024 * 1024, MemoryRequest: 512 * 1024 * 1024}, // 50% — fine
-			{Namespace: "default", Name: "no-request-pod", CPUUsage: 100, CPURequest: 0, MemoryUsage: 128 * 1024 * 1024, MemoryRequest: 0},                // no requests — skip
-		},
-	}
-
-	results := RunChecks(input)
-	pods := map[string]int{} // pod name → finding count
-	for _, f := range results.Findings {
-		if f.CheckID == "resourceUtilization" {
-			pods[f.Name]++
-		}
-	}
-
-	if pods["waste-pod"] < 1 {
-		t.Error("expected utilization finding for waste-pod (under-utilized)")
-	}
-	if pods["hot-pod"] < 1 {
-		t.Error("expected utilization finding for hot-pod (over-utilized)")
-	}
-	if pods["normal-pod"] > 0 {
-		t.Error("normal-pod at 50% utilization should not be flagged")
-	}
-	if pods["no-request-pod"] > 0 {
-		t.Error("pod with no requests should not be flagged")
-	}
-}
-
-func TestResourceUtilization_Empty(t *testing.T) {
-	input := &CheckInput{}
-	results := RunChecks(input)
-	for _, f := range results.Findings {
-		if f.CheckID == "resourceUtilization" {
-			t.Error("resourceUtilization should not fire when no metrics provided")
 		}
 	}
 }

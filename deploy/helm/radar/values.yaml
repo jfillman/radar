@@ -106,8 +106,9 @@ rbac:
   # installs — those have direct kubectl/Helm access anyway.
   # Security scope: namespace-scoped Role (not ClusterRole), restricted to this
   # Deployment only via resourceNames, get+patch verbs only (no delete/create).
-  # The endpoint validates that the requested image comes from
-  # ghcr.io/skyhook-io/radar before issuing any patch.
+  # The endpoint requires an explicitly attributed Radar Cloud organization
+  # owner, validates the requested Radar tag, and preserves the repository
+  # already configured on the live container (including private mirrors).
   selfUpgrade: false
 
   # Traffic visibility (Hubble/Cilium integration)
@@ -161,7 +162,7 @@ rbac:
     prometheus: true        # monitoring.coreos.com
     reflector: true         # reflector.v1.k8s.emberstack.com
     reloader: true          # reloader.stakater.com
-    sealedSecrets: true     # sealed-secrets.bitnami.com
+    sealedSecrets: true     # bitnami.com
     strimzi: true           # strimzi.io, kafka.strimzi.io
     tekton: true            # tekton.dev
     traefik: true           # traefik.io, traefik.containo.us
@@ -212,6 +213,20 @@ ingress:
   #  - secretName: radar-tls
   #    hosts:
   #      - radar.example.com
+
+httpRoute:
+  enabled: false
+  apiVersion: gateway.networking.k8s.io/v1
+  annotations: {}
+  labels: {}
+  parentRefs: []
+  hostnames: []
+  # Optional request timeout for chart-generated default rule. Empty means
+  # Gateway deployment default applies. Set 0s to explicitly disable timeout.
+  defaultTimeout: ""
+  # When empty, chart emits a default / Prefix rule to Radar Service.
+  # Non-empty rules replace default and pass through unchanged.
+  rules: []
 
 resources:
   limits:
@@ -326,6 +341,11 @@ cloud:
   # The Secret must contain a key matching existingSecretKey.
   existingSecret: ""
   existingSecretKey: "token"
+  # Skip TLS verification on the tunnel to the hub — for trials against a
+  # self-hosted hub that serves a self-signed certificate. The tunnel stays
+  # encrypted but is NOT authenticated (a network attacker could impersonate
+  # the hub), so leave false for any hub with a publicly trusted certificate.
+  insecureSkipVerify: false
   # Default ClusterRoleBindings for Radar Cloud identity groups.
   #
   # How it works: Cloud injects X-Forwarded-Groups: cloud:<role>,
@@ -357,10 +377,44 @@ cloud:
     member: true
     viewer: true
     # ClusterRoles the three Cloud roles bind to. Swap for custom ClusterRoles
-    # to tighten or loosen the defaults.
+    # to tighten or loosen the defaults. NOTE: this controls the namespaced
+    # binding only — the cluster-scoped read add-on below is a SEPARATE,
+    # independent binding. Tightening a tier here does not remove its
+    # clusterScopedRead grant; set that tier's flag below too.
     ownerClusterRole: admin
     memberClusterRole: edit
     viewerClusterRole: view
+    # Grant cluster-scoped READ (Nodes, PVs, StorageClasses, IngressClasses,
+    # PriorityClasses, RuntimeClasses) on top of the built-in view/edit/admin
+    # roles, which exclude cluster-scoped resources. Per tier, each default
+    # true — Radar is a cluster-wide observability tool, so by default every
+    # tier (incl. viewer) sees core infrastructure. No Secrets or RBAC objects.
+    #
+    # Set a tier false to remove this add-on's binding. With the default
+    # built-in role mappings above that leaves the tier namespaced-only —
+    # common for security-conscious orgs (clusterScopedRead.viewer=false →
+    # viewers get stock `view` and cannot enumerate cluster infra). With a
+    # custom *ClusterRole the tier's cluster-scoped reach is whatever that
+    # role grants; this flag only controls our add-on binding.
+    #
+    # Independent of *ClusterRole above: a custom namespaced role does NOT
+    # disable cluster-read (they're separate bindings). Want a tier to read a
+    # DIFFERENT cluster-scoped set (e.g. Nodes but not PVs)? Set its flag false
+    # and bind your own ClusterRole to the cloud:<tier> group — the cloud:*
+    # groups exist regardless of this chart, so your binding composes cleanly.
+    clusterScopedRead:
+      viewer: true
+      member: true
+      owner: true
+    # Grant the owner tier node cordon/drain. Cluster-scoped WRITE, so OFF by
+    # default. Blast radius when enabled: `patch nodes` can't be field-scoped
+    # by RBAC (also permits label/taint edits cluster-wide), and
+    # `create pods/eviction` can't be name-scoped (permits evicting any pod in
+    # any namespace; PDBs bound the impact only where they exist). The role
+    # adds no RBAC-object or Secret access. Composes with the tier toggles:
+    # while owner=false this renders nothing, but it stays latent — re-enabling
+    # owner later activates it. See templates/cloud-rbac-node-ops.yaml.
+    nodeOps: false
 
 # MCP (Model Context Protocol) server for AI tools
 mcp:
@@ -398,6 +452,37 @@ traffic:
   #           key: token
   prometheusHeadersFromEnv: {}
 
+# Argo CD integration (GitOps deep diff)
+# Provisions the Argo CD API connection declaratively so it survives pod
+# restarts and needs no interactive Settings paste — the right shape for
+# in-cluster / Cloud deployments. Powers the full Git-rendered desired-vs-live
+# diff on GitOps Application pages. Leave token/existingSecret empty to configure
+# it interactively in Settings instead (note: that pick is stored under
+# /home/nonroot and is lost on restart unless persistence is enabled).
+#
+# Setting a token here makes the integration environment-managed: read-only in
+# the Settings UI, never written to disk. Mint a token with
+# `argocd account generate-token --account radar` (a read-only account is enough).
+argocd:
+  # Source the token from an existing Secret (recommended — the token never
+  # lands in the Helm release values or `helm get values` output). The Secret
+  # must contain a key matching existingSecretKey.
+  existingSecret: ""
+  existingSecretKey: "token"
+  # Inline token (rendered into the Deployment via RADAR_ARGOCD_TOKEN). Convenient
+  # for dev, but it lands in the Helm release state and shell history — prefer
+  # existingSecret in production. For file-based rotation, mount your own Secret
+  # volume and set RADAR_ARGOCD_TOKEN_FILE via `extraVolumes`/`env` instead.
+  token: ""
+  # Explicit argocd-server URL. Leave blank to auto-discover the argocd-server in
+  # this cluster (the common in-cluster case). Set it to pin the endpoint when
+  # discovery is ambiguous or the server is out-of-cluster.
+  url: ""
+  # Skip TLS verification (self-signed argocd-server). Leave false unless the
+  # server presents a cert Radar can't validate — it exposes the token to
+  # interception on the path to argocd-server.
+  insecureTls: false
+
 # Persistence for SQLite timeline storage
 # Required when timeline.storage is "sqlite" (readOnlyRootFilesystem prevents local writes)
 persistence:
@@ -422,6 +507,18 @@ initContainers: []
 #  - name: init-myservice
 #    image: busybox:1.36
 #    command: ['sh', '-c', 'echo init']
+
+# Additional volumes to add to the pod
+extraVolumes: []
+#  - name: my-config
+#    configMap:
+#      name: my-configmap
+
+# Additional volume mounts for the main container
+extraVolumeMounts: []
+#  - name: my-config
+#    mountPath: /etc/my-config
+#    readOnly: true
 
 # Liveness and readiness probes
 probes:

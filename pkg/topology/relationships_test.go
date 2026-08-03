@@ -26,14 +26,14 @@ func (s *stubProvider) Services() ([]*corev1.Service, error) { return s.services
 func (s *stubProvider) Deployments() ([]*appsv1.Deployment, error) {
 	return nil, nil
 }
-func (s *stubProvider) DaemonSets() ([]*appsv1.DaemonSet, error)         { return nil, nil }
-func (s *stubProvider) StatefulSets() ([]*appsv1.StatefulSet, error)     { return nil, nil }
-func (s *stubProvider) ReplicaSets() ([]*appsv1.ReplicaSet, error)       { return nil, nil }
-func (s *stubProvider) Jobs() ([]*batchv1.Job, error)                    { return nil, nil }
-func (s *stubProvider) CronJobs() ([]*batchv1.CronJob, error)            { return nil, nil }
-func (s *stubProvider) Ingresses() ([]*networkingv1.Ingress, error)      { return nil, nil }
-func (s *stubProvider) ConfigMaps() ([]*corev1.ConfigMap, error)         { return nil, nil }
-func (s *stubProvider) Secrets() ([]*corev1.Secret, error)               { return nil, nil }
+func (s *stubProvider) DaemonSets() ([]*appsv1.DaemonSet, error)     { return nil, nil }
+func (s *stubProvider) StatefulSets() ([]*appsv1.StatefulSet, error) { return nil, nil }
+func (s *stubProvider) ReplicaSets() ([]*appsv1.ReplicaSet, error)   { return nil, nil }
+func (s *stubProvider) Jobs() ([]*batchv1.Job, error)                { return nil, nil }
+func (s *stubProvider) CronJobs() ([]*batchv1.CronJob, error)        { return nil, nil }
+func (s *stubProvider) Ingresses() ([]*networkingv1.Ingress, error)  { return nil, nil }
+func (s *stubProvider) ConfigMaps() ([]*corev1.ConfigMap, error)     { return nil, nil }
+func (s *stubProvider) Secrets() ([]*corev1.Secret, error)           { return nil, nil }
 func (s *stubProvider) PersistentVolumeClaims() ([]*corev1.PersistentVolumeClaim, error) {
 	return nil, nil
 }
@@ -107,6 +107,92 @@ func TestGetRelationships_PodHygieneFields_EmptySAandUnscheduled(t *testing.T) {
 	}
 }
 
+func TestGetRelationships_ConfiguresDispatchesByKind(t *testing.T) {
+	topo := &Topology{
+		Nodes: []Node{
+			{ID: "deployment/demo/web", Kind: KindDeployment, Name: "web"},
+			{ID: "serviceaccount/demo/web", Kind: KindServiceAccount, Name: "web"},
+			{ID: "sealedsecret/demo/web", Kind: KindSealedSecret, Name: "web"},
+			{ID: "configmap/demo/web", Kind: KindConfigMap, Name: "web"},
+			{ID: "destinationrule/demo/web", Kind: KindDestinationRule, Name: "web"},
+			{ID: "podmonitor/demo/web", Kind: KindPodMonitor, Name: "web"},
+		},
+		Edges: []Edge{
+			{ID: "sa-to-web", Source: "serviceaccount/demo/web", Target: "deployment/demo/web", Type: EdgeConfigures},
+			{ID: "sealed-to-web", Source: "sealedsecret/demo/web", Target: "deployment/demo/web", Type: EdgeConfigures},
+			{ID: "config-to-web", Source: "configmap/demo/web", Target: "deployment/demo/web", Type: EdgeConfigures},
+			{ID: "destination-rule-to-web", Source: "destinationrule/demo/web", Target: "deployment/demo/web", Type: EdgeConfigures},
+			{ID: "monitor-to-web", Source: "podmonitor/demo/web", Target: "deployment/demo/web", Type: EdgeConfigures},
+		},
+	}
+
+	rel := GetRelationships("Deployment", "demo", "web", topo, nil, nil)
+	if rel == nil {
+		t.Fatal("expected relationships")
+	}
+	if rel.ServiceAccount == nil || rel.ServiceAccount.Name != "web" {
+		t.Fatalf("expected workload ServiceAccount, got %+v", rel.ServiceAccount)
+	}
+	if len(rel.ConfigRefs) != 3 {
+		t.Fatalf("expected all non-identity configurers in ConfigRefs, got %+v", rel.ConfigRefs)
+	}
+	gotConfigKinds := make(map[string]bool, len(rel.ConfigRefs))
+	for _, ref := range rel.ConfigRefs {
+		gotConfigKinds[ref.Kind] = true
+	}
+	for _, kind := range []string{"SealedSecret", "ConfigMap", "destinationrule"} {
+		if !gotConfigKinds[kind] {
+			t.Errorf("ConfigRefs missing %s; got kinds=%v", kind, gotConfigKinds)
+		}
+	}
+	if gotConfigKinds["PodMonitor"] {
+		t.Errorf("PodMonitor observes the workload and must not be projected as configuration")
+	}
+}
+
+func TestGetRelationships_WorkloadIncludesServiceEntrypoints(t *testing.T) {
+	topo := &Topology{
+		Nodes: []Node{
+			{ID: "deployment/demo/web", Kind: KindDeployment, Name: "web"},
+			{ID: "service/demo/web", Kind: KindService, Name: "web"},
+			{ID: "ingress/demo/web", Kind: KindIngress, Name: "web"},
+			{ID: "httproute/demo/web", Kind: KindHTTPRoute, Name: "web"},
+			{ID: "ingressroute/demo/web", Kind: KindIngressRoute, Name: "web"},
+		},
+		Edges: []Edge{
+			{ID: "service-to-workload", Source: "service/demo/web", Target: "deployment/demo/web", Type: EdgeExposes},
+			{ID: "ingress-to-service", Source: "ingress/demo/web", Target: "service/demo/web", Type: EdgeRoutesTo},
+			{ID: "http-route-to-service", Source: "httproute/demo/web", Target: "service/demo/web", Type: EdgeRoutesTo},
+			{ID: "ingress-route-to-service", Source: "ingressroute/demo/web", Target: "service/demo/web", Type: EdgeExposes},
+		},
+	}
+
+	rel := GetRelationshipsWithIndex("Deployment", "demo", "web", topo, nil, nil, IndexByResource(topo))
+	if rel == nil {
+		t.Fatal("expected workload relationships")
+	}
+	if len(rel.Ingresses) != 1 || rel.Ingresses[0].Name != "web" {
+		t.Fatalf("Ingresses = %+v, want demo/web", rel.Ingresses)
+	}
+	if len(rel.Routes) != 2 {
+		t.Fatalf("Routes = %+v, want HTTPRoute and IngressRoute", rel.Routes)
+	}
+	kinds := map[string]bool{}
+	for _, ref := range rel.Routes {
+		kinds[ref.Kind] = true
+	}
+	if !kinds["HTTPRoute"] || !kinds["IngressRoute"] {
+		t.Fatalf("Routes = %+v, want HTTPRoute and IngressRoute", rel.Routes)
+	}
+
+	serviceRel := GetRelationshipsWithIndex("Service", "demo", "web", topo, nil, nil, IndexByResource(topo))
+	if serviceRel == nil || len(serviceRel.Routes) != 1 || serviceRel.Routes[0].Kind != "IngressRoute" {
+		t.Fatalf("Service Routes = %+v, want IngressRoute", serviceRel)
+	}
+	if len(serviceRel.Services) != 0 {
+		t.Fatalf("Service Services = %+v, route CRDs must not be labeled as Services", serviceRel.Services)
+	}
+}
 
 // TestGetRelationships_IncomingEdgeProtects_DispatchesByKind verifies that
 // incoming "protects" edges split into rel.PDBs vs rel.NetworkPolicies based
@@ -151,6 +237,42 @@ func TestGetRelationships_IncomingEdgeProtects_DispatchesByKind(t *testing.T) {
 		if !gotKinds[expected] {
 			t.Errorf("rel.NetworkPolicies missing %s; got kinds=%v", expected, gotKinds)
 		}
+	}
+}
+
+func TestGetRelationships_IncomingEdgeUsesSplitsScalersFromStorage(t *testing.T) {
+	topo := &Topology{
+		Nodes: []Node{
+			{ID: "deployment/demo/web", Kind: KindDeployment, Name: "web"},
+			{ID: "horizontalpodautoscaler/demo/web-hpa", Kind: KindHPA, Name: "web-hpa"},
+			{ID: "persistentvolumeclaim/demo/web-data", Kind: KindPVC, Name: "web-data"},
+		},
+		Edges: []Edge{
+			{ID: "hpa-to-web", Source: "horizontalpodautoscaler/demo/web-hpa", Target: "deployment/demo/web", Type: EdgeUses},
+			{ID: "pvc-to-web", Source: "persistentvolumeclaim/demo/web-data", Target: "deployment/demo/web", Type: EdgeUses},
+		},
+	}
+
+	rel := GetRelationships("Deployment", "demo", "web", topo, nil, nil)
+	if rel == nil {
+		t.Fatal("GetRelationships returned nil for deployment with incoming uses edges")
+	}
+	if len(rel.Scalers) != 1 || rel.Scalers[0].Kind != "HorizontalPodAutoscaler" || rel.Scalers[0].Name != "web-hpa" {
+		t.Errorf("rel.Scalers: want [HorizontalPodAutoscaler/web-hpa], got %+v", rel.Scalers)
+	}
+	if len(rel.StorageRefs) != 1 || rel.StorageRefs[0].Kind != "PersistentVolumeClaim" || rel.StorageRefs[0].Name != "web-data" {
+		t.Errorf("rel.StorageRefs: want [PersistentVolumeClaim/web-data], got %+v", rel.StorageRefs)
+	}
+
+	pvcRel := GetRelationships("PersistentVolumeClaim", "demo", "web-data", topo, nil, nil)
+	if pvcRel == nil {
+		t.Fatal("GetRelationships returned nil for PVC with outgoing uses edge")
+	}
+	if pvcRel.ScaleTarget != nil {
+		t.Errorf("PVC relationship should not expose a scale target, got %+v", pvcRel.ScaleTarget)
+	}
+	if len(pvcRel.Consumers) != 1 || pvcRel.Consumers[0].Kind != "Deployment" || pvcRel.Consumers[0].Name != "web" {
+		t.Errorf("PVC consumers: want [Deployment/web], got %+v", pvcRel.Consumers)
 	}
 }
 

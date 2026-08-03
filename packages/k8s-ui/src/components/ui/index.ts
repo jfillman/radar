@@ -1,4 +1,4 @@
-export { Tooltip } from './Tooltip'
+export { Tooltip, WithTooltip } from './Tooltip'
 export { FreshnessControl } from './FreshnessControl'
 export type { FreshnessMode, FreshnessConnection } from './FreshnessControl'
 export { PaneLoader } from './PaneLoader'
@@ -10,6 +10,9 @@ export type { EmptyStateTone, EmptyStateVariant } from './EmptyState'
 export { RestrictedState } from './RestrictedState'
 export { FetchResult } from './FetchResult'
 export { SearchBox } from './SearchBox'
+export { SelectMenu } from './SelectMenu'
+export type { SelectMenuOption } from './SelectMenu'
+export { Input } from './Input'
 export { FilterPill } from './FilterPill'
 export type { FilterPillTone } from './FilterPill'
 export { StatusDot, mapHealthToTone } from './status-tone'
@@ -19,11 +22,21 @@ export { ConfirmDialog } from './ConfirmDialog'
 export { HealthRing } from './HealthRing'
 export { MetricsChart, MetricsSparkline } from './MetricsChart'
 export * from './drawer-components'
+export { Collapse, CollapseChevron } from './Collapse'
 export { ResourceBar } from './ResourceBar'
 export { ForceDeleteConfirmDialog } from './ForceDeleteConfirmDialog'
 export { ToastProvider, useToast, showApiError, showApiSuccess } from './Toast'
 export { CodeViewer } from './CodeViewer'
 export { YamlEditor, YamlDiffEditor } from './YamlEditor'
+export type {
+  YamlDiagnostic,
+  YamlDocumentIdentity,
+  YamlEditorProps,
+  YamlSchemaLoader,
+  YamlSchemaLoadResult,
+} from './YamlEditor'
+export { YamlReview } from './YamlReview'
+export type { YamlPreviewResult, YamlReviewProps } from './YamlReview'
 export { RowActionMenu } from './RowActionMenu'
 export type { RowActionItem } from './RowActionMenu'
 
@@ -40,3 +53,5 @@ export { SearchPillInput } from './SearchPillInput'
 export type { SearchModifier, SearchPillInputProps } from './SearchPillInput'
 export { CardSection, CardBody, TerminalBlock, renderProse, NEUTRAL_CHIP_CLASS, KIND_CHIP_CLASS } from './CardSection'
 export type { CardSectionTone } from './CardSection'
+export { MultiSelectPicker } from './MultiSelectPicker'
+export type { MultiSelectPickerProps } from './MultiSelectPicker'

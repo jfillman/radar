@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -32,6 +33,7 @@ func TestSaveAndLoad(t *testing.T) {
 		Kubeconfig:      "/tmp/kubeconfig",
 		KubeconfigDirs:  []string{"/dir1", "/dir2"},
 		Namespace:       "prod",
+		Namespaces:      []string{"dev", "staging"},
 		Port:            9999,
 		NoBrowser:       true,
 		Browser:         "firefox",
@@ -45,7 +47,10 @@ func TestSaveAndLoad(t *testing.T) {
 		PrometheusHeadersFromEnv: map[string]string{
 			"X-Api-Key": "PROMETHEUS_API_KEY",
 		},
-		MCP: &mcp,
+		MCP:               &mcp,
+		ArgoCDURL:         "https://argocd.example.com",
+		ArgoCDToken:       "argo-secret-token",
+		ArgoCDInsecureTLS: true,
 	}
 
 	if err := Save(want); err != nil {
@@ -71,6 +76,9 @@ func TestSaveAndLoad(t *testing.T) {
 	if got.Namespace != want.Namespace {
 		t.Errorf("Namespace = %q, want %q", got.Namespace, want.Namespace)
 	}
+	if len(got.Namespaces) != 2 || got.Namespaces[0] != "dev" || got.Namespaces[1] != "staging" {
+		t.Errorf("Namespaces = %v, want %v", got.Namespaces, want.Namespaces)
+	}
 	if got.NoBrowser != want.NoBrowser {
 		t.Errorf("NoBrowser = %v, want %v", got.NoBrowser, want.NoBrowser)
 	}
@@ -94,6 +102,52 @@ func TestSaveAndLoad(t *testing.T) {
 	if len(got.PrometheusHeadersFromEnv) != 1 ||
 		got.PrometheusHeadersFromEnv["X-Api-Key"] != "PROMETHEUS_API_KEY" {
 		t.Errorf("PrometheusHeadersFromEnv = %v, want %v", got.PrometheusHeadersFromEnv, want.PrometheusHeadersFromEnv)
+	}
+	if got.ArgoCDURL != want.ArgoCDURL {
+		t.Errorf("ArgoCDURL = %q, want %q", got.ArgoCDURL, want.ArgoCDURL)
+	}
+	if got.ArgoCDToken != want.ArgoCDToken {
+		t.Errorf("ArgoCDToken = %q, want %q", got.ArgoCDToken, want.ArgoCDToken)
+	}
+	if !got.ArgoCDInsecureTLS {
+		t.Error("ArgoCDInsecureTLS = false, want true")
+	}
+}
+
+func TestSaveFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not meaningful on Windows")
+	}
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+
+	path := filepath.Join(dir, ".radar", "config.json")
+
+	if err := Save(Config{ArgoCDToken: "secret"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("config file mode = %o, want 0600", info.Mode().Perm())
+	}
+
+	// A pre-existing world-readable file must tighten on next save.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(Config{ArgoCDToken: "secret2"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("config file mode after re-save = %o, want 0600", info.Mode().Perm())
 	}
 }
 
@@ -222,6 +276,16 @@ func TestHelpers(t *testing.T) {
 		c := Config{KubeconfigDirs: []string{"/a", "/b"}}
 		if c.KubeconfigDirsFlag() != "/a,/b" {
 			t.Errorf("got %q, want %q", c.KubeconfigDirsFlag(), "/a,/b")
+		}
+	})
+
+	t.Run("NamespacesFlag", func(t *testing.T) {
+		if (Config{}).NamespacesFlag() != "" {
+			t.Error("nil namespaces should return empty string")
+		}
+		c := Config{Namespaces: []string{"dev", "prod"}}
+		if c.NamespacesFlag() != "dev,prod" {
+			t.Errorf("got %q, want %q", c.NamespacesFlag(), "dev,prod")
 		}
 	})
 }

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,10 +13,13 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
+	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 // Workload tool input types
@@ -36,12 +40,12 @@ type manageCronJobInput struct {
 }
 
 type getWorkloadLogsInput struct {
-	Kind      string `json:"kind,omitempty" jsonschema:"workload kind: deployment, statefulset, or daemonset. Defaults to deployment when omitted."`
+	Kind      string `json:"kind,omitempty" jsonschema:"workload kind: deployment, statefulset, daemonset, job, or workflow. Defaults to deployment when omitted."`
 	Namespace string `json:"namespace" jsonschema:"workload namespace"`
 	Name      string `json:"name" jsonschema:"workload name"`
 	Container string `json:"container,omitempty" jsonschema:"specific container name, defaults to all containers"`
 	TailLines int    `json:"tail_lines,omitempty" jsonschema:"lines per pod (default 100)"`
-	Grep      string `json:"grep,omitempty" jsonschema:"optional regular expression to keep matching log lines before diagnostic filtering, like kubectl logs | grep PATTERN"`
+	Grep      string `json:"grep,omitempty" jsonschema:"optional regex; when set, only matching timestamp-prefixed lines are returned, like kubectl logs --timestamps | grep PATTERN; when omitted, lines are auto-filtered for diagnostic relevance"`
 	Since     string `json:"since,omitempty" jsonschema:"only return logs newer than this duration (e.g. 30s, 10m, 1h), like kubectl logs --since"`
 	Previous  bool   `json:"previous,omitempty" jsonschema:"return logs from the previous terminated container instance (e.g. for CrashLoopBackOff diagnosis), like kubectl logs -p"`
 }
@@ -79,7 +83,7 @@ func handleManageWorkload(ctx context.Context, req *mcp.CallToolRequest, input m
 
 	dynClient := k8s.DynamicClientFromContext(ctx)
 	if dynClient == nil {
-		return nil, nil, fmt.Errorf("not connected to cluster")
+		return nil, nil, errNotConnected()
 	}
 
 	switch strings.ToLower(input.Action) {
@@ -134,7 +138,7 @@ func handleManageWorkload(ctx context.Context, req *mcp.CallToolRequest, input m
 func handleManageCronJob(ctx context.Context, req *mcp.CallToolRequest, input manageCronJobInput) (*mcp.CallToolResult, any, error) {
 	dynClient := k8s.DynamicClientFromContext(ctx)
 	if dynClient == nil {
-		return nil, nil, fmt.Errorf("not connected to cluster")
+		return nil, nil, errNotConnected()
 	}
 
 	switch strings.ToLower(input.Action) {
@@ -175,7 +179,7 @@ func handleManageCronJob(ctx context.Context, req *mcp.CallToolRequest, input ma
 func handleGetWorkloadLogs(ctx context.Context, req *mcp.CallToolRequest, input getWorkloadLogsInput) (*mcp.CallToolResult, any, error) {
 	kind := normalizeWorkloadLogsKind(input.Kind)
 	if kind == "" {
-		return nil, nil, fmt.Errorf("invalid kind %q: must be deployment, statefulset, or daemonset", input.Kind)
+		return nil, nil, fmt.Errorf("invalid kind %q: must be deployment, statefulset, daemonset, job, or workflow", input.Kind)
 	}
 
 	if !checkNamespaceAccess(ctx, input.Namespace) {
@@ -184,28 +188,31 @@ func handleGetWorkloadLogs(ctx context.Context, req *mcp.CallToolRequest, input 
 
 	cache := k8s.GetResourceCache()
 	if cache == nil {
-		return nil, nil, fmt.Errorf("not connected to cluster")
+		return nil, nil, errNotConnected()
 	}
 
 	client := k8s.ClientFromContext(ctx)
 	if client == nil {
-		return nil, nil, fmt.Errorf("not connected to cluster")
+		return nil, nil, errNotConnected()
 	}
 
 	// Get the workload's label selector
 	selector, err := k8s.GetWorkloadSelector(cache, kind, input.Namespace, input.Name)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, workloadSelectorMCPError(ctx, err, kind, input.Namespace, input.Name)
 	}
 
 	// Get pods matching the workload
 	pods := cache.GetPodsForWorkload(input.Namespace, selector)
 	if len(pods) == 0 {
-		return toJSONResult(map[string]any{
+		empty := describeMCPWorkloadLogEmpty(ctx, kind, input.Namespace, input.Name)
+		response := map[string]any{
 			"workload": fmt.Sprintf("%s/%s/%s", kind, input.Namespace, input.Name),
 			"pods":     0,
-			"logs":     "no pods found for this workload",
-		})
+			"logs":     empty.Message,
+		}
+		addMCPWorkloadLogEmptyMetadata(response, empty)
+		return toJSONResult(response)
 	}
 
 	tailLines := int64(100)
@@ -253,28 +260,138 @@ func handleGetWorkloadLogs(ctx context.Context, req *mcp.CallToolRequest, input 
 	}
 
 	allLogs := fetchPodLogs(ctx, pods, input.Namespace, input.Container, input.Grep, tailLines, sinceSeconds, input.Previous)
-
-	resp := map[string]any{
-		"workload": fmt.Sprintf("%s/%s/%s", kind, input.Namespace, input.Name),
-		"pods":     len(pods),
-		"logs":     allLogs,
-	}
+	var narrowHint string
 	// Steering hint when any pod's stream hit its tail cap. Compare against
 	// RawLines (pre-grep) so grep-filtered streams still surface the hint.
 	// Heuristic mirrors handleGetPodLogs.
 	for _, e := range allLogs {
 		if int64(e.RawLines) >= tailLines {
-			resp["narrowHint"] = fmt.Sprintf(
+			narrowHint = fmt.Sprintf(
 				"at least one pod's log stream tailed to %d lines (cap reached) — narrow with since= (e.g. 10m), grep= regex, container=, or raise tail_lines",
 				tailLines,
 			)
 			break
 		}
 	}
-	if w := computeWorkloadLogsWarnings(pods, input.Previous); len(w) > 0 {
+	capped, capStats := capMultiPodLogBundles(allLogs)
+	allLogs = capped[0]
+	if capStats.Truncated {
+		// Raising tail_lines cannot recover aggregate-truncated output, so the
+		// bundle-cap guidance supersedes the per-stream tail hint.
+		narrowHint = multiPodLogBundleNarrowHint(input.Namespace, capStats, input.Previous)
+	}
+
+	resp := map[string]any{
+		"workload": fmt.Sprintf("%s/%s/%s", kind, input.Namespace, input.Name),
+		"pods":     len(pods),
+		"logs":     allLogs,
+	}
+	if narrowHint != "" {
+		resp["narrowHint"] = narrowHint
+	}
+	if w := computeWorkloadLogsWarnings(pods, allLogs, input.Previous); len(w) > 0 {
 		resp["warnings"] = w
 	}
 	return toJSONResult(resp)
+}
+
+func workloadSelectorMCPError(ctx context.Context, err error, kind, namespace, name string) error {
+	if errors.Is(err, k8s.ErrWorkloadAccessDenied) || apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+		return fmt.Errorf("forbidden: cannot access %s %s/%s: %w", kind, namespace, name, err)
+	}
+	if apierrors.IsNotFound(err) || errors.Is(err, k8score.ErrResourceNotFound) {
+		return notFoundError(ctx, err, kind, namespace, name)
+	}
+	return fmt.Errorf("get %s %s/%s: %w", kind, namespace, name, err)
+}
+
+type mcpWorkloadLogEmptyMetadata struct {
+	Reason  string
+	Message string
+	Command string
+}
+
+func describeMCPWorkloadLogEmpty(ctx context.Context, kind, namespace, name string) mcpWorkloadLogEmptyMetadata {
+	switch kind {
+	case "jobs":
+		return describeMCPJobLogEmpty(namespace, name)
+	case "workflows":
+		return describeMCPWorkflowLogEmpty(ctx, namespace, name)
+	default:
+		return mcpWorkloadLogEmptyMetadata{
+			Reason:  "no-pods",
+			Message: "no pods found for this workload",
+		}
+	}
+}
+
+func describeMCPJobLogEmpty(namespace, name string) mcpWorkloadLogEmptyMetadata {
+	metadata := mcpWorkloadLogEmptyMetadata{
+		Reason:  "no-pods",
+		Message: "No pods found for this Job yet. Check scheduling, admission, or controller events.",
+		Command: "kubectl logs job/" + name + " -n " + namespace,
+	}
+	cache := k8s.GetResourceCache()
+	if cache == nil || cache.Jobs() == nil {
+		return metadata
+	}
+	job, err := cache.Jobs().Jobs(namespace).Get(name)
+	if err != nil {
+		return metadata
+	}
+	applyMCPTerminalJobEmptyState(&metadata, job, namespace, name)
+	return metadata
+}
+
+func applyMCPTerminalJobEmptyState(metadata *mcpWorkloadLogEmptyMetadata, job *batchv1.Job, namespace, name string) {
+	if !k8s.IsJobTerminal(job) {
+		return
+	}
+	metadata.Reason = "pods-gone"
+	metadata.Message = "This Job has finished, but its pods are no longer present in Kubernetes. If logs were retained externally, use your logging system; otherwise inspect the Job conditions and events."
+	metadata.Command = "kubectl describe job/" + name + " -n " + namespace
+}
+
+func describeMCPWorkflowLogEmpty(ctx context.Context, namespace, name string) mcpWorkloadLogEmptyMetadata {
+	metadata := mcpWorkloadLogEmptyMetadata{
+		Reason:  "no-pods",
+		Message: "No Workflow pods found yet. Check scheduling, admission, or controller events.",
+		Command: "argo logs " + name + " -n " + namespace,
+	}
+	cache := k8s.GetResourceCache()
+	if cache == nil {
+		return metadata
+	}
+	workflow, err := cache.GetDynamicWithGroup(ctx, "Workflow", namespace, name, "argoproj.io")
+	if err != nil {
+		return metadata
+	}
+	applyMCPTerminalWorkflowEmptyState(&metadata, workflow.Object, namespace, name)
+	return metadata
+}
+
+func applyMCPTerminalWorkflowEmptyState(metadata *mcpWorkloadLogEmptyMetadata, workflow map[string]any, namespace, name string) {
+	if !k8s.IsWorkflowTerminal(workflow) {
+		return
+	}
+	metadata.Reason = "pods-gone"
+	if k8s.WorkflowArchiveLogsConfigured(workflow) {
+		metadata.Message = "This Workflow has finished and its pods are no longer present. Archived logs appear to be enabled; use the configured Argo or logging UI, or try argo logs " + name + " -n " + namespace + "."
+	} else {
+		metadata.Message = "This Workflow has finished and its pods are no longer present. Argo may have garbage-collected them; Kubernetes pod logs are no longer available here."
+	}
+}
+
+func addMCPWorkloadLogEmptyMetadata(response map[string]any, metadata mcpWorkloadLogEmptyMetadata) {
+	if metadata.Reason != "" {
+		response["emptyReason"] = metadata.Reason
+	}
+	if metadata.Message != "" {
+		response["emptyMessage"] = metadata.Message
+	}
+	if metadata.Command != "" {
+		response["command"] = metadata.Command
+	}
 }
 
 // schedulingBlockerWarnings detects when a restart won't accomplish what the
@@ -343,11 +460,13 @@ func schedulingBlockerWarnings(kind, namespace, name string) []string {
 	)}
 }
 
-// computeWorkloadLogsWarnings aggregates the not-Running and crashloop logs
-// hints that get_pod_logs surfaces, summarized across all pods of the workload.
-func computeWorkloadLogsWarnings(pods []*corev1.Pod, previous bool) []string {
+// computeWorkloadLogsWarnings aggregates the not-Running, crashloop, and empty
+// previous-log hints that get_pod_logs surfaces across the workload.
+func computeWorkloadLogsWarnings(pods []*corev1.Pod, logs []podLogEntry, previous bool) []string {
 	var notRunning, crashloop int
+	podsByName := make(map[string]*corev1.Pod, len(pods))
 	for _, p := range pods {
+		podsByName[p.Name] = p
 		if p.Status.Phase != corev1.PodRunning && p.Status.Phase != corev1.PodSucceeded {
 			notRunning++
 		}
@@ -368,14 +487,49 @@ func computeWorkloadLogsWarnings(pods []*corev1.Pod, previous bool) []string {
 			crashloop, len(pods),
 		))
 	}
+	if previous {
+		var emptyCrashLogs int
+		var examplePod string
+		var exampleStatus *corev1.ContainerStatus
+		for _, entry := range logs {
+			if entry.RawLines != 0 || entry.Error != "" {
+				continue
+			}
+			pod := podsByName[entry.Pod]
+			if pod == nil {
+				continue
+			}
+			statuses := filterContainerStatuses(pod.Status.ContainerStatuses, entry.Container)
+			if cs := pickCrashIndicator(statuses); cs != nil {
+				emptyCrashLogs++
+				if exampleStatus == nil {
+					examplePod = entry.Pod
+					exampleStatus = cs
+				}
+			}
+		}
+		if emptyCrashLogs > 0 {
+			reason := exampleStatus.LastTerminationState.Terminated.Reason
+			if reason == "" {
+				reason = "(reason unset)"
+			}
+			out = append(out, fmt.Sprintf(
+				"No crash log was captured for %d previous pod/container instance(s) (for example, `%s/%s`; last recorded termination: `%s`, exit code %d). This is an absence of evidence, not evidence of health — do NOT infer a root cause from the empty log. Inspect `get_events`, `diagnose` (recent spec changes), and pod conditions instead.",
+				emptyCrashLogs,
+				examplePod,
+				exampleStatus.Name,
+				reason,
+				exampleStatus.LastTerminationState.Terminated.ExitCode,
+			))
+		}
+	}
 	return out
 }
 
 // podLogEntry is the per-pod-per-container log row returned by fetchPodLogs.
 //
-// RawLines is the line count of the pre-grep stream so the workload-logs
-// narrowHint can detect upstream truncation correctly even when grep is
-// active. FilteredLogs.TotalLines reflects the post-grep count.
+// RawLines lets workload-logs detect upstream truncation independently of
+// response filtering.
 type podLogEntry struct {
 	Pod       string                 `json:"pod"`
 	Container string                 `json:"container"`
@@ -386,7 +540,7 @@ type podLogEntry struct {
 
 // fetchPodLogs fans out kubectl-logs requests across the given pods x containers.
 // containerFilter "" includes every container; non-empty restricts to that name.
-// grep is server-side regex applied before diagnostic filtering. previous=true
+// grep replaces diagnostic filtering when set. previous=true
 // fetches the prior terminated container instance (CrashLoopBackOff diagnosis).
 // Returns entries sorted by (pod, container) for deterministic output.
 // Resolves the kube client from ctx so the call still honors per-request RBAC.
@@ -490,7 +644,7 @@ func handleManageNode(ctx context.Context, req *mcp.CallToolRequest, input manag
 
 	client := k8s.ClientFromContext(ctx)
 	if client == nil {
-		return nil, nil, fmt.Errorf("not connected to cluster")
+		return nil, nil, errNotConnected()
 	}
 
 	switch strings.ToLower(input.Action) {
@@ -568,5 +722,12 @@ func normalizeWorkloadLogsKind(kind string) string {
 	if strings.TrimSpace(kind) == "" {
 		return "deployments"
 	}
-	return normalizeWorkloadKind(kind)
+	switch strings.ToLower(kind) {
+	case "job", "jobs":
+		return "jobs"
+	case "workflow", "workflows":
+		return "workflows"
+	default:
+		return normalizeWorkloadKind(kind)
+	}
 }

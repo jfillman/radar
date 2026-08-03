@@ -65,6 +65,15 @@ type ResourceChange struct {
 	UID       string
 	Operation string    // "add", "update", "delete"
 	Diff      *DiffInfo // Diff details for updates (optional)
+
+	// Group and Resource carry the GVR coordinates for per-kind RBAC
+	// authorization of change frames. Populated by the dynamic cache (which
+	// knows the exact GVR, disambiguating CRD kind collisions like
+	// EC2NodeClass vs a synthesized NodeClass); left empty by the typed cache,
+	// whose kinds are well-known and unambiguously resolvable from Kind alone.
+	// Resource is the plural REST name (e.g. "secrets", "deployments").
+	Group    string
+	Resource string
 }
 
 // DiffInfo contains the diff details for an update operation.
@@ -119,6 +128,13 @@ type CacheConfig struct {
 	// scope it actually has, instead of falling back to all-or-nothing.
 	ResourceScopes map[string]ResourceScope
 
+	// ResourceScopeNamespaces optionally expands a namespace-scoped
+	// ResourceScopes entry to multiple namespaces. It is keyed by the same
+	// resource type strings as ResourceScopes. A kind with cluster-wide scope
+	// ignores this field; a namespaced kind with multiple entries starts one
+	// informer per namespace and exposes a union lister.
+	ResourceScopeNamespaces map[string][]string
+
 	// DeferredTypes lists resource types whose informers sync in the
 	// background after critical informers complete. Their listers return
 	// nil until sync finishes. If nil, no resources are deferred.
@@ -128,6 +144,17 @@ type CacheConfig struct {
 	// filtering (noisy checks, suppress-initial-adds). Used for metrics
 	// tracking (e.g., timeline.IncrementReceived). May be nil.
 	OnReceived func(kind string)
+
+	// OnTransform is called immediately before managed fields are stripped
+	// from an informer object. Callers may inspect metadata but must not mutate
+	// the object. May be nil.
+	OnTransform func(obj any)
+
+	// OnObservedChange is called for every non-Event resource change after diff
+	// computation, including changes excluded by noisy filtering or initial-add
+	// suppression. It is intended for internal state reconciliation that must
+	// follow every transformed informer version. May be nil.
+	OnObservedChange func(change ResourceChange, obj, oldObj any)
 
 	// OnChange is called for each non-Event resource change after the
 	// change is sent to the changes channel. It receives the change plus
@@ -287,7 +314,12 @@ type DynamicCacheConfig struct {
 	// NamespaceFallback is used when informers should prefer cluster-wide
 	// access but retry namespace-scoped after a cluster-wide 403/401.
 	// Ignored when NamespaceScoped is true.
-	NamespaceFallback string
+	// NamespaceFallbacks is the multi-namespace form: after a cluster-wide
+	// 403/401 every listed namespace is probed and each granted one gets its
+	// own informer, with reads unioning across them. When set it takes
+	// precedence over NamespaceFallback.
+	NamespaceFallback  string
+	NamespaceFallbacks []string
 
 	// DebugEvents enables verbose debug logging.
 	DebugEvents bool

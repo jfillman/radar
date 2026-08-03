@@ -5,6 +5,7 @@ import type { LogEntry, LogLevel } from './useLogBuffer'
 import { useLogSearch } from './useLogSearch'
 import { StructuredLogLine } from './StructuredLogLine'
 import { Tooltip } from '../ui/Tooltip'
+import { Input } from '../ui/Input'
 import {
   formatLogTimestamp,
   highlightSearchMatches,
@@ -37,6 +38,7 @@ interface LogCoreProps {
   toolbarExtra?: ToolbarExtraRenderer
   showPodName?: boolean
   emptyMessage?: string
+  emptyCommand?: string | null
   errorMessage?: string | null
   /**
    * Hard override for the viewer palette. When set, the viewer stays pinned to
@@ -88,6 +90,8 @@ const STRUCTURED_MODE_DESCRIPTIONS: Record<StructuredMode, string> = {
   raw: 'Original log line, unparsed',
 }
 
+const EMPTY_STATE_CLASS = 'flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center'
+
 const TIMESTAMP_FORMAT_SHORT_LABELS: Record<TimestampFormat, string> = {
   'time-local': 'Local time',
   'time-utc': 'UTC time',
@@ -124,6 +128,7 @@ export function LogCore({
   toolbarExtra,
   showPodName = false,
   emptyMessage = 'No logs available',
+  emptyCommand,
   errorMessage,
   forceDark,
 }: LogCoreProps) {
@@ -694,8 +699,7 @@ export function LogCore({
       {search.isOpen && (
         <div className={`flex items-center gap-2 px-3 py-2 border-b ${palette.border} ${palette.toolbarBgMuted}`}>
           <Search className={`w-4 h-4 ${palette.textSecondary} shrink-0`} />
-          <input
-            type="text"
+          <Input
             value={search.query}
             onChange={(e) => search.setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -800,14 +804,20 @@ export function LogCore({
           </div>
         </div>
       ) : errorMessage ? (
-        <div className={`flex-1 flex flex-col items-center justify-center gap-2 ${palette.textError}`}>
+        <div className={`${EMPTY_STATE_CLASS} ${palette.textError}`}>
           <Terminal className="w-8 h-8" />
           <span>{errorMessage}</span>
         </div>
       ) : groupedEntries.length === 0 ? (
-        <div className={`flex-1 flex flex-col items-center justify-center gap-2 ${palette.textTertiary}`}>
+        <div className={`${EMPTY_STATE_CLASS} ${palette.textTertiary}`}>
           <Terminal className="w-8 h-8" />
           <span>{emptyMessage}</span>
+          {emptyCommand && (
+            <button type="button" onClick={() => navigator.clipboard.writeText(emptyCommand).catch(() => {})} className={`mt-2 inline-flex max-w-[80%] items-center gap-2 rounded border px-3 py-2 font-mono text-xs ${palette.border} ${palette.toolbarBg}`} title="Copy recovery command">
+              <code className="truncate">{emptyCommand}</code>
+              <Copy className="h-3.5 w-3.5 shrink-0" />
+            </button>
+          )}
         </div>
       ) : (
         <div className="flex-1 relative">

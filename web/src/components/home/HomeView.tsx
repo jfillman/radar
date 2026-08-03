@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from 'react'
 import { useDashboard, useDashboardCRDs, useDashboardHelm, useIssues, type IssuesResponse } from '../../api/client'
 import { useConnection } from '../../context/ConnectionContext'
+import type { ClusterLoadState } from '../../types/clusterLoadState'
 import type { ExtendedMainView, Topology, SelectedResource } from '../../types'
 import { TopologyPreview } from './TopologyPreview'
 import { HelmSummary } from './HelmSummary'
@@ -10,6 +11,8 @@ import { CertificateHealthCard } from './CertificateHealthCard'
 import { NetworkPolicyCoverageCard } from './NetworkPolicyCoverageCard'
 import { CostCard } from './CostCard'
 import { GitOpsControllersCard } from './GitOpsControllersCard'
+import { CapacityCard } from './CapacityCard'
+import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
 import { Tooltip } from '../ui/Tooltip'
 import {
   AuditCard,
@@ -33,6 +36,7 @@ interface HomeViewProps {
   onNavigateToView: (view: ExtendedMainView, params?: Record<string, string>) => void
   onNavigateToResourceKind: (kind: string, group?: string, filters?: Record<string, string[]>) => void
   onNavigateToResource: (resource: SelectedResource) => void
+  fallbackClusterLoadState?: ClusterLoadState
   /**
    * Optional override for the Certificate Health card's click. When an embedded
    * host (Radar Cloud) takes Certs over with its own fleet page, it passes this
@@ -42,7 +46,14 @@ interface HomeViewProps {
   onNavigateToCerts?: () => void
 }
 
-export function HomeView({ namespaces, topology, onNavigateToView, onNavigateToResourceKind, onNavigateToResource, onNavigateToCerts }: HomeViewProps) {
+export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNavigateToView, onNavigateToResourceKind, onNavigateToResource, onNavigateToCerts }: HomeViewProps) {
+  // The card itself decides whether the cluster has a capacity story
+  // (available, softened-denied, or karpenterless-with-managers/groups) and
+  // returns null otherwise — the outer gate only excludes states with nothing
+  // to fetch against.
+  const karpenterState = useCapabilitiesContext().karpenter?.state
+  const capacityCardPossible =
+    karpenterState === 'available' || karpenterState === 'denied' || karpenterState === 'not_detected'
   const { data, isLoading, error, dataUpdatedAt, refetch } = useDashboard(namespaces)
   const { connection } = useConnection()
   const { data: issuesData, isLoading: issuesLoading, isFetching: issuesFetching, error: issuesError } = useIssues(namespaces)
@@ -69,7 +80,7 @@ export function HomeView({ namespaces, topology, onNavigateToView, onNavigateToR
   const { data: helmData } = useDashboardHelm(namespaces)
 
   if (isLoading) {
-    return <PaneLoader label="Loading dashboard…" className="flex-1" />
+    return <PaneLoader label="Loading dashboard…" className="flex-1 min-h-0" />
   }
 
   if (error || !data) {
@@ -96,19 +107,13 @@ export function HomeView({ namespaces, topology, onNavigateToView, onNavigateToR
     )
   }
 
-  const stillLoading = data.deferredLoading || (data.partialData && data.partialData.length > 0)
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-[1600px] mx-auto px-6 py-6 space-y-6">
-        {stillLoading && (
-          <div className="flex items-center gap-2 text-xs text-theme-text-tertiary">
-            <Loader2 className="w-3 h-3 animate-spin" />
-            <span>
-              {data.partialData && data.partialData.length > 0
-                ? `Still loading: ${data.partialData.join(', ')}`
-                : 'Loading remaining resources…'}
-            </span>
+        {fallbackClusterLoadState?.loading && (
+          <div className="flex items-center gap-2 text-sm text-theme-text-tertiary">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>{fallbackClusterLoadState.message}</span>
           </div>
         )}
         {/* Row 1: Cluster Health Card (combined health + resource counts) */}
@@ -179,7 +184,7 @@ export function HomeView({ namespaces, topology, onNavigateToView, onNavigateToR
             {/* Posture band — same flex-grow wrap so any subset of compliance cards
                 fills its row instead of stranding the last one (the old 3-col grid
                 left Cluster Audit alone with two empty cells beside it). */}
-            {(data.certificateHealth || data.networkPolicyCoverage || data.audit || data.gitopsControllers) && (
+            {(data.certificateHealth || data.networkPolicyCoverage || data.audit || data.gitopsControllers || capacityCardPossible) && (
               <div className="flex flex-wrap gap-6">
                 {data.certificateHealth && (
                   <BandItem>
@@ -203,6 +208,11 @@ export function HomeView({ namespaces, topology, onNavigateToView, onNavigateToR
                       data={data.gitopsControllers}
                       onNavigate={() => onNavigateToView('gitops')}
                     />
+                  </BandItem>
+                )}
+                {capacityCardPossible && (
+                  <BandItem>
+                    <CapacityCard onNavigate={() => onNavigateToView('capacity')} />
                   </BandItem>
                 )}
                 {data.audit && (

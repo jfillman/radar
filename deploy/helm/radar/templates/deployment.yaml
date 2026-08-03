@@ -47,6 +47,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --port={{ .Values.service.port }}
+            - --listen-address=0.0.0.0
             - --no-browser
             - --timeline-storage={{ .Values.timeline.storage }}
             {{- if eq .Values.timeline.storage "sqlite" }}
@@ -130,6 +131,9 @@ spec:
             {{- end }}
             - --cloud-url={{ required "cloud.url is required when cloud.enabled=true" .Values.cloud.url }}
             - --cluster-name={{ required "cloud.clusterName is required when cloud.enabled=true" .Values.cloud.clusterName }}
+            {{- if .Values.cloud.insecureSkipVerify }}
+            - --cloud-insecure-skip-verify
+            {{- end }}
             {{- /* cloud.token is injected via RADAR_CLOUD_TOKEN env var below, not the command line */}}
             {{- end }}
           ports:
@@ -183,6 +187,31 @@ spec:
               {{- end }}
             {{- end }}
             {{- end }}
+            {{- /* Argo CD deep-diff: env-provisioned token (independent of cloud
+                   mode — works for plain in-cluster too). URL/TLS ride along only
+                   when a token is set; a URL without a token can't authenticate. */}}
+            {{- if and .Values.argocd.token .Values.argocd.existingSecret }}
+            {{- fail "argocd.token and argocd.existingSecret are mutually exclusive: set only one (prefer existingSecret so the token stays out of the Helm release)" }}
+            {{- end }}
+            {{- if or .Values.argocd.token .Values.argocd.existingSecret }}
+            - name: RADAR_ARGOCD_TOKEN
+              {{- if .Values.argocd.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.argocd.existingSecret }}
+                  key: {{ .Values.argocd.existingSecretKey }}
+              {{- else }}
+              value: {{ .Values.argocd.token | quote }}
+              {{- end }}
+            {{- if .Values.argocd.url }}
+            - name: RADAR_ARGOCD_URL
+              value: {{ .Values.argocd.url | quote }}
+            {{- end }}
+            {{- if .Values.argocd.insecureTls }}
+            - name: RADAR_ARGOCD_INSECURE_TLS
+              value: "true"
+            {{- end }}
+            {{- end }}
             {{- if .Values.rbac.selfUpgrade }}
             - name: MY_POD_NAMESPACE
               valueFrom:
@@ -225,6 +254,9 @@ spec:
             - name: data
               mountPath: /data
             {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -234,6 +266,9 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "radar.fullname" . }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

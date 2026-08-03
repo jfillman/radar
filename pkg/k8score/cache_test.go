@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
@@ -60,6 +63,12 @@ func TestNewResourceCache_Basic(t *testing.T) {
 	}
 	if rc.Nodes() != nil {
 		t.Error("expected Nodes() lister to be nil (not enabled)")
+	}
+	if !rc.IsKindClusterWide(Pods) {
+		t.Error("legacy cluster-wide ResourceTypes config must report cluster-wide authority")
+	}
+	if got := rc.KindNamespaces(Pods); got != nil {
+		t.Fatalf("cluster-wide Pod namespaces = %v, want nil", got)
 	}
 }
 
@@ -698,6 +707,47 @@ func TestNewResourceCache_OnReceived(t *testing.T) {
 	}
 }
 
+func TestNewResourceCache_OnObservedChangeSurvivesFiltering(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "test-pod", Namespace: "default", UID: "test-uid",
+	}}
+	client := fake.NewSimpleClientset(pod)
+
+	var mu sync.Mutex
+	var observed, delivered []ResourceChange
+	rc, err := NewResourceCache(CacheConfig{
+		Client:        client,
+		ResourceTypes: map[string]bool{Pods: true},
+		IsNoisyResource: func(string, string, string) bool {
+			return true
+		},
+		OnObservedChange: func(change ResourceChange, _, _ any) {
+			mu.Lock()
+			observed = append(observed, change)
+			mu.Unlock()
+		},
+		OnChange: func(change ResourceChange, _, _ any) {
+			mu.Lock()
+			delivered = append(delivered, change)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache failed: %v", err)
+	}
+	defer rc.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(observed) != 1 || observed[0].Kind != "Pod" || observed[0].Name != "test-pod" {
+		t.Fatalf("observed changes = %+v, want filtered Pod add", observed)
+	}
+	if len(delivered) != 0 {
+		t.Fatalf("OnChange received filtered changes: %+v", delivered)
+	}
+}
+
 func TestNewResourceCache_NamespaceScopedValidation(t *testing.T) {
 	client := fake.NewSimpleClientset()
 
@@ -860,6 +910,52 @@ func TestDropManagedFields(t *testing.T) {
 	}
 }
 
+func TestResourceCacheOnTransformSeesManagedFieldsBeforeStripping(t *testing.T) {
+	dataWrite := time.Date(2026, 7, 23, 8, 0, 0, 0, time.UTC)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "credentials",
+			Namespace: "default",
+			ManagedFields: []metav1.ManagedFieldsEntry{
+				{
+					Manager:    "secret-controller",
+					Operation:  metav1.ManagedFieldsOperationUpdate,
+					Time:       &metav1.Time{Time: dataWrite},
+					FieldsType: "FieldsV1",
+					FieldsV1:   &metav1.FieldsV1{Raw: []byte(`{"f:data":{"f:password":{}}}`)},
+				},
+			},
+		},
+		Data: map[string][]byte{"password": []byte("must-not-leak")},
+	}
+	client := fake.NewSimpleClientset(secret)
+	var captured time.Time
+	rc, err := NewResourceCache(CacheConfig{
+		Client:        client,
+		ResourceTypes: map[string]bool{Secrets: true},
+		OnTransform: func(obj any) {
+			if transformed, ok := obj.(*corev1.Secret); ok && len(transformed.ManagedFields) == 1 {
+				captured = transformed.ManagedFields[0].Time.Time
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache failed: %v", err)
+	}
+	defer rc.Stop()
+
+	if !captured.Equal(dataWrite) {
+		t.Fatalf("OnTransform captured %v, want %v", captured, dataWrite)
+	}
+	cached, err := rc.Secrets().Secrets("default").Get("credentials")
+	if err != nil {
+		t.Fatalf("cached Secret lookup failed: %v", err)
+	}
+	if len(cached.ManagedFields) != 0 {
+		t.Fatalf("cached Secret leaked %d managedFields entries", len(cached.ManagedFields))
+	}
+}
+
 func TestDropManagedFields_Event(t *testing.T) {
 	event := &corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{
@@ -911,7 +1007,7 @@ func TestNewResourceCache_ResourceScopesMixed(t *testing.T) {
 		ResourceScopes: map[string]ResourceScope{
 			Pods:        {Enabled: true, Namespace: ns}, // namespace-scoped
 			Deployments: {Enabled: true, Namespace: ns}, // namespace-scoped
-			Nodes:       {Enabled: true, Namespace: ""}, // cluster-wide (cluster-scoped kind)
+			Nodes:       {Enabled: true, Namespace: ns}, // cluster-scoped kinds ignore namespace fallback
 			Services:    {Enabled: false},               // denied — no informer
 		},
 	})
@@ -932,6 +1028,9 @@ func TestNewResourceCache_ResourceScopesMixed(t *testing.T) {
 	if rc.Services() != nil {
 		t.Error("Services lister should be nil — kind was disabled")
 	}
+	if !rc.IsKindClusterWide(Nodes) || rc.KindNamespaces(Nodes) != nil {
+		t.Fatal("cluster-scoped Node informer did not report its effective cluster-wide scope")
+	}
 
 	enabled := rc.GetEnabledResources()
 	if !enabled[Pods] || !enabled[Deployments] || !enabled[Nodes] {
@@ -945,6 +1044,132 @@ func TestNewResourceCache_ResourceScopesMixed(t *testing.T) {
 	// the namespace used by Pods/Deployments.
 	if _, ok := rc.nsFactories[ns]; !ok {
 		t.Errorf("expected nsFactories to contain %q, got keys %v", ns, mapKeys(rc.nsFactories))
+	}
+}
+
+func TestNewResourceCache_ResourceScopeNamespacesUnion(t *testing.T) {
+	const nsA, nsB, nsOther = "team-a", "team-b", "team-c"
+	client := fake.NewSimpleClientset(
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: nsA, UID: "pod-a"}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-b", Namespace: nsB, UID: "pod-b"}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-c", Namespace: nsOther, UID: "pod-c"}},
+	)
+
+	rc, err := NewResourceCache(CacheConfig{
+		Client: client,
+		ResourceScopes: map[string]ResourceScope{
+			Pods: {Enabled: true, Namespace: nsA},
+		},
+		ResourceScopeNamespaces: map[string][]string{
+			Pods: {nsA, nsB},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache failed: %v", err)
+	}
+	defer rc.Stop()
+
+	lister := rc.Pods()
+	if lister == nil {
+		t.Fatal("Pods lister should exist")
+	}
+	all, err := lister.List(labels.Everything())
+	if err != nil {
+		t.Fatalf("list all pods: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all pods = %d, want 2 from %s/%s (items=%v)", len(all), nsA, nsB, all)
+	}
+	for _, tc := range []struct {
+		namespace string
+		want      int
+	}{
+		{nsA, 1},
+		{nsB, 1},
+		{nsOther, 0},
+	} {
+		items, err := lister.Pods(tc.namespace).List(labels.Everything())
+		if err != nil {
+			t.Fatalf("list pods in %s: %v", tc.namespace, err)
+		}
+		if len(items) != tc.want {
+			t.Fatalf("pods in %s = %d, want %d", tc.namespace, len(items), tc.want)
+		}
+	}
+	if got := ListCountNamespaced(lister, []string{nsA, nsB}); got != 2 {
+		t.Fatalf("ListCountNamespaced = %d, want 2", got)
+	}
+	if rc.IsKindClusterWide(Pods) {
+		t.Fatal("multi-namespace scoped Pods must not report cluster-wide authority")
+	}
+	if got := rc.KindNamespaces(Pods); !slices.Equal(got, []string{nsA, nsB}) {
+		t.Fatalf("Pod informer namespaces = %v, want [%s %s]", got, nsA, nsB)
+	}
+	got := rc.KindNamespaces(Pods)
+	got[0] = "mutated"
+	if next := rc.KindNamespaces(Pods); !slices.Equal(next, []string{nsA, nsB}) {
+		t.Fatalf("caller mutation changed Pod informer namespaces: %v", next)
+	}
+}
+
+func TestUnionIndexer_ReadFanout(t *testing.T) {
+	const nsA, nsB = "team-a", "team-b"
+	mkIndexer := func(pods ...*corev1.Pod) cache.Indexer {
+		idx := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+		for _, p := range pods {
+			if err := idx.Add(p); err != nil {
+				t.Fatalf("seed indexer: %v", err)
+			}
+		}
+		return idx
+	}
+	podA := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: nsA, UID: "pod-a"}}
+	podB := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-b", Namespace: nsB, UID: "pod-b"}}
+	u := &unionIndexer{indexers: []cache.Indexer{mkIndexer(podA), mkIndexer(podB)}}
+
+	if got := len(u.List()); got != 2 {
+		t.Fatalf("List() = %d items, want 2", got)
+	}
+	if got := len(u.ListKeys()); got != 2 {
+		t.Fatalf("ListKeys() = %d, want 2", got)
+	}
+	for key, want := range map[string]bool{nsA + "/pod-a": true, nsB + "/pod-b": true, "other/pod-x": false} {
+		_, exists, err := u.GetByKey(key)
+		if err != nil {
+			t.Fatalf("GetByKey(%s): %v", key, err)
+		}
+		if exists != want {
+			t.Fatalf("GetByKey(%s) exists = %v, want %v", key, exists, want)
+		}
+	}
+	byNs, err := u.ByIndex(cache.NamespaceIndex, nsB)
+	if err != nil {
+		t.Fatalf("ByIndex: %v", err)
+	}
+	if len(byNs) != 1 || byNs[0].(*corev1.Pod).Name != "pod-b" {
+		t.Fatalf("ByIndex(%s) = %v, want [pod-b]", nsB, byNs)
+	}
+	if vals := u.ListIndexFuncValues(cache.NamespaceIndex); len(vals) != 2 {
+		t.Fatalf("ListIndexFuncValues = %v, want two namespaces", vals)
+	}
+}
+
+func TestUnionIndexer_WritesRejected(t *testing.T) {
+	u := &unionIndexer{indexers: []cache.Indexer{cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)}}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"}}
+	for name, err := range map[string]error{
+		"Add":     u.Add(pod),
+		"Update":  u.Update(pod),
+		"Delete":  u.Delete(pod),
+		"Replace": u.Replace(nil, ""),
+		"Resync":  u.Resync(),
+	} {
+		if err == nil {
+			t.Fatalf("%s on read-only union indexer returned nil error", name)
+		}
+	}
+	if got := len(u.List()); got != 0 {
+		t.Fatalf("rejected writes still stored %d items", got)
 	}
 }
 
@@ -1096,20 +1321,20 @@ func TestDynamicResourceCache_NamespaceFallbackIsPerGVR(t *testing.T) {
 		t.Fatalf("NewDynamicResourceCache failed: %v", err)
 	}
 
-	clusterScope, err := d.probeScope(clusterGVR, "")
+	clusterScopes, _, err := d.probeScopes(clusterGVR, "")
 	if err != nil {
 		t.Fatalf("cluster GVR probe failed: %v", err)
 	}
-	if clusterScope != "" {
-		t.Errorf("cluster GVR scope = %q, want cluster-wide", clusterScope)
+	if !reflect.DeepEqual(clusterScopes, []string{""}) {
+		t.Errorf("cluster GVR scopes = %q, want cluster-wide", clusterScopes)
 	}
 
-	nsScope, err := d.probeScope(namespacedGVR, "")
+	nsScopes, _, err := d.probeScopes(namespacedGVR, "")
 	if err != nil {
 		t.Fatalf("namespaced GVR probe failed: %v", err)
 	}
-	if nsScope != ns {
-		t.Errorf("namespaced GVR scope = %q, want %q", nsScope, ns)
+	if !reflect.DeepEqual(nsScopes, []string{ns}) {
+		t.Errorf("namespaced GVR scopes = %q, want [%q]", nsScopes, ns)
 	}
 }
 
@@ -1131,12 +1356,12 @@ func TestDynamicResourceCache_ForcedNamespaceScopesEveryGVR(t *testing.T) {
 		t.Fatalf("NewDynamicResourceCache failed: %v", err)
 	}
 
-	scope, err := d.probeScope(gvr, "")
+	scopes, _, err := d.probeScopes(gvr, "")
 	if err != nil {
 		t.Fatalf("forced namespace probe failed: %v", err)
 	}
-	if scope != ns {
-		t.Errorf("GVR scope = %q, want %q", scope, ns)
+	if !reflect.DeepEqual(scopes, []string{ns}) {
+		t.Errorf("GVR scopes = %q, want [%q]", scopes, ns)
 	}
 }
 
@@ -1162,18 +1387,18 @@ func TestDynamicResourceCache_ProbeScope_HonorsRequestedNamespace(t *testing.T) 
 	}
 
 	// Requesting the namespace the user can list scopes the informer there.
-	scope, err := d.probeScope(gvr, wantedNs)
+	scopes, _, err := d.probeScopes(gvr, wantedNs)
 	if err != nil {
-		t.Fatalf("probeScope(%q) failed: %v", wantedNs, err)
+		t.Fatalf("probeScopes(%q) failed: %v", wantedNs, err)
 	}
-	if scope != wantedNs {
-		t.Errorf("scope = %q, want %q", scope, wantedNs)
+	if !reflect.DeepEqual(scopes, []string{wantedNs}) {
+		t.Errorf("scopes = %q, want [%q]", scopes, wantedNs)
 	}
 
 	// With no requested namespace, it falls back to the configured fallback,
 	// which the user cannot list — so the probe is forbidden.
-	if _, err := d.probeScope(gvr, ""); !apierrors.IsForbidden(err) {
-		t.Errorf("probeScope(\"\") err = %v, want forbidden", err)
+	if _, _, err := d.probeScopes(gvr, ""); !apierrors.IsForbidden(err) {
+		t.Errorf("probeScopes(\"\") err = %v, want forbidden", err)
 	}
 }
 
@@ -1553,4 +1778,165 @@ func fakeDynamicForListAccess(
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}, "", nil)
 	})
 	return dyn
+}
+
+// The PR core for CRDs: cluster-wide denied but several fallback namespaces
+// granted → one scope per granted namespace, denied candidates skipped.
+func TestDynamicResourceCache_ProbeScopesFansOutAcrossFallbacks(t *testing.T) {
+	const nsA, nsB, nsDenied = "team-a", "team-b", "team-c"
+	gvr := schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgets"}
+	dyn := fakeDynamicForListAccess(t, map[schema.GroupVersionResource]string{
+		gvr: "WidgetList",
+	}, func(_ schema.GroupVersionResource, namespace string) bool {
+		return namespace == nsA || namespace == nsB
+	})
+
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{
+		DynamicClient:      dyn,
+		NamespaceFallbacks: []string{nsA, nsB, nsDenied},
+	})
+	if err != nil {
+		t.Fatalf("NewDynamicResourceCache failed: %v", err)
+	}
+
+	scopes, complete, err := d.probeScopes(gvr, "")
+	if err != nil {
+		t.Fatalf("probeScopes failed: %v", err)
+	}
+	if !reflect.DeepEqual(scopes, []string{nsA, nsB}) {
+		t.Fatalf("scopes = %v, want [%s %s]", scopes, nsA, nsB)
+	}
+	if !complete {
+		t.Fatal("healthy fanout walk must report complete")
+	}
+}
+
+// End-to-end: an all-namespaces read of a fallback-scoped GVR starts one
+// informer per granted namespace, unions their contents, and does not
+// re-probe on subsequent reads.
+func TestDynamicResourceCache_EnsureWatchingFansOutAndUnions(t *testing.T) {
+	const nsA, nsB, nsDenied = "team-a", "team-b", "team-c"
+	gvr := schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgets"}
+	dyn := fakeDynamicForListAccess(t, map[schema.GroupVersionResource]string{
+		gvr: "WidgetList",
+	}, func(_ schema.GroupVersionResource, namespace string) bool {
+		return namespace == nsA || namespace == nsB
+	})
+	for _, ns := range []string{nsA, nsB} {
+		obj := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "example.com/v1",
+			"kind":       "Widget",
+			"metadata":   map[string]any{"name": "w-" + ns, "namespace": ns},
+		}}
+		if _, err := dyn.Resource(gvr).Namespace(ns).Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed %s: %v", ns, err)
+		}
+	}
+
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{
+		DynamicClient:      dyn,
+		NamespaceFallbacks: []string{nsA, nsB, nsDenied},
+	})
+	if err != nil {
+		t.Fatalf("NewDynamicResourceCache failed: %v", err)
+	}
+
+	items, err := d.ListBlocking(gvr, "", 3*time.Second)
+	if err != nil {
+		t.Fatalf("ListBlocking failed: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("union read = %d items, want 2 (one per granted namespace)", len(items))
+	}
+
+	if !d.hasCoveringInformer(gvr, "") {
+		t.Fatal("all-namespaces scope not marked resolved — every read would re-probe cluster + candidates")
+	}
+	if n, err := d.Count(gvr, nil); err != nil || n != 2 {
+		t.Fatalf("Count = %d, %v; want 2", n, err)
+	}
+}
+
+// Pins the unavailable-over-partial contract: a fanout GVR whose informers
+// exist only from namespace-specific reads (all-namespaces walk never
+// settled) must refuse an all-namespace count rather than sum the subset —
+// and must start counting once an all-namespaces read settles the walk.
+func TestDynamicResourceCache_CountRefusesUnsettledFanout(t *testing.T) {
+	const nsA, nsB = "team-a", "team-b"
+	gvr := schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgets"}
+	dyn := fakeDynamicForListAccess(t, map[schema.GroupVersionResource]string{
+		gvr: "WidgetList",
+	}, func(_ schema.GroupVersionResource, namespace string) bool {
+		return namespace == nsA || namespace == nsB
+	})
+	for _, ns := range []string{nsA, nsB} {
+		obj := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "example.com/v1",
+			"kind":       "Widget",
+			"metadata":   map[string]any{"name": "w-" + ns, "namespace": ns},
+		}}
+		if _, err := dyn.Resource(gvr).Namespace(ns).Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed %s: %v", ns, err)
+		}
+	}
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{
+		DynamicClient:      dyn,
+		NamespaceFallbacks: []string{nsA, nsB},
+	})
+	if err != nil {
+		t.Fatalf("NewDynamicResourceCache failed: %v", err)
+	}
+
+	// Namespace-specific read only — informer for nsA exists, walk unsettled.
+	if _, err := d.ListBlocking(gvr, nsA, 3*time.Second); err != nil {
+		t.Fatalf("ListBlocking(%s): %v", nsA, err)
+	}
+	if n, err := d.Count(gvr, nil); err == nil {
+		t.Fatalf("all-namespace count on unsettled fanout returned %d, want error", n)
+	}
+
+	// All-namespaces read settles the walk; the count becomes authoritative.
+	if _, err := d.ListBlocking(gvr, "", 3*time.Second); err != nil {
+		t.Fatalf("ListBlocking(all): %v", err)
+	}
+	if n, err := d.Count(gvr, nil); err != nil || n != 2 {
+		t.Fatalf("settled count = %d, %v; want 2", n, err)
+	}
+}
+
+// Legacy single-fallback regression: with exactly one configured fallback
+// namespace, an informer created by an explicit-namespace read fully covers
+// the configured scope — Count(gvr, nil) must work without ever seeing an
+// all-namespaces read.
+func TestDynamicResourceCache_SingleFallbackCountsWithoutAllNamespacesRead(t *testing.T) {
+	const ns = "team-a"
+	gvr := schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgets"}
+	dyn := fakeDynamicForListAccess(t, map[schema.GroupVersionResource]string{
+		gvr: "WidgetList",
+	}, func(_ schema.GroupVersionResource, namespace string) bool {
+		return namespace == ns
+	})
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "example.com/v1",
+		"kind":       "Widget",
+		"metadata":   map[string]any{"name": "w-1", "namespace": ns},
+	}}
+	if _, err := dyn.Resource(gvr).Namespace(ns).Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{
+		DynamicClient:     dyn,
+		NamespaceFallback: ns,
+	})
+	if err != nil {
+		t.Fatalf("NewDynamicResourceCache failed: %v", err)
+	}
+
+	// Explicit-namespace read only — never an all-namespaces read.
+	if _, err := d.ListBlocking(gvr, ns, 3*time.Second); err != nil {
+		t.Fatalf("ListBlocking(%s): %v", ns, err)
+	}
+	if n, err := d.Count(gvr, nil); err != nil || n != 1 {
+		t.Fatalf("single-fallback Count = %d, %v; want 1", n, err)
+	}
 }

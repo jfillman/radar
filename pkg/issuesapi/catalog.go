@@ -59,7 +59,7 @@ var catalogOrder = []Category{
 	CategoryCrashLoop, CategoryOOMKilled, CategoryLivenessProbeFail, CategoryReadinessFailed,
 	CategoryWorkloadDegraded, CategoryHighRestart, CategoryJobFailed, CategoryCronJobFailed,
 	// Configuration
-	CategoryMissingConfigRef, CategoryPDBBlocksEvictions, CategorySecretSyncFailed,
+	CategoryMissingConfigRef, CategoryInvalidConfiguration, CategoryPDBBlocksEvictions, CategorySecretSyncFailed,
 	// Networking
 	CategoryServiceNoEndpoints, CategoryIngressBackendMissing, CategoryLoadBalancerPending,
 	CategoryGatewayNotReady, CategoryGatewayRouteInvalid, CategoryDNSFailure,
@@ -75,6 +75,7 @@ var catalogOrder = []Category{
 	CategoryNodeProvisioningFail, CategoryCrossplaneReconcile, CategoryOperatorConditionFail,
 	CategoryGitOpsSyncFailed, CategoryGitOpsRenderFailed, CategoryGitOpsSpecInvalid,
 	CategoryGitOpsOperationFailed, CategoryGitOpsOutOfSync, CategoryGitOpsHealthDegraded,
+	CategoryGitOpsStale,
 	CategoryHelmReleaseFailed, CategoryWebhookBackendDown, CategoryControlPlaneNotReady, CategoryMachineNotReady,
 }
 
@@ -107,9 +108,10 @@ var categoryDescription = map[Category]string{
 	CategoryJobFailed:         "A Job failed — it exhausted its retries (backoffLimit) or hit its deadline — or has been running too long with no completions.",
 	CategoryCronJobFailed:     "A CronJob's recent runs are failing, or its schedule isn't producing successful jobs.",
 	// Configuration
-	CategoryMissingConfigRef:   "A pod references a ConfigMap, Secret, or volume that doesn't exist, so it can't start.",
-	CategoryPDBBlocksEvictions: "A PodDisruptionBudget is blocking evictions — node drains and upgrades can't make progress.",
-	CategorySecretSyncFailed:   "An external secret sync (e.g. External Secrets Operator) failed to materialize a Secret.",
+	CategoryMissingConfigRef:     "A pod references a ConfigMap, Secret, or volume that doesn't exist, so it can't start.",
+	CategoryInvalidConfiguration: "A workload contains contradictory or redundant configuration that can make the application behave differently from its manifest's apparent intent.",
+	CategoryPDBBlocksEvictions:   "A PodDisruptionBudget is blocking evictions — node drains and upgrades can't make progress.",
+	CategorySecretSyncFailed:     "An external secret sync (e.g. External Secrets Operator) failed to materialize a Secret.",
 	// Networking
 	CategoryServiceNoEndpoints:    "A Service has no ready endpoints — its selector matches no ready pods, so traffic to it fails.",
 	CategoryIngressBackendMissing: "An Ingress points at a Service that doesn't exist — incoming requests get 503s.",
@@ -144,6 +146,7 @@ var categoryDescription = map[Category]string{
 	CategoryGitOpsOperationFailed: "A GitOps sync ran but failed — a resource apply, install, or upgrade errored.",
 	CategoryGitOpsOutOfSync:       "Live state has drifted from Git — the GitOps app is OutOfSync.",
 	CategoryGitOpsHealthDegraded:  "A GitOps app's managed resources are unhealthy or missing.",
+	CategoryGitOpsStale:           "A GitOps app's sync/drift verdict is frozen — the application-controller is down or backed up re-comparing.",
 	CategoryHelmReleaseFailed:     "A native Helm release is failed or stuck pending — its latest install, upgrade, or rollback did not complete cleanly.",
 	CategoryWebhookBackendDown:    "An admission webhook points at a backend Service that doesn't exist — matching requests are blocked (failurePolicy=Fail) or silently bypassed (Ignore).",
 	CategoryControlPlaneNotReady:  "A managed control plane (Cluster API) isn't ready — the cluster's control plane is unhealthy or still provisioning.",

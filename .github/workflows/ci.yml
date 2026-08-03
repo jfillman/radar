@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26'
 
@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26'
 
@@ -68,6 +68,10 @@ jobs:
 
       - name: Type check
         run: npm run tsc
+        working-directory: web
+
+      - name: Test
+        run: npm run test
         working-directory: web
 
       - name: Lint
@@ -136,6 +140,26 @@ jobs:
             --set cloud.url=wss://cloud.example/agent \
             --set cloud.clusterName=test 2>/dev/null; then
             echo "ERROR: helm template should have failed with no token set"
+            exit 1
+          fi
+
+      - name: Render Argo CD integration with inline token
+        run: |
+          helm template radar deploy/helm/radar \
+            --set argocd.token=argo_deadbeef \
+            --set argocd.url=https://argocd.example.com > /dev/null
+
+      - name: Render Argo CD integration with existingSecret
+        run: |
+          helm template radar deploy/helm/radar \
+            --set argocd.existingSecret=my-argo-token > /dev/null
+
+      - name: Reject Argo CD token and existingSecret together
+        run: |
+          if helm template radar deploy/helm/radar \
+            --set argocd.token=argo_deadbeef \
+            --set argocd.existingSecret=my-argo-token 2>/dev/null; then
+            echo "ERROR: helm template should have failed with both token and existingSecret set"
             exit 1
           fi
 

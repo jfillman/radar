@@ -50,7 +50,7 @@
         "podExec": { "type": "boolean", "description": "Allow pod exec (terminal feature)." },
         "podLogs": { "type": "boolean" },
         "portForward": { "type": "boolean" },
-        "selfUpgrade": { "type": "boolean", "description": "Allow Radar Cloud to trigger in-app upgrades." },
+        "selfUpgrade": { "type": "boolean", "description": "Allow Radar Cloud organization owners to trigger in-app upgrades." },
         "traffic": { "type": "boolean", "description": "Read access to hubble-relay-client-certs for Hubble TLS." },
         "metrics": { "type": "boolean", "description": "Read metrics.k8s.io for CPU/memory widgets." },
         "crdGroups": {
@@ -157,6 +157,34 @@
         }
       }
     },
+    "httpRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "apiVersion": { "type": "string", "minLength": 1 },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+        "parentRefs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["name"],
+            "properties": { "name": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "hostnames": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "defaultTimeout": { "type": "string" },
+        "rules": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": true }
+        }
+      }
+    },
     "resources": { "type": "object" },
     "timeline": {
       "type": "object",
@@ -238,9 +266,20 @@
             "viewer": { "type": "boolean" },
             "ownerClusterRole": { "type": "string" },
             "memberClusterRole": { "type": "string" },
-            "viewerClusterRole": { "type": "string" }
+            "viewerClusterRole": { "type": "string" },
+            "clusterScopedRead": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "viewer": { "type": "boolean" },
+                "member": { "type": "boolean" },
+                "owner": { "type": "boolean" }
+              }
+            },
+            "nodeOps": { "type": "boolean" }
           }
-        }
+        },
+        "insecureSkipVerify": { "type": "boolean" }
       }
     },
     "mcp": {
@@ -263,6 +302,17 @@
           "type": "object",
           "additionalProperties": { "type": "string" }
         }
+      }
+    },
+    "argocd": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token": { "type": "string", "description": "Inline Argo CD API token (prefer existingSecret in production)." },
+        "existingSecret": { "type": "string", "description": "Name of a Secret holding the Argo CD token." },
+        "existingSecretKey": { "type": "string", "description": "Key within existingSecret holding the token." },
+        "url": { "type": "string", "description": "Explicit argocd-server URL; blank auto-discovers in-cluster." },
+        "insecureTls": { "type": "boolean", "description": "Skip TLS verification for a self-signed argocd-server." }
       }
     },
     "persistence": {
@@ -297,6 +347,16 @@
     "initContainers": {
       "type": "array",
       "description": "Init containers to run before the main container.",
+      "items": { "type": "object" }
+    },
+    "extraVolumes": {
+      "type": "array",
+      "description": "Additional volumes to add to the pod.",
+      "items": { "type": "object" }
+    },
+    "extraVolumeMounts": {
+      "type": "array",
+      "description": "Additional volume mounts for the main container.",
       "items": { "type": "object" }
     },
     "probes": {

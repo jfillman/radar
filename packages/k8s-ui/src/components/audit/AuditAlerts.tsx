@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { ClipboardCheck, ChevronRight, ShieldAlert, AlertTriangle, ArrowRight } from 'lucide-react'
 import { clsx } from 'clsx'
-import { SEVERITY_TEXT, BP_CATEGORY_BADGE, DEFAULT_BADGE_COLOR } from '../../utils/badge-colors'
+import { BP_CATEGORY_BADGE, DEFAULT_BADGE_COLOR } from '../../utils/badge-colors'
+import { SEVERITY_TEXT_CLASS } from '../checks/severity'
 
 export interface AuditFinding {
   kind: string
@@ -13,6 +14,7 @@ export interface AuditFinding {
   name: string
   checkID: string
   category: string
+  /** Raw detector compatibility value: danger renders as High, warning as Medium. */
   severity: string
   message: string
   /** Cluster context — set when findings come from multiple clusters
@@ -37,24 +39,25 @@ export function AuditAlerts({ findings, onViewAll }: AuditAlertsProps) {
 
   if (findings.length === 0) return null
 
-  const dangers = findings.filter(f => f.severity === 'danger').length
-  const warnings = findings.filter(f => f.severity === 'warning').length
+  const highCount = findings.filter(f => f.severity === 'danger').length
+  const mediumCount = findings.filter(f => f.severity === 'warning').length
 
   return (
-    <div className="border-b-subtle pb-4 last:border-0">
+    <section className="rounded-lg border border-theme-border bg-theme-surface p-4 shadow-theme-sm">
       <button
+        type="button"
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 w-full text-left mb-2 hover:text-theme-text-primary transition-colors"
+        className="flex w-full items-center gap-2 rounded-md text-left transition-colors hover:text-theme-text-primary"
       >
         <ChevronRight className={clsx('w-4 h-4 text-theme-text-tertiary transition-transform duration-200', expanded && 'rotate-90')} />
         <ClipboardCheck className="w-4 h-4 text-theme-text-secondary" />
-        <span className="text-sm font-medium text-theme-text-secondary">Audit Findings</span>
+        <span className="text-sm font-semibold text-theme-text-primary">Audit Findings</span>
         <div className="flex items-center gap-2 ml-1">
-          {dangers > 0 && (
-            <span className={clsx('text-xs font-medium tabular-nums', SEVERITY_TEXT.error)}>{dangers} critical</span>
+          {highCount > 0 && (
+            <span className={clsx('text-xs font-medium tabular-nums', SEVERITY_TEXT_CLASS.high)}>{highCount} high</span>
           )}
-          {warnings > 0 && (
-            <span className={clsx('text-xs font-medium tabular-nums', SEVERITY_TEXT.warning)}>{warnings} warning</span>
+          {mediumCount > 0 && (
+            <span className={clsx('text-xs font-medium tabular-nums', SEVERITY_TEXT_CLASS.medium)}>{mediumCount} medium</span>
           )}
         </div>
       </button>
@@ -64,27 +67,30 @@ export function AuditAlerts({ findings, onViewAll }: AuditAlertsProps) {
         style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
       >
         <div className="overflow-hidden">
-          <div className="pl-6 pt-1 flex flex-col gap-0.5">
+          <div className="flex flex-col gap-0.5 pt-3">
             {findings.map((f, i) => {
-              const isDanger = f.severity === 'danger'
+              const isHigh = f.severity === 'danger'
               return (
                 <div key={`${f.checkID}-${i}`} className="flex items-start gap-2 py-1">
-                  {isDanger ? (
-                    <ShieldAlert className={clsx('w-3.5 h-3.5 shrink-0 mt-0.5', SEVERITY_TEXT.error)} />
+                  {isHigh ? (
+                    <ShieldAlert className={clsx('w-3.5 h-3.5 shrink-0 mt-0.5', SEVERITY_TEXT_CLASS.high)} />
                   ) : (
-                    <AlertTriangle className={clsx('w-3.5 h-3.5 shrink-0 mt-0.5', SEVERITY_TEXT.warning)} />
+                    <AlertTriangle className={clsx('w-3.5 h-3.5 shrink-0 mt-0.5', SEVERITY_TEXT_CLASS.medium)} />
                   )}
-                  <span className="text-xs text-theme-text-secondary flex-1">{f.message}</span>
-                  <span className={clsx('badge-sm text-[10px] shrink-0', BP_CATEGORY_BADGE[f.category] || DEFAULT_BADGE_COLOR)}>
-                    {f.category}
-                  </span>
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="text-xs text-theme-text-secondary">{f.message}</span>
+                    <span className={clsx('badge-sm text-[10px] shrink-0', BP_CATEGORY_BADGE[f.category] || DEFAULT_BADGE_COLOR)}>
+                      {f.category}
+                    </span>
+                  </div>
                 </div>
               )
             })}
             {onViewAll && (
               <button
+                type="button"
                 onClick={(e) => { e.stopPropagation(); onViewAll() }}
-                className="flex items-center gap-1 text-xs text-skyhook-500 hover:text-skyhook-400 mt-1 py-1 transition-colors"
+                className="mt-1 flex items-center gap-1 py-1 text-xs text-accent-text transition-colors hover:text-accent"
               >
                 View all findings
                 <ArrowRight className="w-3 h-3" />
@@ -93,6 +99,6 @@ export function AuditAlerts({ findings, onViewAll }: AuditAlertsProps) {
           </div>
         </div>
       </div>
-    </div>
+    </section>
   )
 }

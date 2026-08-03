@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import {
   RefreshCw,
   Terminal,
@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { createTwoFilesPatch } from 'diff'
 import { clsx } from 'clsx'
+import { classifyDiffLine } from './UnifiedDiff'
 import { Tooltip } from '../ui/Tooltip'
 import { ForceDeleteConfirmDialog, type CascadeDependent } from '../ui/ForceDeleteConfirmDialog'
 import { ConfirmDialog } from '../ui/ConfirmDialog'
@@ -150,6 +151,12 @@ export function ResourceActionsBar({
   onDrainNode, isDrainingNode,
 }: ResourceActionsBarProps) {
   const kind = resource.kind.toLowerCase()
+  const canOpenWorkloadLogs = Boolean(
+    canViewLogs &&
+    !hideLogs &&
+    openWorkloadLogs &&
+    ['deployments', 'statefulsets', 'daemonsets', 'jobs', 'workflows', 'cronjobs', 'cronworkflows', 'workflowtemplates', 'clusterworkflowtemplates', 'scaledjobs'].includes(kind)
+  )
 
   // Delete confirmation state
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
@@ -362,33 +369,21 @@ export function ResourceActionsBar({
             </button>
           )}
           {isRollbackKind && onRollback && (
-            <button
-              onClick={() => setShowRevisions(true)}
-              disabled={!hasMultipleRevisions}
-              title={hasMultipleRevisions ? 'View revision history and rollback' : 'Only one revision exists'}
-              className={clsx(
-                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors",
-                hasMultipleRevisions
-                  ? "text-white bg-amber-600 hover:bg-amber-700"
-                  : "text-theme-text-disabled bg-theme-elevated"
-              )}
-            >
-              <History className="w-3.5 h-3.5" />
-              Rollback
-            </button>
-          )}
-          {canViewLogs && !hideLogs && ['deployments', 'statefulsets', 'daemonsets'].includes(kind) && openWorkloadLogs && (
-            <button
-              onClick={() => openWorkloadLogs({
-                namespace: resource.namespace,
-                workloadKind: kind,
-                workloadName: resource.name,
-              })}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
-            >
-              <FileText className="w-3.5 h-3.5" />
-              Logs
-            </button>
+            <Tooltip content={hasMultipleRevisions ? 'View revision history and rollback' : 'Only one revision exists'} delay={150}>
+              <button
+                onClick={() => setShowRevisions(true)}
+                disabled={!hasMultipleRevisions}
+                className={clsx(
+                  "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors",
+                  hasMultipleRevisions
+                    ? "text-white bg-amber-600 hover:bg-amber-700"
+                    : "text-theme-text-disabled bg-theme-elevated"
+                )}
+              >
+                <History className="w-3.5 h-3.5" />
+                Rollback
+              </button>
+            </Tooltip>
           )}
         </>
       )}
@@ -473,8 +468,22 @@ export function ResourceActionsBar({
         />
       )}
 
+      {canOpenWorkloadLogs && (
+        <button
+          onClick={() => openWorkloadLogs?.({
+            namespace: resource.namespace,
+            workloadKind: kind,
+            workloadName: resource.name,
+          })}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
+        >
+          <FileText className="w-3.5 h-3.5" />
+          Logs
+        </button>
+      )}
+
       {/* Job logs */}
-      {kind === 'jobs' && onCopyCommand && (
+      {kind === 'jobs' && onCopyCommand && (!canViewLogs || !openWorkloadLogs) && (
         <button
           onClick={(e) => onCopyCommand(
             `kubectl logs job/${resource.name} -n ${resource.namespace} -f`,
@@ -488,24 +497,41 @@ export function ResourceActionsBar({
         </button>
       )}
 
+      {kind === 'workflows' && onCopyCommand && (!canViewLogs || !openWorkloadLogs) && (
+        <button
+          onClick={(e) => onCopyCommand(
+            `argo logs ${resource.name} -n ${resource.namespace}`,
+            'Logs command copied',
+            e
+          )}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
+        >
+          <FileText className="w-3.5 h-3.5" />
+          Logs
+        </button>
+      )}
+
       {/* Spacer pushes universal actions to the right */}
       <div className="flex-1" />
 
-      {/* Universal actions (right-aligned) */}
+      {/* Universal actions (right-aligned). The AI/Diagnose action is NOT here — it
+          lives in the detail header chrome (see WorkloadView), set apart from these
+          imperative ops. */}
       {onToggleYaml && (
-        <button
-          onClick={onToggleYaml}
-          className={clsx(
-            'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
-            showYaml
-              ? 'btn-brand'
-              : 'text-theme-text-secondary hover:text-theme-text-primary border border-theme-border-light hover:bg-theme-elevated'
-          )}
-          title="Toggle YAML view"
-        >
-          <FileCode2 className="w-3.5 h-3.5" />
-          YAML
-        </button>
+        <Tooltip content="Toggle YAML view" delay={150}>
+          <button
+            onClick={onToggleYaml}
+            className={clsx(
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
+              showYaml
+                ? 'btn-brand'
+                : 'text-theme-text-secondary hover:text-theme-text-primary border border-theme-border-light hover:bg-theme-elevated'
+            )}
+          >
+            <FileCode2 className="w-3.5 h-3.5" />
+            YAML
+          </button>
+        </Tooltip>
       )}
 
       {(onCompareTo || onCompareAcrossClusters) && (
@@ -669,35 +695,37 @@ function FluxActions({ resource, data, onReconcile, isReconciling, onSyncWithSou
   return (
     <>
       {onReconcile && (
-        <button
-          onClick={() => onReconcile({
-            kind: resource.kind,
-            namespace: resource.namespace,
-            name: resource.name,
-          })}
-          disabled={isReconciling || isSuspended}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand rounded-lg"
-          title={isSuspended ? 'Cannot reconcile while suspended' : 'Trigger reconciliation'}
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isReconciling ? 'animate-spin' : ''}`} />
-          {isReconciling ? 'Reconciling...' : 'Reconcile'}
-        </button>
+        <Tooltip content={isSuspended ? 'Cannot reconcile while suspended' : 'Trigger reconciliation'} delay={150}>
+          <button
+            onClick={() => onReconcile({
+              kind: resource.kind,
+              namespace: resource.namespace,
+              name: resource.name,
+            })}
+            disabled={isReconciling || isSuspended}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand rounded-lg"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isReconciling ? 'animate-spin' : ''}`} />
+            {isReconciling ? 'Reconciling...' : 'Reconcile'}
+          </button>
+        </Tooltip>
       )}
 
       {hasSource && onSyncWithSource && (
-        <button
-          onClick={() => onSyncWithSource({
-            kind: resource.kind,
-            namespace: resource.namespace,
-            name: resource.name,
-          })}
-          disabled={isSyncing || isSuspended}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors disabled:opacity-50"
-          title={isSuspended ? 'Cannot sync while suspended' : 'Fetch latest from source, then reconcile'}
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-          {isSyncing ? 'Syncing...' : 'Sync with Source'}
-        </button>
+        <Tooltip content={isSuspended ? 'Cannot sync while suspended' : 'Fetch latest from source, then reconcile'} delay={150}>
+          <button
+            onClick={() => onSyncWithSource({
+              kind: resource.kind,
+              namespace: resource.namespace,
+              name: resource.name,
+            })}
+            disabled={isSyncing || isSuspended}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+            {isSyncing ? 'Syncing...' : 'Sync with Source'}
+          </button>
+        </Tooltip>
       )}
 
       {isSuspended ? (
@@ -751,34 +779,36 @@ function ArgoActions({ resource, data, onSync, isSyncing, onRefresh, isRefreshin
   return (
     <>
       {onSync && (
-        <button
-          onClick={() => onSync({
-            namespace: resource.namespace,
-            name: resource.name,
-          })}
-          disabled={isSyncing}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand rounded-lg"
-          title="Sync application"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-          {isSyncing ? 'Syncing...' : 'Sync'}
-        </button>
+        <Tooltip content="Sync application" delay={150}>
+          <button
+            onClick={() => onSync({
+              namespace: resource.namespace,
+              name: resource.name,
+            })}
+            disabled={isSyncing}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand rounded-lg"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+            {isSyncing ? 'Syncing...' : 'Sync'}
+          </button>
+        </Tooltip>
       )}
 
       {onRefresh && (
-        <button
-          onClick={() => onRefresh({
-            namespace: resource.namespace,
-            name: resource.name,
-            hard: false,
-          })}
-          disabled={isRefreshing}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
-          title="Refresh (re-read from git)"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-          {isRefreshing ? 'Refreshing...' : 'Refresh'}
-        </button>
+        <Tooltip content="Refresh (re-read from git)" delay={150}>
+          <button
+            onClick={() => onRefresh({
+              namespace: resource.namespace,
+              name: resource.name,
+              hard: false,
+            })}
+            disabled={isRefreshing}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+            {isRefreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+        </Tooltip>
       )}
 
       {hasAutomatedSync ? (
@@ -817,6 +847,35 @@ function ArgoActions({ resource, data, onSync, isSyncing, onRefresh, isRefreshin
 // ============================================================================
 // REVISION HISTORY DIALOG
 // ============================================================================
+
+function RevisionImage({ image, displayImage }: { image: string; displayImage: string }) {
+  const ref = useRef<HTMLSpanElement>(null)
+  const [isTruncated, setIsTruncated] = useState(false)
+
+  useEffect(() => {
+    const element = ref.current
+    if (!element) return
+
+    const measure = () => setIsTruncated(element.scrollWidth > element.clientWidth)
+    measure()
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [displayImage])
+
+  return (
+    <Tooltip
+      content={image}
+      delay={300}
+      disabled={!isTruncated}
+      preserveWrapperWhenDisabled
+      wrapperClassName="w-full min-w-0"
+    >
+      <span ref={ref} className="block truncate">{displayImage}</span>
+    </Tooltip>
+  )
+}
 
 export function RevisionHistoryDialog({ kind, namespace, name, open, onClose, revisions, isLoading, error, onRollback, isRollingBack }: {
   kind: string
@@ -878,10 +937,7 @@ export function RevisionHistoryDialog({ kind, namespace, name, open, onClose, re
       open={open}
       onClose={handleClose}
       closable={!isRollingBack}
-      className={clsx(
-        "flex flex-col",
-        diffRevision ? "max-w-5xl w-full max-h-[85vh]" : "max-w-lg w-full"
-      )}
+      className="flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-5xl flex-col"
     >
       <div className="flex items-center justify-between p-4 border-b border-theme-border shrink-0">
         <div className="flex items-center gap-2">
@@ -894,17 +950,20 @@ export function RevisionHistoryDialog({ kind, namespace, name, open, onClose, re
             </span>
           )}
         </div>
-        <button
-          onClick={handleClose}
-          disabled={isRollingBack}
-          className="p-1 text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded disabled:opacity-50"
-        >
-          <X className="w-5 h-5" />
-        </button>
+        <Tooltip content="Close" delay={150}>
+          <button
+            onClick={handleClose}
+            disabled={isRollingBack}
+            aria-label="Close revision history"
+            className="p-1 text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded disabled:opacity-50"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </Tooltip>
       </div>
 
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <div className={clsx("p-4 overflow-y-auto", diffRevision ? "max-h-48 shrink-0" : "max-h-80")}>
+        <div className={clsx("min-h-0 overflow-x-hidden overflow-y-auto p-4", diffRevision ? "max-h-48 shrink-0" : "max-h-[65vh]")}>
           {isLoading && (
             <div className="flex items-center justify-center py-8 text-theme-text-secondary text-sm">
               Loading revisions…
@@ -924,7 +983,13 @@ export function RevisionHistoryDialog({ kind, namespace, name, open, onClose, re
           )}
 
           {revisions && revisions.length > 0 && (
-            <table className="w-full text-sm">
+            <table className="w-full table-fixed text-sm">
+              <colgroup>
+                <col className="w-16" />
+                <col />
+                <col className="w-24" />
+                <col className="w-44" />
+              </colgroup>
               <thead>
                 <tr className="text-theme-text-secondary text-left text-xs uppercase tracking-wider">
                   <th className="pb-2 pr-3 font-medium">Rev</th>
@@ -945,28 +1010,29 @@ export function RevisionHistoryDialog({ kind, namespace, name, open, onClose, re
                     <td className="py-2 pr-3 text-theme-text-primary font-mono">
                       #{rev.number}
                     </td>
-                    <td className="py-2 pr-3 text-theme-text-secondary font-mono truncate max-w-[180px]" title={rev.image}>
-                      {getImageTag(rev.image)}
+                    <td className="min-w-0 py-2 pr-3 text-theme-text-secondary font-mono">
+                      <RevisionImage image={rev.image} displayImage={getImageTag(rev.image)} />
                     </td>
                     <td className="py-2 pr-3 text-theme-text-secondary whitespace-nowrap">
                       {formatTimeAgo(rev.createdAt)}
                     </td>
                     <td className="py-2 text-right">
                       <div className="flex items-center gap-1 justify-end">
-                        {!rev.isCurrent && rev.template && currentRevision?.template && (
-                          <button
-                            onClick={() => setDiffRevision(diffRevision === rev.number ? null : rev.number)}
-                            className={clsx(
-                              "px-2 py-0.5 text-xs font-medium rounded transition-colors flex items-center gap-1",
-                              diffRevision === rev.number
-                                ? "bg-blue-500/20 text-blue-400 border border-blue-400/50"
-                                : "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 border border-transparent"
-                            )}
-                            title={`Compare with current revision`}
-                          >
-                            <GitCompare className="w-3 h-3" />
-                            Diff
-                          </button>
+                        {!rev.isCurrent && confirmRevision !== rev.number && rev.template && currentRevision?.template && (
+                          <Tooltip content="Compare with current revision" delay={150}>
+                            <button
+                              onClick={() => setDiffRevision(diffRevision === rev.number ? null : rev.number)}
+                              className={clsx(
+                                "px-2 py-0.5 text-xs font-medium rounded transition-colors flex items-center gap-1",
+                                diffRevision === rev.number
+                                  ? "bg-blue-500/20 text-blue-400 border border-blue-400/50"
+                                  : "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 border border-transparent"
+                              )}
+                            >
+                              <GitCompare className="w-3 h-3" />
+                              Diff
+                            </button>
+                          </Tooltip>
                         )}
                         {rev.isCurrent ? (
                           <span className="badge status-healthy">
@@ -1092,9 +1158,7 @@ function RevisionDiffView({ currentTemplate, selectedTemplate, currentRevision, 
         {hasChanges ? (
           <pre className="text-xs font-mono p-0 m-0">
             {diffLines.map((line, index) => {
-              const isAddition = line.startsWith('+') && !line.startsWith('+++')
-              const isDeletion = line.startsWith('-') && !line.startsWith('---')
-              const isHeader = line.startsWith('@@') || line.startsWith('---') || line.startsWith('+++')
+              const { isAddition, isRemoval: isDeletion, isHeader } = classifyDiffLine(line)
 
               return (
                 <div

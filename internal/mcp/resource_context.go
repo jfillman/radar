@@ -1,15 +1,16 @@
 package mcp
 
 import (
+	"context"
 	"sort"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
-	"github.com/skyhook-io/radar/internal/audit"
+	"github.com/skyhook-io/radar/internal/auditcontext"
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
-	bpaudit "github.com/skyhook-io/radar/pkg/audit"
 	"github.com/skyhook-io/radar/pkg/policyreports"
 	"github.com/skyhook-io/radar/pkg/resourcecontext"
 	topo "github.com/skyhook-io/radar/pkg/topology"
@@ -65,7 +66,7 @@ func (l mcpServiceBackendLookup) PodsForServiceSelector(namespace string, select
 // Pascal-singular kind required: the composer's Filters.Kinds matcher
 // case-folds both sides but doesn't plural-to-singular convert. Callers
 // pass canonicalKind from obj's TypeMeta.
-func computeMCPIssueSummary(cache *k8s.ResourceCache, group, kind, namespace, name string) *resourcecontext.IssueSummary {
+func computeMCPIssueSummary(ctx context.Context, cache *k8s.ResourceCache, group, kind, namespace, name string) *resourcecontext.IssueSummary {
 	if cache == nil {
 		return nil
 	}
@@ -73,15 +74,16 @@ func computeMCPIssueSummary(cache *k8s.ResourceCache, group, kind, namespace, na
 	if provider == nil {
 		return nil
 	}
-	var namespaces []string
-	if namespace != "" {
-		namespaces = []string{namespace}
-	}
+	namespaces := issueNamespacesForResource(namespace)
 	// RelatedIssues is owner-aware and uncapped: get_resource on a workload
 	// surfaces the GROUPED issues its pods are evidence for (was empty — the
 	// old flat-by-exact-resource match looked for Kind=Deployment rows, but the
 	// evidence is Kind=Pod), and on a pod past the inline-Members cap too.
-	matched := issues.RelatedIssues(provider, namespaces, group, kind, namespace, name)
+	matched := issues.RelatedIssues(provider, issues.RelatedIssueOptions{
+		Namespaces:           namespaces,
+		CanReadClusterScoped: issueClusterScopedAccess(ctx),
+		CanReadRelated:       issueRelatedResourceAccess(ctx),
+	}, group, kind, namespace, name)
 	if len(matched) == 0 {
 		return nil
 	}
@@ -105,69 +107,45 @@ func computeMCPIssueSummary(cache *k8s.ResourceCache, group, kind, namespace, na
 	}
 }
 
-// computeMCPAuditSummary looks up audit findings for the subject resource
-// via the group-aware (group, Kind, ns, name) key. Mirrors the REST
-// handler's computeAuditSummaryForResource.
-//
-// kind MUST be Pascal singular — the audit check runner writes that into
-// Finding.Kind, and Finding.Group is populated by audit.buildResults via
-// the built-in (Kind→Group) table, so the lookup keys correctly.
-func computeMCPAuditSummary(cache *k8s.ResourceCache, group, kind, namespace, name string) *resourcecontext.AuditSummary {
-	if cache == nil || kind == "" {
+func issueNamespacesForResource(namespace string) []string {
+	if namespace == "" {
 		return nil
 	}
-	var namespaces []string
-	if namespace != "" {
-		namespaces = []string{namespace}
-	}
-	results := audit.RunFromCache(cache, namespaces, nil)
-	if results == nil || len(results.Findings) == 0 {
-		return nil
-	}
-	idx := bpaudit.IndexByResource(results.Findings)
-	match := idx[bpaudit.ResourceKey(group, kind, namespace, name)]
-	if len(match) == 0 {
-		return nil
-	}
+	return []string{namespace}
+}
 
-	sort.Slice(match, func(i, j int) bool {
-		ri, rj := mcpAuditSeverityRank(match[i].Severity), mcpAuditSeverityRank(match[j].Severity)
-		if ri != rj {
-			return ri > rj
+// issueClusterScopedAccess mirrors the issues_list gate so every composer entry
+// point applies the same cluster-scoped authorization — both to the rows
+// themselves and to the cluster-scoped state (NodePool specs) folded into them.
+func issueClusterScopedAccess(ctx context.Context) func(kind, group string) bool {
+	return func(kind, group string) bool {
+		return canReadClusterScopedKind(ctx, kind, group, "list")
+	}
+}
+
+func issueRelatedResourceAccess(ctx context.Context) func(issues.Ref) bool {
+	return func(ref issues.Ref) bool {
+		user, _ := resolveUserPerms(ctx)
+		if user == nil {
+			return true
 		}
-		return match[i].CheckID < match[j].CheckID
-	})
-
-	return &resourcecontext.AuditSummary{
-		Count:           len(match),
-		HighestSeverity: mcpNormalizeAuditSeverity(match[0].Severity),
-		TopFinding:      match[0].CheckID,
+		if ref.Namespace != "" {
+			if !checkNamespaceAccess(ctx, ref.Namespace) {
+				return false
+			}
+			if strings.EqualFold(ref.Kind, "Secret") {
+				return canReadInNamespace(ctx, ref.Group, "secrets", ref.Namespace, "get")
+			}
+			return true
+		}
+		clusterScoped, _, _ := k8s.ClassifyKindScope(ref.Kind, ref.Group)
+		return clusterScoped && canReadClusterScopedKind(ctx, ref.Kind, ref.Group, "get")
 	}
 }
 
-func mcpAuditSeverityRank(s string) int {
-	switch s {
-	case bpaudit.SeverityDanger:
-		return 2
-	case bpaudit.SeverityWarning:
-		return 1
-	}
-	return 0
-}
-
-// mcpNormalizeAuditSeverity maps the audit suite's emission vocabulary
-// ("danger" / "warning") onto the unified resourceContext severity scale
-// ("critical" / "warning") used by issueSummary. Two sibling fields in
-// the same response reporting severity in different vocabularies is a
-// wire-shape footgun — mirror the REST handler's normalizeAuditSeverity.
-func mcpNormalizeAuditSeverity(s string) string {
-	switch s {
-	case bpaudit.SeverityDanger:
-		return string(issues.SeverityCritical)
-	case bpaudit.SeverityWarning:
-		return string(issues.SeverityWarning)
-	}
-	return s
+func computeMCPAuditSummary(cache *k8s.ResourceCache, group, kind, namespace, name string) *resourcecontext.AuditSummary {
+	summary, _ := auditcontext.SummarizeResource(cache, group, kind, namespace, name)
+	return summary
 }
 
 // mcpTopologyForContext returns a per-call topology snapshot scoped to the

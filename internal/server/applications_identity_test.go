@@ -24,6 +24,58 @@ func identRow(name, ns string, tier int, key string, images ...string) appRow {
 	return r
 }
 
+func TestEnrichRowsWithArgoStatus(t *testing.T) {
+	rows := []appRow{{
+		Health:        "healthy",
+		RuntimeHealth: "healthy",
+		SourceRef:     &appSourceRef{Type: "gitops", Tool: "argocd", Kind: "Application", Namespace: "argocd", Name: "checkout"},
+	}}
+	app := &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"namespace": "argocd", "name": "checkout"},
+		"status": map[string]any{
+			"sync":   map[string]any{"status": "Synced"},
+			"health": map[string]any{"status": "Degraded"},
+		},
+	}}
+
+	enrichRowsWithArgoStatus(rows, []*unstructured.Unstructured{app})
+
+	if rows[0].SourceStatus == nil || rows[0].SourceStatus.Sync != "Synced" || rows[0].SourceStatus.Health != "Degraded" {
+		t.Fatalf("source status = %#v", rows[0].SourceStatus)
+	}
+	if rows[0].RuntimeHealth != "healthy" || rows[0].Health != "degraded" {
+		t.Fatalf("runtime=%q overall=%q", rows[0].RuntimeHealth, rows[0].Health)
+	}
+}
+
+func TestEnrichRowsWithNonDegradingArgoStatesPreservesHealthyRuntime(t *testing.T) {
+	for _, healthStatus := range []string{"Progressing", "Unknown", "Suspended"} {
+		t.Run(healthStatus, func(t *testing.T) {
+			rows := []appRow{{
+				Health:        "healthy",
+				RuntimeHealth: "healthy",
+				SourceRef:     &appSourceRef{Type: "gitops", Tool: "argocd", Kind: "Application", Namespace: "argocd", Name: "checkout"},
+			}}
+			app := &unstructured.Unstructured{Object: map[string]any{
+				"metadata": map[string]any{"namespace": "argocd", "name": "checkout"},
+				"status": map[string]any{
+					"sync":   map[string]any{"status": "Synced"},
+					"health": map[string]any{"status": healthStatus},
+				},
+			}}
+
+			enrichRowsWithArgoStatus(rows, []*unstructured.Unstructured{app})
+
+			if rows[0].SourceStatus == nil || rows[0].SourceStatus.Health != healthStatus {
+				t.Fatalf("source status = %#v", rows[0].SourceStatus)
+			}
+			if rows[0].RuntimeHealth != "healthy" || rows[0].Health != "healthy" {
+				t.Fatalf("runtime=%q overall=%q", rows[0].RuntimeHealth, rows[0].Health)
+			}
+		})
+	}
+}
+
 func identOf(t *testing.T, rows []appRow, name string) *appIdentity {
 	t.Helper()
 	for i := range rows {
@@ -174,7 +226,18 @@ func TestIdentities_ClassificationNotIdentity(t *testing.T) {
 	tagged := mk()
 	resolveAppIdentities(tagged, nil, nil, nil, nil)
 	for i := range tagged {
+		// Classification emits two derived outputs: the Identity block and an
+		// informational "name-stem:" match key (excluded from event matching).
+		// Strip both — the contract is that classification only ADDS these derived
+		// fields and never mutates the row's substantive data or exact match keys.
 		tagged[i].Identity = nil
+		kept := tagged[i].MatchKeys[:0]
+		for _, k := range tagged[i].MatchKeys {
+			if !strings.HasPrefix(k, "name-stem:") {
+				kept = append(kept, k)
+			}
+		}
+		tagged[i].MatchKeys = kept
 	}
 	want, _ := json.Marshal(mk())
 	got, _ := json.Marshal(tagged)
@@ -915,5 +978,24 @@ func TestFluxKustomizationFacts(t *testing.T) {
 	}
 	if _, ok := got["flux-system/infra"]; ok {
 		t.Fatalf("env-less path should be skipped: %v", got)
+	}
+}
+
+func TestAddFluxKustomizationManagedSourceRefsParsesInventoryIDFromRight(t *testing.T) {
+	ks := &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"namespace": "flux-system", "name": "platform"},
+		"status": map[string]any{"inventory": map[string]any{"entries": []any{
+			map[string]any{"id": "team_api_worker_apps_Deployment"},
+		}}},
+	}}
+	got := map[string][]appSourceRef{}
+	addFluxKustomizationManagedSourceRefs(context.Background(), &stubLister{items: []*unstructured.Unstructured{ks}}, got)
+
+	refs := got[managedWorkloadKey("Deployment", "team", "api_worker")]
+	if len(refs) != 1 {
+		t.Fatalf("managed source refs = %#v, want one ref keyed by full workload name", got)
+	}
+	if refs[0].Name != "platform" || refs[0].Namespace != "flux-system" || refs[0].Tool != "fluxcd" {
+		t.Fatalf("source ref = %+v, want flux-system/platform flux ref", refs[0])
 	}
 }

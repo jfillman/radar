@@ -48,6 +48,16 @@ func fromProblem(p k8s.Detection, now time.Time, source Source) Issue {
 		// issue looking fresh. AgeSeconds (resource age) is a stable lower bound.
 		since = now.Add(-time.Duration(p.AgeSeconds) * time.Second)
 	}
+	reason := p.Reason
+	cause, action := p.Cause, p.Action
+	if isForbiddenMessage(p.Message) && !isBatchFailureProblem(p.Kind, p.Reason) {
+		if reason != "RBACForbidden" {
+			// Detector diagnoses describe the original reason and would mislead
+			// after the message promotes the issue to an RBAC failure.
+			cause, action = "", ""
+		}
+		reason = "RBACForbidden"
+	}
 	iss := Issue{
 		Severity:             sev,
 		Source:               source,
@@ -55,15 +65,16 @@ func fromProblem(p k8s.Detection, now time.Time, source Source) Issue {
 		Group:                resolveGroup(p.Group, p.Kind),
 		Namespace:            p.Namespace,
 		Name:                 p.Name,
-		Reason:               p.Reason,
+		Reason:               reason,
 		Message:              p.Message,
 		RawMessage:           p.RawMessage,
-		Cause:                p.Cause,
-		Action:               p.Action,
+		Cause:                cause,
+		Action:               action,
 		RemediationKind:      p.RemediationKind,
 		RemediationTarget:    p.RemediationTarget,
 		OperationRetryCount:  p.OperationRetryCount,
 		Stuck:                p.Stuck,
+		CapacityRelevant:     p.CapacityRelevant,
 		Fingerprint:          p.Fingerprint,
 		FirstSeen:            since,
 		LastSeen:             now,
@@ -103,6 +114,7 @@ func classifyIssue(i *Issue) {
 		APIGroup:             i.Group,
 		Kind:                 i.Kind,
 		Reason:               i.Reason,
+		Message:              i.Message,
 		LastTerminatedReason: i.LastTerminatedReason,
 	})
 	i.CategoryGroup = issuesapi.GroupOf(i.Category)

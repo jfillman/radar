@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"sync"
+	"time"
 
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"k8s.io/client-go/dynamic"
@@ -44,13 +45,23 @@ func InitTestResourceCache(client kubernetes.Interface) error {
 		"rolebindings":             true,
 		"clusterrolebindings":      true,
 		"serviceaccounts":          true,
+		"ingressclasses":           true,
+		"networkpolicies":          true,
+		"limitranges":              true,
 	}
 
+	secretWriteTimes := newSecretDataManagerWriteIndex()
 	cfg := k8score.CacheConfig{
 		Client:        client,
 		ResourceTypes: enabled,
 		// No deferred types for tests — all sync immediately
 		DeferredTypes: map[string]bool{},
+		OnTransform: func(obj any) {
+			secretWriteTimes.capture(obj)
+		},
+		OnObservedChange: func(change k8score.ResourceChange, obj, _ any) {
+			secretWriteTimes.reconcile(change, obj)
+		},
 	}
 
 	core, err := k8score.NewResourceCache(cfg)
@@ -61,8 +72,9 @@ func InitTestResourceCache(client kubernetes.Interface) error {
 	initialSyncComplete = true
 
 	resourceCache = &ResourceCache{
-		ResourceCache:  core,
-		secretsEnabled: true,
+		ResourceCache:    core,
+		secretsEnabled:   true,
+		secretWriteTimes: secretWriteTimes,
 	}
 
 	// Mark cacheOnce as "already executed" so InitResourceCache is a no-op.
@@ -134,6 +146,27 @@ func SetTestContextName(name string) string {
 	return prev
 }
 
+// SetTestContextNamespace is a test-only helper that overrides the package-level
+// kubeconfig context namespace. Returns the previous value so callers can
+// restore it on cleanup.
+func SetTestContextNamespace(ns string) string {
+	clientMu.Lock()
+	prev := contextNamespace
+	contextNamespace = ns
+	clientMu.Unlock()
+	return prev
+}
+
+// SetTestContextUsesExec overrides whether the current context uses exec auth
+// and returns the previous value so callers can restore it on cleanup.
+func SetTestContextUsesExec(enabled bool) bool {
+	clientMu.Lock()
+	prev := contextUsesExec
+	contextUsesExec = enabled
+	clientMu.Unlock()
+	return prev
+}
+
 // SetTestClient overrides the package-level client and returns the previous
 // value so tests in other packages can restore it.
 func SetTestClient(c *kubernetes.Clientset) *kubernetes.Clientset {
@@ -162,6 +195,45 @@ func ResetTestState() {
 	connectionCallbacksMu.Lock()
 	connectionCallbacks = nil
 	connectionCallbacksMu.Unlock()
+
+	runtimeAuthChecksMu.Lock()
+	runtimeAuthChecks = make(map[uint64]struct{})
+	runtimeAuthCooldownGeneration = 0
+	runtimeAuthProbeNotBefore = time.Time{}
+	runtimeAuthInconclusiveStreak = 0
+	runtimeAuthProbe = TestClusterConnection
+	runtimeAuthEndpointProbe = defaultRuntimeAuthEndpointProbe
+	runtimeAuthReconnect = nil
+	runtimeAuthRecoveryInitialInterval = defaultRuntimeAuthRecoveryInitialInterval
+	runtimeAuthRecoveryMaxInterval = defaultRuntimeAuthRecoveryMaxInterval
+	runtimeAuthRecoveryHungInterval = defaultRuntimeAuthRecoveryHungInterval
+	runtimeAuthChecksMu.Unlock()
+	// Clear the debt and nudge rather than forcing the active flag: a
+	// surviving worker wakes, sees no debt, and exits through its own defer.
+	// Forcing the flag false would let a second worker coexist with it. With
+	// no worker alive, drain instead — a stray token would give the next
+	// test's worker a spurious immediate tick.
+	runtimeAuthRecoveryOwed.Store(false)
+	if runtimeAuthRecoveryActive.Load() {
+		select {
+		case runtimeAuthRecoveryNudge <- struct{}{}:
+		default:
+		}
+	} else {
+		select {
+		case <-runtimeAuthRecoveryNudge:
+		default:
+		}
+	}
+	activeContextOperations.Store(0)
+	clientMu.Lock()
+	k8sConfig = nil
+	k8sClient = nil
+	discoveryClient = nil
+	dynamicClient = nil
+	activeClientGeneration = 0
+	kubeconfigMode = ""
+	clientMu.Unlock()
 
 	// Reset capabilities cache
 	capabilitiesMu.Lock()

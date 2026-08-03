@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/skyhook-io/radar/pkg/resourceid"
+	"github.com/skyhook-io/radar/pkg/rolloutdiag"
 	"github.com/skyhook-io/radar/pkg/timeutil"
 )
 
@@ -75,6 +76,9 @@ func RunChecks(input *CheckInput) *ScanResults {
 	} else {
 		missingInputs = append(missingInputs, "horizontalpodautoscalers")
 	}
+	if input.Deployments != nil {
+		findings = append(findings, checkRolloutAvailabilityRisk(tr, input.Deployments)...)
+	}
 	// Only check PDB coverage if we can actually list PDBs (nil = RBAC denied, not "none exist")
 	if input.PodDisruptionBudgets != nil {
 		findings = append(findings, checkMissingPDB(tr, input.Deployments, input.StatefulSets, pdbSelectors)...)
@@ -127,13 +131,6 @@ func RunChecks(input *CheckInput) *ScanResults {
 	}
 	findings = append(findings, checkTraefikDanglingRefs(tr, input)...)
 
-	// --- Utilization checks (optional, only when metrics provided) ---
-	if input.PodMetrics != nil {
-		findings = append(findings, checkResourceUtilization(tr, input.PodMetrics)...)
-	} else {
-		missingInputs = append(missingInputs, "podmetrics")
-	}
-
 	// --- Deprecated API checks ---
 	findings = append(findings, checkDeprecatedAPIs(tr, input.ServedAPIs, input.ClusterVersion)...)
 
@@ -149,6 +146,12 @@ func RunChecks(input *CheckInput) *ScanResults {
 	// Same severity ramp as stuckTerminating (5min warning, 30min danger) so
 	// operators see the same "long enough to flag" semantics across surfaces.
 	findings = append(findings, checkCrossplaneStuck(tr, input)...)
+
+	// --- GitOps coverage: workloads not tracked by a GitOps controller ---
+	// Self-gates on input.GitOpsToolsPresent; a no-GitOps cluster records
+	// nothing, so the check is absent from CheckCounts rather than reported as a
+	// missing input (the gate is "not applicable here", not "couldn't list").
+	findings = append(findings, checkGitOpsCoverage(tr, input)...)
 
 	return buildResults(findings, tr, missingInputs)
 }
@@ -725,6 +728,24 @@ func checkSingleReplica(tr *evalTracker, deployments []*appsv1.Deployment, hpaTa
 				Kind: "Deployment", Namespace: d.Namespace, Name: d.Name,
 				CheckID: "singleReplica", Category: CategoryReliability, Severity: SeverityWarning,
 				Message: "Deployment has only 1 replica",
+			})
+		}
+	}
+	return findings
+}
+
+func checkRolloutAvailabilityRisk(tr *evalTracker, deployments []*appsv1.Deployment) []Finding {
+	var findings []Finding
+	for _, deployment := range deployments {
+		if !rolloutdiag.Applicable(deployment) {
+			continue
+		}
+		tr.record("rolloutAvailabilityRisk", deployment.Namespace)
+		if risk := rolloutdiag.Analyze(deployment); risk != nil {
+			findings = append(findings, Finding{
+				Kind: "Deployment", Namespace: deployment.Namespace, Name: deployment.Name,
+				CheckID: "rolloutAvailabilityRisk", Category: CategoryReliability, Severity: SeverityWarning,
+				Message: risk.Message,
 			})
 		}
 	}
@@ -1418,63 +1439,6 @@ func hasControllerOwnerReference(refs []metav1.OwnerReference) bool {
 		}
 	}
 	return false
-}
-
-// ============================================================================
-// Resource utilization checks
-// ============================================================================
-
-func checkResourceUtilization(tr *evalTracker, metrics []PodMetricsInput) []Finding {
-	if len(metrics) == 0 {
-		return nil
-	}
-
-	var findings []Finding
-	for _, m := range metrics {
-		// Pods with no requests at all can't be measured against anything —
-		// they're out of scope, not passing.
-		if m.CPURequest > 0 || m.MemoryRequest > 0 {
-			tr.record("resourceUtilization", m.Namespace)
-		}
-		// CPU utilization
-		if m.CPURequest > 0 {
-			cpuPct := float64(m.CPUUsage) / float64(m.CPURequest) * 100
-			if cpuPct < 10 && m.CPUUsage > 0 {
-				findings = append(findings, Finding{
-					Kind: "Pod", Namespace: m.Namespace, Name: m.Name,
-					CheckID: "resourceUtilization", Category: CategoryEfficiency, Severity: SeverityWarning,
-					Message: fmt.Sprintf("CPU usage is %.0f%% of request (%dm used, %dm requested) — consider reducing request", cpuPct, m.CPUUsage, m.CPURequest),
-				})
-			} else if cpuPct > 90 {
-				findings = append(findings, Finding{
-					Kind: "Pod", Namespace: m.Namespace, Name: m.Name,
-					CheckID: "resourceUtilization", Category: CategoryEfficiency, Severity: SeverityWarning,
-					Message: fmt.Sprintf("CPU usage is %.0f%% of request (%dm used, %dm requested) — at risk of throttling", cpuPct, m.CPUUsage, m.CPURequest),
-				})
-			}
-		}
-
-		// Memory utilization
-		if m.MemoryRequest > 0 {
-			memPct := float64(m.MemoryUsage) / float64(m.MemoryRequest) * 100
-			memUsageMi := m.MemoryUsage / (1024 * 1024)
-			memReqMi := m.MemoryRequest / (1024 * 1024)
-			if memPct < 10 && m.MemoryUsage > 0 {
-				findings = append(findings, Finding{
-					Kind: "Pod", Namespace: m.Namespace, Name: m.Name,
-					CheckID: "resourceUtilization", Category: CategoryEfficiency, Severity: SeverityWarning,
-					Message: fmt.Sprintf("Memory usage is %.0f%% of request (%dMi used, %dMi requested) — consider reducing request", memPct, memUsageMi, memReqMi),
-				})
-			} else if memPct > 90 {
-				findings = append(findings, Finding{
-					Kind: "Pod", Namespace: m.Namespace, Name: m.Name,
-					CheckID: "resourceUtilization", Category: CategoryEfficiency, Severity: SeverityWarning,
-					Message: fmt.Sprintf("Memory usage is %.0f%% of request (%dMi used, %dMi requested) — at risk of OOM kill", memPct, memUsageMi, memReqMi),
-				})
-			}
-		}
-	}
-	return findings
 }
 
 // ============================================================================

@@ -218,6 +218,50 @@ func TestComputeCostSummary_RoundsValues(t *testing.T) {
 	}
 }
 
+func TestComputeCostSummary_DedupesPersistentVolumeClaimRefs(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+		queries = append(queries, q)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(q, "container_cpu_allocation"):
+			_, _ = w.Write([]byte(vectorBody(map[string]float64{"checkout": 1.0})))
+		case strings.Contains(q, "container_memory_allocation_bytes"):
+			_, _ = w.Write([]byte(vectorBody(map[string]float64{"checkout": 1.0})))
+		default:
+			_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
+		}
+	}))
+	defer srv.Close()
+	client := prom.NewClient(prom.NewHTTPTransport(srv.URL, "", nil))
+
+	got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{})
+	if !got.Available {
+		t.Fatalf("summary unavailable: %+v", got)
+	}
+
+	var storageQuery string
+	for _, q := range queries {
+		if strings.Contains(q, "pv_hourly_cost") {
+			storageQuery = q
+			break
+		}
+	}
+	if storageQuery == "" {
+		t.Fatal("storage query was not issued")
+	}
+	if !strings.Contains(storageQuery, "max by (persistentvolume) (pv_hourly_cost)") {
+		t.Fatalf("storage query must dedupe duplicate PV cost series:\n%s", storageQuery)
+	}
+	if !strings.Contains(storageQuery, "max by (persistentvolume, namespace)") {
+		t.Fatalf("storage query must dedupe duplicate PVC ref series:\n%s", storageQuery)
+	}
+	if !strings.Contains(storageQuery, `label_replace(kube_persistentvolume_claim_ref, "namespace", "$1", "claim_namespace", "(.+)")`) {
+		t.Fatalf("storage query must normalize claim_namespace before namespace aggregation:\n%s", storageQuery)
+	}
+}
+
 func TestWindowHours(t *testing.T) {
 	cases := []struct {
 		in   string

@@ -1,6 +1,7 @@
 package insights
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -125,17 +126,13 @@ func TestBuildIssuesArgoRunningOperationProducesInfo(t *testing.T) {
 }
 
 func TestBuildIssuesArgoSortsCriticalBeforeWarning(t *testing.T) {
-	// Resource list with a Degraded (critical) and an OutOfSync (warning).
-	// The Degraded resource is listed second to verify sort order, not input order.
+	// A Degraded resource (critical, resource scope) plus an app-level
+	// ManualDrift warning (OutOfSync with auto-sync off). The detector chain
+	// appends the warning first; the severity-stable sort must hoist the
+	// critical resource issue above it.
 	root := argoApp(map[string]any{
+		"sync": map[string]any{"status": "OutOfSync"},
 		"resources": []any{
-			map[string]any{
-				"kind":   "Service",
-				"name":   "auth",
-				"sync":   map[string]any{"status": "OutOfSync"},
-				"health": map[string]any{"status": "Healthy"},
-				"status": "OutOfSync",
-			},
 			map[string]any{
 				"kind":   "Deployment",
 				"name":   "auth",
@@ -146,7 +143,7 @@ func TestBuildIssuesArgoSortsCriticalBeforeWarning(t *testing.T) {
 	})
 	issues := buildIssues(root, nil, "argocd", nil)
 	if len(issues) != 2 {
-		t.Fatalf("expected 2 issues, got %d", len(issues))
+		t.Fatalf("expected 2 issues, got %d (%+v)", len(issues), issues)
 	}
 	if issues[0].Severity != "critical" {
 		t.Fatalf("expected critical first, got %q (%+v)", issues[0].Severity, issues[0])
@@ -372,7 +369,7 @@ func TestNewCreateNamespaceRemediation_NilOnEmpty(t *testing.T) {
 
 func TestBuildIssuesSuppressesResourceIssueDuplicatedByOperationFailure(t *testing.T) {
 	// When the operation message names CRD scaledjobs.keda.sh AND the
-	// resources[] list also flags the same CRD as OutOfSync, we want only
+	// resources[] list also flags the same CRD as Missing, we want only
 	// the operation issue. The resource issue is the same root cause from
 	// a different angle and adds noise.
 	root := argoApp(map[string]any{
@@ -384,14 +381,15 @@ func TestBuildIssuesSuppressesResourceIssueDuplicatedByOperationFailure(t *testi
 			"kind":   "CustomResourceDefinition",
 			"name":   "scaledjobs.keda.sh",
 			"status": "OutOfSync",
+			"health": map[string]any{"status": "Missing"},
 		}},
 	})
 	issues := buildIssues(root, nil, "argocd", nil)
 	for _, iss := range issues {
-		if iss.Scope == "resource" && iss.Reason == "OutOfSync" {
+		if iss.Scope == ScopeResource {
 			for _, ref := range iss.Refs {
 				if ref.Kind == "CustomResourceDefinition" && ref.Name == "scaledjobs.keda.sh" {
-					t.Fatalf("expected the resource OutOfSync issue for the same CRD to be suppressed when the operation failure already names it; issues=%v", issues)
+					t.Fatalf("expected the resource issue for the same CRD to be suppressed when the operation failure already names it; issues=%v", issues)
 				}
 			}
 		}
@@ -415,14 +413,15 @@ func TestBuildIssuesSuppressesResourceIssueForNamespacedKind(t *testing.T) {
 			"name":      "guestbook-ui",
 			"namespace": "demo-healthy",
 			"status":    "OutOfSync",
+			"health":    map[string]any{"status": "Missing"},
 		}},
 	})
 	issues := buildIssues(root, nil, "argocd", nil)
 	for _, iss := range issues {
-		if iss.Scope == ScopeResource && iss.Reason == "OutOfSync" {
+		if iss.Scope == ScopeResource {
 			for _, ref := range iss.Refs {
 				if ref.Kind == "Deployment" && ref.Name == "guestbook-ui" && ref.Namespace == "demo-healthy" {
-					t.Fatalf("expected namespaced Deployment OutOfSync issue to be suppressed by the operation failure that already names it; issues=%v", issues)
+					t.Fatalf("expected namespaced Deployment issue to be suppressed by the operation failure that already names it; issues=%v", issues)
 				}
 			}
 		}
@@ -557,6 +556,15 @@ func TestDetectStuckDriftLoop_DoesNotFireForVariousReasons(t *testing.T) {
 				unstructured.RemoveNestedField(u.Object, "status", "reconciledAt")
 			},
 		},
+		{
+			// Auto-sync configured but self-heal off: persistent post-sync drift
+			// is expected (Argo won't re-correct it), so this is not a loop —
+			// detectAutoDriftSelfHealOff owns it.
+			name: "auto-sync on but self-heal off",
+			mut: func(u *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(u.Object, false, "spec", "syncPolicy", "automated", "selfHeal")
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -565,6 +573,76 @@ func TestDetectStuckDriftLoop_DoesNotFireForVariousReasons(t *testing.T) {
 				t.Errorf("expected no issue, got %+v", got)
 			}
 		})
+	}
+}
+
+func TestDetectAutoDriftSelfHealOff(t *testing.T) {
+	cases := []struct {
+		name     string
+		mut      func(*unstructured.Unstructured)
+		wantFire bool
+	}{
+		{
+			name: "OutOfSync + auto-sync + self-heal off → fires",
+			mut: func(u *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(u.Object, false, "spec", "syncPolicy", "automated", "selfHeal")
+			},
+			wantFire: true,
+		},
+		{
+			// stuckLoopApp defaults to selfHeal: true.
+			name:     "OutOfSync + auto-sync + self-heal on → no fire (StuckDriftLoop owns it)",
+			mut:      func(u *unstructured.Unstructured) {},
+			wantFire: false,
+		},
+		{
+			name: "OutOfSync + manual → no fire (ManualDrift owns it)",
+			mut: func(u *unstructured.Unstructured) {
+				unstructured.RemoveNestedField(u.Object, "spec", "syncPolicy", "automated")
+			},
+			wantFire: false,
+		},
+		{
+			name: "Synced + auto-sync + self-heal off → no fire",
+			mut: func(u *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(u.Object, false, "spec", "syncPolicy", "automated", "selfHeal")
+				_ = unstructured.SetNestedField(u.Object, "Synced", "status", "sync", "status")
+			},
+			wantFire: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := detectAutoDriftSelfHealOff(stuckLoopApp(t, tc.mut))
+			if (got != nil) != tc.wantFire {
+				t.Errorf("fire = %v, want %v; issue=%+v", got != nil, tc.wantFire, got)
+			}
+			if got != nil && got.Reason != "SelfHealDisabled" {
+				t.Errorf("Reason = %q, want SelfHealDisabled", got.Reason)
+			}
+		})
+	}
+}
+
+// The gap that dropping per-resource OutOfSync issues could otherwise open:
+// auto-sync configured but self-heal off + an OutOfSync app. No per-resource
+// issue is emitted for plain drift, so the app-level SelfHealDisabled warning
+// must be the band signal that nothing will reconcile this.
+func TestBuildIssuesArgoAutoSyncSelfHealOffSurfacesDrift(t *testing.T) {
+	root := argoApp(map[string]any{
+		"sync":           map[string]any{"status": "OutOfSync"},
+		"operationState": map[string]any{"phase": "Succeeded"},
+	})
+	_ = unstructured.SetNestedMap(root.Object, map[string]any{"prune": true}, "spec", "syncPolicy", "automated")
+	issues := buildIssues(root, nil, "argocd", nil)
+	var found bool
+	for _, iss := range issues {
+		if iss.Reason == "SelfHealDisabled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a SelfHealDisabled issue for auto-sync-without-self-heal drift; got %+v", issues)
 	}
 }
 
@@ -664,7 +742,7 @@ func TestBuildHistoryArgo_AutomatedBoolBecomesInitiator(t *testing.T) {
 			},
 		},
 	})
-	hist := buildHistory(root, "argocd")
+	hist := BuildHistory(root)
 	// First entry should be the only history row (no operationState set).
 	if len(hist) != 1 {
 		t.Fatalf("expected 1 history entry, got %d", len(hist))
@@ -698,7 +776,7 @@ func TestBuildHistoryArgo_RunningOpStaysOnTop(t *testing.T) {
 			},
 		},
 	})
-	hist := buildHistory(root, "argocd")
+	hist := BuildHistory(root)
 	if len(hist) < 1 || hist[0].Phase != "Running" {
 		t.Fatalf("expected the running operation to sort to the top; got hist=%+v", hist)
 	}
@@ -1138,6 +1216,89 @@ func TestBuildSummary_TerminatingFields(t *testing.T) {
 	}
 }
 
+// TestBuildSummary_IgnoredDifferences pins the Argo comparison-coverage
+// disclosure: RuleCount counts every spec.ignoreDifferences entry,
+// UnsupportedRuleCount counts those using jqPathExpressions OR
+// managedFieldsManagers (Radar's drift filter applies neither — the drift
+// panel may surface fields Argo's UI suppresses), and Kinds is the sorted
+// unique Group/Kind targets with a group-wildcard rule (kind omitted)
+// rendered as "group/*".
+func TestBuildSummary_IgnoredDifferences(t *testing.T) {
+	root := argoApp(map[string]any{})
+	root.Object["spec"] = map[string]any{
+		"ignoreDifferences": []any{
+			// jsonPointers rule, namespaced group + kind → "apps/Deployment".
+			map[string]any{
+				"group":        "apps",
+				"kind":         "Deployment",
+				"jsonPointers": []any{"/spec/replicas"},
+			},
+			// jqPathExpressions rule, core resource (empty group) → "ConfigMap".
+			map[string]any{
+				"kind":              "ConfigMap",
+				"jqPathExpressions": []any{".data.checksum"},
+			},
+			// managedFieldsManagers rule — the other exclusion shape Radar's
+			// drift filter doesn't apply.
+			map[string]any{
+				"group":                 "apps",
+				"kind":                  "Deployment",
+				"managedFieldsManagers": []any{"kube-controller-manager"},
+			},
+			// Group-wildcard rule: group set, kind omitted → "networking.k8s.io/*".
+			map[string]any{
+				"group":        "networking.k8s.io",
+				"jsonPointers": []any{"/spec/rules"},
+			},
+		},
+	}
+
+	s := buildSummary(root, "argocd")
+	if s.IgnoredDifferences == nil {
+		t.Fatal("expected IgnoredDifferences to be populated")
+	}
+	if s.IgnoredDifferences.RuleCount != 4 {
+		t.Errorf("RuleCount = %d, want 4", s.IgnoredDifferences.RuleCount)
+	}
+	if s.IgnoredDifferences.UnsupportedRuleCount != 2 {
+		t.Errorf("UnsupportedRuleCount = %d, want 2", s.IgnoredDifferences.UnsupportedRuleCount)
+	}
+	want := []string{"ConfigMap", "apps/Deployment", "networking.k8s.io/*"}
+	if !reflect.DeepEqual(s.IgnoredDifferences.Kinds, want) {
+		t.Errorf("Kinds = %v, want %v", s.IgnoredDifferences.Kinds, want)
+	}
+}
+
+// TestBuildSummary_IgnoredDifferences_NilWhenAbsent confirms the field stays
+// nil (and json-omitted) when the Application declares no exclusions.
+func TestBuildSummary_IgnoredDifferences_NilWhenAbsent(t *testing.T) {
+	s := buildSummary(argoApp(map[string]any{}), "argocd")
+	if s.IgnoredDifferences != nil {
+		t.Errorf("expected nil IgnoredDifferences when spec.ignoreDifferences absent, got %+v", s.IgnoredDifferences)
+	}
+}
+
+// TestBuildSummary_IgnoredDifferences_NilForFlux pins that the disclosure is
+// Argo-only: it describes Argo's comparison pipeline, so a Flux root leaves the
+// field nil even if it somehow carried spec.ignoreDifferences.
+func TestBuildSummary_IgnoredDifferences_NilForFlux(t *testing.T) {
+	root := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+		"kind":       "Kustomization",
+		"metadata":   map[string]any{"namespace": "flux-system", "name": "apps"},
+		"spec": map[string]any{
+			"ignoreDifferences": []any{
+				map[string]any{"kind": "ConfigMap", "jsonPointers": []any{"/data"}},
+			},
+		},
+		"status": map[string]any{},
+	}}
+	s := buildSummary(root, "fluxcd")
+	if s.IgnoredDifferences != nil {
+		t.Errorf("expected nil IgnoredDifferences for Flux root, got %+v", s.IgnoredDifferences)
+	}
+}
+
 // TestCategorizeArgoChange pins the closed mapping from Argo's per-resource
 // sync + health vocabularies onto the typed Category constants. A mapping
 // gap would silently drop a row into changeRank's default bucket and
@@ -1227,5 +1388,43 @@ func TestChangeRank(t *testing.T) {
 	// values don't silently mix with valid ones in the sorted output.
 	if got := changeRank(Category("Bogus")); got <= 4 {
 		t.Errorf("changeRank(Bogus) = %d, want > 4 (default branch must rank below all named constants)", got)
+	}
+}
+
+func TestDedupeIssues_SameNameDifferentNamespaceKept(t *testing.T) {
+	// Two genuinely distinct Degraded resources sharing a kind+name across
+	// namespaces (an ApplicationSet fanning out an identically-named workload)
+	// must BOTH survive dedup — the namespace is part of the key.
+	in := []Issue{
+		{Scope: "resource", Severity: "critical", Reason: "Degraded", Message: "Deployment api is Degraded", Refs: []Ref{{Kind: "Deployment", Namespace: "team-a", Name: "api"}}},
+		{Scope: "resource", Severity: "critical", Reason: "Degraded", Message: "Deployment api is Degraded", Refs: []Ref{{Kind: "Deployment", Namespace: "team-b", Name: "api"}}},
+	}
+	got := dedupeIssues(in)
+	if len(got) != 2 {
+		t.Fatalf("expected both namespaces' issues kept, got %d: %+v", len(got), got)
+	}
+}
+
+func TestEnrichChangeHealthFromTree_BackfillsEmptyHealth(t *testing.T) {
+	tree := &gitopstree.ResourceTree{Nodes: []gitopstree.Node{
+		{Ref: gitopstree.ResourceRef{Group: "apps", Kind: "Deployment", Namespace: "staging", Name: "radar-hub"}, Health: "Degraded"},
+		{Ref: gitopstree.ResourceRef{Kind: "Service", Namespace: "staging", Name: "radar-hub"}, Health: "Healthy"},
+		{Ref: gitopstree.ResourceRef{Kind: "ConfigMap", Namespace: "staging", Name: "vars"}, Health: ""},
+	}}
+	changes := []Change{
+		{Ref: Ref{Group: "apps", Kind: "Deployment", Namespace: "staging", Name: "radar-hub"}, Health: ""},        // backfilled → Degraded
+		{Ref: Ref{Kind: "Service", Namespace: "staging", Name: "radar-hub"}, Health: "Progressing"},              // already set → unchanged
+		{Ref: Ref{Kind: "ConfigMap", Namespace: "staging", Name: "vars"}, Health: ""},                            // tree node empty → stays empty
+		{Ref: Ref{Kind: "SealedSecret", Namespace: "staging", Name: "x"}, Health: ""},                            // not in tree → stays empty
+	}
+	enrichChangeHealthFromTree(changes, tree)
+	if changes[0].Health != "Degraded" {
+		t.Errorf("Deployment health = %q, want Degraded (backfilled from tree)", changes[0].Health)
+	}
+	if changes[1].Health != "Progressing" {
+		t.Errorf("Service health = %q, want Progressing (already set, unchanged)", changes[1].Health)
+	}
+	if changes[2].Health != "" || changes[3].Health != "" {
+		t.Errorf("resources with no tree health must stay empty: %q %q", changes[2].Health, changes[3].Health)
 	}
 }

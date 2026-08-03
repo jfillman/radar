@@ -14,9 +14,9 @@ package cloud
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -25,6 +25,13 @@ type Config struct {
 	// URL is the WebSocket URL of the Cloud service's /agent endpoint,
 	// e.g. wss://api.radarhq.io/agent
 	URL string
+
+	// InsecureSkipVerify disables TLS certificate verification on the wss
+	// tunnel. Intended only for trials against a self-hosted hub that serves a
+	// self-signed certificate: the connection stays encrypted but is not
+	// authenticated, so a network attacker could impersonate the hub. Leave
+	// false for any hub with a publicly trusted certificate.
+	InsecureSkipVerify bool
 
 	// Token is the cluster bearer token issued by the Cloud install wizard.
 	// Format: rhc_<random>.
@@ -55,6 +62,13 @@ type Config struct {
 	// is empty.
 	APIServerURL string
 
+	// SelfUpgradeAvailable reports whether this installation has the
+	// chart-provided namespace/deployment configuration and RBAC needed by
+	// Radar's in-cluster self-upgrade endpoint. It is advertised explicitly on
+	// every Cloud tunnel handshake so the Hub never has to infer capability
+	// from the Radar version.
+	SelfUpgradeAvailable bool
+
 	// Handler is the HTTP handler to serve over tunneled streams — typically
 	// Radar's Server.Handler() (chi router).
 	Handler http.Handler
@@ -64,8 +78,8 @@ func (c Config) validate() error {
 	if c.URL == "" {
 		return errors.New("cloud: URL is required")
 	}
-	if !strings.HasPrefix(c.URL, "ws://") && !strings.HasPrefix(c.URL, "wss://") {
-		return errors.New("cloud: URL must start with ws:// or wss://")
+	if err := ValidateWebSocketURL(c.URL); err != nil {
+		return fmt.Errorf("cloud: %w", err)
 	}
 	if c.Token == "" {
 		return errors.New("cloud: Token is required")

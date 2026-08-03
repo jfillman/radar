@@ -8,6 +8,7 @@ import (
 	"log"
 	"maps"
 	"net"
+	neturl "net/url"
 	"os"
 	"os/signal"
 	"sort"
@@ -16,9 +17,11 @@ import (
 	"time"
 
 	"github.com/skyhook-io/radar/internal/app"
+	"github.com/skyhook-io/radar/internal/argocd"
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/cloud"
 	"github.com/skyhook-io/radar/internal/config"
+	"github.com/skyhook-io/radar/internal/diagnosecli"
 	"github.com/skyhook-io/radar/internal/k8s"
 	mcppkg "github.com/skyhook-io/radar/internal/mcp"
 	"github.com/skyhook-io/radar/internal/server"
@@ -32,6 +35,14 @@ var (
 )
 
 func main() {
+	// Subcommand dispatch (before flag parsing — subcommands own their flags).
+	// `radar diagnose <kind>/<name>` is a thin client for a RUNNING instance.
+	if len(os.Args) > 1 && os.Args[1] == "diagnose" {
+		os.Exit(diagnosecli.Run(os.Args[2:], func(url string) {
+			app.OpenBrowser(url, "")
+		}))
+	}
+
 	startupStart := time.Now()
 
 	// Propagate the build-time version to the cloud dialer so the agent
@@ -41,6 +52,13 @@ func main() {
 	// ldflags target so there's a single source of truth.
 	cloud.Version = version
 
+	// `radar cloud <sub>` — the one subcommand family, dispatched before flag
+	// parsing. Supported subcommands handle themselves and exit; the reserved
+	// local-preview command exits with in-cluster installation guidance.
+	if len(os.Args) >= 2 && os.Args[1] == "cloud" {
+		runCloudSubcommand()
+	}
+
 	// Load persistent config (~/.radar/config.json) for flag defaults.
 	// CLI flags override config file values.
 	fileCfg := config.Load()
@@ -49,7 +67,9 @@ func main() {
 	kubeconfig := flag.String("kubeconfig", fileCfg.Kubeconfig, "Path to kubeconfig file (default: ~/.kube/config)")
 	kubeconfigDir := flag.String("kubeconfig-dir", fileCfg.KubeconfigDirsFlag(), "Comma-separated directories containing kubeconfig files (mutually exclusive with --kubeconfig)")
 	namespace := flag.String("namespace", fileCfg.Namespace, "Initial namespace filter (empty = all namespaces)")
+	namespaces := flag.String("namespaces", fileCfg.NamespacesFlag(), "Initial namespace filters as a comma-separated list (e.g. ns1,ns2,ns3). Use this when you can list resources in specific namespaces but cannot list namespaces cluster-wide.")
 	port := flag.Int("port", fileCfg.PortOr(9280), "Server port")
+	listenAddress := flag.String("listen-address", server.DefaultListenAddress, "HTTP listen address: 127.0.0.1 or localhost for local-only access; 0.0.0.0 for remote/shared access")
 	noBrowser := flag.Bool("no-browser", fileCfg.NoBrowser, "Don't auto-open browser")
 	browser := flag.String("browser", fileCfg.Browser, "Browser to use when opening the UI (default: OS default browser; macOS app names supported)")
 	devMode := flag.Bool("dev", false, "Development mode (serve frontend from filesystem)")
@@ -69,6 +89,8 @@ func main() {
 	timelineDBPath := flag.String("timeline-db", fileCfg.TimelineDBPath, "Path to timeline database file (default: ~/.radar/timeline.db)")
 	timelineRetention := flag.Duration("timeline-retention", fileCfg.TimelineRetentionOr(7*24*time.Hour), "How long to retain timeline events when --timeline-storage=sqlite (e.g. 168h, 720h). 0 disables age-based cleanup.")
 	timelineMaxSize := flag.String("timeline-max-size", fileCfg.TimelineMaxSizeOr("1Gi"), "Maximum SQLite timeline storage size before pruning oldest events (e.g. 800Mi, 8Gi). 0 disables size-based pruning.")
+	// AI history (Diagnose investigations)
+	aiHistory := flag.Bool("ai-history", fileCfg.AIHistoryOr(true), "Persist AI investigations (transcripts + verdicts) to ~/.radar/ai-runs.db so they survive restarts")
 	// Traffic/metrics options
 	prometheusURL := flag.String("prometheus-url", fileCfg.PrometheusURL, "Manual Prometheus/VictoriaMetrics URL (skips auto-discovery)")
 	// --prometheus-header Key=Value, repeatable. Defaults populated from
@@ -101,13 +123,14 @@ func main() {
 	authOIDCInsecureSkipVerify := flag.Bool("auth-oidc-insecure-skip-verify", false, "Skip TLS certificate verification for OIDC provider (insecure, dev/test only)")
 	authOIDCCACert := flag.String("auth-oidc-ca-cert", "", "Path to CA certificate file for OIDC provider TLS verification")
 	authOIDCBackchannelLogout := flag.Bool("auth-oidc-backchannel-logout", false, "Enable OIDC Back-Channel Logout endpoint (single-replica only)")
-	// Radar Cloud flags — enable hosted mode when --cloud-url is set.
+	// Radar Hub flags — enable connected mode when --cloud-url is set.
 	// Local-binary behavior is unchanged when these flags are empty. Each
 	// flag falls back to an env var so Kubernetes deployments can source
 	// the token from a Secret without exposing it in `ps` output.
-	cloudURL := flag.String("cloud-url", os.Getenv("RADAR_CLOUD_URL"), "Radar Cloud WebSocket URL (e.g. wss://api.radarhq.io/agent) — empty = local-only. Env: RADAR_CLOUD_URL")
-	cloudToken := flag.String("cloud-token", os.Getenv("RADAR_CLOUD_TOKEN"), "Cluster token from the Radar Cloud install wizard (rhc_<random>). Env: RADAR_CLOUD_TOKEN")
-	cloudClusterName := flag.String("cluster-name", os.Getenv("RADAR_CLOUD_CLUSTER_NAME"), "Human-readable cluster name for Radar Cloud (required with --cloud-url). Env: RADAR_CLOUD_CLUSTER_NAME")
+	cloudURL := flag.String("cloud-url", os.Getenv("RADAR_CLOUD_URL"), "Radar Hub WebSocket URL (e.g. wss://api.radarhq.io/agent) — empty = local-only. Env: RADAR_CLOUD_URL")
+	cloudToken := flag.String("cloud-token", os.Getenv("RADAR_CLOUD_TOKEN"), "Connection token from the Radar install flow (rhc_<random>). Env: RADAR_CLOUD_TOKEN")
+	cloudClusterName := flag.String("cluster-name", os.Getenv("RADAR_CLOUD_CLUSTER_NAME"), "Human-readable cluster name shown in Radar (required with --cloud-url). Env: RADAR_CLOUD_CLUSTER_NAME")
+	cloudInsecureSkipVerify := flag.Bool("cloud-insecure-skip-verify", os.Getenv("RADAR_CLOUD_INSECURE_SKIP_VERIFY") == "true", "Skip TLS verification on the Radar Hub tunnel — for trials against a self-hosted hub with a self-signed cert (insecure: encrypted but not authenticated). Env: RADAR_CLOUD_INSECURE_SKIP_VERIFY")
 	// Tunable deadlines for slow / high-latency / SSH-tunneled clusters.
 	// Defaults preserve the original behavior. Each flag falls back to an
 	// environment variable so Kubernetes deployments can source values from
@@ -119,17 +142,18 @@ func main() {
 	maxScopeCandidates := flag.Int("max-scope-candidates", k8s.EnvIntOr("RADAR_MAX_SCOPE_CANDIDATES", 20), "Cap on the namespace-fallback probe fanout for users who can list namespaces cluster-wide but not list a specific kind cluster-wide (default: 20). Raise for clusters with more than 20 namespaces to avoid silently marking kinds as denied in dropped namespaces. Env: RADAR_MAX_SCOPE_CANDIDATES")
 	flag.Parse()
 
-	// Cloud-mode: Radar runs inside a customer cluster and fronts Radar
-	// Cloud. Under cloud-mode the tunnel is the only path to this listener
-	// and it delivers Cloud-authenticated identity headers on every request.
+	// Cloud-mode: Radar runs inside a customer cluster and connects to Radar Hub.
+	// The ordinary TCP listener is health-only; the full handler is served over
+	// the authenticated tunnel, which marks requests in-process before proxy
+	// identity headers are accepted.
 	// Force --auth-mode=proxy so Radar impersonates the Cloud user against
 	// the K8s API instead of falling back to the ServiceAccount (which would
 	// give every Cloud user full SA permissions).
 	// Read once via the cloud package so we use the same normalized
 	// parser (strconv.ParseBool — accepts true/1/T/TRUE etc.) as every
-	// other site that reads RADAR_CLOUD_MODE. cloud.LogStartupMode
-	// emits the resolved value below regardless of true/false so the
-	// deployment topology is obvious in startup logs.
+	// other site that reads RADAR_CLOUD_MODE. The resolved mode is included
+	// in both the preflight line (so early failures retain it) and the startup
+	// summary after the HTTP listener binds.
 	cloudMode := cloud.Mode()
 	if cloudMode {
 		if *authMode != "none" && *authMode != "proxy" {
@@ -142,11 +166,6 @@ func main() {
 		*authGroupsHeader = "X-Forwarded-Groups"
 		log.Printf("[cloud] RADAR_CLOUD_MODE=true: auth-mode forced to proxy, trusting tunnel-supplied identity headers")
 	}
-	// Always log the resolved cloud mode (true OR false) so deployment
-	// topology is visible in chart-install logs even when an operator
-	// expected Cloud mode but typo'd the env var.
-	cloud.LogStartupMode()
-
 	if *showVersion {
 		fmt.Printf("radar %s\n", version)
 		os.Exit(0)
@@ -159,7 +178,11 @@ func main() {
 	_ = flag.Set("alsologtostderr", "false")
 	klog.SetOutput(os.Stderr)
 
-	log.Printf("Radar %s starting...", version)
+	startupMode := "local"
+	if cloudMode {
+		startupMode = "Radar Cloud"
+	}
+	log.Printf("Radar %s starting (mode=%s, auth=%s)...", version, startupMode, *authMode)
 
 	// Validate flags
 	switch *authMode {
@@ -171,14 +194,25 @@ func main() {
 	if *kubeconfig != "" && *kubeconfigDir != "" {
 		log.Fatalf("--kubeconfig and --kubeconfig-dir are mutually exclusive")
 	}
+	normalizedListenAddress, err := server.NormalizeListenAddress(*listenAddress)
+	if err != nil {
+		log.Fatalf("Invalid --listen-address %q: %v", *listenAddress, err)
+	}
 	timelineMaxSizeBytes, err := config.ParseByteSize(*timelineMaxSize)
 	if err != nil {
 		log.Fatalf("Invalid --timeline-max-size %q: %v", *timelineMaxSize, err)
 	}
 	noMCPFlagSet := false
+	namespaceFlagSet := false
+	namespacesFlagSet := false
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "no-mcp" {
+		switch f.Name {
+		case "no-mcp":
 			noMCPFlagSet = true
+		case "namespace":
+			namespaceFlagSet = true
+		case "namespaces":
+			namespacesFlagSet = true
 		}
 	})
 	if *mcpCatalogOnly && noMCPFlagSet && *noMCP {
@@ -191,6 +225,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid Prometheus header configuration: %v", err)
 	}
+	resolvedNamespace, resolvedNamespaces, err := app.ResolveNamespaceSelection(*namespace, *namespaces, namespaceFlagSet, namespacesFlagSet)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if *namespaceScope && len(resolvedNamespaces) > 1 {
+		log.Fatalf("--namespace-scope supports a single namespace; use --namespace instead of --namespaces with multiple values")
+	}
+	if *namespaceScope && len(resolvedNamespaces) == 1 {
+		resolvedNamespace = resolvedNamespaces[0]
+		resolvedNamespaces = nil
+	}
+	if len(resolvedNamespaces) > *maxScopeCandidates {
+		log.Fatalf("--namespaces lists %d namespaces but the RBAC probe fanout cap is %d; raise --max-scope-candidates (or RADAR_MAX_SCOPE_CANDIDATES) to cover all of them", len(resolvedNamespaces), *maxScopeCandidates)
+	}
 	mcpEnabled := !*noMCP
 	if *mcpCatalogOnly || *mcpCatalogStdio {
 		mcpEnabled = true
@@ -199,8 +247,11 @@ func main() {
 	cfg := app.AppConfig{
 		Kubeconfig:               *kubeconfig,
 		KubeconfigDirs:           app.ParseKubeconfigDirs(*kubeconfigDir),
-		Namespace:                *namespace,
+		Namespace:                resolvedNamespace,
+		Namespaces:               resolvedNamespaces,
 		Port:                     *port,
+		ListenAddress:            normalizedListenAddress,
+		ShowRemoteAccessHint:     true,
 		NoBrowser:                *noBrowser,
 		Browser:                  *browser,
 		DevMode:                  *devMode,
@@ -222,6 +273,8 @@ func main() {
 		PrometheusHeaders:        resolvedPrometheusHeaders,
 		PrometheusHeadersFromEnv: promHeadersFromEnv.value(),
 		MCPEnabled:               mcpEnabled,
+		AIHistory:                *aiHistory,
+		AIHistoryDBPath:          fileCfg.AIHistoryDBPath,
 		Version:                  version,
 		AuthConfig: auth.Config{
 			Mode:                      *authMode,
@@ -286,6 +339,19 @@ func main() {
 	}
 	k8s.LogTiming(" K8s client init: %v", time.Since(t))
 
+	// Provision the Argo CD integration from the environment (RADAR_ARGOCD_TOKEN
+	// or RADAR_ARGOCD_TOKEN_FILE) when set — for headless / in-cluster / Cloud
+	// deployments with no interactive Settings session. Runs before the server
+	// serves; inert when no token env is present (the local/UI path is unchanged).
+	// A misconfigured env credential is logged and skipped (fail-closed: no token
+	// is seeded, so the deep diff just falls back to annotation drift) rather than
+	// crashing Radar's core cluster-visibility over an optional integration.
+	if seeded, err := argocd.SeedFromEnvVars(); err != nil {
+		log.Printf("[argocd] ERROR: ignoring the environment Argo CD config: %v", err)
+	} else if seeded {
+		log.Printf("[argocd] integration provisioned from the environment (read-only in Settings)")
+	}
+
 	// Build timeline config and register callbacks
 	t = time.Now()
 	timelineStoreCfg := app.BuildTimelineStoreConfig(cfg)
@@ -302,18 +368,20 @@ func main() {
 
 	// Open browser — server is confirmed ready to accept connections
 	if !cfg.NoBrowser {
-		url := fmt.Sprintf("http://localhost:%d", cfg.Port)
-		if cfg.Namespace != "" {
-			url += fmt.Sprintf("?namespace=%s", cfg.Namespace)
+		targetURL := fmt.Sprintf("http://localhost:%d", cfg.Port)
+		if len(cfg.Namespaces) > 0 {
+			targetURL += "?namespaces=" + neturl.QueryEscape(strings.Join(cfg.Namespaces, ","))
+		} else if cfg.Namespace != "" {
+			targetURL += "?namespace=" + neturl.QueryEscape(cfg.Namespace)
 		}
-		go app.OpenBrowser(url, cfg.Browser)
+		go app.OpenBrowser(targetURL, cfg.Browser)
 	}
 
 	// Now initialize cluster connection and caches (browser will see progress via SSE)
 	app.InitializeCluster()
 	k8s.LogTiming(" Total startup (to connected): %v", time.Since(startupStart))
 
-	// When --cloud-url is set, dial out to Radar Cloud and serve the
+	// When --cloud-url is set, dial out to Radar Hub and serve the
 	// existing router over yamux-tunneled streams. No behavior change
 	// when empty.
 	if *cloudURL != "" {
@@ -335,14 +403,20 @@ func main() {
 			discoverCtx, cancel := context.WithTimeout(rootCtx, 3*time.Second)
 			apiServerURL := cloud.DiscoverAPIServerURL(discoverCtx, k8s.GetClient())
 			cancel()
+			namespace := os.Getenv("MY_POD_NAMESPACE")
+			deploymentName := os.Getenv("MY_DEPLOYMENT_NAME")
 			runErr := cloud.Run(rootCtx, cloud.Config{
 				URL:          *cloudURL,
 				Token:        *cloudToken,
 				ClusterID:    *cloudClusterName,
 				ClusterName:  *cloudClusterName,
-				Namespace:    os.Getenv("MY_POD_NAMESPACE"),
-				APIServerURL: apiServerURL,
-				Handler:      srv.Handler(),
+				Namespace:          namespace,
+				APIServerURL:       apiServerURL,
+				InsecureSkipVerify: *cloudInsecureSkipVerify,
+				// The chart sets both env vars only when rbac.selfUpgrade is
+				// enabled. Match handleSelfUpgrade's configuration gate exactly.
+				SelfUpgradeAvailable: namespace != "" && deploymentName != "",
+				Handler:              srv.Handler(),
 			})
 			if runErr != nil && !errors.Is(runErr, context.Canceled) {
 				log.Printf("[cloud] tunnel exited: %v", runErr)

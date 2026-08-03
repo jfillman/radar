@@ -53,6 +53,55 @@ helm upgrade --install radar skyhook/radar \
   --set ingress.tls[0].hosts[0]=radar.example.com
 ```
 
+### With Gateway API HTTPRoute
+
+HTTPRoute is disabled by default. Empty `httpRoute.rules` creates a `/`
+`PathPrefix` route to Radar's Service. The generated rule has no timeout by
+default, so the Gateway deployment's default timeout applies. Set
+`httpRoute.defaultTimeout` to add an explicit request timeout, or set it to
+`0s` to explicitly disable timeout. Set `rules` for multiple prefixes,
+timeouts, filters, or custom backends; supplied rules replace that default and
+pass through unchanged.
+
+```yaml
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: public-gateway
+  hostnames: []
+  # Optional timeout for chart-generated default rule.
+  # defaultTimeout: 30s
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+      timeouts:
+        request: 30s
+        backendRequest: 20s
+      backendRefs:
+        - name: radar
+          port: 9280
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /admin
+      timeouts:
+        request: 2m
+      backendRefs:
+        - name: radar
+          port: 9280
+```
+
+Override `httpRoute.apiVersion` when cluster Gateway API support requires a
+different version, for example `gateway.networking.k8s.io/v1beta1`. Custom
+rules can define their own `timeouts` independently.
+
+`httpRoute` and `ingress` are mutually exclusive - enabling both fails the
+render. `httpRoute.enabled` requires at least one `parentRefs` entry (the
+Gateway to attach to), otherwise the render fails rather than emit a route
+bound to no Gateway.
+
 ### Connecting to Radar Cloud
 
 To connect Radar to Radar Cloud (hosted SaaS), follow the install wizard at
@@ -77,6 +126,29 @@ applies to GitOps users: manage the Secret with SealedSecrets / SOPS /
 External Secrets and reference it via `cloud.existingSecret`; Helm never
 touches its contents.
 
+### Connecting to Argo CD (GitOps deep diff)
+
+Radar's GitOps pages show a Git-rendered desired-vs-live diff when connected to
+Argo CD's API. A self-hosted / in-cluster Radar can be given the token
+declaratively so it survives pod restarts and needs no interactive Settings paste:
+
+```bash
+# A read-only Argo CD account token is enough:
+#   argocd account generate-token --account radar
+kubectl create secret generic radar-argocd-token -n radar \
+  --from-literal=token=$ARGOCD_TOKEN \
+  --dry-run=client -o yaml | kubectl apply -f -
+helm upgrade --install radar skyhook/radar -n radar \
+  --set argocd.existingSecret=radar-argocd-token
+```
+
+Leave `argocd.url` unset to auto-discover the in-cluster `argocd-server`, or set
+it to pin an explicit endpoint. Providing a token makes the integration
+**environment-managed**: read-only in the Settings UI, never written to disk.
+Prefer `argocd.existingSecret` over the inline `argocd.token` so the token never
+lands in the Helm release state. Rotation requires a pod restart. See
+[docs/gitops.md](../../../docs/gitops.md#provisioning-the-token-per-deployment-shape).
+
 ## Configuration
 
 | Parameter | Description | Default |
@@ -90,6 +162,11 @@ touches its contents.
 | `listPageSize` | Paginate the initial LIST of high-cardinality kinds (Pods, ReplicaSets) on very large clusters; `0` = off, try `2000`. Only used when the apiserver lacks WatchList streaming. | `0` |
 | `ingress.enabled` | Enable ingress | `false` |
 | `ingress.className` | Ingress class name | `""` |
+| `httpRoute.enabled` | Enable Gateway API HTTPRoute | `false` |
+| `httpRoute.apiVersion` | HTTPRoute API version override | `gateway.networking.k8s.io/v1` |
+| `httpRoute.hostnames` | HTTPRoute hostnames | `[]` |
+| `httpRoute.defaultTimeout` | Optional request timeout for generated default rule; empty uses Gateway deployment default | `""` |
+| `httpRoute.rules` | HTTPRoute rules, passed through unchanged | `[]` |
 | `timeline.storage` | Timeline storage (memory/sqlite) | `memory` |
 | `timeline.retention` | SQLite retention (Go duration; `0` disables) | `168h` |
 | `timeline.maxSize` | SQLite max DB + WAL size before oldest events are pruned (`0` disables) | `800Mi` |
@@ -97,6 +174,11 @@ touches its contents.
 | `traffic.prometheusUrl` | Manual Prometheus/VictoriaMetrics URL (skips auto-discovery) | `""` |
 | `traffic.prometheusHeaders` | HTTP headers sent with every Prometheus request (auth-protected backends) | `{}` |
 | `traffic.prometheusHeadersFromEnv` | Prometheus headers sourced from environment variables, for secret-backed auth headers | `{}` |
+| `argocd.existingSecret` | Name of a Secret holding the Argo CD API token (recommended — keeps it out of the release) | `""` |
+| `argocd.existingSecretKey` | Key within `argocd.existingSecret` holding the token | `token` |
+| `argocd.token` | Inline Argo CD API token (dev only — lands in the release state) | `""` |
+| `argocd.url` | Explicit `argocd-server` URL; blank auto-discovers in-cluster | `""` |
+| `argocd.insecureTls` | Skip TLS verification for a self-signed `argocd-server` | `false` |
 | `resources.limits.memory` | Memory limit | `512Mi` |
 | `resources.requests.memory` | Memory request | `128Mi` |
 
@@ -146,9 +228,9 @@ Disabled by default for security:
 
 ### In-app Agent Upgrades (opt-in, for Radar Cloud users)
 
-`rbac.selfUpgrade: true` lets Radar Cloud trigger one-click upgrades from the web UI — no terminal or cloud credentials needed. Disabled by default; only needed when connecting to Radar Cloud (the install wizard sets this automatically).
+`rbac.selfUpgrade: true` lets a Radar Cloud organization owner trigger one-click upgrades from the web UI — no terminal or cloud credentials needed. It does not upgrade anything automatically. Disabled by default; only needed when connecting to Radar Cloud (the install wizard sets this automatically).
 
-It creates a namespace-scoped Role (not a ClusterRole) with `get` + `patch` on this Deployment only, enforced via `resourceNames`. The endpoint validates that the requested image comes from `ghcr.io/skyhook-io/radar` before issuing any patch.
+It creates a namespace-scoped Role (not a ClusterRole) with `get` + `patch` on this Deployment only, enforced via `resourceNames`. The endpoint requires an explicitly attributed Cloud `owner` role and validates the requested Radar tag. It preserves the repository already configured on the live container, including private mirrors.
 
 ```bash
 --set rbac.selfUpgrade=true
@@ -198,7 +280,7 @@ This overrides individual settings below. Simpler but broader — some orgs may 
 | `prometheus` | `monitoring.coreos.com` |
 | `reflector` | `reflector.v1.k8s.emberstack.com` |
 | `reloader` | `reloader.stakater.com` |
-| `sealedSecrets` | `sealed-secrets.bitnami.com` |
+| `sealedSecrets` | `bitnami.com` |
 | `strimzi` | `strimzi.io`, `kafka.strimzi.io` |
 | `tekton` | `tekton.dev` |
 | `traefik` | `traefik.io`, `traefik.containo.us` |

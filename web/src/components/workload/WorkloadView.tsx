@@ -1,6 +1,7 @@
 import { useMemo, useEffect, useCallback, useState } from 'react'
-import { useQueries } from '@tanstack/react-query'
+import { useQueries, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
+import { workloadPodAwaitsScheduling } from '../capacity/podDemandGate'
 import { clsx } from 'clsx'
 import { Terminal } from 'lucide-react'
 import {
@@ -12,39 +13,89 @@ import {
   type GitOpsOwnerRef,
   type GitOpsStatus,
   type HelmOwnerRef,
+  type AppRow,
+  type ResourceOwnershipContext,
+  type ServingResourceDetail,
+  type AuditFinding,
   gitOpsRouteForOwner,
   gitOpsOwnerFromRelationships,
   getGitOpsResourceStatus,
-  resolvedEnvFromKey,
 } from '@skyhook-io/k8s-ui'
-import type { SelectedResource, ResourceRef, Relationships, ResolvedEnvFrom } from '../../types'
-import { kindToPlural, buildWorkloadPath, type NavigateToResource } from '../../utils/navigation'
+import type { ServicePortRenderProps } from '@skyhook-io/k8s-ui/components/resources/renderers/ServiceRenderer'
+import type { SelectedResource, ResourceRef, Relationships } from '../../types'
 import {
-  useChanges, useResourceWithRelationships, usePodLogs, useTopology, useUpdateResource,
-  useDeleteResource, useTriggerCronJob, useSuspendCronJob, useResumeCronJob,
-  useRestartWorkload, useWorkloadRevisions, useRollbackWorkload,
-  useFluxReconcile, useFluxSyncWithSource, useFluxSuspend, useFluxResume,
-  useArgoSync, useArgoRefresh, useArgoSuspend, useArgoResume,
-  useCordonNode, useUncordonNode, useDrainNode,
+  kindToPlural,
+  pluralToKind,
+  relatedResourcePath,
+  type NavigateToResource,
+} from '../../utils/navigation'
+import {
+  useChanges,
+  useResourceWithRelationships,
+  usePodLogs,
+  useTopology,
+  useUpdateResource,
+  usePreviewResources,
+  useDeleteResource,
+  useTriggerCronJob,
+  useSuspendCronJob,
+  useResumeCronJob,
+  useRestartWorkload,
+  useWorkloadRevisions,
+  useRollbackWorkload,
+  useWorkloadPods,
+  useFluxReconcile,
+  useFluxSyncWithSource,
+  useFluxSuspend,
+  useFluxResume,
+  useArgoSync,
+  useArgoRefresh,
+  useArgoSuspend,
+  useArgoResume,
+  useCordonNode,
+  useUncordonNode,
+  useDrainNode,
   useCascadeDeletePreview,
   useResourceEvents,
   useResource,
+  useWorkloadRuns,
+  useApplications,
   fetchJSON,
+  fetchYamlSchemas,
 } from '../../api/client'
 import { PrometheusCharts, isPrometheusSupported } from '../resource/PrometheusCharts'
 import { PrometheusChartsGrid } from '../resource/PrometheusChartsGrid'
 import { RestartEventLane } from '../resource/RestartChart'
-import { RightsizingStrip } from '../resource/RightsizingStrip'
+import { RightsizingPanel, RightsizingStrip } from '../resource/RightsizingStrip'
+import { WorkloadCostTab } from '../cost/WorkloadCostTab'
+import { isOpenCostWorkloadKind } from '../cost/kinds'
 import { useResourceAudit, useResourceIssues, useResources } from '../../api/client'
 import { AuditAlerts, ResourceIssuesSection } from '@skyhook-io/k8s-ui'
 import { WorkloadLogsViewer } from '../logs/WorkloadLogsViewer'
+import { ScheduledWorkloadLogsViewer } from '../logs/ScheduledWorkloadLogsViewer'
 import { LogsViewer } from '../logs/LogsViewer'
-import { useCanUpdateSecrets, useCanNodeWrite, useNamespacedCapabilities, useIsLocalDeployment } from '../../contexts/CapabilitiesContext'
+import { BatchExecutionFullscreen } from '../execution/BatchExecutionView'
+import { workloadRunTimelineEvents } from '../execution/batch-timeline'
+import {
+  useCanUpdateSecrets,
+  useCanNodeWrite,
+  useNamespacedCapabilities,
+  useIsLocalDeployment,
+  useCapabilitiesContext,
+} from '../../contexts/CapabilitiesContext'
 import { useOpenTerminal, useOpenLogs, useOpenWorkloadLogs, useOpenNodeTerminal } from '../dock'
-import { PortForwardButton } from '../portforward/PortForwardButton'
+import { PortForwardButton, PortForwardInlineButton } from '../portforward/PortForwardButton'
+import {
+  CurlButton,
+  CurlPanel,
+  isHttpishPort,
+  defaultScheme,
+  defaultPathForPort,
+} from '../curl/ServiceCurlButton'
 import { useToast } from '../ui/Toast'
 import { Tooltip } from '../ui/Tooltip'
 import { PodRenderer } from '../resources/renderers/PodRenderer'
+import { KarpenterNodePoolRenderer } from '../resources/renderers/KarpenterNodePoolRenderer'
 import { NodeRenderer } from '../resources/renderers/NodeRenderer'
 import { ServiceRenderer } from '../resources/renderers/ServiceRenderer'
 import { WorkloadRenderer } from '../resources/renderers/WorkloadRenderer'
@@ -59,13 +110,28 @@ import { CreateResourceDialog } from '../shared/CreateResourceDialog'
 import { cleanYamlForDuplicate } from '../../utils/skeleton-yaml'
 import { useDesktopDownload } from '../../hooks/useDesktopDownload'
 import { useCompareLauncher } from '../compare/useCompareLauncher'
+import { useDiagnoseCustomization } from '../../context/DiagnoseCustomization'
 import { apiVersionToGroup } from '../../utils/navigation'
 
 type TabType = WorkloadTabType
+const BATCH_EXECUTION_KINDS = new Set([
+  'Job',
+  'CronJob',
+  'Workflow',
+  'CronWorkflow',
+  'WorkflowTemplate',
+  'ClusterWorkflowTemplate',
+  'ScaledJob',
+])
 
 // Stable reference — web renderer wrappers inject platform hooks internally
 const rendererOverrides: RendererOverrides = {
-  PodRenderer, NodeRenderer, ServiceRenderer, WorkloadRenderer, CompositeRenderer,
+  PodRenderer,
+  KarpenterNodePoolRenderer,
+  NodeRenderer,
+  ServiceRenderer,
+  WorkloadRenderer,
+  CompositeRenderer,
   ServiceAccountRenderer,
   RoleRenderer,
   RoleBindingRenderer,
@@ -97,7 +163,11 @@ export function WorkloadViewRoute({ onNavigateToResource }: WorkloadViewRoutePro
   // collapsed three-segment form (/workload/:kind/:name) for older links.
   const parts = location.pathname.replace(/^\//, '').split('/')
   const decode = (s: string): string => {
-    try { return decodeURIComponent(s) } catch { return s }
+    try {
+      return decodeURIComponent(s)
+    } catch {
+      return s
+    }
   }
   const kind = decode(parts[1] ?? '')
   let namespace: string
@@ -121,9 +191,12 @@ export function WorkloadViewRoute({ onNavigateToResource }: WorkloadViewRoutePro
     }
   }, [navigate])
 
-  const handleNavigate = useCallback((resource: SelectedResource) => {
-    navigate(buildWorkloadPath(resource))
-  }, [navigate])
+  const handleNavigate = useCallback(
+    (resource: SelectedResource) => {
+      navigate(relatedResourcePath(resource))
+    },
+    [navigate],
+  )
 
   // Hooks must run unconditionally — the invalid-URL guard comes after them.
   // Namespace is empty for cluster-scoped resources, so only kind + name are required.
@@ -169,6 +242,7 @@ interface WorkloadViewProps {
   onCancelExpandIntent?: () => void
   initialTab?: 'detail' | 'yaml'
   group?: string
+  pushTabHistory?: boolean
 }
 
 function useActionsBarProps(kind: string, namespace: string, name: string) {
@@ -191,7 +265,11 @@ function useActionsBarProps(kind: string, namespace: string, name: string) {
   const resumeCronJobMutation = useResumeCronJob()
 
   const isRollbackKind = ['deployments', 'statefulsets', 'daemonsets'].includes(kind.toLowerCase())
-  const { data: revisionsList, isLoading: revisionsLoading, error: revisionsError } = useWorkloadRevisions(kind.toLowerCase(), namespace, name, isRollbackKind)
+  const {
+    data: revisionsList,
+    isLoading: revisionsLoading,
+    error: revisionsError,
+  } = useWorkloadRevisions(kind.toLowerCase(), namespace, name, isRollbackKind)
 
   const fluxReconcileMutation = useFluxReconcile()
   const fluxSyncWithSourceMutation = useFluxSyncWithSource()
@@ -203,12 +281,19 @@ function useActionsBarProps(kind: string, namespace: string, name: string) {
   const argoSuspendMutation = useArgoSuspend()
   const argoResumeMutation = useArgoResume()
 
-  const { data: cascadePreview, isLoading: cascadeLoading } = useCascadeDeletePreview(kind, namespace, name, true)
+  const { data: cascadePreview, isLoading: cascadeLoading } = useCascadeDeletePreview(
+    kind,
+    namespace,
+    name,
+    true,
+  )
 
   const canNodeWrite = useCanNodeWrite()
   const cordonMutation = useCordonNode()
   const uncordonMutation = useUncordonNode()
   const drainMutation = useDrainNode()
+
+  const { renderAction: renderDiagnose } = useDiagnoseCustomization()
 
   return {
     canExec,
@@ -218,49 +303,80 @@ function useActionsBarProps(kind: string, namespace: string, name: string) {
     onOpenLogs: openLogs,
     onOpenWorkloadLogs: openWorkloadLogs,
     onOpenNodeTerminal: openNodeTerminal,
-    onCopyCommand: (text: string, message: string, event: React.MouseEvent) => showCopied(text, message, event),
-    renderPortForward: ({ type, namespace: ns, name: n, className }: { type: 'pod' | 'service'; namespace: string; name: string; className?: string }) => (
-      <PortForwardButton type={type} namespace={ns} name={n} className={className} />
-    ),
-    onDelete: (params: Parameters<typeof deleteMutation.mutate>[0], callbacks?: { onSuccess?: () => void }) => deleteMutation.mutate(params, { onSuccess: callbacks?.onSuccess }),
+    onCopyCommand: (text: string, message: string, event: React.MouseEvent) =>
+      showCopied(text, message, event),
+    renderPortForward: ({
+      type,
+      namespace: ns,
+      name: n,
+      className,
+    }: {
+      type: 'pod' | 'service'
+      namespace: string
+      name: string
+      className?: string
+    }) => <PortForwardButton type={type} namespace={ns} name={n} className={className} />,
+    renderDiagnose,
+    onDelete: (
+      params: Parameters<typeof deleteMutation.mutate>[0],
+      callbacks?: { onSuccess?: () => void },
+    ) => deleteMutation.mutate(params, { onSuccess: callbacks?.onSuccess }),
     isDeleting: deleteMutation.isPending,
     cascadeDependents: cascadePreview?.dependents,
     cascadeLoading,
-    onRestart: (params: Parameters<typeof restartWorkloadMutation.mutate>[0]) => restartWorkloadMutation.mutate(params),
+    onRestart: (params: Parameters<typeof restartWorkloadMutation.mutate>[0]) =>
+      restartWorkloadMutation.mutate(params),
     isRestarting: restartWorkloadMutation.isPending,
     revisions: revisionsList,
     revisionsLoading,
     revisionsError: revisionsError ?? null,
-    onRollback: (params: Parameters<typeof rollbackMutation.mutate>[0], callbacks?: { onSuccess?: () => void }) => rollbackMutation.mutate(params, { onSuccess: callbacks?.onSuccess }),
+    onRollback: (
+      params: Parameters<typeof rollbackMutation.mutate>[0],
+      callbacks?: { onSuccess?: () => void },
+    ) => rollbackMutation.mutate(params, { onSuccess: callbacks?.onSuccess }),
     isRollingBack: rollbackMutation.isPending,
-    onTriggerCronJob: (params: Parameters<typeof triggerCronJobMutation.mutate>[0]) => triggerCronJobMutation.mutate(params),
+    onTriggerCronJob: (params: Parameters<typeof triggerCronJobMutation.mutate>[0]) =>
+      triggerCronJobMutation.mutate(params),
     isTriggeringCronJob: triggerCronJobMutation.isPending,
-    onSuspendCronJob: (params: Parameters<typeof suspendCronJobMutation.mutate>[0]) => suspendCronJobMutation.mutate(params),
+    onSuspendCronJob: (params: Parameters<typeof suspendCronJobMutation.mutate>[0]) =>
+      suspendCronJobMutation.mutate(params),
     isSuspendingCronJob: suspendCronJobMutation.isPending,
-    onResumeCronJob: (params: Parameters<typeof resumeCronJobMutation.mutate>[0]) => resumeCronJobMutation.mutate(params),
+    onResumeCronJob: (params: Parameters<typeof resumeCronJobMutation.mutate>[0]) =>
+      resumeCronJobMutation.mutate(params),
     isResumingCronJob: resumeCronJobMutation.isPending,
-    onFluxReconcile: (params: Parameters<typeof fluxReconcileMutation.mutate>[0]) => fluxReconcileMutation.mutate(params),
+    onFluxReconcile: (params: Parameters<typeof fluxReconcileMutation.mutate>[0]) =>
+      fluxReconcileMutation.mutate(params),
     isFluxReconciling: fluxReconcileMutation.isPending,
-    onFluxSyncWithSource: (params: Parameters<typeof fluxSyncWithSourceMutation.mutate>[0]) => fluxSyncWithSourceMutation.mutate(params),
+    onFluxSyncWithSource: (params: Parameters<typeof fluxSyncWithSourceMutation.mutate>[0]) =>
+      fluxSyncWithSourceMutation.mutate(params),
     isFluxSyncing: fluxSyncWithSourceMutation.isPending,
-    onFluxSuspend: (params: Parameters<typeof fluxSuspendMutation.mutate>[0]) => fluxSuspendMutation.mutate(params),
+    onFluxSuspend: (params: Parameters<typeof fluxSuspendMutation.mutate>[0]) =>
+      fluxSuspendMutation.mutate(params),
     isFluxSuspending: fluxSuspendMutation.isPending,
-    onFluxResume: (params: Parameters<typeof fluxResumeMutation.mutate>[0]) => fluxResumeMutation.mutate(params),
+    onFluxResume: (params: Parameters<typeof fluxResumeMutation.mutate>[0]) =>
+      fluxResumeMutation.mutate(params),
     isFluxResuming: fluxResumeMutation.isPending,
-    onArgoSync: (params: Parameters<typeof argoSyncMutation.mutate>[0]) => argoSyncMutation.mutate(params),
+    onArgoSync: (params: Parameters<typeof argoSyncMutation.mutate>[0]) =>
+      argoSyncMutation.mutate(params),
     isArgoSyncing: argoSyncMutation.isPending,
-    onArgoRefresh: (params: Parameters<typeof argoRefreshMutation.mutate>[0]) => argoRefreshMutation.mutate(params),
+    onArgoRefresh: (params: Parameters<typeof argoRefreshMutation.mutate>[0]) =>
+      argoRefreshMutation.mutate(params),
     isArgoRefreshing: argoRefreshMutation.isPending,
-    onArgoSuspend: (params: Parameters<typeof argoSuspendMutation.mutate>[0]) => argoSuspendMutation.mutate(params),
+    onArgoSuspend: (params: Parameters<typeof argoSuspendMutation.mutate>[0]) =>
+      argoSuspendMutation.mutate(params),
     isArgoSuspending: argoSuspendMutation.isPending,
-    onArgoResume: (params: Parameters<typeof argoResumeMutation.mutate>[0]) => argoResumeMutation.mutate(params),
+    onArgoResume: (params: Parameters<typeof argoResumeMutation.mutate>[0]) =>
+      argoResumeMutation.mutate(params),
     isArgoResuming: argoResumeMutation.isPending,
     canNodeWrite,
-    onCordonNode: (params: Parameters<typeof cordonMutation.mutate>[0]) => cordonMutation.mutate(params),
+    onCordonNode: (params: Parameters<typeof cordonMutation.mutate>[0]) =>
+      cordonMutation.mutate(params),
     isCordoningNode: cordonMutation.isPending,
-    onUncordonNode: (params: Parameters<typeof uncordonMutation.mutate>[0]) => uncordonMutation.mutate(params),
+    onUncordonNode: (params: Parameters<typeof uncordonMutation.mutate>[0]) =>
+      uncordonMutation.mutate(params),
     isUncordoningNode: uncordonMutation.isPending,
-    onDrainNode: (params: Parameters<typeof drainMutation.mutate>[0]) => drainMutation.mutate(params),
+    onDrainNode: (params: Parameters<typeof drainMutation.mutate>[0]) =>
+      drainMutation.mutate(params),
     isDrainingNode: drainMutation.isPending,
   }
 }
@@ -270,36 +386,101 @@ export function WorkloadView({
   namespace,
   name,
   expanded = true,
+  pushTabHistory = false,
   ...rest
 }: WorkloadViewProps) {
   const [searchParams, setSearchParams] = useSearchParams()
+  const apiKind = kindToPlural(kindProp)
+  const queryClient = useQueryClient()
 
   // Tab state from URL query param — migrate legacy tab names
   const rawTab = searchParams.get('tab')
-  const migratedTab: TabType = rawTab === 'info' ? 'overview'
-    : rawTab === 'events' ? 'timeline'
-    : (rawTab as TabType) || 'overview'
+  const migratedTab: TabType =
+    rawTab === 'info'
+      ? 'overview'
+      : rawTab === 'events'
+        ? 'timeline'
+        : (rawTab as TabType) || 'overview'
 
-  const handleTabChange = useCallback((tab: TabType) => {
-    const params = new URLSearchParams(searchParams)
-    if (tab === 'overview') {
-      params.delete('tab')
-    } else {
-      params.set('tab', tab)
-    }
-    setSearchParams(params, { replace: true })
-  }, [searchParams, setSearchParams])
+  const handleTabChange = useCallback(
+    (tab: TabType, opts?: { replace?: boolean }) => {
+      const params = new URLSearchParams(searchParams)
+      if (tab === 'overview') {
+        params.delete('tab')
+      } else {
+        params.set('tab', tab)
+      }
+      setSearchParams(params, { replace: opts?.replace ?? !pushTabHistory })
+    },
+    [pushTabHistory, searchParams, setSearchParams],
+  )
+
+  const selectedRunKey = searchParams.get('run') ?? ''
+  const handleSelectedRunChange = useCallback(
+    (runKey: string) => {
+      const params = new URLSearchParams(searchParams)
+      if (runKey) params.set('run', runKey)
+      else params.delete('run')
+      setSearchParams(params, { replace: true })
+    },
+    [searchParams, setSearchParams],
+  )
+
+  const batchKind = pluralToKind(apiKind)
+  const batchExecution = BATCH_EXECUTION_KINDS.has(batchKind)
+  const batchRunsQuery = useWorkloadRuns(apiKind, namespace, name, expanded && batchExecution, {
+    refetchActive: true,
+    clusterScoped: batchKind === 'ClusterWorkflowTemplate',
+  })
+  const relatedTimelineEvents = useMemo(
+    () => workloadRunTimelineEvents(batchRunsQuery.data?.runs ?? []),
+    [batchRunsQuery.data?.runs],
+  )
 
   // Fetch resource with relationships
-  const { data: resourceResponse, isLoading: resourceLoading, error: resourceError, refetch: refetchResource } = useResourceWithRelationships<any>(kindProp, namespace, name, rest.group)
+  const {
+    data: resourceResponse,
+    isLoading: resourceLoading,
+    error: resourceError,
+    refetch: refetchResource,
+  } = useResourceWithRelationships<any>(apiKind, namespace, name, rest.group)
   const resource = resourceResponse?.resource
   const relationships = resourceResponse?.relationships
+  const refetchResourceAndRuns = useCallback(async () => {
+    await Promise.all([
+      refetchResource(),
+      queryClient.refetchQueries({
+        queryKey: ['workload-runs', apiKind, namespace, name],
+      }),
+    ])
+  }, [apiKind, name, namespace, queryClient, refetchResource])
+  const podWorkloadOwner = useMemo(
+    () => podWorkloadOwnerFromRelationships(apiKind, namespace, relationships, resource),
+    [apiKind, namespace, relationships, resource],
+  )
+  const podOwnerAppsQuery = useApplications(
+    podWorkloadOwner?.namespace ? [podWorkloadOwner.namespace] : [],
+    { enabled: Boolean(podWorkloadOwner?.namespace) },
+  )
+  const ownershipContext = useMemo(
+    () => buildPodOwnershipContext(podWorkloadOwner, podOwnerAppsQuery.data?.applications),
+    [podWorkloadOwner, podOwnerAppsQuery.data?.applications],
+  )
   const certificateInfo = resourceResponse?.certificateInfo
   const hpaDiagnosis = resourceResponse?.hpaDiagnosis
-  const relationshipGitopsOwner = useMemo(() => gitOpsOwnerFromRelationships(relationships), [relationships])
+  const relationshipGitopsOwner = useMemo(
+    () => gitOpsOwnerFromRelationships(relationships),
+    [relationships],
+  )
   const inheritedGitOpsLookupRef = useMemo(
-    () => findInheritedGitOpsLookupRef(relationships, relationshipGitopsOwner, { kind: kindProp, namespace, name, group: rest.group }),
-    [relationships, relationshipGitopsOwner, kindProp, namespace, name, rest.group],
+    () =>
+      findInheritedGitOpsLookupRef(relationships, relationshipGitopsOwner, {
+        kind: apiKind,
+        namespace,
+        name,
+        group: rest.group,
+      }),
+    [relationships, relationshipGitopsOwner, apiKind, namespace, name, rest.group],
   )
   const inheritedGitOpsResponse = useResourceWithRelationships<any>(
     inheritedGitOpsLookupRef ? kindToPlural(inheritedGitOpsLookupRef.kind) : '',
@@ -312,19 +493,34 @@ export function WorkloadView({
     [inheritedGitOpsResponse.data?.relationships],
   )
   const relationshipHelmOwner = useMemo(
-    () => nativeHelmOwnerFromRelationships(relationships, resource?.metadata?.namespace ?? namespace),
+    () =>
+      nativeHelmOwnerFromRelationships(relationships, resource?.metadata?.namespace ?? namespace),
     [relationships, resource?.metadata?.namespace, namespace],
   )
   const inheritedHelmOwner = useMemo(
-    () => nativeHelmOwnerFromRelationships(inheritedGitOpsResponse.data?.relationships, inheritedGitOpsResponse.data?.resource?.metadata?.namespace ?? namespace),
-    [inheritedGitOpsResponse.data?.relationships, inheritedGitOpsResponse.data?.resource?.metadata?.namespace, namespace],
+    () =>
+      nativeHelmOwnerFromRelationships(
+        inheritedGitOpsResponse.data?.relationships,
+        inheritedGitOpsResponse.data?.resource?.metadata?.namespace ?? namespace,
+      ),
+    [
+      inheritedGitOpsResponse.data?.relationships,
+      inheritedGitOpsResponse.data?.resource?.metadata?.namespace,
+      namespace,
+    ],
   )
   const rawGitopsOwner = relationshipGitopsOwner ?? inheritedGitopsOwner
-  const gitOpsSourceResource = relationshipGitopsOwner ? resource : inheritedGitOpsResponse.data?.resource
+  const gitOpsSourceResource = relationshipGitopsOwner
+    ? resource
+    : inheritedGitOpsResponse.data?.resource
   const helmOwner = relationshipHelmOwner ?? inheritedHelmOwner
-  const helmSourceResource = relationshipHelmOwner ? resource : inheritedGitOpsResponse.data?.resource
+  const helmSourceResource = relationshipHelmOwner
+    ? resource
+    : inheritedGitOpsResponse.data?.resource
   const shouldResolveArgoOwner = rawGitopsOwner?.tool === 'argocd' && !rawGitopsOwner.namespace
-  const { data: argoApplications } = useResources<any>('applications', undefined, 'argoproj.io', { enabled: shouldResolveArgoOwner })
+  const { data: argoApplications } = useResources<any>('applications', undefined, 'argoproj.io', {
+    enabled: shouldResolveArgoOwner,
+  })
   const gitopsOwner = useMemo(
     () => resolveGitOpsOwner(rawGitopsOwner, argoApplications),
     [rawGitopsOwner, argoApplications],
@@ -342,7 +538,9 @@ export function WorkloadView({
     [gitopsOwner, gitopsOwnerQuery.data],
   )
   const gitOpsOwnerVerified = Boolean(gitopsOwner?.namespace && gitopsOwnerQuery.data)
-  const gitOpsOwnerPending = Boolean(gitopsOwner?.namespace && gitopsOwnerQuery.isLoading && !gitopsOwnerQuery.data)
+  const gitOpsOwnerPending = Boolean(
+    gitopsOwner?.namespace && gitopsOwnerQuery.isLoading && !gitopsOwnerQuery.data,
+  )
   const gitOpsOwnerSource = useMemo(
     () => describeGitOpsOwnerSource(rawGitopsOwner, gitOpsSourceResource),
     [rawGitopsOwner, gitOpsSourceResource],
@@ -352,63 +550,10 @@ export function WorkloadView({
     [helmOwner, helmSourceResource],
   )
 
-  // For pods: extract envFrom ConfigMap/Secret names and resolve their keys
-  const isPod = kindProp.toLowerCase() === 'pods'
-  const { envFromConfigMapNames, envFromSecretNames } = useMemo(() => {
-    if (!isPod || !resource) return { envFromConfigMapNames: [] as string[], envFromSecretNames: [] as string[] }
-    const cmNames = new Set<string>()
-    const secretNames = new Set<string>()
-    const containers = [...(resource.spec?.containers || []), ...(resource.spec?.initContainers || [])]
-    for (const c of containers) {
-      for (const ef of (c.envFrom || [])) {
-        if (ef.configMapRef?.name) cmNames.add(ef.configMapRef.name)
-        if (ef.secretRef?.name) secretNames.add(ef.secretRef.name)
-      }
-    }
-    return { envFromConfigMapNames: Array.from(cmNames), envFromSecretNames: Array.from(secretNames) }
-  }, [isPod, resource])
-
-  const configMapQueries = useQueries({
-    queries: envFromConfigMapNames.map((cmName) => ({
-      queryKey: ['resources', 'configmaps', namespace, cmName],
-      queryFn: () => fetchJSON<any>(`/resources/configmaps/${namespace}/${cmName}`),
-      enabled: isPod,
-      staleTime: 30000,
-    })),
-  })
-
-  const secretQueries = useQueries({
-    queries: envFromSecretNames.map((secretName) => ({
-      queryKey: ['resources', 'secrets', namespace, secretName],
-      queryFn: () => fetchJSON<any>(`/resources/secrets/${namespace}/${secretName}`),
-      enabled: isPod,
-      staleTime: 30000,
-    })),
-  })
-
-  const resolvedEnvFrom = useMemo(() => {
-    if (!isPod || (envFromConfigMapNames.length === 0 && envFromSecretNames.length === 0)) return undefined
-    const result: ResolvedEnvFrom = {}
-    envFromConfigMapNames.forEach((n, i) => {
-      // Single-resource endpoint returns { resource, relationships } wrapper
-      const cm = configMapQueries[i]?.data?.resource ?? configMapQueries[i]?.data
-      if (cm) result[resolvedEnvFromKey('configmap', n)] = { keys: Object.keys(cm.data || {}), values: cm.data || {}, isSecret: false }
-    })
-    envFromSecretNames.forEach((n, i) => {
-      const secret = secretQueries[i]?.data?.resource ?? secretQueries[i]?.data
-      if (secret) {
-        const decodedValues: Record<string, string> = {}
-        for (const [k, v] of Object.entries(secret.data || {})) {
-          try { decodedValues[k] = atob(v as string) } catch { decodedValues[k] = v as string }
-        }
-        result[resolvedEnvFromKey('secret', n)] = { keys: Object.keys(decodedValues), values: decodedValues, isSecret: true }
-      }
-    })
-    return Object.keys(result).length > 0 ? result : undefined
-  }, [isPod, envFromConfigMapNames, envFromSecretNames, configMapQueries, secretQueries])
-
   // Fetch topology for hierarchy building (only when expanded)
-  const { data: topology } = useTopology([namespace], 'resources', { enabled: expanded })
+  const { data: topology } = useTopology([namespace], 'resources', {
+    enabled: expanded,
+  })
 
   // Always fetched so Recent Events populates on drawer open; allEvents below is
   // gated on expanded because it's namespace-wide and expensive.
@@ -418,7 +563,7 @@ export function WorkloadView({
     isLoading: resourceFocusedEventsLoading,
     k8sError: resourceFocusedK8sError,
     updatesError: resourceFocusedUpdatesError,
-  } = useResourceEvents(kindProp, namespace, name)
+  } = useResourceEvents(apiKind, namespace, name)
 
   // Fetch all events for this resource's namespace (only when expanded)
   const { data: allEvents, isLoading: eventsLoading } = useChanges({
@@ -432,8 +577,82 @@ export function WorkloadView({
 
   // RBAC
   const canUpdateSecrets = useCanUpdateSecrets()
+  const { features, karpenter } = useCapabilitiesContext()
+  const { canPortForward } = useNamespacedCapabilities(namespace)
+  const isLocalDeployment = useIsLocalDeployment()
+  const showServingPortForward = canPortForward || !isLocalDeployment
+  const showServingCurl = !isLocalDeployment
+  const [servingCurl, setServingCurl] = useState<{
+    namespace: string
+    serviceName: string
+    port: number
+    closing: boolean
+  } | null>(null)
+  const closeServingCurl = useCallback(() => {
+    setServingCurl((p) => (p ? { ...p, closing: true } : null))
+    window.setTimeout(() => setServingCurl((p) => (p?.closing ? null : p)), 220)
+  }, [])
+  const renderServicePortAction = useCallback(
+    (props: ServicePortRenderProps) => {
+      const active =
+        servingCurl?.namespace === props.namespace &&
+        servingCurl?.serviceName === props.serviceName &&
+        servingCurl?.port === props.port &&
+        !servingCurl.closing
+      return (
+        <>
+          {showServingCurl &&
+            isHttpishPort(props.port, props.name, props.appProtocol, props.protocol) && (
+              <CurlButton
+                active={active}
+                onClick={() => {
+                  if (active) closeServingCurl()
+                  else
+                    setServingCurl({
+                      namespace: props.namespace,
+                      serviceName: props.serviceName,
+                      port: props.port,
+                      closing: false,
+                    })
+                }}
+              />
+            )}
+          {showServingPortForward && (
+            <PortForwardInlineButton
+              namespace={props.namespace}
+              serviceName={props.serviceName}
+              port={props.port}
+              protocol={props.protocol}
+            />
+          )}
+        </>
+      )
+    },
+    [closeServingCurl, servingCurl, showServingCurl, showServingPortForward],
+  )
+  const renderServicePortPanel = useCallback(
+    (props: ServicePortRenderProps) => {
+      const active =
+        servingCurl?.namespace === props.namespace &&
+        servingCurl?.serviceName === props.serviceName &&
+        servingCurl?.port === props.port
+      return active ? (
+        <CurlPanel
+          namespace={props.namespace}
+          serviceName={props.serviceName}
+          port={props.port}
+          initialScheme={defaultScheme(props.port, props.name, props.appProtocol)}
+          initialPath={defaultPathForPort(props.port, props.name, props.appProtocol)}
+          open={!servingCurl.closing}
+          onClose={closeServingCurl}
+        />
+      ) : null
+    },
+    [closeServingCurl, servingCurl],
+  )
   const updateResource = useUpdateResource()
-  const baseActionsBarProps = useActionsBarProps(kindProp, namespace, name)
+  const previewResources = usePreviewResources()
+  const baseActionsBarProps = useActionsBarProps(apiKind, namespace, name)
   const desktopDownload = useDesktopDownload()
 
   const resourceGroup = useMemo(
@@ -443,14 +662,20 @@ export function WorkloadView({
   // Live Operational Issues for this resource. Fetched here (not inside the lead
   // render-prop) so the count also gates `hasOperationalIssues` — which tells the
   // renderers to suppress their own status-derived problems and avoid duplicates.
-  // Keyed on the STABLE prop kind+group (same inputs as the resource fetch above),
+  // Keyed on the stable API kind+group (same inputs as the resource fetch above),
   // NOT the manifest-derived ones: deriving kind/group from the loaded resource
   // would flip the query key when the manifest arrives, drop liveIssues, and flash
   // the renderer banners. The backend canonicalizes a plural kind via discovery,
-  // so passing the route's plural kindProp resolves correctly.
-  const { data: liveIssues } = useResourceIssues(kindProp, rest.group, namespace, name)
-  const { onCompareTo, onCompareAcrossClusters, picker: comparePicker } = useCompareLauncher({
-    kind: kindProp,
+  // so using the normalized API kind resolves direct links and app navigation alike.
+  const { data: liveIssues, isPending: issuesPending } = useResourceIssues(apiKind, rest.group, namespace, name)
+  const { data: auditFindings } = useResourceAudit(apiKind, namespace, name)
+  const hasOperationalIssues = Boolean(liveIssues?.length)
+  const {
+    onCompareTo,
+    onCompareAcrossClusters,
+    picker: comparePicker,
+  } = useCompareLauncher({
+    kind: apiKind,
     namespace,
     name,
     // Prefer the URL-supplied group so Compare works even before the resource
@@ -463,9 +688,17 @@ export function WorkloadView({
     [baseActionsBarProps, onCompareTo, onCompareAcrossClusters],
   )
 
-  const handleUpdateResource = useCallback(async (params: { kind: string; namespace: string; name: string; yaml: string }) => {
-    await updateResource.mutateAsync(params)
-  }, [updateResource])
+  const handleUpdateResource = useCallback(
+    async (params: Parameters<typeof updateResource.mutateAsync>[0]) => {
+      await updateResource.mutateAsync(params)
+    },
+    [updateResource],
+  )
+  const handlePreviewResource = useCallback(
+    async (params: Parameters<typeof previewResources.mutateAsync>[0]) =>
+      previewResources.mutateAsync(params),
+    [previewResources],
+  )
 
   const navigateRouter = useNavigate()
   const handleOpenGitOpsResource = useCallback(
@@ -473,7 +706,10 @@ export function WorkloadView({
       const params = new URLSearchParams()
       const namespaces = searchParams.get('namespaces')
       if (namespaces) params.set('namespaces', namespaces)
-      navigateRouter({ pathname: gitOpsRouteForOwner(ref), search: params.toString() })
+      navigateRouter({
+        pathname: gitOpsRouteForOwner(ref),
+        search: params.toString(),
+      })
     },
     [navigateRouter, searchParams],
   )
@@ -491,113 +727,264 @@ export function WorkloadView({
     },
     [navigateRouter, searchParams],
   )
+  const handleOpenApplication = useCallback(
+    (appKey: string) => {
+      const params = new URLSearchParams()
+      const namespaces = new Set(
+        (searchParams.get('namespaces') ?? '')
+          .split(',')
+          .map((ns) => ns.trim())
+          .filter(Boolean),
+      )
+      if (ownershipContext?.application?.key === appKey && ownershipContext.workload.namespace) {
+        namespaces.add(ownershipContext.workload.namespace)
+      }
+      if (namespaces.size > 0) params.set('namespaces', Array.from(namespaces).join(','))
+      params.set('app', appKey)
+      navigateRouter({ pathname: '/applications', search: params.toString() })
+    },
+    [navigateRouter, ownershipContext, searchParams],
+  )
 
   // Duplicate dialog
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false)
   const [duplicateYaml, setDuplicateYaml] = useState('')
 
-  const handleDuplicate = useCallback((params: { kind: string; namespace: string; name: string; yaml: string }) => {
-    setDuplicateYaml(cleanYamlForDuplicate(params.yaml))
-    setDuplicateDialogOpen(true)
-  }, [])
+  const handleDuplicate = useCallback(
+    (params: { kind: string; namespace: string; name: string; yaml: string }) => {
+      setDuplicateYaml(cleanYamlForDuplicate(params.yaml))
+      setDuplicateDialogOpen(true)
+    },
+    [],
+  )
+
+  const supportsWorkloadPods = ['deployments', 'statefulsets', 'daemonsets'].includes(apiKind)
+  const workloadPodsQuery = useWorkloadPods(supportsWorkloadPods ? apiKind : '', namespace, name)
+  const workloadAwaitsCapacity =
+    karpenter?.state === 'available' &&
+    (workloadPodsQuery.data?.pods ?? []).some(workloadPodAwaitsScheduling)
+  const servingRefs = useMemo(() => collectServingRefs(relationships), [relationships])
+  const servingQueries = useQueries({
+    queries: servingRefs.map((ref) => {
+      const pluralKind = kindToPlural(ref.kind)
+      const ns = ref.namespace || '_'
+      const params = new URLSearchParams()
+      if (ref.group) params.set('group', ref.group)
+      const queryString = params.toString()
+      return {
+        queryKey: ['resource', pluralKind, ref.namespace, ref.name, ref.group],
+        queryFn: () =>
+          fetchJSON<any>(
+            `/resources/${pluralKind}/${ns}/${ref.name}${queryString ? `?${queryString}` : ''}`,
+          ),
+        enabled: expanded && Boolean(ref.kind && ref.name),
+        staleTime: 30000,
+      }
+    }),
+  })
+  const servingResources = useMemo<ServingResourceDetail[]>(
+    () =>
+      servingRefs.map((ref, index) => {
+        const query = servingQueries[index]
+        const data = query?.data?.resource ?? query?.data
+        return {
+          ref,
+          resource: data,
+          loading: query?.isLoading ?? false,
+          error: (query?.error as Error | null) ?? null,
+        }
+      }),
+    [servingRefs, servingQueries],
+  )
 
   return (
     <>
-    <BaseWorkloadView
-      kind={kindProp}
-      namespace={namespace}
-      name={name}
-      expanded={expanded}
-      {...rest}
-      // Data
-      resource={resource}
-      relationships={relationships}
-      certificateInfo={certificateInfo}
-      hpaDiagnosis={hpaDiagnosis}
-      isLoading={resourceLoading}
-      resourceError={resourceError}
-      refetch={refetchResource}
-      // Timeline
-      allEvents={allEvents}
-      eventsLoading={eventsLoading}
-      topology={topology}
-      resourceFocusedK8sEvents={resourceFocusedK8sEvents}
-      resourceFocusedUpdates={resourceFocusedUpdates}
-      resourceFocusedEventsLoading={resourceFocusedEventsLoading}
-      resourceFocusedK8sError={resourceFocusedK8sError}
-      resourceFocusedUpdatesError={resourceFocusedUpdatesError}
-      // Capabilities
-      canUpdateSecrets={canUpdateSecrets}
-      // Mutations
-      onUpdateResource={handleUpdateResource}
-      isUpdatingResource={updateResource.isPending}
-      updateResourceError={updateResource.error?.message ?? null}
-      // Tab state (URL-synced)
-      activeTab={migratedTab}
-      onTabChange={handleTabChange}
-      // Render props
-      renderLogsTab={(props) => <LogsTabContent {...props} />}
-      renderRelatedYaml={(ref) => <RelatedResourceYaml key={`${ref.kind}/${ref.namespace}/${ref.name}`} target={ref} />}
-      renderMetricsTab={({ kind, namespace: ns, name: n }) => (
-        <MetricsTabContent kind={kind} namespace={ns} name={n} resource={resource} expanded={expanded} />
-      )}
-      isMetricsAvailable={(kind, res) =>
-        isPrometheusSupported(kind) && !(kind === 'Pod' && res?.status?.phase === 'Pending')
-      }
-      onDuplicate={handleDuplicate}
-      onDownload={desktopDownload}
-      actionsBarProps={actionsBarProps}
-      rendererOverrides={rendererOverrides}
-      resolvedEnvFrom={resolvedEnvFrom}
-      renderOverviewExtra={({ kind: k, namespace: ns, name: n }) => (
-        <>
-          <AuditSection kind={k} namespace={ns} name={n} />
-          <FluxSourceConsumersSection kind={k} namespace={ns} name={n} />
-        </>
-      )}
-      renderOverviewLead={() => (
-        <ResourceIssuesSection
-          issues={liveIssues}
-          onResourceClick={
-            rest.onNavigateToResource
-              ? (ref) =>
-                  rest.onNavigateToResource?.({
-                    kind: kindToPlural(ref.kind),
-                    namespace: ref.namespace ?? '',
-                    name: ref.name,
-                    group: ref.group ?? '',
-                  })
-              : undefined
-          }
-        />
-      )}
-      hasOperationalIssues={!!liveIssues?.length}
-      onOpenGitOpsResource={gitopsOwnerQuery.data ? handleOpenGitOpsResource : undefined}
-      resolvedGitOpsOwner={gitopsOwner}
-      gitOpsOwnerVerified={gitOpsOwnerVerified}
-      gitOpsOwnerPending={gitOpsOwnerPending}
-      gitOpsOwnerSource={gitOpsOwnerSource}
-      gitOpsOwnerStatus={gitOpsOwnerStatus}
-      helmOwner={helmOwner}
-      helmOwnerSource={helmOwnerSource}
-      onOpenHelmRelease={handleOpenHelmRelease}
-      onNavigateGitOpsPath={handleNavigateGitOpsPath}
-    />
-    <CreateResourceDialog
-      open={duplicateDialogOpen}
-      onClose={() => setDuplicateDialogOpen(false)}
-      initialYaml={duplicateYaml}
-      title="Duplicate Resource"
-      onCreated={(result) => {
-        rest.onNavigateToResource?.({ kind: kindToPlural(result.kind), namespace: result.namespace, name: result.name, group: '' })
-      }}
-    />
-    {comparePicker}
+      <BaseWorkloadView
+        kind={apiKind}
+        namespace={namespace}
+        name={name}
+        expanded={expanded}
+        {...rest}
+        // Data
+        resource={resource}
+        relationships={relationships}
+        ownershipContext={ownershipContext}
+        onOpenApplication={handleOpenApplication}
+        certificateInfo={certificateInfo}
+        hpaDiagnosis={hpaDiagnosis}
+        workloadPods={supportsWorkloadPods ? workloadPodsQuery.data?.pods : undefined}
+        onEvaluateCapacity={
+          workloadAwaitsCapacity
+            ? () =>
+                navigateRouter(
+                  `/capacity/demand?owner=${encodeURIComponent(`${namespace}/${pluralToKind(apiKind)}/${name}`)}`,
+                )
+            : undefined
+        }
+        workloadPodsLoading={supportsWorkloadPods ? workloadPodsQuery.isLoading : false}
+        workloadPodsError={supportsWorkloadPods ? (workloadPodsQuery.error as Error | null) : null}
+        servingResources={servingResources}
+        renderServicePortAction={renderServicePortAction}
+        renderServicePortPanel={renderServicePortPanel}
+        isLoading={resourceLoading}
+        resourceError={resourceError}
+        refetch={refetchResourceAndRuns}
+        // Timeline
+        allEvents={allEvents}
+        relatedTimelineEvents={relatedTimelineEvents}
+        eventsLoading={eventsLoading || (batchExecution && batchRunsQuery.isLoading)}
+        topology={topology}
+        resourceFocusedK8sEvents={resourceFocusedK8sEvents}
+        resourceFocusedUpdates={resourceFocusedUpdates}
+        resourceFocusedEventsLoading={resourceFocusedEventsLoading}
+        resourceFocusedK8sError={resourceFocusedK8sError}
+        resourceFocusedUpdatesError={resourceFocusedUpdatesError}
+        // Capabilities
+        canUpdateSecrets={canUpdateSecrets}
+        // Mutations
+        onUpdateResource={handleUpdateResource}
+        isUpdatingResource={updateResource.isPending}
+        updateResourceError={updateResource.error?.message ?? null}
+        onPreviewResource={features?.yamlReview ? handlePreviewResource : undefined}
+        isPreviewingResource={previewResources.isPending}
+        previewResourceError={previewResources.error?.message ?? null}
+        yamlSchemaLoader={features?.yamlSchemas ? fetchYamlSchemas : undefined}
+        // Tab state (URL-synced)
+        activeTab={migratedTab}
+        onTabChange={handleTabChange}
+        // Render props
+        renderLogsTab={(props) => (
+          <LogsTabContent
+            {...props}
+            selectedRunKey={selectedRunKey}
+            onSelectRun={handleSelectedRunChange}
+          />
+        )}
+        renderExpandedOverview={({ kind: k, apiKind, namespace: ns, name: n, resource: res }) =>
+          BATCH_EXECUTION_KINDS.has(k) && res ? (
+            <BatchExecutionFullscreen
+              kind={k}
+              apiKind={apiKind}
+              namespace={ns}
+              name={n}
+              resource={res}
+              selectedRunKey={selectedRunKey}
+              canViewLogs={baseActionsBarProps.canViewLogs}
+              onSelectRun={handleSelectedRunChange}
+              onSwitchToLogs={() => handleTabChange('logs')}
+              onSwitchToTimeline={() => handleTabChange('timeline')}
+              onNavigateToResource={rest.onNavigateToResource}
+            />
+          ) : null
+        }
+        renderRelatedYaml={(ref) => (
+          <RelatedResourceYaml key={`${ref.kind}/${ref.namespace}/${ref.name}`} target={ref} />
+        )}
+        renderMetricsTab={({ kind, namespace: ns, name: n }) => (
+          <MetricsTabContent
+            kind={kind}
+            namespace={ns}
+            name={n}
+            resource={resource}
+            expanded={expanded}
+          />
+        )}
+        renderCostTab={({ kind, namespace: ns, name: n }) => (
+          <div className="space-y-4">
+            <RightsizingPanel kind={kind} namespace={ns} name={n} />
+            <WorkloadCostTab kind={kind} namespace={ns} name={n} />
+          </div>
+        )}
+        isMetricsAvailable={(kind, res) =>
+          isPrometheusSupported(kind) && !(kind === 'Pod' && res?.status?.phase === 'Pending')
+        }
+        isCostAvailable={(kind) => isOpenCostWorkloadKind(kind)}
+        onDuplicate={handleDuplicate}
+        onDownload={desktopDownload}
+        actionsBarProps={actionsBarProps}
+        rendererOverrides={rendererOverrides}
+        renderOverviewExtra={({ kind: k, namespace: ns, name: n }) => (
+          <>
+            <FluxSourceConsumersSection kind={k} namespace={ns} name={n} />
+            <AuditOverviewSection
+              findings={auditFindings ?? []}
+              onViewAll={() => navigateRouter('/checks')}
+            />
+          </>
+        )}
+        renderOverviewLead={() => (
+          <ResourceIssuesSection
+            issues={liveIssues}
+            subjectResource={{ kind: apiKind, namespace, name, group: rest.group }}
+            onResourceClick={
+              rest.onNavigateToResource
+                ? (ref) =>
+                    rest.onNavigateToResource?.({
+                      kind: kindToPlural(ref.kind),
+                      namespace: ref.namespace ?? '',
+                      name: ref.name,
+                      group: ref.group ?? '',
+                    })
+                : undefined
+            }
+          />
+        )}
+        hasOperationalIssues={hasOperationalIssues}
+        operationalIssuesPending={issuesPending}
+        onOpenGitOpsResource={gitopsOwnerQuery.data ? handleOpenGitOpsResource : undefined}
+        resolvedGitOpsOwner={gitopsOwner}
+        gitOpsOwnerVerified={gitOpsOwnerVerified}
+        gitOpsOwnerPending={gitOpsOwnerPending}
+        gitOpsOwnerSource={gitOpsOwnerSource}
+        gitOpsOwnerStatus={gitOpsOwnerStatus}
+        helmOwner={helmOwner}
+        helmOwnerSource={helmOwnerSource}
+        onOpenHelmRelease={handleOpenHelmRelease}
+        onNavigateGitOpsPath={handleNavigateGitOpsPath}
+      />
+      <CreateResourceDialog
+        open={duplicateDialogOpen}
+        onClose={() => setDuplicateDialogOpen(false)}
+        initialYaml={duplicateYaml}
+        title="Duplicate Resource"
+        onCreated={(result) => {
+          rest.onNavigateToResource?.({
+            kind: kindToPlural(result.kind),
+            namespace: result.namespace,
+            name: result.name,
+            group: '',
+          })
+        }}
+      />
+      {comparePicker}
     </>
   )
 }
 
-function resolveGitOpsOwner(owner: GitOpsOwnerRef | null, argoApplications: any[] | undefined): GitOpsOwnerRef | null {
+function collectServingRefs(relationships: Relationships | undefined): ResourceRef[] {
+  if (!relationships) return []
+  return dedupeRefs([
+    ...(relationships.services ?? []),
+    ...(relationships.ingresses ?? []),
+    ...(relationships.gateways ?? []),
+    ...(relationships.routes ?? []),
+  ])
+}
+
+function dedupeRefs(refs: ResourceRef[]): ResourceRef[] {
+  const seen = new Set<string>()
+  return refs.filter((ref) => {
+    const key = `${ref.kind}/${ref.namespace}/${ref.name}/${ref.group ?? ''}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function resolveGitOpsOwner(
+  owner: GitOpsOwnerRef | null,
+  argoApplications: any[] | undefined,
+): GitOpsOwnerRef | null {
   if (!owner || owner.namespace || owner.tool !== 'argocd') return owner
   const matches = (argoApplications ?? []).filter((app) => app?.metadata?.name === owner.name)
   if (matches.length !== 1) return owner
@@ -611,9 +998,8 @@ function findInheritedGitOpsLookupRef(
   current: ResourceRef,
 ): ResourceRef | null {
   if (directOwner) return null
-  const inheritedManagerRefs = (relationships?.managedBy ?? []).filter((ref) =>
-    !gitOpsOwnerFromRelationships({ managedBy: [ref] })
-    && !isNativeHelmManager(ref)
+  const inheritedManagerRefs = (relationships?.managedBy ?? []).filter(
+    (ref) => !gitOpsOwnerFromRelationships({ managedBy: [ref] }) && !isNativeHelmManager(ref),
   )
   const candidates = [
     relationships?.deployment,
@@ -624,7 +1010,89 @@ function findInheritedGitOpsLookupRef(
   return candidates.find((ref) => !isCurrentResource(ref, current)) ?? null
 }
 
-function nativeHelmOwnerFromRelationships(relationships: Relationships | undefined, fallbackNamespace: string): HelmOwnerRef | null {
+const POD_OWNERSHIP_WORKLOAD_KINDS = new Set([
+  'deployments',
+  'statefulsets',
+  'daemonsets',
+  'jobs',
+  'cronjobs',
+  'rollouts',
+])
+
+function podWorkloadOwnerFromRelationships(
+  kind: string,
+  namespace: string,
+  relationships: Relationships | undefined,
+  resource: any,
+): ResourceRef | null {
+  if (kindToPlural(kind).toLowerCase() !== 'pods') return null
+
+  if (relationships?.deployment) return relationships.deployment
+
+  const managedWorkload = relationships?.managedBy?.find((ref) => isPodOwnershipWorkloadRef(ref))
+  if (managedWorkload) return managedWorkload
+
+  if (relationships?.owner && isPodOwnershipWorkloadRef(relationships.owner))
+    return relationships.owner
+
+  return podControllerOwnerFromMetadata(namespace, resource)
+}
+
+function isPodOwnershipWorkloadRef(ref: ResourceRef): boolean {
+  return POD_OWNERSHIP_WORKLOAD_KINDS.has(kindToPlural(ref.kind).toLowerCase())
+}
+
+function podControllerOwnerFromMetadata(namespace: string, resource: any): ResourceRef | null {
+  const ownerRefs = resource?.metadata?.ownerReferences
+  if (!Array.isArray(ownerRefs)) return null
+  const owner = ownerRefs.find((ref) => ref?.controller === true) ?? null
+  if (!owner?.kind || !owner?.name) return null
+  if (
+    !isPodOwnershipWorkloadRef({
+      kind: owner.kind,
+      namespace,
+      name: owner.name,
+    })
+  )
+    return null
+  return {
+    kind: owner.kind,
+    namespace,
+    name: owner.name,
+    group: apiVersionToGroup(owner.apiVersion),
+  }
+}
+
+function buildPodOwnershipContext(
+  workload: ResourceRef | null,
+  apps: AppRow[] | undefined,
+): ResourceOwnershipContext | undefined {
+  if (!workload) return undefined
+  const matches = (apps ?? []).filter((app) =>
+    (app.workloads ?? []).some((candidate) => sameWorkload(candidate, workload)),
+  )
+  const app = matches.length === 1 ? matches[0] : null
+  return {
+    workload,
+    application: app ? { key: app.key, name: app.name } : undefined,
+  }
+}
+
+function sameWorkload(
+  candidate: { kind: string; namespace: string; name: string },
+  workload: ResourceRef,
+): boolean {
+  return (
+    kindToPlural(candidate.kind).toLowerCase() === kindToPlural(workload.kind).toLowerCase() &&
+    candidate.namespace === workload.namespace &&
+    candidate.name === workload.name
+  )
+}
+
+function nativeHelmOwnerFromRelationships(
+  relationships: Relationships | undefined,
+  fallbackNamespace: string,
+): HelmOwnerRef | null {
   const ref = relationships?.managedBy?.[0]
   if (!ref || !isNativeHelmManager(ref)) return null
   return {
@@ -634,10 +1102,12 @@ function nativeHelmOwnerFromRelationships(relationships: Relationships | undefin
 }
 
 function isCurrentResource(ref: ResourceRef, current: ResourceRef): boolean {
-  return kindToPlural(ref.kind) === kindToPlural(current.kind)
-    && ref.namespace === current.namespace
-    && ref.name === current.name
-    && (ref.group ?? '') === (current.group ?? '')
+  return (
+    kindToPlural(ref.kind) === kindToPlural(current.kind) &&
+    ref.namespace === current.namespace &&
+    ref.name === current.name &&
+    (ref.group ?? '') === (current.group ?? '')
+  )
 }
 
 function isNativeHelmManager(ref: ResourceRef): boolean {
@@ -650,8 +1120,14 @@ function describeGitOpsOwnerSource(owner: GitOpsOwnerRef | null, resource: any):
   const annotations = resource.metadata?.annotations ?? {}
 
   if (owner.tool === 'fluxcd') {
-    const nameKey = owner.kind === 'helmreleases' ? 'helm.toolkit.fluxcd.io/name' : 'kustomize.toolkit.fluxcd.io/name'
-    const nsKey = owner.kind === 'helmreleases' ? 'helm.toolkit.fluxcd.io/namespace' : 'kustomize.toolkit.fluxcd.io/namespace'
+    const nameKey =
+      owner.kind === 'helmreleases'
+        ? 'helm.toolkit.fluxcd.io/name'
+        : 'kustomize.toolkit.fluxcd.io/name'
+    const nsKey =
+      owner.kind === 'helmreleases'
+        ? 'helm.toolkit.fluxcd.io/namespace'
+        : 'kustomize.toolkit.fluxcd.io/namespace'
     if (labels[nameKey] || labels[nsKey]) {
       return `${nameKey}=${labels[nameKey] ?? ''}, ${nsKey}=${labels[nsKey] ?? ''}`
     }
@@ -699,7 +1175,14 @@ function hasGitOpsStatusPayload(owner: GitOpsOwnerRef, resource: any): boolean {
 // LOGS TAB — platform-specific (uses data-fetching hooks)
 // ============================================================================
 
-const WORKLOAD_LOG_KINDS = new Set(['Deployment', 'StatefulSet', 'DaemonSet'])
+const WORKLOAD_LOG_KINDS = new Set(['Deployment', 'StatefulSet', 'DaemonSet', 'Job', 'Workflow'])
+const SCHEDULED_LOG_KINDS = new Set([
+  'CronJob',
+  'CronWorkflow',
+  'WorkflowTemplate',
+  'ClusterWorkflowTemplate',
+  'ScaledJob',
+])
 
 function LogsTabContent({
   kind,
@@ -712,6 +1195,8 @@ function LogsTabContent({
   onSelectPod,
   initialContainer,
   onConsumeInitialContainer,
+  selectedRunKey,
+  onSelectRun,
 }: {
   kind: string
   apiKind: string
@@ -723,19 +1208,48 @@ function LogsTabContent({
   onSelectPod: (name: string | null) => void
   initialContainer: string | null
   onConsumeInitialContainer: () => void
+  selectedRunKey: string
+  onSelectRun: (runKey: string) => void
 }) {
-  // Workload kinds (Deployment, StatefulSet, DaemonSet) use the aggregated workload logs viewer
+  if (SCHEDULED_LOG_KINDS.has(kind)) {
+    return (
+      <div className="h-full">
+        <ScheduledWorkloadLogsViewer
+          kind={apiKind}
+          namespace={namespace}
+          name={name}
+          selectedRunKey={selectedRunKey}
+          onSelectRun={onSelectRun}
+        />
+      </div>
+    )
+  }
+
+  // Workload kinds with stable pod selectors use the aggregated workload logs viewer
   if (WORKLOAD_LOG_KINDS.has(kind)) {
     return (
       <div className="h-full">
-        <WorkloadLogsViewer kind={apiKind} namespace={namespace} name={name} />
+        <WorkloadLogsViewer
+          kind={apiKind}
+          namespace={namespace}
+          name={name}
+          autoStream={shouldAutoStreamWorkloadLogs(kind, resource)}
+        />
       </div>
     )
   }
 
   // Individual Pod — use LogsViewer with container list from resource data
   if (kind === 'Pod') {
-    return <PodLogsTab namespace={namespace} name={name} resource={resource} initialContainer={initialContainer} onConsumeInitialContainer={onConsumeInitialContainer} />
+    return (
+      <PodLogsTab
+        namespace={namespace}
+        name={name}
+        resource={resource}
+        initialContainer={initialContainer}
+        onConsumeInitialContainer={onConsumeInitialContainer}
+      />
+    )
   }
 
   // Other kinds with associated pods (Jobs, CronJobs, ReplicaSets, etc.) — pod selector + LogsViewer
@@ -750,7 +1264,24 @@ function LogsTabContent({
   )
 }
 
-function PodLogsTab({ namespace, name, resource, initialContainer, onConsumeInitialContainer }: {
+function shouldAutoStreamWorkloadLogs(kind: string, resource: any): boolean {
+  if (kind === 'Job') {
+    return (resource?.status?.active ?? 0) > 0
+  }
+  if (kind === 'Workflow') {
+    const phase = resource?.status?.phase
+    return phase === 'Running' || phase === 'Pending'
+  }
+  return true
+}
+
+function PodLogsTab({
+  namespace,
+  name,
+  resource,
+  initialContainer,
+  onConsumeInitialContainer,
+}: {
   namespace: string
   name: string
   resource: any
@@ -789,7 +1320,13 @@ function PodLogsTab({ namespace, name, resource, initialContainer, onConsumeInit
   )
 }
 
-function MultiPodLogsTab({ pods, namespace, selectedPod, onSelectPod, initialContainer }: {
+function MultiPodLogsTab({
+  pods,
+  namespace,
+  selectedPod,
+  onSelectPod,
+  initialContainer,
+}: {
   pods: ResourceRef[]
   namespace: string
   selectedPod: string | null
@@ -802,10 +1339,12 @@ function MultiPodLogsTab({ pods, namespace, selectedPod, onSelectPod, initialCon
     }
   }, [pods, selectedPod, onSelectPod])
 
-  const podNamespace = pods.find(p => p.name === selectedPod)?.namespace || namespace
+  const podNamespace = pods.find((p) => p.name === selectedPod)?.namespace || namespace
 
   // Fetch container list for the selected pod
-  const { data: logsData } = usePodLogs(podNamespace, selectedPod || '', { tailLines: 1 })
+  const { data: logsData } = usePodLogs(podNamespace, selectedPod || '', {
+    tailLines: 1,
+  })
   const containers = logsData?.containers || []
 
   // A terminated pod (common for Job/CronJob children) has nothing to follow —
@@ -828,7 +1367,7 @@ function MultiPodLogsTab({ pods, namespace, selectedPod, onSelectPod, initialCon
     <div className="h-full flex flex-col">
       {pods.length > 1 && (
         <div className="shrink-0 border-b border-theme-border bg-theme-surface/50 px-4 py-2 flex gap-2 overflow-x-auto">
-          {pods.map(pod => (
+          {pods.map((pod) => (
             <button
               key={pod.name}
               onClick={() => onSelectPod(pod.name)}
@@ -836,7 +1375,7 @@ function MultiPodLogsTab({ pods, namespace, selectedPod, onSelectPod, initialCon
                 'px-3 py-1.5 text-sm rounded-lg whitespace-nowrap transition-colors',
                 selectedPod === pod.name
                   ? 'bg-blue-500 text-theme-text-primary'
-                  : 'bg-theme-elevated text-theme-text-secondary hover:bg-theme-hover'
+                  : 'bg-theme-elevated text-theme-text-secondary hover:bg-theme-hover',
               )}
             >
               {pod.name.length > 40 ? '...' + pod.name.slice(-37) : pod.name}
@@ -860,11 +1399,15 @@ function MultiPodLogsTab({ pods, namespace, selectedPod, onSelectPod, initialCon
   )
 }
 
-function AuditSection({ kind, namespace, name }: { kind: string; namespace: string; name: string }) {
-  const navigate = useNavigate()
-  const { data: findings } = useResourceAudit(kind, namespace, name)
-  if (!findings || findings.length === 0) return null
-  return <AuditAlerts findings={findings} onViewAll={() => navigate('/checks')} />
+function AuditOverviewSection({
+  findings,
+  onViewAll,
+}: {
+  findings: AuditFinding[]
+  onViewAll: () => void
+}) {
+  if (findings.length === 0) return null
+  return <AuditAlerts findings={findings} onViewAll={onViewAll} />
 }
 
 // FluxSourceConsumersSection lists the reconcilers (Kustomization, HelmRelease)
@@ -884,7 +1427,15 @@ function AuditSection({ kind, namespace, name }: { kind: string; namespace: stri
 // …), since the hook has no `enabled` flag and can't be conditionally called
 // (Rules of Hooks). The hooks only need to run when the focused resource is
 // actually a Flux source CR.
-function FluxSourceConsumersSection({ kind, namespace, name }: { kind: string; namespace: string; name: string }) {
+function FluxSourceConsumersSection({
+  kind,
+  namespace,
+  name,
+}: {
+  kind: string
+  namespace: string
+  name: string
+}) {
   // The inner WorkloadView de-pluralizes the URL's plural form, which gives
   // "Gitrepository" (single-uppercase) rather than the wire-correct
   // "GitRepository" — so we match lowercase. spec.sourceRef.kind on consumers
@@ -894,38 +1445,72 @@ function FluxSourceConsumersSection({ kind, namespace, name }: { kind: string; n
   return <FluxSourceConsumersInner sourceKind={sourceKind} namespace={namespace} name={name} />
 }
 
-function FluxSourceConsumersInner({ sourceKind, namespace, name }: { sourceKind: string; namespace: string; name: string }) {
+function FluxSourceConsumersInner({
+  sourceKind,
+  namespace,
+  name,
+}: {
+  sourceKind: string
+  namespace: string
+  name: string
+}) {
   const navigate = useNavigate()
-  const { data: kustomizations } = useResources<any>('kustomizations', undefined, 'kustomize.toolkit.fluxcd.io')
-  const { data: helmReleases } = useResources<any>('helmreleases', undefined, 'helm.toolkit.fluxcd.io')
+  const { data: kustomizations } = useResources<any>(
+    'kustomizations',
+    undefined,
+    'kustomize.toolkit.fluxcd.io',
+  )
+  const { data: helmReleases } = useResources<any>(
+    'helmreleases',
+    undefined,
+    'helm.toolkit.fluxcd.io',
+  )
 
-  const consumers: Array<{ kind: 'Kustomization' | 'HelmRelease'; namespace: string; name: string; plural: string }> = []
+  const consumers: Array<{
+    kind: 'Kustomization' | 'HelmRelease'
+    namespace: string
+    name: string
+    plural: string
+  }> = []
   for (const k of kustomizations ?? []) {
     const ref = k?.spec?.sourceRef ?? {}
     const refNs = ref.namespace || k?.metadata?.namespace
     if (ref.kind === sourceKind && ref.name === name && refNs === namespace) {
-      consumers.push({ kind: 'Kustomization', namespace: k.metadata.namespace, name: k.metadata.name, plural: 'kustomizations' })
+      consumers.push({
+        kind: 'Kustomization',
+        namespace: k.metadata.namespace,
+        name: k.metadata.name,
+        plural: 'kustomizations',
+      })
     }
   }
   for (const h of helmReleases ?? []) {
     const ref = h?.spec?.chart?.spec?.sourceRef ?? {}
     const refNs = ref.namespace || h?.metadata?.namespace
     if (ref.kind === sourceKind && ref.name === name && refNs === namespace) {
-      consumers.push({ kind: 'HelmRelease', namespace: h.metadata.namespace, name: h.metadata.name, plural: 'helmreleases' })
+      consumers.push({
+        kind: 'HelmRelease',
+        namespace: h.metadata.namespace,
+        name: h.metadata.name,
+        plural: 'helmreleases',
+      })
     }
   }
 
   if (consumers.length === 0) {
     return (
-      <div className="rounded-lg border border-theme-border bg-theme-elevated/40 p-3 text-xs text-theme-text-tertiary">
-        Consumed by — no Kustomization or HelmRelease references this source.
-      </div>
+      <section className="rounded-lg border border-theme-border bg-theme-surface p-4 shadow-theme-sm">
+        <h3 className="mb-2 text-sm font-semibold text-theme-text-primary">Consumed by</h3>
+        <p className="text-xs text-theme-text-tertiary">
+          No Kustomization or HelmRelease references this source.
+        </p>
+      </section>
     )
   }
 
   return (
-    <div className="rounded-lg border border-theme-border bg-theme-elevated/40 p-3">
-      <h3 className="mb-2 text-xs font-medium text-theme-text-secondary">
+    <section className="rounded-lg border border-theme-border bg-theme-surface p-4 shadow-theme-sm">
+      <h3 className="mb-3 text-sm font-semibold text-theme-text-primary">
         Consumed by ({consumers.length})
       </h3>
       <div className="flex flex-wrap gap-1.5">
@@ -934,24 +1519,38 @@ function FluxSourceConsumersInner({ sourceKind, namespace, name }: { sourceKind:
             key={`${c.kind}/${c.namespace}/${c.name}`}
             content={`${c.kind} ${c.namespace}/${c.name}`}
           >
-          <button
-            onClick={() => navigate(`/gitops/detail/${c.plural}/${encodeURIComponent(c.namespace)}/${encodeURIComponent(c.name)}`)}
-            className="inline-flex items-center gap-1.5 rounded border border-theme-border bg-theme-surface px-1.5 py-0.5 text-[11px] text-theme-text-secondary hover:border-skyhook-500/60 hover:text-skyhook-500 transition-colors"
-          >
-            <span className="text-theme-text-tertiary">{c.kind === 'HelmRelease' ? 'HR' : 'K'}</span>
-            <span>{c.namespace}/{c.name}</span>
-          </button>
+            <button
+              onClick={() =>
+                navigate(
+                  `/gitops/detail/${c.plural}/${encodeURIComponent(c.namespace)}/${encodeURIComponent(c.name)}`,
+                )
+              }
+              className="inline-flex items-center gap-1.5 rounded border border-theme-border bg-theme-surface px-1.5 py-0.5 text-[11px] text-theme-text-secondary hover:border-skyhook-500/60 hover:text-skyhook-500 transition-colors"
+            >
+              <span className="text-theme-text-tertiary">
+                {c.kind === 'HelmRelease' ? 'HR' : 'K'}
+              </span>
+              <span>
+                {c.namespace}/{c.name}
+              </span>
+            </button>
           </Tooltip>
         ))}
       </div>
-    </div>
+    </section>
   )
 }
 
 // Drawer mode: single chart + category tabs (compact for ~500px width).
 // Full-screen mode: multi-chart grid so CPU + Memory + Network can be
 // compared side-by-side without tab switching.
-function MetricsTabContent({ kind, namespace, name, resource, expanded }: {
+function MetricsTabContent({
+  kind,
+  namespace,
+  name,
+  resource,
+  expanded,
+}: {
   kind: string
   namespace: string
   name: string
@@ -969,12 +1568,7 @@ function MetricsTabContent({ kind, namespace, name, resource, expanded }: {
           </div>
         )}
         <div className="flex-1 min-h-0">
-          <PrometheusChartsGrid
-            kind={kind}
-            namespace={namespace}
-            name={name}
-            resource={resource}
-          />
+          <PrometheusChartsGrid kind={kind} namespace={namespace} name={name} resource={resource} />
         </div>
       </div>
     )
@@ -982,17 +1576,15 @@ function MetricsTabContent({ kind, namespace, name, resource, expanded }: {
 
   // Drawer fallback: single chart with tabs + restart lane below. The chart's
   // time-range selector is mirrored to the restart lane so they stay aligned.
-  return (
-    <DrawerMetricsContent
-      kind={kind}
-      namespace={namespace}
-      name={name}
-      resource={resource}
-    />
-  )
+  return <DrawerMetricsContent kind={kind} namespace={namespace} name={name} resource={resource} />
 }
 
-function DrawerMetricsContent({ kind, namespace, name, resource }: {
+function DrawerMetricsContent({
+  kind,
+  namespace,
+  name,
+  resource,
+}: {
   kind: string
   namespace: string
   name: string
@@ -1004,7 +1596,14 @@ function DrawerMetricsContent({ kind, namespace, name, resource }: {
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 min-h-0">
-        <PrometheusCharts kind={kind} namespace={namespace} name={name} showEmptyState resource={resource} onTimeRangeChange={setChartRange} />
+        <PrometheusCharts
+          kind={kind}
+          namespace={namespace}
+          name={name}
+          showEmptyState
+          resource={resource}
+          onTimeRangeChange={setChartRange}
+        />
       </div>
       {showRestartLane && (
         <div className="px-4 pb-4">
@@ -1030,18 +1629,33 @@ const FLUX_SOURCE_KIND_BY_LOWER = new Map<string, string>([
 // Read-only manifest view for an object in the workload's neighborhood (the
 // YAML tab's object rail). Read-only by design — editing an arbitrary related
 // object belongs on that resource's own page.
-function RelatedResourceYaml({ target }: { target: { kind: string; namespace: string; name: string; group?: string } }) {
-  const { data, isLoading, error } = useResource<any>(kindToPlural(target.kind), target.namespace, target.name, target.group)
+function RelatedResourceYaml({
+  target,
+}: {
+  target: { kind: string; namespace: string; name: string; group?: string }
+}) {
+  const { data, isLoading, error } = useResource<any>(
+    kindToPlural(target.kind),
+    target.namespace,
+    target.name,
+    target.group,
+  )
   const [copied, setCopied] = useState(false)
   const handleCopy = useCallback((text: string) => {
     navigator.clipboard.writeText(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }, [])
-  if (!data) return <FetchResult loading={isLoading} error={error as Error | null} className="h-32" />
+  if (!data)
+    return <FetchResult loading={isLoading} error={error as Error | null} className="h-32" />
   return (
     <EditableYamlView
-      resource={{ kind: kindToPlural(target.kind), namespace: target.namespace, name: target.name, group: target.group }}
+      resource={{
+        kind: kindToPlural(target.kind),
+        namespace: target.namespace,
+        name: target.name,
+        group: target.group,
+      }}
       data={data}
       onCopy={handleCopy}
       copied={copied}

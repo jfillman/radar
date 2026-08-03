@@ -10,6 +10,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/issuesapi"
+	"github.com/skyhook-io/radar/pkg/karpenter"
 )
 
 // Provider abstracts the data sources Compose needs. Implementations
@@ -23,8 +24,8 @@ type Provider interface {
 	// generic CRD-condition fallback structurally can't read (Argo encodes
 	// health/sync outside status.conditions). Surfaced under SourceProblem.
 	DetectGitOpsProblems(namespaces []string) []k8s.Detection
-	// DetectMissingRefs returns dangling-reference problems (Pod→missing
-	// PVC/CM/Secret/SA, HPA→missing target, Ingress→missing backend, etc.)
+	// DetectMissingRefs returns missing-reference problems (Pod→missing
+	// PVC/CM/Secret/SA or required key, HPA→missing target, Ingress→missing backend, etc.)
 	// plus webhook-config refs. Surfaced under SourceMissingRef so agents
 	// can filter the "direct config error" category separately from the
 	// workload-state-based SourceProblem signals.
@@ -127,10 +128,26 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 	// (deprecated-RBAC residue, singleton-StatefulSet headless-DNS trivia) —
 	// classified honestly at the Problem layer for other surfaces, but NOT part
 	// of the live "what's broken now" issue stream. Issues stays critical|warning.
+	// Correlated capacity relevance is derived from cluster-scoped NodePool
+	// state; folding it into the wire flag for a caller who cannot list
+	// NodePools would let them probe hidden pool specs by varying pod specs.
+	// Checked lazily so composes without any correlated detection don't pay
+	// (or record) a NodePool access check.
+	correlationChecked, correlationAllowed := false, false
+	canFoldCorrelation := func() bool {
+		if !correlationChecked {
+			correlationAllowed = canReadKarpenterKind(f, karpenter.Group, karpenter.NodePoolKind)
+			correlationChecked = true
+		}
+		return correlationAllowed
+	}
 	emit := func(ps []k8s.Detection, source Source) {
 		for _, pr := range ps {
 			if pr.Severity == "info" {
 				continue
+			}
+			if pr.CapacityRelevantCorrelated && canFoldCorrelation() {
+				pr.CapacityRelevant = true
 			}
 			out = append(out, fromProblem(pr, now, source))
 		}
@@ -140,13 +157,16 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 	emit(p.DetectGitOpsProblems(f.Namespaces), SourceProblem) // Argo/Flux reconciler health
 	emit(p.DetectMissingRefs(f.Namespaces), SourceMissingRef) // dangling by-name refs
 	emit(p.DetectScheduling(f.Namespaces), SourceScheduling)  // placement/admission/post-bind
-	out = append(out, detectGenericCRDIssues(p, f)...)        // generic CRD .status.conditions
+	karpenterIssues, karpenterOwnedSubjects := detectKarpenterIssues(p, f)
+	out = append(out, karpenterIssues...)
+	out = append(out, detectGenericCRDIssues(p, f, karpenterOwnedSubjects)...) // generic CRD .status.conditions
 
 	// ---- 2. Evidence-level transforms (operate on flat rows) ---------
 	// RBAC gating on the underlying resource, and dedup that compares child
 	// symptoms against parent rollups across member pods — both need the flat
 	// rows, so they run BEFORE grouping and BEFORE the public filters.
 	out = applyClusterScopedAccess(out, f)
+	out = redactUnreadableRelatedRefs(out, f.CanReadRelated)
 	out = dedupePodSchedulingOverProblem(out)
 	// Same-resource structural-root → symptom: fold a pod's runtime symptom into
 	// the dangling-ref that caused it, and an autoscaler's condition into its
@@ -177,30 +197,27 @@ func ComposeWithStats(p Provider, f Filters) ([]Issue, ComposeStats) {
 }
 
 // MergeExternalIssues adds already-shaped issue rows from handler-owned data
-// sources, then applies the public sort/cap. `base` must already have gone
-// through ComposeWithStats with the same filters except Limit=NoLimit.
+// sources, then applies the public filters, sort, and cap. `base` must already
+// have gone through ComposeWithStats with the same structural filters except
+// Limit=NoLimit and Filter=nil; CEL is evaluated here against the final public
+// shape after duplicate-env aggregation and external rows are merged.
 func MergeExternalIssues(base []Issue, baseStats ComposeStats, f Filters, extras []Issue) ([]Issue, ComposeStats) {
 	limit, uncapped := normalizedLimit(f.Limit)
 	f.Limit = limit
-
-	if len(extras) == 0 {
-		baseStats.TotalMatched = len(base)
-		if !uncapped && len(base) > f.Limit {
-			base = base[:f.Limit]
-		}
-		return base, baseStats
+	if f.Grouped {
+		base = aggregateDuplicateEnvIssues(base)
 	}
 
-	filteredExtras, extraStats := filterShapedIssues(append([]Issue(nil), extras...), f)
-	out := make([]Issue, 0, len(base)+len(filteredExtras))
+	out := make([]Issue, 0, len(base)+len(extras))
 	out = append(out, base...)
-	out = append(out, filteredExtras...)
+	out = append(out, extras...)
+	out, mergedStats := filterShapedIssues(out, f)
 	sort.SliceStable(out, func(i, j int) bool { return lessIssue(out[i], out[j]) })
 
 	stats := baseStats
-	stats.FilterErrors += extraStats.FilterErrors
+	stats.FilterErrors += mergedStats.FilterErrors
 	if stats.FilterErrorSample == "" {
-		stats.FilterErrorSample = extraStats.FilterErrorSample
+		stats.FilterErrorSample = mergedStats.FilterErrorSample
 	}
 	stats.TotalMatched = len(out)
 	if !uncapped && len(out) > f.Limit {

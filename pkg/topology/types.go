@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"encoding/json"
 	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -19,99 +20,107 @@ import (
 // NodeKind represents the type of a topology node
 //
 // When adding a new NodeKind constant, also update:
-// - builder.go: node creation + edge creation (both resources and traffic views)
-// - builder.go: genericCRDExclusion check (if kind is handled via dynamic cache)
-// - relationships.go: buildNodeID + normalizeKind maps, EdgeRoutesTo dispatch
-// - history.go: diff dispatch switch
-// - dashboard.go: resource counting (if applicable)
-// - capabilities.go: ResourcePermissions struct + permCheck array (if needs RBAC)
-// - dynamic_cache.go: warmup list (if CRD)
-// - if the kind is cluster-scoped: add an entry to topology.ClusterScopedKinds
-//   in pkg/topology/cluster_scoped_kinds.go so the topology strip helpers
-//   AND neighborhood per-node gates can SAR-check it. Missing the entry
-//   leaks the cluster-scoped node to namespace-restricted users via
-//   /api/topology, get_topology MCP, AND get_neighborhood MCP/REST.
+//   - builder.go: node creation + edge creation (both resources and traffic views)
+//   - builder.go: genericCRDExclusion check (if kind is handled via dynamic cache)
+//   - relationships.go: buildNodeID + normalizeKind maps, EdgeRoutesTo dispatch
+//   - history.go: diff dispatch switch
+//   - dashboard.go: resource counting (if applicable)
+//   - capabilities.go: ResourcePermissions struct + permCheck array (if needs RBAC)
+//   - dynamic_cache.go: warmup list (if CRD)
+//   - if the kind is cluster-scoped: add an entry to topology.ClusterScopedKinds
+//     in pkg/topology/cluster_scoped_kinds.go so the topology strip helpers
+//     AND neighborhood per-node gates can SAR-check it. Missing the entry
+//     leaks the cluster-scoped node to namespace-restricted users via
+//     /api/topology, get_topology MCP, AND get_neighborhood MCP/REST.
 type NodeKind string
 
 const (
-	KindInternet      NodeKind = "Internet"
-	KindIngress       NodeKind = "Ingress"
-	KindGateway       NodeKind = "Gateway"
-	KindHTTPRoute     NodeKind = "HTTPRoute"
-	KindGRPCRoute     NodeKind = "GRPCRoute"
-	KindTCPRoute      NodeKind = "TCPRoute"
-	KindTLSRoute      NodeKind = "TLSRoute"
-	KindService       NodeKind = "Service"
-	KindDeployment    NodeKind = "Deployment"
-	KindRollout       NodeKind = "Rollout"
-	KindApplication   NodeKind = "Application"   // ArgoCD Application
-	KindKustomization NodeKind = "Kustomization" // FluxCD Kustomization
-	KindHelmRelease   NodeKind = "HelmRelease"   // FluxCD HelmRelease (Flux, not native Helm)
-	KindGitRepository NodeKind = "GitRepository" // FluxCD GitRepository
-	KindCertificate   NodeKind = "Certificate"   // cert-manager Certificate
-	KindNode          NodeKind = "Node"          // Kubernetes Node (only shown when Karpenter-managed)
-	KindNodePool      NodeKind = "NodePool"      // Karpenter NodePool
-	KindNodeClaim     NodeKind = "NodeClaim"     // Karpenter NodeClaim
-	KindNodeClass     NodeKind = "NodeClass"     // Karpenter NodeClass (EC2NodeClass, AKSNodeClass, etc.)
-	KindScaledObject  NodeKind = "ScaledObject"  // KEDA ScaledObject
-	KindScaledJob     NodeKind = "ScaledJob"     // KEDA ScaledJob
-	KindGatewayClass         NodeKind = "GatewayClass"         // Gateway API GatewayClass
-	KindVirtualService       NodeKind = "VirtualService"       // Istio VirtualService
-	KindDestinationRule      NodeKind = "DestinationRule"      // Istio DestinationRule
-	KindIstioGateway         NodeKind = "IstioGateway"         // Istio Gateway (networking.istio.io, NOT Gateway API)
-	KindServiceEntry         NodeKind = "ServiceEntry"         // Istio ServiceEntry
-	KindPeerAuthentication   NodeKind = "PeerAuthentication"   // Istio PeerAuthentication
-	KindAuthorizationPolicy  NodeKind = "AuthorizationPolicy"  // Istio AuthorizationPolicy
-	KindKnativeService       NodeKind = "KnativeService"       // KNative Serving Service
-	KindKnativeConfiguration NodeKind = "KnativeConfiguration" // KNative Serving Configuration
-	KindKnativeRevision      NodeKind = "KnativeRevision"      // KNative Serving Revision
-	KindKnativeRoute         NodeKind = "KnativeRoute"         // KNative Serving Route
-	KindBroker               NodeKind = "Broker"               // KNative Eventing Broker
-	KindTrigger              NodeKind = "Trigger"              // KNative Eventing Trigger
-	KindPingSource           NodeKind = "PingSource"           // KNative Eventing PingSource
-	KindApiServerSource      NodeKind = "ApiServerSource"      // KNative Eventing ApiServerSource
-	KindContainerSource      NodeKind = "ContainerSource"      // KNative Eventing ContainerSource
-	KindSinkBinding          NodeKind = "SinkBinding"          // KNative Eventing SinkBinding
-	KindChannel              NodeKind = "Channel"              // KNative Messaging Channel
-	KindIngressRoute         NodeKind = "IngressRoute"         // Traefik IngressRoute
-	KindIngressRouteTCP      NodeKind = "IngressRouteTCP"      // Traefik IngressRouteTCP
-	KindIngressRouteUDP      NodeKind = "IngressRouteUDP"      // Traefik IngressRouteUDP
-	KindMiddleware           NodeKind = "Middleware"            // Traefik Middleware
-	KindMiddlewareTCP        NodeKind = "MiddlewareTCP"        // Traefik MiddlewareTCP
-	KindTraefikService       NodeKind = "TraefikService"       // Traefik TraefikService (advanced LB)
-	KindServersTransport     NodeKind = "ServersTransport"     // Traefik ServersTransport
-	KindServersTransportTCP  NodeKind = "ServersTransportTCP"  // Traefik ServersTransportTCP
-	KindTLSOption            NodeKind = "TLSOption"            // Traefik TLSOption
-	KindTLSStore             NodeKind = "TLSStore"             // Traefik TLSStore
-	KindHTTPProxy            NodeKind = "HTTPProxy"            // Contour HTTPProxy
-	KindDaemonSet            NodeKind = "DaemonSet"
-	KindStatefulSet   NodeKind = "StatefulSet"
-	KindReplicaSet    NodeKind = "ReplicaSet"
-	KindPod           NodeKind = "Pod"
-	KindPodGroup      NodeKind = "PodGroup"
-	KindConfigMap     NodeKind = "ConfigMap"
-	KindSecret        NodeKind = "Secret"
-	KindHPA           NodeKind = "HorizontalPodAutoscaler"
-	KindJob           NodeKind = "Job"
-	KindCronJob       NodeKind = "CronJob"
-	KindPVC           NodeKind = "PersistentVolumeClaim"
-	KindPV            NodeKind = "PersistentVolume"
-	KindStorageClass  NodeKind = "StorageClass"
-	KindPDB                          NodeKind = "PodDisruptionBudget"
-	KindNetworkPolicy                NodeKind = "NetworkPolicy"
-	KindCiliumNetworkPolicy          NodeKind = "CiliumNetworkPolicy"
+	KindInternet                       NodeKind = "Internet"
+	KindIngress                        NodeKind = "Ingress"
+	KindGateway                        NodeKind = "Gateway"
+	KindHTTPRoute                      NodeKind = "HTTPRoute"
+	KindGRPCRoute                      NodeKind = "GRPCRoute"
+	KindTCPRoute                       NodeKind = "TCPRoute"
+	KindTLSRoute                       NodeKind = "TLSRoute"
+	KindService                        NodeKind = "Service"
+	KindDeployment                     NodeKind = "Deployment"
+	KindRollout                        NodeKind = "Rollout"
+	KindApplication                    NodeKind = "Application"          // ArgoCD Application
+	KindKustomization                  NodeKind = "Kustomization"        // FluxCD Kustomization
+	KindHelmRelease                    NodeKind = "HelmRelease"          // FluxCD HelmRelease (Flux, not native Helm)
+	KindGitRepository                  NodeKind = "GitRepository"        // FluxCD GitRepository
+	KindCertificate                    NodeKind = "Certificate"          // cert-manager Certificate
+	KindNode                           NodeKind = "Node"                 // Kubernetes Node (only shown when Karpenter-managed)
+	KindNodePool                       NodeKind = "NodePool"             // Karpenter NodePool
+	KindNodeClaim                      NodeKind = "NodeClaim"            // Karpenter NodeClaim
+	KindNodeClass                      NodeKind = "NodeClass"            // Karpenter NodeClass (EC2NodeClass, AKSNodeClass, etc.)
+	KindScaledObject                   NodeKind = "ScaledObject"         // KEDA ScaledObject
+	KindScaledJob                      NodeKind = "ScaledJob"            // KEDA ScaledJob
+	KindGatewayClass                   NodeKind = "GatewayClass"         // Gateway API GatewayClass
+	KindVirtualService                 NodeKind = "VirtualService"       // Istio VirtualService
+	KindDestinationRule                NodeKind = "DestinationRule"      // Istio DestinationRule
+	KindIstioGateway                   NodeKind = "IstioGateway"         // Istio Gateway (networking.istio.io, NOT Gateway API)
+	KindServiceEntry                   NodeKind = "ServiceEntry"         // Istio ServiceEntry
+	KindPeerAuthentication             NodeKind = "PeerAuthentication"   // Istio PeerAuthentication
+	KindAuthorizationPolicy            NodeKind = "AuthorizationPolicy"  // Istio AuthorizationPolicy
+	KindKnativeService                 NodeKind = "KnativeService"       // KNative Serving Service
+	KindKnativeConfiguration           NodeKind = "KnativeConfiguration" // KNative Serving Configuration
+	KindKnativeRevision                NodeKind = "KnativeRevision"      // KNative Serving Revision
+	KindKnativeRoute                   NodeKind = "KnativeRoute"         // KNative Serving Route
+	KindBroker                         NodeKind = "Broker"               // KNative Eventing Broker
+	KindTrigger                        NodeKind = "Trigger"              // KNative Eventing Trigger
+	KindPingSource                     NodeKind = "PingSource"           // KNative Eventing PingSource
+	KindApiServerSource                NodeKind = "ApiServerSource"      // KNative Eventing ApiServerSource
+	KindContainerSource                NodeKind = "ContainerSource"      // KNative Eventing ContainerSource
+	KindSinkBinding                    NodeKind = "SinkBinding"          // KNative Eventing SinkBinding
+	KindChannel                        NodeKind = "Channel"              // KNative Messaging Channel
+	KindIngressRoute                   NodeKind = "IngressRoute"         // Traefik IngressRoute
+	KindIngressRouteTCP                NodeKind = "IngressRouteTCP"      // Traefik IngressRouteTCP
+	KindIngressRouteUDP                NodeKind = "IngressRouteUDP"      // Traefik IngressRouteUDP
+	KindMiddleware                     NodeKind = "Middleware"           // Traefik Middleware
+	KindMiddlewareTCP                  NodeKind = "MiddlewareTCP"        // Traefik MiddlewareTCP
+	KindTraefikService                 NodeKind = "TraefikService"       // Traefik TraefikService (advanced LB)
+	KindServersTransport               NodeKind = "ServersTransport"     // Traefik ServersTransport
+	KindServersTransportTCP            NodeKind = "ServersTransportTCP"  // Traefik ServersTransportTCP
+	KindTLSOption                      NodeKind = "TLSOption"            // Traefik TLSOption
+	KindTLSStore                       NodeKind = "TLSStore"             // Traefik TLSStore
+	KindHTTPProxy                      NodeKind = "HTTPProxy"            // Contour HTTPProxy
+	KindDaemonSet                      NodeKind = "DaemonSet"
+	KindStatefulSet                    NodeKind = "StatefulSet"
+	KindReplicaSet                     NodeKind = "ReplicaSet"
+	KindPod                            NodeKind = "Pod"
+	KindPodGroup                       NodeKind = "PodGroup"
+	KindConfigMap                      NodeKind = "ConfigMap"
+	KindSecret                         NodeKind = "Secret"
+	KindServiceAccount                 NodeKind = "ServiceAccount"
+	KindSealedSecret                   NodeKind = "SealedSecret"
+	KindServiceMonitor                 NodeKind = "ServiceMonitor"
+	KindPodMonitor                     NodeKind = "PodMonitor"
+	KindHPA                            NodeKind = "HorizontalPodAutoscaler"
+	KindJob                            NodeKind = "Job"
+	KindCronJob                        NodeKind = "CronJob"
+	KindWorkflow                       NodeKind = "Workflow"
+	KindCronWorkflow                   NodeKind = "CronWorkflow"
+	KindWorkflowTemplate               NodeKind = "WorkflowTemplate"
+	KindClusterWorkflowTemplate        NodeKind = "ClusterWorkflowTemplate"
+	KindPVC                            NodeKind = "PersistentVolumeClaim"
+	KindPV                             NodeKind = "PersistentVolume"
+	KindStorageClass                   NodeKind = "StorageClass"
+	KindPDB                            NodeKind = "PodDisruptionBudget"
+	KindNetworkPolicy                  NodeKind = "NetworkPolicy"
+	KindCiliumNetworkPolicy            NodeKind = "CiliumNetworkPolicy"
 	KindCiliumClusterwideNetworkPolicy NodeKind = "CiliumClusterwideNetworkPolicy"
 	KindClusterNetworkPolicy           NodeKind = "ClusterNetworkPolicy"
-	KindVPA                          NodeKind = "VerticalPodAutoscaler"
-	KindNamespace     NodeKind = "Namespace"
-	KindCAPICluster           NodeKind = "CAPICluster"           // Cluster API Cluster
-	KindMachineDeployment     NodeKind = "MachineDeployment"     // Cluster API MachineDeployment
-	KindMachineSet            NodeKind = "MachineSet"            // Cluster API MachineSet
-	KindMachine               NodeKind = "Machine"               // Cluster API Machine
-	KindMachinePool           NodeKind = "MachinePool"           // Cluster API MachinePool
-	KindKubeadmControlPlane   NodeKind = "KubeadmControlPlane"   // Cluster API KubeadmControlPlane
-	KindClusterClass          NodeKind = "ClusterClass"          // Cluster API ClusterClass
-	KindMachineHealthCheck    NodeKind = "MachineHealthCheck"    // Cluster API MachineHealthCheck
+	KindVPA                            NodeKind = "VerticalPodAutoscaler"
+	KindNamespace                      NodeKind = "Namespace"
+	KindCAPICluster                    NodeKind = "CAPICluster"         // Cluster API Cluster
+	KindMachineDeployment              NodeKind = "MachineDeployment"   // Cluster API MachineDeployment
+	KindMachineSet                     NodeKind = "MachineSet"          // Cluster API MachineSet
+	KindMachine                        NodeKind = "Machine"             // Cluster API Machine
+	KindMachinePool                    NodeKind = "MachinePool"         // Cluster API MachinePool
+	KindKubeadmControlPlane            NodeKind = "KubeadmControlPlane" // Cluster API KubeadmControlPlane
+	KindClusterClass                   NodeKind = "ClusterClass"        // Cluster API ClusterClass
+	KindMachineHealthCheck             NodeKind = "MachineHealthCheck"  // Cluster API MachineHealthCheck
 )
 
 // HealthStatus represents the health status of a node
@@ -168,15 +177,32 @@ const (
 
 // Topology represents the complete graph
 type Topology struct {
-	Nodes              []Node   `json:"nodes"`
-	Edges              []Edge   `json:"edges"`
-	Warnings           []string `json:"warnings,omitempty"`           // Warnings about resources that failed to load
+	Nodes                   []Node   `json:"nodes"`
+	Edges                   []Edge   `json:"edges"`
+	Warnings                []string `json:"warnings,omitempty"`                // Warnings about resources that failed to load
 	LargeCluster            bool     `json:"largeCluster,omitempty"`            // True if cluster exceeds large cluster threshold
 	HiddenKinds             []string `json:"hiddenKinds,omitempty"`             // Resource kinds auto-hidden for performance
 	RequiresNamespaceFilter bool     `json:"requiresNamespaceFilter,omitempty"` // True if cluster is too large for all-namespace topology
 	CRDDiscoveryStatus      string   `json:"crdDiscoveryStatus,omitempty"`      // CRD discovery status: idle, discovering, ready
 	EstimatedNodes          int      `json:"estimatedNodes,omitempty"`          // Pre-build node count estimate from the large-cluster optimizer; exposed so SSE / UI can tune debounce + render mode off the same signal
 	SummaryMode             bool     `json:"summaryMode,omitempty"`             // True when the pod tier was collapsed into per-workload/service counts (see SummaryModeThreshold)
+}
+
+// MarshalJSON guarantees the wire contract the frontend types promise:
+// nodes and edges are arrays, never null. Producers reintroduce nil slices
+// too easily (an append-based clone of an empty topology, a strip that
+// drops everything), so the contract is enforced at the marshal boundary
+// rather than per producer.
+func (t Topology) MarshalJSON() ([]byte, error) {
+	type wireTopology Topology
+	out := wireTopology(t)
+	if out.Nodes == nil {
+		out.Nodes = []Node{}
+	}
+	if out.Edges == nil {
+		out.Edges = []Edge{}
+	}
+	return json.Marshal(out)
 }
 
 // StripNodeKinds removes nodes whose Kind is in deny, plus every edge that
@@ -209,6 +235,91 @@ func (t *Topology) StripNodeKinds(deny map[NodeKind]bool) {
 		keptEdges = append(keptEdges, e)
 	}
 	t.Edges = keptEdges
+}
+
+// StripNodeIDs removes exact nodes plus every edge that references them.
+// Exact-ID filtering is required for topology pseudo-kinds such as NodeClass,
+// where one NodeKind can contain independently authorized provider APIs.
+func (t *Topology) StripNodeIDs(deny map[string]bool) {
+	if t == nil || len(deny) == 0 {
+		return
+	}
+	kept := t.Nodes[:0]
+	for _, n := range t.Nodes {
+		if deny[n.ID] {
+			continue
+		}
+		kept = append(kept, n)
+	}
+	t.Nodes = kept
+
+	keptEdges := t.Edges[:0]
+	for _, e := range t.Edges {
+		if deny[e.Source] || deny[e.Target] {
+			continue
+		}
+		keptEdges = append(keptEdges, e)
+	}
+	t.Edges = keptEdges
+}
+
+// NodeClassRBACTuples returns the distinct exact provider resources present
+// in the graph. A malformed NodeClass node is omitted here and will still be
+// removed by StripNodeClassesExcept.
+func (t *Topology) NodeClassRBACTuples() []SARTuple {
+	if t == nil {
+		return nil
+	}
+	seen := make(map[SARTuple]bool)
+	var tuples []SARTuple
+	for i := range t.Nodes {
+		n := &t.Nodes[i]
+		if n.Kind != KindNodeClass {
+			continue
+		}
+		decision, candidates := RBACTuplesForNode(n, nil)
+		if decision != NodeRBACCheckTuples {
+			continue
+		}
+		for _, candidate := range candidates {
+			if seen[candidate] {
+				continue
+			}
+			seen[candidate] = true
+			tuples = append(tuples, candidate)
+		}
+	}
+	return tuples
+}
+
+// StripNodeClassesExcept keeps only NodeClass nodes whose exact provider
+// resource is present in allowed. Unknown or malformed identities fail closed.
+func (t *Topology) StripNodeClassesExcept(allowed map[SARTuple]bool) {
+	if t == nil {
+		return
+	}
+	deny := make(map[string]bool)
+	for i := range t.Nodes {
+		n := &t.Nodes[i]
+		if n.Kind != KindNodeClass {
+			continue
+		}
+		decision, tuples := RBACTuplesForNode(n, nil)
+		authorized := decision == NodeRBACCheckTuples
+		if authorized {
+			authorized = false
+			for _, tuple := range tuples {
+				if allowed[tuple] {
+					authorized = true
+					break
+				}
+			}
+		}
+		if !authorized {
+			deny[n.ID] = true
+		}
+	}
+	t.StripNodeIDs(deny)
 }
 
 // ViewMode determines how the topology is built
@@ -245,17 +356,17 @@ type PodSummary struct {
 
 // BuildOptions configures topology building
 type BuildOptions struct {
-	Namespaces         []string // Filter to specific namespaces (empty = all)
-	ViewMode           ViewMode // How to display topology
-	MaxIndividualPods  int      // Above this, pods are grouped (default: 5)
-	IncludeSecrets     bool     // Include Secret nodes
-	IncludeConfigMaps  bool     // Include ConfigMap nodes
-	IncludePVCs        bool     // Include PersistentVolumeClaim nodes
-	IncludeReplicaSets bool     // Include ReplicaSet nodes (noisy intermediate objects)
-	IncludeGenericCRDs     bool // Include CRDs with owner refs to topology nodes (default: true)
-	ForRelationshipCache   bool // Skip large cluster guard — used for internal relationship cache builds
-	ShowPolicyEffect       bool // Evaluate NetworkPolicies and annotate edges with allow/block/unprotected
-	SummaryMode            bool // Collapse the pod tier into per-workload/service counts (set by Build when estimate ≥ SummaryModeThreshold)
+	Namespaces           []string // Filter to specific namespaces (empty = all)
+	ViewMode             ViewMode // How to display topology
+	MaxIndividualPods    int      // Above this, pods are grouped (default: 5)
+	IncludeSecrets       bool     // Include Secret nodes
+	IncludeConfigMaps    bool     // Include ConfigMap nodes
+	IncludePVCs          bool     // Include PersistentVolumeClaim nodes
+	IncludeReplicaSets   bool     // Include ReplicaSet nodes (noisy intermediate objects)
+	IncludeGenericCRDs   bool     // Include CRDs with owner refs to topology nodes (default: true)
+	ForRelationshipCache bool     // Skip large cluster guard — used for internal relationship cache builds
+	ShowPolicyEffect     bool     // Evaluate NetworkPolicies and annotate edges with allow/block/unprotected
+	SummaryMode          bool     // Collapse the pod tier into per-workload/service counts (set by Build when estimate ≥ SummaryModeThreshold)
 }
 
 // MatchesNamespace returns true if ns is in the allowed list.
@@ -298,23 +409,23 @@ type ResourceRef struct {
 
 // Relationships holds computed relationships for a resource
 type Relationships struct {
-	Owner       *ResourceRef  `json:"owner,omitempty"`       // Parent via ownerReference (manages edge)
-	Deployment  *ResourceRef  `json:"deployment,omitempty"`  // Grandparent Deployment (for Pods owned by ReplicaSets)
-	Children    []ResourceRef `json:"children,omitempty"`    // Resources this owns (manages edge)
-	Services    []ResourceRef `json:"services,omitempty"`    // Services selecting/exposing this
-	Ingresses   []ResourceRef `json:"ingresses,omitempty"`   // Ingresses routing to this
-	Gateways    []ResourceRef `json:"gateways,omitempty"`    // Gateways routing to this (via routes)
-	Routes      []ResourceRef `json:"routes,omitempty"`      // Routes attached to this Gateway
-	ConfigRefs  []ResourceRef `json:"configRefs,omitempty"`  // ConfigMaps/Secrets used by this
-	Consumers   []ResourceRef `json:"consumers,omitempty"`   // For ConfigMap/Secret: workloads that reference this
-	Scalers     []ResourceRef `json:"scalers,omitempty"`     // HPA/ScaledObject/ScaledJob scaling this
-	ScaleTarget *ResourceRef  `json:"scaleTarget,omitempty"` // For HPA/ScaledObject: what it scales
+	Owner           *ResourceRef  `json:"owner,omitempty"`           // Parent via ownerReference (manages edge)
+	Deployment      *ResourceRef  `json:"deployment,omitempty"`      // Grandparent Deployment (for Pods owned by ReplicaSets)
+	Children        []ResourceRef `json:"children,omitempty"`        // Resources this owns (manages edge)
+	Services        []ResourceRef `json:"services,omitempty"`        // Services selecting/exposing this
+	Ingresses       []ResourceRef `json:"ingresses,omitempty"`       // Ingresses routing to this
+	Gateways        []ResourceRef `json:"gateways,omitempty"`        // Gateways routing to this (via routes)
+	Routes          []ResourceRef `json:"routes,omitempty"`          // Routes attached to this Gateway
+	ConfigRefs      []ResourceRef `json:"configRefs,omitempty"`      // ConfigMaps/Secrets used by this
+	Consumers       []ResourceRef `json:"consumers,omitempty"`       // For ConfigMap/Secret: workloads that reference this
+	Scalers         []ResourceRef `json:"scalers,omitempty"`         // HPA/ScaledObject/ScaledJob scaling this
+	StorageRefs     []ResourceRef `json:"storageRefs,omitempty"`     // PersistentVolumeClaims used by this workload
+	ScaleTarget     *ResourceRef  `json:"scaleTarget,omitempty"`     // For HPA/ScaledObject: what it scales
 	PDBs            []ResourceRef `json:"pdbs,omitempty"`            // PodDisruptionBudgets protecting this workload
 	NetworkPolicies []ResourceRef `json:"networkPolicies,omitempty"` // NetworkPolicy / CiliumNetworkPolicy / ClusterNetworkPolicy / CiliumClusterwideNetworkPolicy selecting this workload
 	Pods            []ResourceRef `json:"pods,omitempty"`            // For Service: pods it routes to
 
-	// ServiceAccount is the ServiceAccount bound to this Pod (Pod-only field,
-	// derived from pod.Spec.ServiceAccountName). Omitted when the SA name is empty.
+	// ServiceAccount is the ServiceAccount selected by this Pod or workload.
 	ServiceAccount *ResourceRef `json:"serviceAccount,omitempty"`
 	// Node is the Node this Pod is scheduled on (Pod-only field, derived from
 	// pod.Spec.NodeName). Omitted when the Pod is unscheduled.
@@ -396,6 +507,11 @@ type ResourceProvider interface {
 	Nodes() ([]*corev1.Node, error)
 	// GetResourceStatus returns health status for a resource; nil if unknown.
 	GetResourceStatus(kind, namespace, name string) *ResourceStatus
+}
+
+// ServiceAccountProvider is implemented by providers that can expose workload identities.
+type ServiceAccountProvider interface {
+	ServiceAccounts() ([]*corev1.ServiceAccount, error)
 }
 
 // DynamicProvider adds CRD/dynamic resource support (pass nil to skip CRD nodes).

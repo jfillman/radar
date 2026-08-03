@@ -40,9 +40,6 @@ type CheckInput struct {
 	// ServedAPIs lists API group/versions the cluster still serves (e.g. ["apps/v1", "batch/v1beta1"]).
 	// Used to detect deprecated APIs. Callers populate from discovery client.
 	ServedAPIs []string
-	// PodMetrics provides live CPU/memory usage for utilization checks.
-	// Optional — check is skipped when nil/empty. Callers populate from metrics-server or equivalent.
-	PodMetrics []PodMetricsInput
 	// ConfigObjectRefs lists ConfigMaps and Secrets referenced by non-core
 	// resources that the typed Kubernetes structs above do not cover.
 	ConfigObjectRefs []ConfigObjectRef
@@ -76,6 +73,22 @@ type CheckInput struct {
 	// AllServices is the cluster-wide Service list (all namespaces) for resolving
 	// Traefik route → Service references, including cross-namespace ones.
 	AllServices []*corev1.Service
+
+	// GitOpsToolsPresent gates the GitOps coverage check (checkGitOpsCoverage).
+	// True when at least one GitOps root OBJECT exists (Argo CD Application,
+	// Flux Kustomization, or Flux HelmRelease) — not merely the CRDs, which
+	// linger after an uninstall and would gate the check open on a cluster that
+	// doesn't do GitOps at all. The coverage check flags workloads NOT under
+	// GitOps, so it must stay silent there, otherwise it flags everything.
+	GitOpsToolsPresent bool
+
+	// ArgoAppNames is the set of Argo CD Application names in the cluster.
+	// Argo's label tracking mode (application.resourceTrackingMethod: label)
+	// stamps managed resources with only app.kubernetes.io/instance — by shape
+	// indistinguishable from a generic Helm/kustomize label — so the coverage
+	// check treats that label as GitOps-managed only when its value names a
+	// real Application.
+	ArgoAppNames map[string]struct{}
 }
 
 // ConfigObjectRef identifies a ConfigMap or Secret dependency.
@@ -83,16 +96,6 @@ type ConfigObjectRef struct {
 	Kind      string
 	Namespace string
 	Name      string
-}
-
-// PodMetricsInput provides metrics data for resource utilization checks.
-type PodMetricsInput struct {
-	Namespace     string
-	Name          string
-	CPUUsage      int64 // millicores
-	MemoryUsage   int64 // bytes
-	CPURequest    int64 // millicores
-	MemoryRequest int64 // bytes
 }
 
 // ScanResults is the output of RunChecks.
@@ -117,7 +120,7 @@ type ScanResults struct {
 	// without re-running the scan.
 	EvaluatedByNamespace map[string]map[string]int `json:"evaluatedByNamespace,omitempty"`
 	// MissingInputs lists prerequisite inputs that were nil (RBAC denied or
-	// unavailable), e.g. "poddisruptionbudgets", "configmaps", "podmetrics".
+	// unavailable), e.g. "poddisruptionbudgets", "configmaps".
 	// Checks depending on them did not run and are absent from CheckCounts.
 	MissingInputs []string `json:"missingInputs,omitempty"`
 	// GroupedChecks is the per-check remediation-queue rollup (one Check per
@@ -191,7 +194,11 @@ const (
 	CategoryEfficiency  = "Efficiency"
 )
 
-// Severities
+// Raw detector severities are retained as scan provenance and in existing
+// audit transport/public-property compatibility contracts, especially the
+// mixed-version /api/audit?raw=true Radar Hub boundary. Checks and agent
+// surfaces map them to pkg/checks.Severity; visible audit presentation uses
+// the mapped High/Medium labels.
 const (
 	SeverityWarning = "warning"
 	SeverityDanger  = "danger"

@@ -2,6 +2,7 @@ import type { IssueSeverity } from './types';
 import { BADGE_SEVERITY_COLORS as sev } from '../ui/Badge';
 import { NEUTRAL_CHIP_CLASS } from '../ui/CardSection';
 import {
+  TONE_FILL_CLASS,
   TONE_HEADER_BAND_CLASS,
   TONE_RAIL_CLASS,
   TONE_SOLID_CLASS,
@@ -36,6 +37,7 @@ export const ISSUE_SEVERITY_BADGE_CLASS: Record<IssueSeverity, string> = {
 };
 
 export const ISSUE_SEVERITY_TEXT_CLASS = byTone(TONE_TEXT_CLASS);
+export const ISSUE_SEVERITY_FILL_CLASS = byTone(TONE_FILL_CLASS);
 export const ISSUE_SEVERITY_RAIL_CLASS = byTone(TONE_RAIL_CLASS);
 export const ISSUE_SEVERITY_SOLID_CLASS = byTone(TONE_SOLID_CLASS);
 export const ISSUE_SEVERITY_HEADER_BAND_CLASS = byTone(TONE_HEADER_BAND_CLASS);
@@ -99,6 +101,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   gitops_operation_failed: 'GitOps operation failed',
   gitops_out_of_sync: 'GitOps out of sync',
   gitops_health_degraded: 'GitOps health degraded',
+  gitops_stale: 'GitOps comparisons stale',
   helm_release_failed: 'Helm release failed',
   webhook_backend_down: 'Webhook backend down',
   control_plane_not_ready: 'Control plane not ready',

@@ -26,6 +26,7 @@ import {
 
 import { HealthStatusBadge, SyncStatusBadge } from './GitOpsStatusBadge'
 import { Tooltip } from '../ui/Tooltip'
+import { Input } from '../ui/Input'
 import { PageHeader } from '../ui/PageHeader'
 import { SummaryTile, type SummaryTone } from '../ui/SummaryTile'
 import { FacetSection, FacetButton } from '../ui/Facet'
@@ -34,7 +35,7 @@ import { DistributionBar } from '../ui/DistributionBar'
 import { RowActionMenu, type RowActionItem } from '../ui/RowActionMenu'
 import { BoardTableSkeleton, BoardRailSkeleton } from '../ui/BoardSkeleton'
 import { getGitOpsResourceStatus } from './detail-helpers'
-import { isArgoSuspendedByRadar } from '../resources/resource-utils-argo'
+import { isArgoOperationInProgress, isArgoSuspendedByRadar } from '../resources/resource-utils-argo'
 import { toggleSet } from './GitOpsGraphFilterRail'
 import { useFilterState, defineFilterSchema } from '../../filter-state'
 import { parseContextName } from '../../utils/context-name'
@@ -687,7 +688,7 @@ export function GitOpsTableView({
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <div className="relative w-full max-w-md">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-theme-text-tertiary" />
-              <input
+              <Input
                 ref={searchInputRef}
                 value={search}
                 onChange={(e) => filters.setString('q', e.target.value)}
@@ -1129,8 +1130,7 @@ function LabelsDropdown({
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
                 <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-theme-text-tertiary" />
-                <input
-                  type="text"
+                <Input
                   value={search}
                   onChange={(e) => onSearchChange(e.target.value)}
                   placeholder="Search labels..."
@@ -1358,13 +1358,20 @@ function buildRowActionItems(
   const items: RowActionItem[] = []
 
   if (row.tool === 'argo') {
+    const operationInProgress = isArgoOperationInProgress(row.raw)
     items.push({
       key: 'sync',
       label: 'Sync...',
       icon: ArrowDownUp,
       onClick: () => onAction(row, 'sync'),
-      disabled: suspended || terminating,
-      disabledReason: terminating ? terminatingReason : suspended ? suspendedReason : undefined,
+      disabled: suspended || terminating || operationInProgress,
+      disabledReason: terminating
+        ? terminatingReason
+        : suspended
+          ? suspendedReason
+          : operationInProgress
+            ? 'Wait for the current Argo operation to finish.'
+            : undefined,
       pending: isPending('sync'),
     })
     // Refresh / Hard refresh are read-style verbs — they re-read Git and

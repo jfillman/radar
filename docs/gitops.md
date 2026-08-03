@@ -81,7 +81,7 @@ Radar treats Terminating as a distinct lifecycle phase that dominates other stat
 - **Severity ramp**: info <5min, warning 5-30min, alert >30min. Past 30min the Issue's Cause line names the controller responsible for the finalizer and reports its pod state ("helm-controller is not running in flux-system")
 - **Fleet view**: `—` in Sync/Health columns, orange row stripe, `[TERMINATING]` chip in the leftmost slot, `Pending Nago` instead of "Last Sync"
 - **Topology**: orange left-stripe on the root + children; stale sync/health chips suppressed
-- **Cluster Audit**: `stuckTerminating` check across all typed K8s resources with the same warning/alert thresholds
+- **Cluster Audit**: `stuckTerminating` check across all typed K8s resources with the same 5-minute/30-minute thresholds, presented as Medium/High posture priority
 - **Mutating ops** (`Sync`, `Reconcile`, `Rollback`, `SetAutoSync`, `SyncWithSource`) return `ErrResourceTerminating` (HTTP 409) on zombies, including over MCP
 
 ## Operations
@@ -115,6 +115,110 @@ Radar treats Terminating as a distinct lifecycle phase that dominates other stat
 | `Shift+R` | Hard refresh (Argo) |
 | `t` | Terminate running sync (Argo, only when an op is in flight) |
 
+## Argo CD API integration (deep diff)
+
+Radar's inline field-level drift approximates desired state from the
+`kubectl.kubernetes.io/last-applied-configuration` annotation — absent under
+server-side apply and Helm-installed resources. Connecting Radar to the
+argocd-server API upgrades the Changes tab with the **canonical Git-rendered
+diff**: desired (rendered from Git, with Argo's own normalizations and every
+`ignoreDifferences` rule applied — including jq rules Radar can't evaluate)
+vs live, per managed resource, as a full YAML line diff.
+
+Setup (Settings → Argo CD, or `PUT /api/integrations/argocd`):
+
+1. Create a get-only local account in `argocd-cm` (`accounts.radar: apiKey`)
+   and grant it `p, role:radar, applications, get, */*, allow` in
+   `argocd-rbac-cm`, then mint a token
+   (`argocd account generate-token --account radar`). A project-scoped token
+   works too. Don't use an admin/personal token.
+2. Paste the token in Settings. Leave the URL empty for in-cluster
+   auto-discovery (the `argocd-server` Service, port-forwarded automatically
+   when Radar runs outside the cluster), or set it explicitly for external
+   endpoints. Self-signed installs need the insecure-TLS toggle.
+   Alternatively "Use Argo CD CLI session" adopts your local
+   `~/.config/argocd` token — an explicit action, never silent.
+
+Behavior and guarantees:
+
+- The token is transport, not authorization: every diff request passes
+  Radar's own per-user RBAC (Application access + a `get` SubjectAccessReview
+  on the target resource's kind) before Argo is consulted. Users can never
+  see manifests through Radar's token that Radar's RBAC would deny.
+- **Secret manifests are structurally redacted** — `data`/`stringData` values
+  are masked with per-key changed/unchanged markers on both sides of the
+  diff. There is no un-redact option.
+- The token lives in `~/.radar/config.json` (written `0600`) and is redacted
+  from `GET /api/config`; saving settings never erases it.
+- A token is bound to the server it was issued for: changing the Argo CD URL
+  requires re-entering the token, and a token saved in auto-discovery mode
+  (empty URL) is bound to the kubeconfig context it was saved under — after a
+  context switch or a Radar restart it must be re-confirmed in Settings, so it
+  is never sent to a different cluster's argocd-server.
+- Argo CD *core* installs have no argocd-server — Radar degrades to the
+  annotation-based drift view. Same when the server is unreachable or the
+  token expires; the Changes tab keeps working, only the deep diff goes away.
+
+The gitops-demo cluster mints a ready-to-use token into
+`scripts/gitops-demo/.radar-argocd-token` (see the demo section below).
+
+### Provisioning the token per deployment shape
+
+The Settings paste above is right for a laptop, but not for a headless or hosted
+Radar — pasting in the UI stores the token under `/home/nonroot`, which is an
+`emptyDir` in the default chart and is lost on pod restart. Pick by how Radar runs:
+
+| Deployment | How to provision | Notes |
+|------------|------------------|-------|
+| **Local / desktop** | Settings → Argo CD (paste, or "Use Argo CD CLI session") | Interactive; persists to `~/.radar/config.json`. |
+| **In-cluster (self-hosted)** | Helm `argocd.existingSecret` (or `argocd.token`) → `RADAR_ARGOCD_TOKEN` | Declarative, survives restarts, read-only in the UI. |
+| **Radar Cloud** | The customer's in-cluster Radar carries the token (as above); the token never reaches the hub. | Same env path; the hub proxies to the binary, which holds the credential. |
+
+When a token is provided via the environment, the integration becomes
+**environment-managed**: the Settings card renders read-only and `PUT
+/api/integrations/argocd` returns `409` — the deployment is the source of truth.
+The env token is held in memory only and is never written to `~/.radar/config.json`.
+
+Environment variables (read once at startup):
+
+- `RADAR_ARGOCD_TOKEN` — the API token. `RADAR_ARGOCD_TOKEN_FILE` (a mounted-secret
+  path) takes precedence and is preferred — a file isn't exposed via
+  `/proc/<pid>/environ`.
+- `RADAR_ARGOCD_URL` — explicit `argocd-server` URL; omit for in-cluster
+  auto-discovery. Must be `http(s)`, with no embedded userinfo.
+- `RADAR_ARGOCD_INSECURE_TLS` — `true` to skip TLS verification (self-signed
+  server). Leave unset otherwise; it exposes the token on the path to the server.
+
+Helm (`deploy/helm/radar`), preferring a pre-created Secret so the token never
+lands in the release state:
+
+```yaml
+argocd:
+  existingSecret: radar-argocd-token   # Secret with a `token` key (recommended)
+  # token: argo_xxx                    # or inline (dev only — lands in release values)
+  # url: https://argocd.example.com    # optional; blank auto-discovers in-cluster
+  # insecureTls: false
+```
+
+Scoping and lifecycle:
+
+- **Scope the Secret per cluster.** The token authenticates to *one* `argocd-server`;
+  auto-discovery sends it to whichever server this cluster exposes. Broadcasting one
+  Secret across clusters with a shared GitOps manifest would send the token to each
+  cluster's server. Prefer `RADAR_ARGOCD_URL` to pin the endpoint explicitly.
+- **Rotation requires a pod restart** — env vars and Secret-backed env are read at
+  startup and don't hot-reload. Roll the Deployment to pick up a new token.
+- **Invalid env config fails closed.** If the env vars are set but don't resolve to
+  a usable token (unreadable/empty file, invalid URL, non-boolean TLS), Radar does
+  NOT fall back to a previously UI-set on-disk token — it disables the deep diff
+  (annotation-drift fallback) and surfaces the reason on the Settings card. Fix the
+  deployment and restart. Removing the env vars entirely returns control to any
+  on-disk config; on a persistence-enabled deployment, clear both to fully remove a
+  credential.
+- Deep-diff cross-cluster destinations are refused: a Radar SAR can only authorize
+  a read against its own cluster, so Applications targeting a remote
+  `spec.destination` fall back to annotation drift.
+
 ## Cross-linking from the rest of Radar
 
 The GitOps tab isn't the only place Argo/Flux ownership matters. Surfaces across Radar know about GitOps and route into the right detail page when they should:
@@ -127,12 +231,12 @@ The GitOps tab isn't the only place Argo/Flux ownership matters. Surfaces across
 
 ## MCP integration
 
-`manage_gitops` MCP tool exposes the same actions to AI assistants with per-action input validation:
+`manage_gitops` MCP tool exposes the same actions to AI agents with per-action input validation:
 
 - Argo: `sync`, `suspend`, `resume`
 - Flux: `reconcile`, `suspend`, `resume`
 
-`get_resource` Summary carries lifecycle signal (`terminating`, `finalizers`) so AI assistants can distinguish a zombie from a live resource and won't suggest `Sync` on something pending deletion.
+`get_resource` Summary carries lifecycle signal (`terminating`, `finalizers`) so AI agents can distinguish a zombie from a live resource and won't suggest `Sync` on something pending deletion.
 
 See [MCP server](mcp.md) for the full tool list and security model.
 
@@ -163,6 +267,6 @@ Radar shows GitOps connections only when the controller and managed resources li
 
 ## See also
 
-- [MCP server](mcp.md) — how AI assistants drive GitOps operations and read lifecycle signal
+- [MCP server](mcp.md) — how AI agents drive GitOps operations and read lifecycle signal
 - [Integrations & CRDs](integrations.md) — full CRD support matrix for Argo CD, Flux, and everything else
 - [Configuration](configuration.md) — cluster connection, multi-context kubeconfig handling

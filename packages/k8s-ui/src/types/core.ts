@@ -1,3 +1,5 @@
+import type { CapacityIntegrationState } from './capacity'
+
 // Topology types matching the Go backend
 
 // Per-resource-type RBAC permissions. Field names must match the JSON keys
@@ -11,6 +13,7 @@ export interface ResourcePermissions {
   statefulSets: boolean
   replicaSets: boolean
   ingresses: boolean
+  ingressClasses: boolean
   configMaps: boolean
   secrets: boolean
   events: boolean
@@ -56,6 +59,12 @@ export interface WorkloadWritePermissions {
   rollouts: boolean
 }
 
+export interface IntegrationCapability {
+  state: CapacityIntegrationState
+  reasonCode?: string
+  cacheUnavailable?: boolean
+}
+
 // Feature capabilities based on RBAC permissions
 export interface Capabilities {
   exec: boolean           // Terminal feature (pods/exec)
@@ -68,14 +77,26 @@ export interface Capabilities {
   nodeWrite: boolean      // Node write operations (cordon, uncordon, drain)
   workloadWrites?: WorkloadWritePermissions // Workload patch permissions (restart/scale controls)
   mcpEnabled: boolean     // MCP server is running
+  // Karpenter discovery and NodePool read state. Optional on the wire for the
+  // same newer-frontend/older-backend reason as `deployment` below — consumers
+  // must treat absence as "unknown" and fall back to discovery signals.
+  karpenter?: IntegrationCapability
   // How / where this Radar binary is running. Optional on the wire so a
   // newer frontend (e.g. radar-hub-web bundling a fresher @skyhook-io/radar-app)
   // doesn't crash against an older backend that hasn't shipped the field yet —
   // consumers should default to { mode: 'local' } when absent.
   deployment?: Deployment
+  // Optional because Radar Hub can embed a newer frontend against an older
+  // in-cluster Radar agent. Features require an explicit server advertisement.
+  features?: FeatureCapabilities
   resources?: ResourcePermissions // Per-resource-type permissions
   authEnabled?: boolean   // Auth is enabled on the backend
   username?: string       // Authenticated user's username (when auth enabled)
+}
+
+export interface FeatureCapabilities {
+  yamlReview?: boolean
+  yamlSchemas?: boolean
 }
 
 // DeploymentMode is the closed set of topologies Radar can run in.
@@ -94,7 +115,6 @@ export interface Deployment {
 // When adding a new kind here, also update:
 // - ALL_NODE_KINDS in App.tsx
 // - TopologyFilterSidebar.tsx RESOURCE_KINDS array
-// - index.css .topology-icon-* class
 // - K8sResourceNode.tsx NODE_DIMENSIONS
 // - resource-icons.ts KIND_ICON_MAP
 // - kindToPlural in navigation.ts (if irregular plural)
@@ -123,9 +143,17 @@ export type CoreNodeKind =
   | 'PodGroup'
   | 'ConfigMap'
   | 'Secret'
+  | 'ServiceAccount'
+  | 'SealedSecret'
+  | 'ServiceMonitor'
+  | 'PodMonitor'
   | 'HorizontalPodAutoscaler'
   | 'Job'
   | 'CronJob'
+  | 'Workflow'
+  | 'CronWorkflow'
+  | 'WorkflowTemplate'
+  | 'ClusterWorkflowTemplate'
   | 'PersistentVolumeClaim'
   | 'Node'
   | 'Namespace'
@@ -168,6 +196,10 @@ export function displayKind(kind: string): string {
   const shortNames: Record<string, string> = {
     HorizontalPodAutoscaler: 'HPA',
     PersistentVolumeClaim: 'PVC',
+    ServiceAccount: 'Service Account',
+    SealedSecret: 'Sealed Secret',
+    ServiceMonitor: 'Service Monitor',
+    PodMonitor: 'Pod Monitor',
     EC2NodeClass: 'NodeClass',
     KnativeService: 'Knative Svc',
     KnativeConfiguration: 'Knative Config',
@@ -275,6 +307,10 @@ export interface TimelineEvent {
   id: string
   timestamp: string // ISO date string
   source: EventSource // Where event originated: 'informer', 'k8s_event', 'historical'
+  // Store-assigned arrival number (monotonic per store instance). The delta
+  // cursor keys on it — arrival order, not event time, so late-arriving
+  // events can't slip behind a client's cursor.
+  seq?: number
 
   // Resource identity
   kind: string
@@ -367,7 +403,7 @@ export interface TimelineFilters {
   timeRange: TimeRange
 }
 
-export type TimeRange = '5m' | '30m' | '1h' | '6h' | '24h' | 'all'
+export type TimeRange = '5m' | '30m' | '1h' | '6h' | '24h' | '7d' | '30d' | 'all'
 
 // Cluster info
 export interface ClusterInfo {
@@ -438,6 +474,62 @@ export interface ResolvedEnvFromEntry {
 export type ResolvedEnvFromKey = `configmap:${string}` | `secret:${string}`
 export type ResolvedEnvFrom = Partial<Record<ResolvedEnvFromKey, ResolvedEnvFromEntry>>
 
+export type PodEnvironmentValueState = 'resolved' | 'masked' | 'unavailable' | 'missing' | 'denied'
+
+export interface PodEnvironmentSource {
+  kind: string
+  name?: string
+  key?: string
+  variable?: string
+}
+
+export interface PodEnvironmentEvidence {
+  kind: 'modified' | 'removed' | 'added'
+  changedAt: string
+  message?: string
+}
+
+export interface PodEnvironmentRow {
+  name: string
+  value?: string
+  state: PodEnvironmentValueState
+  sensitive?: boolean
+  source: PodEnvironmentSource
+  dependencies?: PodEnvironmentSource[]
+  shadowedSources?: PodEnvironmentSource[]
+  message?: string
+  optional?: boolean
+  missingImpact?: 'startupBlocked' | 'restartBlocked'
+  runtimeDependent?: boolean
+  currentPodValue?: boolean
+  placeholder?: boolean
+  evidence?: PodEnvironmentEvidence
+}
+
+export interface PodEnvironmentContainer {
+  name: string
+  role: 'container' | 'init' | 'sidecar'
+  rows: PodEnvironmentRow[]
+  truncated?: boolean
+}
+
+export interface PodEnvironmentResponse {
+  containers: PodEnvironmentContainer[]
+  coverage: {
+    observedSince?: string
+    degraded?: boolean
+    degradedReason?: string
+    saturated?: boolean
+  }
+  partial?: boolean
+  truncated?: boolean
+}
+
+export interface PodEnvironmentRevealResponse {
+  value: string
+  encoding: 'utf8' | 'base64'
+}
+
 // Resource reference (for relationships)
 export interface ResourceRef {
   kind: string
@@ -459,6 +551,7 @@ export interface Relationships {
   configRefs?: ResourceRef[]
   consumers?: ResourceRef[]
   scalers?: ResourceRef[]
+  storageRefs?: ResourceRef[]
   scaleTarget?: ResourceRef
   pdbs?: ResourceRef[]              // PodDisruptionBudgets protecting this workload
   networkPolicies?: ResourceRef[]   // NetworkPolicy / CiliumNetworkPolicy / ClusterNetworkPolicy variants selecting this workload
@@ -836,9 +929,11 @@ export interface UpgradeInfo {
   // oci:// chart reference an OCI-sourced upgrade lives at (display only).
   chartRef?: string
   error?: string
+  // Machine-readable source-resolution failure, used to make the Helm drawer
+  // explain whether tracking an OCI source can help.
+  sourceIssue?: 'untracked' | 'repo_index_error' | 'ambiguous_repository'
   // True only when the error is a genuinely untracked source (registering a
-  // chart source could fix it) — NOT for repo-side errors like a stale index or
-  // classic ambiguity. Gates the "track source" affordance.
+  // chart source could fix it). Kept for compatibility; prefer sourceIssue.
   untracked?: boolean
 }
 
@@ -850,6 +945,8 @@ export interface BatchUpgradeInfo {
 // Request body for applying new values to a release
 export interface ApplyValuesRequest {
   values: Record<string, unknown>
+  version?: string
+  repository?: string
 }
 
 // Response for previewing values changes
@@ -1003,21 +1100,35 @@ export type ChartSource = 'local' | 'artifacthub'
 // ============================================================================
 
 // Top metrics types (bulk, for resource table view)
+export interface ContainerResourceMetrics {
+  name: string
+  cpu: number           // nanocores (usage)
+  cpuRequest: number    // nanocores
+  cpuLimit: number      // nanocores
+  memory: number        // bytes (usage)
+  memoryRequest: number // bytes
+  memoryLimit: number   // bytes
+}
+
 export interface TopPodMetrics {
   namespace: string
   name: string
   cpu: number           // nanocores (usage)
   memory: number        // bytes (usage)
-  cpuRequest: number    // nanocores (sum across containers)
-  cpuLimit: number      // nanocores (sum across containers)
-  memoryRequest: number // bytes (sum across containers)
-  memoryLimit: number   // bytes (sum across containers)
+  cpuRequest: number    // nanocores (sum across running containers)
+  cpuLimit: number      // nanocores (sum across running containers)
+  memoryRequest: number // bytes (sum across running containers)
+  memoryLimit: number   // bytes (sum across running containers)
+  // Per-container breakdown; present only for pods with more than one running
+  // container (regular + native sidecars). Absent for single-container pods.
+  containers?: ContainerResourceMetrics[]
 }
 
 export interface TopNodeMetrics {
   name: string
   cpu: number              // nanocores (usage)
   memory: number           // bytes (usage)
+  observedAt?: string      // exact metrics sample time; absent when no sample exists
   podCount: number         // pods scheduled on this node
   cpuAllocatable: number   // nanocores
   memoryAllocatable: number // bytes
@@ -1189,11 +1300,11 @@ export interface TrafficFilters {
   timeRange: string
 }
 
-// Main view type now includes 'traffic', 'cost', 'checks', 'gitops'.
+// Main view type now includes 'traffic', 'cost', 'capacity', 'checks', 'gitops'.
 // Library consumers (Radar Hub) get all GitOps surfaces — the package
 // IS the public surface, so adding new top-level views must extend
 // this type rather than rely on app-local extensions.
-export type ExtendedMainView = MainView | 'traffic' | 'cost' | 'checks' | 'gitops' | 'issues' | 'applications'
+export type ExtendedMainView = MainView | 'traffic' | 'cost' | 'capacity' | 'checks' | 'gitops' | 'issues' | 'applications'
 
 // ============================================================================
 // Image Filesystem Types
@@ -1248,10 +1359,29 @@ export interface ImageMetadata {
 // ============================================================================
 
 // Pod info returned from workload pods endpoint
+export interface WorkloadPodContainerInfo {
+  name: string
+  init?: boolean
+  ready: boolean
+  restartCount: number
+}
+
 export interface WorkloadPodInfo {
   name: string
   containers: string[]
   ready: boolean
+  phase?: string
+  nodeName?: string
+  healthLevel?: HealthStatus
+  reason?: string
+  message?: string
+  restartCount?: number
+  lastTerminationReason?: string
+  createdAt?: string
+  containerStatuses?: WorkloadPodContainerInfo[]
+  stepID?: string
+  stepName?: string
+  stepPhase?: string
 }
 
 // SSE event types for workload log streaming

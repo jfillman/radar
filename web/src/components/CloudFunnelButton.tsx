@@ -3,13 +3,13 @@ import { Bell, Check, Globe, History, Sparkles, Users, X } from 'lucide-react'
 import { DialogPortal } from '@skyhook-io/k8s-ui/components/ui/DialogPortal'
 import { Tooltip } from './ui/Tooltip'
 
-// OSS → Cloud funnel (SKY-1107): a quiet globe button in the top bar that
+// OSS → Cloud funnel: a quiet globe button in the top bar that
 // opens a modal pitching Radar Cloud. Ships dark by design: no impressions,
 // no remote config — conversion is measured on the receiving end via
 // utm_source.
 const SIGNUP_URL = 'https://app.radarhq.io/signup?utm_source=radar-oss&utm_medium=app&utm_campaign=cloud-modal'
-const ABOUT_URL = 'https://www.radarhq.io/about'
-const DEMO_URL = 'https://www.radarhq.io/demo'
+const ABOUT_URL = 'https://radarhq.io/about'
+const DEMO_URL = 'https://radarhq.io/demo'
 const SEEN_KEY = 'radar.cloudFunnel.seen'
 
 // `localStorage` access can throw (SecurityError) when storage is denied —
@@ -58,7 +58,7 @@ export function CloudFunnelButton() {
           <Globe className="w-4 h-4" />
           {!seen && (
             <span className="absolute top-0.5 right-0.5 w-[7px] h-[7px] rounded-full bg-emerald-500">
-              <span className="absolute -inset-[3px] rounded-full border border-emerald-500/70 animate-ping" />
+              <span className="absolute -inset-[3px] rounded-full border border-emerald-500/70 animate-ping motion-reduce:animate-none" />
             </span>
           )}
         </button>

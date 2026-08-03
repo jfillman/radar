@@ -25,16 +25,25 @@ export function CloudFunnelButton() {
   useEffect(() => {
     if (!open) return
     closeRef.current?.focus()
+    // Capture + stopPropagation so Escape closes this modal and nothing
+    // underneath it — the app's other overlays (SettingsDialog, drawers)
+    // listen the same way, and a bubble-phase listener here would let an
+    // underlying overlay swallow the first Escape while this stays open.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        setOpen(false)
+      }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
   }, [open])
 
   return (
     <>
-      <Tooltip content="Radar Cloud — all your clusters, one URL" delay={100} position="bottom">
+      {/* Tooltip is suppressed while the modal is open — it portals above
+          the modal backdrop and would otherwise paint on top of the dialog. */}
+      <Tooltip content="Radar Cloud — all your clusters, one URL" delay={100} position="bottom" disabled={open}>
         <button
           onClick={openModal}
           aria-label="Radar Cloud"

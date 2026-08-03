@@ -10,16 +10,38 @@ import { Tooltip } from './ui/Tooltip'
 const SIGNUP_URL = 'https://app.radarhq.io/signup?utm_source=radar-oss&utm_medium=app&utm_campaign=cloud-modal'
 const ABOUT_URL = 'https://www.radarhq.io/about'
 const DEMO_URL = 'https://www.radarhq.io/demo'
+const SEEN_KEY = 'radar.cloudFunnel.seen'
+
+// `localStorage` access can throw (SecurityError) when storage is denied —
+// sandboxed embeds, some privacy modes. This button mounts in the top bar
+// outside the main error boundary, so an uncaught throw would take down the
+// chrome; degrade to "not seen" / no-op persistence instead.
+function readSeen(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(SEEN_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function markSeen() {
+  try {
+    window.localStorage.setItem(SEEN_KEY, 'true')
+  } catch {
+    // Storage denied — the ping dot just reappears on next mount; harmless.
+  }
+}
 
 export function CloudFunnelButton() {
   const [open, setOpen] = useState(false)
-  const [seen, setSeen] = useState(() => localStorage.getItem('radar.cloudFunnel.seen') === 'true')
+  const [seen, setSeen] = useState(readSeen)
   const closeRef = useRef<HTMLButtonElement>(null)
 
   const openModal = () => {
     setOpen(true)
     setSeen(true)
-    localStorage.setItem('radar.cloudFunnel.seen', 'true')
+    markSeen()
   }
 
   useEffect(() => {
@@ -70,7 +92,7 @@ export function CloudFunnelButton() {
             role="dialog"
             aria-modal="true"
             aria-label="Radar Cloud"
-            className="dialog relative overflow-hidden w-[500px] max-w-full max-h-full overflow-y-auto"
+            className="dialog relative overflow-hidden w-[500px] max-w-full max-h-full flex flex-col"
           >
             <button
               ref={closeRef}
@@ -81,7 +103,11 @@ export function CloudFunnelButton() {
               <X className="w-4 h-4" />
             </button>
 
-            <ModalBody />
+            {/* Only the body scrolls on short viewports — the close control and
+                the Try Cloud free CTA stay pinned so they never scroll away. */}
+            <div className="min-h-0 overflow-y-auto">
+              <ModalBody />
+            </div>
 
             <ModalFooter onLater={() => setOpen(false)} />
           </div>
@@ -156,7 +182,7 @@ function CtaRow({ onLater }: { onLater: () => void }) {
 
 function ModalFooter({ onLater }: { onLater: () => void }) {
   return (
-    <div className="px-7 py-4 bg-theme-base border-t border-theme-border">
+    <div className="shrink-0 px-7 py-4 bg-theme-base border-t border-theme-border">
       <CtaRow onLater={onLater} />
       <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-theme-text-tertiary">
         {['Free for 3 clusters', 'No credit card', 'Your cluster data stays in your cluster'].map((item) => (

@@ -24,6 +24,8 @@ import type {
 } from "@skyhook-io/k8s-ui";
 import { CapacityView } from "./CapacityView";
 import { updateDemandSearchParam } from "./CapacityDemand";
+import { integrationBlock } from "./shared";
+import { ApiError } from "../../api/client";
 
 vi.mock("../../context/ConnectionContext", () => ({
   useConnection: () => ({ connection: { state: "connected" } }),
@@ -2283,5 +2285,24 @@ describe("CapacityView activity", () => {
     );
     expect(html).toContain("All · 3");
     expect(html).not.toContain("All · ≥3");
+  });
+});
+
+describe("integrationBlock version skew", () => {
+  it("maps a top-level 404 to the pre-v1.9.0 upgrade message, never 'Unknown error'", () => {
+    const html = renderToString(
+      <>{integrationBlock(undefined, new ApiError("404 page not found", 404), false, "Loading")}</>,
+    );
+    expect(html).toContain("Capacity needs a newer Radar");
+    expect(html).toContain("v1.9.0");
+    expect(html).not.toContain("Capacity unavailable");
+  });
+
+  it("keeps ordinary failures on the generic error state", () => {
+    const html = renderToString(
+      <>{integrationBlock(undefined, new ApiError("boom", 500), false, "Loading")}</>,
+    );
+    expect(html).toContain("Capacity unavailable");
+    expect(html).not.toContain("needs a newer Radar");
   });
 });

@@ -51,6 +51,7 @@ import {
 import {
   isCapacityCursorInvalidError,
   isForbiddenError,
+  isNotFoundError,
   useCapacityPools,
 } from "../../api/client";
 import type { SelectedResource } from "../../types";
@@ -1517,9 +1518,20 @@ export function integrationBlock(
   if (!response && isLoading)
     return <PaneLoader label={loadingLabel} className="min-h-0 flex-1" />;
   if (!response && error) {
-    return isForbiddenError(error) ? (
-      <DeniedCapacityState detail={errorMessage(error)} />
-    ) : (
+    if (isForbiddenError(error))
+      return <DeniedCapacityState detail={errorMessage(error)} />;
+    // A 404 on the top-level capacity routes means the route doesn't exist on
+    // this Radar — a pre-v1.9.0 binary behind a version-skewed host (Radar
+    // Cloud), not a failure. The embedded OSS binary can never hit this.
+    if (isNotFoundError(error))
+      return (
+        <EmptyState
+          icon={Gauge}
+          title="Capacity needs a newer Radar"
+          detail="This cluster's Radar predates the Capacity view (added in Radar v1.9.0). Upgrade the in-cluster Radar to enable it."
+        />
+      );
+    return (
       <EmptyState
         icon={AlertTriangle}
         title="Capacity unavailable"

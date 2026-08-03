@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -188,7 +189,12 @@ func resolveOIDCProviderMetadata(ctx context.Context, cfg Config) (*oidcProvider
 			return nil, fmt.Errorf("oidc: issuer URL configured for Radar (%q) did not match the issuer URL returned by provider discovery (%q)", cfg.OIDCIssuer, metadata.IssuerURL)
 		}
 	} else {
+		// Explicit-endpoint mode skips discovery, so the provider advertises no
+		// signing algorithms. go-oidc then narrows the verifier to RS256 only,
+		// which would reject valid ES256/PS256/EdDSA tokens; seed the full
+		// supported set so the JWKS keys alone constrain which algorithms verify.
 		metadata.ProviderConfig.IssuerURL = cfg.OIDCIssuer
+		metadata.ProviderConfig.Algorithms = supportedOIDCSigningAlgorithmList()
 	}
 
 	metadata.ProviderConfig.IssuerURL = cfg.OIDCIssuer
@@ -202,6 +208,15 @@ func resolveOIDCProviderMetadata(ctx context.Context, cfg Config) (*oidcProvider
 
 func hasExplicitRequiredOIDCEndpoints(cfg Config) bool {
 	return cfg.OIDCAuthorizationURL != "" && cfg.OIDCTokenURL != "" && cfg.OIDCJWKSURL != ""
+}
+
+func supportedOIDCSigningAlgorithmList() []string {
+	algs := make([]string, 0, len(supportedOIDCSigningAlgorithms))
+	for alg := range supportedOIDCSigningAlgorithms {
+		algs = append(algs, alg)
+	}
+	sort.Strings(algs)
+	return algs
 }
 
 func filterOIDCSigningAlgorithms(algs []string) []string {

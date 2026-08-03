@@ -577,6 +577,31 @@ func TestNewOIDCHandler_ExplicitEndpointsDoNotRequireDiscovery(t *testing.T) {
 	}
 }
 
+func TestResolveOIDCProviderMetadata_ExplicitEndpointsSeedSigningAlgorithms(t *testing.T) {
+	metadata, err := resolveOIDCProviderMetadata(context.Background(), Config{
+		Mode:                 "oidc",
+		OIDCIssuer:           "https://auth.example.com",
+		OIDCAuthorizationURL: "https://auth.example.com/authorize",
+		OIDCTokenURL:         "http://auth.authentik.svc/token",
+		OIDCJWKSURL:          "http://auth.authentik.svc/jwks",
+		OIDCClientID:         "radar",
+	})
+	if err != nil {
+		t.Fatalf("resolveOIDCProviderMetadata: %v", err)
+	}
+	// Without discovery the verifier would default to RS256 only; the resolver
+	// must seed the supported set so non-RS256 IdPs still verify.
+	got := map[string]bool{}
+	for _, alg := range metadata.ProviderConfig.Algorithms {
+		got[alg] = true
+	}
+	for _, want := range []string{oidc.RS256, oidc.ES256, oidc.PS256, oidc.EdDSA} {
+		if !got[want] {
+			t.Errorf("explicit-endpoint algorithms %v missing %q", metadata.ProviderConfig.Algorithms, want)
+		}
+	}
+}
+
 func TestNewOIDCHandler_InvalidCACertPath(t *testing.T) {
 	_, err := NewOIDCHandler(context.Background(), Config{
 		Mode:             "oidc",

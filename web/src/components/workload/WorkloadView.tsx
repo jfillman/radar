@@ -1808,10 +1808,11 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
       setSearchParams(next, { replace: true })
     }
   }, [kind, namespace, name, runProbes, searchParams, setSearchParams])
-  // Full-view Diagnose tab owns the page padding (the drawer variant wraps
-  // in Section, which handles its own indentation).
+  // The full-view Reachability tab fills its pane: the shell supplies the
+  // padding and this stays a full-height flex column so the board's three
+  // panes can scroll independently instead of the whole page scrolling.
   return (
-    <div className="p-4">
+    <div className="flex h-full min-h-0 flex-col">
       <ReachabilityView
         trace={displayTrace}
         isLoading={isLoading || running}

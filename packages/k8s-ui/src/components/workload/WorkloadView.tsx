@@ -1067,7 +1067,7 @@ export function WorkloadView({
           </div>
         )}
         {effectiveTab === 'reachability' && renderDiagnoseTab && (
-          <div className="h-full overflow-auto">
+          <div className="flex h-full min-h-0 flex-col p-3">
             {renderDiagnoseTab({ kind: resource?.kind || kind, namespace, name })}
           </div>
         )}

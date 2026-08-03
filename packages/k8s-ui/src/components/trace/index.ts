@@ -1,5 +1,12 @@
 export { inClusterOutcome, inClusterEligible } from './TracePanel'
 export { ReachabilityView } from './ReachabilityView'
+export { podReach, podProbeKey } from './podReach'
+// Reachability v2 internals - exported so hosts can compose the same vocabulary
+// (marks, origins) elsewhere without re-deriving it.
+export { buildOrigins, defaultOrigin, strongestGap } from './reachOrigins'
+export type { Origin, OriginId, Lane, OriginKind } from './reachOrigins'
+export { routeMark, routeTone, routeChip, orderRoutes, MARKS, MARK_LEGEND } from './reachMarks'
+export type { Mark, SevTone } from './reachMarks'
 export { traceToSubgraph } from './traceToSubgraph'
 export { traceFingerprint, staticPollUnreliable } from './traceFingerprint'
 export { summarizeInClusterTests } from './inClusterSummary'

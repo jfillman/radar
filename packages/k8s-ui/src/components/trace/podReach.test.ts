@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { podReach, podProbeKey } from './ReachabilityView'
+import { podReach, podProbeKey } from './podReach'
 import type { ProbeResult } from './types'
 
 describe('podProbeKey', () => {

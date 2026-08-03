@@ -159,7 +159,10 @@ function nodeInspector(node: GraphNode, ctx: Ctx): Inspector {
     const total = hop?.config?.podTotal ?? roster.length
     const ready = typeof hop?.meta?.ready === 'number' ? (hop.meta.ready as number) : roster.filter((p) => p.ready).length
     const selected = typeof hop?.meta?.selected === 'number' ? (hop.meta.selected as number) : total
-    const notReady = roster.filter((p) => !p.ready)
+    // Same rule as the graph: with publishNotReadyAddresses the dataplane routes
+    // to not-ready Pods, so none of them is excluded from routing.
+    const publishNotReady = !!hop?.meta?.publishNotReadyAddresses
+    const notReady = publishNotReady ? [] : roster.filter((p) => !p.ready)
     const omitted = total - roster.length
     const notProve: string[] = []
     if (omitted > 0) notProve.push(`The ${omitted} endpoints that were not probed. Unprobed is not proven.`)
@@ -174,7 +177,14 @@ function nodeInspector(node: GraphNode, ctx: Ctx): Inspector {
       scope: [
         { k: 'SELECTED', v: `${selected} Pods matched by the selector` },
         { k: 'ELIGIBLE', v: `${ready} Ready and serving` },
-        { k: 'EXCLUDED', v: notReady.length > 0 ? `${notReady.length} NotReady — never routed to` : 'none' },
+        {
+          k: 'EXCLUDED',
+          v: publishNotReady
+            ? 'none — this Service publishes not-ready addresses'
+            : notReady.length > 0
+              ? `${notReady.length} NotReady — never routed to`
+              : 'none',
+        },
         { k: 'PROBED', v: omitted > 0 ? `${roster.length} of ${total} (sampled)` : `${roster.length}` },
       ],
       evidence: [

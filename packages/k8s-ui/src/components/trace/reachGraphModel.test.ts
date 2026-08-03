@@ -321,6 +321,35 @@ describe('layout collisions', () => {
 })
 
 describe('publishNotReadyAddresses', () => {
+  // With this set the dataplane routes to NotReady Pods, so none of them is
+  // excluded. Honouring it in the subtitle but not in the rows told the user a
+  // Pod was "never routed to" while it was in fact serving traffic.
+  const publishing = (pods: PodStatus[], probes: ProbeResult[]) => {
+    const t = trace(pods, probes)
+    t.downstream[1].meta = { ready: pods.length, selected: pods.length, publishNotReadyAddresses: true }
+    return t
+  }
+
+  it('does not call a NotReady endpoint excluded when not-ready addresses are published', () => {
+    const t = publishing([pod('a', false, '10.0.0.1', 'readiness failing')], [p({ path: 'data', target: '10.0.0.1:8080', ok: true })])
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    const rows = g.nodes.find((n) => n.id === 'n:endpoints')!.podRows!
+    expect(rows[0].mark).not.toBe('excluded')
+    expect(rows[0].detail).toMatch(/published anyway/)
+  })
+
+  it('reports no excluded endpoints in the population anomalies', () => {
+    const t = publishing([pod('a', false, '10.0.0.1', 'x'), pod('b', true, '10.0.0.2')], [p({ path: 'data', ok: true })])
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    expect(g.nodes.find((n) => n.id === 'n:endpoints')!.anomalies?.some((a) => a.mark === 'excluded')).toBe(false)
+  })
+
+  it('still excludes NotReady endpoints when the Service withholds them', () => {
+    const t = trace([pod('a', false, '10.0.0.1', 'x')], [p({ path: 'data', ok: true })])
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    expect(g.nodes.find((n) => n.id === 'n:endpoints')!.podRows![0].mark).toBe('excluded')
+  })
+
   it('never renders the published count as a readiness count', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [p({})])
     t.downstream[1].meta = { ready: 3, selected: 3, publishNotReadyAddresses: true }

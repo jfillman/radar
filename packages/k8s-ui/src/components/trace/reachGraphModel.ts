@@ -189,7 +189,7 @@ function probesFromOrigin(probes: ProbeResult[], origin: Origin): ProbeResult[] 
  * how a single refusing endpoint that real users hit becomes invisible, so each
  * category is counted and named rather than folded into a percentage.
  */
-function populationAnomalies(roster: PodStatus[], total: number, probes: ProbeResult[]): { mark: Mark; text: string }[] {
+function populationAnomalies(roster: PodStatus[], total: number, probes: ProbeResult[], publishNotReady: boolean): { mark: Mark; text: string }[] {
   const out: { mark: Mark; text: string }[] = []
   const failing = roster.filter((p) => p.ready && probesForPod(p, probes).some((x) => !x.skipped && (!x.ok || x.tone === 'unhealthy')))
   if (failing.length > 0) {
@@ -203,7 +203,10 @@ function populationAnomalies(roster: PodStatus[], total: number, probes: ProbeRe
       .sort((a, b) => (b.latencyNs ?? 0) - (a.latencyNs ?? 0))[0]
     out.push({ mark: 'slow', text: `${slow.length} slow · ${formatLatency(worst?.latencyNs)}` })
   }
-  const notReady = roster.filter((p) => !p.ready)
+  // With publishNotReadyAddresses the dataplane routes to NotReady Pods too, so
+  // they are eligible endpoints - calling them "excluded, never routed to" is
+  // false precisely when someone is debugging a not-ready Pod that IS serving.
+  const notReady = publishNotReady ? [] : roster.filter((p) => !p.ready)
   if (notReady.length > 0) {
     out.push({ mark: 'excluded', text: `${notReady.length} NotReady — never routed to` })
   }
@@ -321,7 +324,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const publishNotReady = !!podsHop?.meta?.publishNotReadyAddresses
   const aggregated = roster.length > POD_DETAIL_MAX || total > roster.length
   const originProbes = podsHop ? probesFromOrigin(podsHop.probes ?? [], origin) : []
-  const anomalies = podsHop ? populationAnomalies(roster, total, originProbes) : []
+  const anomalies = podsHop ? populationAnomalies(roster, total, originProbes, publishNotReady) : []
 
   const deliveryBlocked = (route ? routeMark(route, { stale, running }) : 'untested') === 'failed'
   const podRows: PodRow[] = []
@@ -332,9 +335,10 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       const failed = mine.find((x) => !x.ok || x.tone === 'unhealthy')
       let mark: Mark
       let detail: string
-      if (!p.ready) {
+      if (!p.ready && !publishNotReady) {
         // Excluded is not failed: the dataplane never routed here, so there is
-        // no result about this endpoint's ability to serve.
+        // no result about this endpoint's ability to serve. Only true when the
+        // Service withholds not-ready addresses.
         mark = 'excluded'
         detail = 'NotReady — never routed'
       } else if (failed) {
@@ -356,6 +360,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         const best = mine.find((x) => x.layer === 'http') ?? mine[0]
         detail = slowest ? `slow · ${formatLatency(slowest.latencyNs)}` : best?.detail || 'reached'
       }
+      if (!p.ready && publishNotReady) detail = `${detail} · NotReady, published anyway`
       podRows.push({ name: p.name, mark, detail, ref: { kind: 'Pod', name: p.name, namespace: trace.subject.namespace } })
     }
 

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useState } from 'react'
 import { Bell, Check, Globe, History, Sparkles, Users, X } from 'lucide-react'
+import { DialogPortal } from '@skyhook-io/k8s-ui/components/ui/DialogPortal'
 import { Tooltip } from './ui/Tooltip'
 
 // OSS → Cloud funnel (SKY-1107): a quiet globe button in the top bar that
@@ -36,30 +36,13 @@ function markSeen() {
 export function CloudFunnelButton() {
   const [open, setOpen] = useState(false)
   const [seen, setSeen] = useState(readSeen)
-  const closeRef = useRef<HTMLButtonElement>(null)
 
   const openModal = () => {
     setOpen(true)
     setSeen(true)
     markSeen()
   }
-
-  useEffect(() => {
-    if (!open) return
-    closeRef.current?.focus()
-    // Capture + stopPropagation so Escape closes this modal and nothing
-    // underneath it — the app's other overlays (SettingsDialog, drawers)
-    // listen the same way, and a bubble-phase listener here would let an
-    // underlying overlay swallow the first Escape while this stays open.
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        setOpen(false)
-      }
-    }
-    document.addEventListener('keydown', onKey, true)
-    return () => document.removeEventListener('keydown', onKey, true)
-  }, [open])
+  const close = () => setOpen(false)
 
   return (
     <>
@@ -81,39 +64,27 @@ export function CloudFunnelButton() {
         </button>
       </Tooltip>
 
-      {/* Portaled: the header's backdrop-blur creates a containing block that
-          would otherwise trap this fixed overlay inside the 49px bar. */}
-      {open && createPortal(
-        <div
-          className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-black/60 backdrop-blur-sm p-6"
-          onClick={(e) => { if (e.target === e.currentTarget) setOpen(false) }}
+      <DialogPortal
+        open={open}
+        onClose={close}
+        className="w-[500px] max-w-full max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col"
+      >
+        <button
+          onClick={close}
+          aria-label="Close"
+          className="absolute top-3.5 right-3.5 z-10 p-1.5 rounded-md text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-hover transition-colors"
         >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Radar Cloud"
-            className="dialog relative overflow-hidden w-[500px] max-w-full max-h-full flex flex-col"
-          >
-            <button
-              ref={closeRef}
-              onClick={() => setOpen(false)}
-              aria-label="Close"
-              className="absolute top-3.5 right-3.5 z-10 p-1.5 rounded-md text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-hover transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
+          <X className="w-4 h-4" />
+        </button>
 
-            {/* Only the body scrolls on short viewports — the close control and
-                the Try Cloud free CTA stay pinned so they never scroll away. */}
-            <div className="min-h-0 overflow-y-auto">
-              <ModalBody />
-            </div>
+        {/* Only the body scrolls on short viewports — the close control and
+            the Try Cloud free CTA stay pinned so they never scroll away. */}
+        <div className="min-h-0 overflow-y-auto">
+          <ModalBody />
+        </div>
 
-            <ModalFooter onLater={() => setOpen(false)} />
-          </div>
-        </div>,
-        document.body
-      )}
+        <ModalFooter onLater={close} />
+      </DialogPortal>
     </>
   )
 }

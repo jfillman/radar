@@ -4,7 +4,7 @@ import { ReachActions, JustTestedNote, CopyableCommand, type TracePanelProps } f
 import { AlertBanner } from '../ui/drawer-components'
 import { ReachabilityGraph, TinyTag, MarkGlyph } from './ReachabilityGraph'
 import { Tooltip } from '../ui/Tooltip'
-import { buildGraph } from './reachGraphModel'
+import { buildGraph, originProducedEvidence } from './reachGraphModel'
 import { buildOrigins, defaultOrigin, type Origin, type OriginId } from './reachOrigins'
 import { buildSidebar, buildVerdict, type Sidebar, type InspectorCTA, type Selection } from './reachInspector'
 import { markStyle, glyphStyle, markHelp, scenariosFor, routeTone, routeChip, SEV_COLOR, SEV_BADGE, type Scenario } from './reachMarks'
@@ -364,7 +364,13 @@ function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: O
       >
         <span className="text-[10.5px] leading-snug text-theme-text-tertiary">Pick one to see what it found.</span>
       </Tooltip>
-      {origins.map((o) => {
+      {/* Vantages Radar can never run are NOT offered as choices. What they
+          would have proven still is - as a statement below - so the coverage
+          gap stays visible without spending two of five rows on controls that
+          can only ever be clicked to be told "no". */}
+      {origins
+        .filter((o) => !o.unsupported)
+        .map((o) => {
         const sel = o.id === active
         return (
           <button
@@ -396,26 +402,49 @@ function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: O
                 title={KIND_TAG_HELP[o.kind]}
               />
               <TinyTag
-                text={o.lane === 'dataplane' ? 'CLUSTER NETWORK' : 'SKIPS CLUSTER NETWORK'}
+                text={o.lane === 'dataplane' ? 'INSIDE THE CLUSTER' : 'OUTSIDE THE CLUSTER'}
                 tone={o.lane === 'dataplane' ? 'var(--accent-text)' : 'var(--color-info)'}
                 title={
                   o.lane === 'dataplane'
-                    ? 'Goes the same way your users’ traffic does — through the cluster’s routing, network policy and service mesh.'
-                    : 'Does not go through the cluster’s routing, network policy or service mesh, so it cannot prove those are working.'
+                    ? 'Runs from a Pod in the cluster, so the request goes through the cluster’s routing, network policy and mesh. It dials the backend directly, so it cannot show whether the front door works.'
+                    : 'Runs outside the cluster. What it crosses depends on the address it was given — a public hostname goes through your load balancer and ingress; a relayed request skips the cluster network entirely.'
                 }
               />
-              {/* That an origin cannot be used stays visible at a glance -
-                  hiding it entirely would make synthetic evidence look
-                  complete. The why is one click away. */}
+              {/* An origin that already produced evidence is not "unavailable" -
+                  it just can't be run again. Showing both at once had the rail
+                  denying a result the graph beside it was displaying. */}
               {o.unavailable && (
                 <Tooltip content={o.unavailable} wrapperClassName="cursor-help">
-                  <span className="text-[9px] text-theme-text-tertiary">⊘ unavailable</span>
+                  <span className="text-[9px] text-theme-text-tertiary">
+                    {originProducedEvidence(o) ? '⊘ can’t run again' : '⊘ unavailable'}
+                  </span>
                 </Tooltip>
               )}
             </div>
           </button>
         )
       })}
+      <UntestableNote origins={origins} />
+    </div>
+  )
+}
+
+/** The vantages Radar cannot run, stated rather than offered. These are the
+ *  biggest holes in the evidence, so they must stay on screen - but as a limit
+ *  on the claim, not as buttons that refuse. */
+function UntestableNote({ origins }: { origins: Origin[] }) {
+  const out = origins.filter((o) => o.unsupported)
+  if (out.length === 0) return null
+  return (
+    <div className="mx-2 mt-2 border-t border-theme-border pt-2">
+      <div className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">NEVER TESTED</div>
+      {out.map((o) => (
+        <Tooltip key={o.id} content={o.unavailable ?? ''} wrapperClassName="mt-1 block cursor-help">
+          <span className="text-[10px] leading-snug text-theme-text-tertiary">
+            {o.glyph} {o.name}
+          </span>
+        </Tooltip>
+      ))}
     </div>
   )
 }

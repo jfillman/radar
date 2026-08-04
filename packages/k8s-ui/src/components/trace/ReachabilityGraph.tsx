@@ -349,7 +349,10 @@ function Legend({ model }: { model: GraphModel }) {
         </span>
       ))}
       <div className="flex-1" />
-      <span className="italic">dot = is the resource healthy · line = did traffic get through, from the selected vantage</span>
+      {/* The dot is NOT pure resource health: hopTone folds in this vantage's
+          probe results, which is deliberate. Saying "is the resource healthy"
+          described behaviour the code does not have. */}
+      <span className="italic">dot = how this resource is doing · line = did traffic get through, from the selected vantage</span>
     </div>
   )
 }

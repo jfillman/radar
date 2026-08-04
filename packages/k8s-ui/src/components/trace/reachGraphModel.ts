@@ -456,7 +456,10 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       node: {
         id: g.id,
         kind: 'PODS',
-        name: `${ready} of ${selected} taking traffic`,
+        // "taking traffic" claims observed delivery; readiness only establishes
+        // ELIGIBILITY. The inspector already says "eligible" for this same
+        // number - the graph must not contradict it.
+        name: `${ready} of ${selected} eligible`,
         sub: publishNotReady
           ? 'not-ready Pods are sent traffic too'
           : ready === selected
@@ -605,15 +608,15 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   }
   const laneControl = boxFor(
     nodes.filter((n) => n.lane === 'control'),
-    'SKIPS THE CLUSTER NETWORK',
-    'These tests reach the target without going through the cluster’s own routing, network policy or service mesh — so a success here cannot prove those are working.',
+    'FROM OUTSIDE THE CLUSTER',
+    'Started outside the cluster. What it crosses on the way depends on the address it was given — a public hostname goes through your load balancer and ingress, while a relayed request skips the cluster network altogether.',
     'var(--color-info)',
     true,
   )
   const laneData = boxFor(
     nodes.filter((n) => n.lane === 'data'),
-    'THROUGH THE CLUSTER NETWORK',
-    'These tests take the same route your users’ traffic does — through the cluster’s routing, network policy and service mesh.',
+    'FROM INSIDE THE CLUSTER',
+    'Started from a Pod inside the cluster, so the request goes through the cluster’s own routing, network policy and mesh. It dials the backend directly, so it says nothing about whether the front door works.',
     'var(--accent-text)',
   )
 

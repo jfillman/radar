@@ -36,11 +36,6 @@ const COL_WIDTH: Record<number, number> = {
   [Col.Endpoints]: 264,
 }
 
-/** Above this many backends the individual pods collapse into one population
- *  node with anomalies pinned under it - a wall of identical rows conveys less
- *  than a count plus the outliers. */
-export const POD_DETAIL_MAX = 5
-
 export interface GraphNode {
   id: string
   x: number
@@ -326,7 +321,6 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const ready = typeof podsHop?.meta?.ready === 'number' ? (podsHop.meta.ready as number) : roster.filter((p) => p.ready).length
   const selected = typeof podsHop?.meta?.selected === 'number' ? (podsHop.meta.selected as number) : total
   const publishNotReady = !!podsHop?.meta?.publishNotReadyAddresses
-  const aggregated = roster.length > POD_DETAIL_MAX || total > roster.length
   const originProbes = podsHop ? probesFromOrigin(podsHop.probes ?? [], origin) : []
   const anomalies = podsHop ? populationAnomalies(roster, total, originProbes, publishNotReady) : []
 
@@ -373,11 +367,15 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       row: 0,
       node: {
         id: 'n:endpoints',
-        kind: aggregated ? 'ENDPOINT POPULATION' : 'ENDPOINT SELECTION',
-        name: `${ready} eligible endpoint${ready === 1 ? '' : 's'}`,
+        kind: 'PODS',
+        name: `${ready} of ${selected} taking traffic`,
         // publishNotReadyAddresses makes `ready` a PUBLISHED count, not a
         // readiness count - saying "N of M ready" there would be false.
-        sub: publishNotReady ? `${selected} selected · published regardless of readiness` : `from EndpointSlices · ${selected} selected`,
+        sub: publishNotReady
+          ? 'not-ready Pods are sent traffic too'
+          : ready === selected
+            ? 'every selected Pod is eligible'
+            : `${selected - ready} not eligible`,
         tone: hopTone(podsHop),
         hop: podsHop,
         anomalies,
@@ -508,7 +506,10 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   if (podsHop) {
     // Membership is control-plane intent - the Service selector plus slice
     // contents. No packet traverses it, so it is always drawn as config.
-    connect('e:subject-endpoints', `n:${subjectId}`, 'n:endpoints', 'config', 'endpoint selection (config)')
+    // Still drawn dotted, because the Service selecting Pods is configuration
+    // rather than a hop - but it is one line between two things the user
+    // configures, not a third box teaching that distinction.
+    connect('e:subject-endpoints', `n:${subjectId}`, 'n:endpoints', 'config', 'selects')
 
   }
 

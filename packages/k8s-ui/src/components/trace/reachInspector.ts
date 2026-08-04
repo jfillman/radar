@@ -170,19 +170,19 @@ function nodeInspector(node: GraphNode, ctx: Ctx): Inspector {
       notProve.push(`The ${notReady.length} excluded NotReady endpoint${notReady.length > 1 ? 's' : ''} — no traffic was routed there, so nothing was tested.`)
     return {
       chipTone: node.tone,
-      chipText: 'config membership',
-      title: `Endpoint selection · ${ready} eligible of ${selected}`,
-      body: 'Which Pods Kubernetes is willing to send traffic to. This is configuration, not a step in the path — traffic goes straight from the Service to a Pod.',
-      scopeHeader: 'SELECTION',
+      chipText: 'backends',
+      title: `${ready} of ${selected} Pods taking traffic`,
+      body: 'The Pods behind this Service. Kubernetes only sends traffic to the ones that are ready — the rest are selected but sitting out.',
+      scopeHeader: 'BACKENDS',
       scope: [
-        { k: 'SELECTED', v: `${selected} Pods matched by the selector` },
-        { k: 'ELIGIBLE', v: `${ready} Ready and serving` },
+        { k: 'SELECTED', v: `${selected} Pods match the selector` },
+        { k: 'TAKING TRAFFIC', v: `${ready}` },
         {
-          k: 'EXCLUDED',
+          k: 'SITTING OUT',
           v: publishNotReady
-            ? 'none — this Service publishes not-ready addresses'
+            ? 'none — this Service sends traffic to not-ready Pods too'
             : notReady.length > 0
-              ? `${notReady.length} NotReady — never routed to`
+              ? `${notReady.length} not ready, so nothing is sent to them`
               : 'none',
         },
         { k: 'PROBED', v: omitted > 0 ? `${roster.length} of ${total} (sampled)` : `${roster.length}` },
@@ -260,9 +260,9 @@ function edgeInspector(edge: GraphEdge, ctx: Ctx): Inspector {
     return {
       chipTone: 'info',
       chipText: 'config relationship',
-      title: 'Service → eligible endpoints',
+      title: 'Which Pods this Service selects',
       body: 'Configuration, not traffic — drawn dotted for that reason. The Service’s selector decides which Pods are eligible. Nothing travels along this line.',
-      scopeHeader: 'RELATIONSHIP',
+      scopeHeader: 'SELECTOR',
       scope: [
         { k: 'SELECTOR', v: Object.entries(trace.downstream?.find((h) => h.config?.selector)?.config?.selector ?? {}).map(([k, v]) => `${k}=${v}`).join(', ') || '—' },
         { k: 'MEMBERSHIP', v: 'from EndpointSlices, control plane' },

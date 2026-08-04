@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildGraph, POD_DETAIL_MAX, POD_ROW_MAX, PILL_MAX_PX } from './reachGraphModel'
+import { buildGraph, POD_ROW_MAX, PILL_MAX_PX } from './reachGraphModel'
 import { buildOrigins } from './reachOrigins'
 import type { Trace, RouteResult, PodStatus, ProbeResult } from './types'
 
@@ -57,11 +57,11 @@ describe('buildGraph lanes', () => {
     expect(g.nodes.find((n) => n.isOrigin)!.lane).toBe('data')
   })
 
-  it('never lays out more than four columns, so the path fits its pane', () => {
+  it('never lays out more than three columns, so the path fits its pane', () => {
     const t = trace([pod('a', true, '10.0.0.1'), pod('b', true, '10.0.0.2')], [p({ path: 'apiserver' })])
     for (const id of ['incluster', 'apiserver'] as const) {
       const g = buildGraph({ trace: t, route: route(), origin: pick(t, id) })
-      expect(new Set(g.nodes.map((n) => n.x)).size).toBeLessThanOrEqual(4)
+      expect(new Set(g.nodes.map((n) => n.x)).size).toBeLessThanOrEqual(3)
     }
   })
 
@@ -200,7 +200,7 @@ describe('node health from probes', () => {
 })
 
 describe('buildGraph aggregation', () => {
-  const many = Array.from({ length: POD_DETAIL_MAX + 3 }, (_, i) => pod(`p${i}`, true, `10.0.0.${i}`))
+  const many = Array.from({ length: 8 }, (_, i) => pod(`p${i}`, true, `10.0.0.${i}`))
 
   it('collapses a large population into one node, never a column of boxes', () => {
     const t = trace(many, many.map((x) => p({ target: `${x.ip}:8080` })))
@@ -208,7 +208,8 @@ describe('buildGraph aggregation', () => {
     // Endpoints are rows inside the selection node - no per-pod node exists.
     expect(g.nodes.filter((n) => n.id.startsWith('n:pod'))).toHaveLength(0)
     const eps = g.nodes.find((n) => n.id === 'n:endpoints')!
-    expect(eps.kind).toBe('ENDPOINT POPULATION')
+    // The backends are Pods - the user's own vocabulary, not "endpoint population".
+    expect(eps.kind).toBe('PODS')
     expect(eps.podRows!.length).toBeLessThanOrEqual(POD_ROW_MAX)
   })
 
@@ -249,7 +250,7 @@ describe('buildGraph aggregation', () => {
     const t = trace(few, few.map((x) => p({ target: `${x.ip}:8080` })))
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
     const eps = g.nodes.find((n) => n.id === 'n:endpoints')!
-    expect(eps.kind).toBe('ENDPOINT SELECTION')
+    expect(eps.kind).toBe('PODS')
     expect(eps.podRows).toHaveLength(2)
     expect(eps.moreRows).toBe(0)
   })
@@ -355,7 +356,7 @@ describe('publishNotReadyAddresses', () => {
     t.downstream[1].meta = { ready: 3, selected: 3, publishNotReadyAddresses: true }
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
     const eps = g.nodes.find((n) => n.id === 'n:endpoints')!
-    expect(eps.sub).toMatch(/regardless of readiness/)
+    expect(eps.sub).toMatch(/not-ready Pods are sent traffic too/)
     // The "N of M ready" phrasing would be a lie here: `ready` is a PUBLISHED
     // count when the Service publishes not-ready addresses.
     expect(eps.sub).not.toMatch(/\d+ of \d+ ready/)

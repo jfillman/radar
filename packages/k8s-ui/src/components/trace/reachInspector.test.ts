@@ -79,7 +79,7 @@ describe('inspector selections', () => {
   it('names an excluded NotReady endpoint as a coverage gap, not a failure', () => {
     const t = mk([pod('a', true, '10.0.0.1'), pod('b', false, '10.0.0.2', 'readiness failing')], [p({})])
     const insp = buildInspector('n:endpoints', ctx(t, 'incluster'))
-    expect(insp.scope.find((x) => x.k === 'EXCLUDED')!.v).toMatch(/never routed to/)
+    expect(insp.scope.find((x) => x.k === 'SITTING OUT')!.v).toMatch(/not ready/)
     expect(insp.notProve.join(' ')).toMatch(/no traffic was routed there/)
     expect(insp.next.header).toMatch(/READINESS, NOT REACHABILITY/)
   })

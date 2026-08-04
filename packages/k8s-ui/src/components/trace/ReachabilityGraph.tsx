@@ -86,8 +86,8 @@ export function ReachabilityGraph({
           className="absolute left-0 top-0"
           style={{ width: canvas.w, height: canvas.h, transform: `scale(${scale})`, transformOrigin: 'top left' }}
         >
-        {laneControl && <Lane box={laneControl} label="NOT THE DATAPLANE — relayed, or from outside the cluster" color="var(--color-info)" dashed />}
-        {laneData && <Lane box={laneData} label="DATAPLANE — real packets through kube-proxy, policy and mesh" color="var(--accent-text)" />}
+        {laneControl && <Lane box={laneControl} />}
+        {laneData && <Lane box={laneData} />}
         <div>
         <svg width={canvas.w} height={canvas.h} viewBox={`0 0 ${canvas.w} ${canvas.h}`} className="absolute inset-0" style={{ overflow: 'visible' }}>
           {model.brackets.map((b, i) => (
@@ -126,29 +126,31 @@ export function ReachabilityGraph({
   )
 }
 
-function Lane({ box, label, color, dashed }: { box: LaneBox; label: string; color: string; dashed?: boolean }) {
+function Lane({ box }: { box: LaneBox }) {
   return (
-    <div
-      className="absolute rounded-[10px]"
-      style={{
-        left: box.x,
-        top: box.y,
-        width: box.w,
-        height: box.h,
-        border: dashed ? '1px dashed var(--border-default)' : '1px solid var(--border-subtle)',
-        background: `color-mix(in srgb, ${color} 4%, transparent)`,
-        zIndex: 0,
-      }}
-    >
-      {/* Right-aligned: cross-lane edges enter from the left, and their pills
-          park in this exact band. */}
+    <>
+      <div
+        className="absolute rounded-[10px]"
+        style={{
+          left: box.x,
+          top: box.y,
+          width: box.w,
+          height: box.h,
+          border: box.dashed ? '1px dashed var(--border-default)' : '1px solid var(--border-subtle)',
+          background: `color-mix(in srgb, ${box.color} 4%, transparent)`,
+          zIndex: 0,
+        }}
+      />
+      {/* Sibling of the box, not a child: a lane that bounds one narrow node is
+          far narrower than its label, and as a child the label was clipped by
+          the box. */}
       <span
         className="absolute whitespace-nowrap px-1.5 text-[9px] font-bold tracking-[0.06em] bg-theme-base"
-        style={{ right: 12, top: -8, color, zIndex: 4 }}
+        style={{ left: box.x + 12, top: box.y - 8, color: box.color, zIndex: 4 }}
       >
-        {label}
+        {box.label}
       </span>
-    </div>
+    </>
   )
 }
 
@@ -201,8 +203,7 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
   return (
     <button type="button" onClick={() => onSelect(node.id)} className="absolute cursor-pointer px-2.5 py-1.5 text-left" style={style}>
       <div className="flex items-center gap-1.5">
-        <span className="whitespace-nowrap font-mono text-[8.5px] font-bold tracking-[0.06em] text-theme-text-tertiary">{node.kind}</span>
-        <div className="flex-1" />
+        <span className="min-w-0 flex-1 truncate font-mono text-[8.5px] font-bold tracking-[0.06em] text-theme-text-tertiary">{node.kind}</span>
         {node.tag && <TinyTag text={node.tag} tone={node.lane === 'control' ? 'var(--color-info)' : 'var(--color-warning-dark)'} />}
         {!isOrigin && (
           <span
@@ -246,7 +247,13 @@ export function TinyTag({ text, tone }: { text: string; tone: string }) {
   return (
     <span
       className="whitespace-nowrap rounded-full px-1.5 py-px text-[8.5px] font-bold tracking-[0.05em]"
-      style={{ color: tone, border: `1px solid ${tone}`, background: `color-mix(in srgb, ${tone} 8%, transparent)` }}
+      style={{
+        color: tone,
+        border: `1px solid ${tone}`,
+        // Opaque, not tinted-transparent: the origin capsule's dashed border ran
+        // straight through the tag when this let the backdrop show.
+        background: `color-mix(in srgb, ${tone} 10%, var(--bg-elevated))`,
+      }}
     >
       {text}
     </span>
@@ -270,7 +277,7 @@ function Legend({ model }: { model: GraphModel }) {
         </span>
       ))}
       <div className="flex-1" />
-      <span className="italic">node dot = resource health · line = path truth for this scenario and origin</span>
+      <span className="italic">dot = is the resource healthy · line = did traffic get through, from the selected vantage</span>
     </div>
   )
 }

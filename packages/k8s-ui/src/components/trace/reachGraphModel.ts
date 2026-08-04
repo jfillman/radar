@@ -96,6 +96,10 @@ export interface LaneBox {
   y: number
   w: number
   h: number
+  label: string
+  /** Lane tint + label colour. */
+  color: string
+  dashed?: boolean
 }
 
 export interface GraphModel {
@@ -269,7 +273,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     row: 0,
     node: {
       id: `origin:${origin.id}`,
-      kind: originIsControl ? 'PROBE ORIGIN · CONTROL PLANE' : 'PROBE ORIGIN · DATAPLANE',
+      kind: 'TESTED FROM',
       name: origin.name,
       sub: origin.mech,
       tone: 'info',
@@ -509,16 +513,16 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   }
 
   // ---- lane boxes: bound only their own nodes ----
-  const boxFor = (list: GraphNode[]): LaneBox | undefined => {
+  const boxFor = (list: GraphNode[], label: string, color: string, dashed?: boolean): LaneBox | undefined => {
     if (list.length === 0) return undefined
     const x0 = Math.min(...list.map((n) => n.x)) - LANE_PAD.x
     const x1 = Math.max(...list.map((n) => n.x + n.w)) + LANE_PAD.x
     const y0 = Math.min(...list.map((n) => n.y)) - LANE_PAD.top
     const y1 = Math.max(...list.map((n) => n.y + n.h)) + LANE_PAD.bottom
-    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, label, color, dashed }
   }
-  const laneControl = boxFor(nodes.filter((n) => n.lane === 'control'))
-  const laneData = boxFor(nodes.filter((n) => n.lane === 'data'))
+  const laneControl = boxFor(nodes.filter((n) => n.lane === 'control'), 'NOT REAL TRAFFIC', 'var(--color-info)', true)
+  const laneData = boxFor(nodes.filter((n) => n.lane === 'data'), 'REAL TRAFFIC', 'var(--accent-text)')
 
   // A cross-lane edge's midpoint lands on the dataplane lane's top edge, which
   // is exactly where the lane label sits. Park those pills in the gap between

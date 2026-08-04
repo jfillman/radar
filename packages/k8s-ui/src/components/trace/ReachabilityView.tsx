@@ -311,9 +311,9 @@ function VerdictBand({
 function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: OriginId; onPick: (id: OriginId) => void }) {
   return (
     <div className="bg-theme-surface py-2.5">
-      <div className="px-3 pb-1 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">ORIGINS · WHERE TESTS RAN FROM</div>
+      <div className="px-3 pb-1 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">TESTED FROM</div>
       <div className="px-3 pb-2 text-[10.5px] leading-snug text-theme-text-tertiary">
-        Selecting an origin re-routes the graph — a different origin is a different path, not a relabel.
+        Each of these is a different way to reach the resource. Pick one to see what it found.
       </div>
       {origins.map((o) => {
         const sel = o.id === active

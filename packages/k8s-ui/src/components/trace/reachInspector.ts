@@ -39,9 +39,9 @@ export interface Inspector {
 /** Selection is an id: `origin:<id>`, `n:<nodeId>`, `e:<edgeId>`, or none. */
 export type Selection = string | undefined
 
-const NOT_DATAPLANE = 'kube-proxy routing, NetworkPolicy and mesh authorization — all bypassed by this mechanism.'
+const NOT_DATAPLANE = 'Nothing about the normal network path. Kubernetes relayed this for us, so routing, network policy and the mesh were all skipped.'
 const SYNTHETIC_IDENTITY =
-  'Identity-dependent behaviour: mesh mTLS, AuthorizationPolicy and NetworkPolicy may treat the real application caller differently.'
+  'That your app can reach it. This test ran as Radar, not as your application, and anything that checks who is calling may answer differently.'
 
 function originScope(o: Origin, trace: Trace): { k: string; v: string }[] {
   const runsIn: Record<OriginId, string> = {
@@ -172,7 +172,7 @@ function nodeInspector(node: GraphNode, ctx: Ctx): Inspector {
       chipTone: node.tone,
       chipText: 'config membership',
       title: `Endpoint selection · ${ready} eligible of ${selected}`,
-      body: 'EndpointSlices describe which Pods are eligible for routing. This is control-plane membership, not a hop — packets go from kube-proxy straight to a Pod IP.',
+      body: 'Which Pods Kubernetes is willing to send traffic to. This is configuration, not a step in the path — traffic goes straight from the Service to a Pod.',
       scopeHeader: 'SELECTION',
       scope: [
         { k: 'SELECTED', v: `${selected} Pods matched by the selector` },
@@ -232,11 +232,11 @@ function nodeInspector(node: GraphNode, ctx: Ctx): Inspector {
     chipTone: node.tone,
     chipText: 'resource health only',
     title: `${node.kind.split(' · ')[0]} ${node.name}`,
-    body: 'Node dots report resource health. They say nothing about whether traffic reached this resource — select a connection to read path truth for the current scenario and origin.',
-    scopeHeader: 'HEALTH ≠ PATH TRUTH',
+    body: 'The dot shows whether this resource itself is healthy. It says nothing about whether traffic got here — click a line to see what actually happened.',
+    scopeHeader: 'HEALTH IS NOT REACHABILITY',
     scope: [
-      { k: 'HEALTH', v: 'from controller status and probes' },
-      { k: 'PATH', v: 'read the edges, not the nodes' },
+      { k: 'HEALTH', v: 'from the resource’s own status' },
+      { k: 'TRAFFIC', v: 'shown on the lines, not the boxes' },
       ...(node.sub ? [{ k: 'DETAIL', v: node.sub }] : []),
     ],
     evidence:
@@ -261,7 +261,7 @@ function edgeInspector(edge: GraphEdge, ctx: Ctx): Inspector {
       chipTone: 'info',
       chipText: 'config relationship',
       title: 'Service → eligible endpoints',
-      body: 'A configuration relationship, drawn dotted: the Service selector plus EndpointSlice membership decide which Pod IPs are eligible. No packet traverses this link.',
+      body: 'Configuration, not traffic — drawn dotted for that reason. The Service’s selector decides which Pods are eligible. Nothing travels along this line.',
       scopeHeader: 'RELATIONSHIP',
       scope: [
         { k: 'SELECTOR', v: Object.entries(trace.downstream?.find((h) => h.config?.selector)?.config?.selector ?? {}).map(([k, v]) => `${k}=${v}`).join(', ') || '—' },
@@ -276,8 +276,9 @@ function edgeInspector(edge: GraphEdge, ctx: Ctx): Inspector {
   if (mark === 'excluded') {
     return {
       chipTone: 'unknown',
-      chipText: 'excluded',
-      title: edge.label,
+      chipText: 'not in the path',
+      // edge.label is truncated to fit the graph pill - never a heading.
+      title: `${origin.name} → ${route?.target || trace.subject.name}`,
       body: 'This endpoint is excluded from routing because it is NotReady. The dataplane never sent it traffic, so there is no result — excluded is not failed.',
       scopeHeader: 'SCOPE',
       scope: [{ k: 'ORIGIN', v: origin.name }, { k: 'SCENARIO', v: route?.route ?? '—' }],
@@ -290,8 +291,8 @@ function edgeInspector(edge: GraphEdge, ctx: Ctx): Inspector {
   if (mark === 'blocked') {
     return {
       chipTone: 'unknown',
-      chipText: 'blocked, not tested',
-      title: edge.label,
+      chipText: 'not tested',
+      title: `${origin.name} → ${route?.target || trace.subject.name}`,
       body: origin.unavailable
         ? origin.unavailable
         : 'This segment never ran because an earlier segment failed. It is not a second failure — nothing was learned here at all.',
@@ -325,11 +326,24 @@ function edgeInspector(edge: GraphEdge, ctx: Ctx): Inspector {
   }
 
   const evidence: { mark: Mark; text: string }[] = []
-  if (route?.evidence) evidence.push({ mark, text: route.evidence })
-  for (const f of route?.localization ?? []) {
-    evidence.push({ mark: f.ok ? 'proxied' : 'failed', text: `${f.layer.toUpperCase()}${f.detail ? ` · ${f.detail}` : ''} (checked behind the gate)` })
+  const seen = new Set<string>()
+  const addEvidence = (m: Mark, text: string) => {
+    const key = text.trim().toLowerCase()
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    evidence.push({ mark: m, text })
   }
-  if (evidence.length === 0) evidence.push({ mark, text: edge.label })
+  if (route?.evidence) addEvidence(mark, route.evidence)
+  for (const f of route?.localization ?? []) {
+    // The detail usually already names the layer ("HTTP 404 · reached"), so
+    // prefixing it produced "HTTP · HTTP 404". And the same fact can appear
+    // more than once, which rendered as identical repeated lines.
+    const layer = f.layer.toUpperCase()
+    const detail = f.detail?.trim()
+    const body = !detail ? layer : detail.toUpperCase().startsWith(layer) ? detail : `${layer} · ${detail}`
+    addEvidence(f.ok ? 'proxied' : 'failed', `${body} — checked directly, past the entry point`)
+  }
+  if (evidence.length === 0) addEvidence(mark, edge.title ?? edge.label)
 
   const failed = mark === 'failed'
   const diagnosis = trace.diagnosis

@@ -70,7 +70,7 @@ describe('buildGraph lanes', () => {
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
     const origin = g.nodes.find((n) => n.isOrigin)!
     expect(origin.ref).toBeUndefined()
-    expect(origin.kind).toMatch(/PROBE ORIGIN/)
+    expect(origin.kind).toBe('TESTED FROM')
   })
 })
 

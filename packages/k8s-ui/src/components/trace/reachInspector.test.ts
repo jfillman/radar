@@ -47,7 +47,9 @@ describe('inspector caveats', () => {
   it('a synthetic probe result always states the identity gap', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({})])
     const insp = buildInspector('e:origin-subject', ctx(t, 'incluster'))
-    expect(insp.notProve.join(' ')).toMatch(/mesh mTLS|AuthorizationPolicy|identity/i)
+    // Asserts the MEANING, not the wording - the caveat must say the test did
+    // not run as the user's application.
+    expect(insp.notProve.join(' ')).toMatch(/not as your application|who is calling/i)
   })
 
   it('does not claim a front-door gap on a resource that has no front door', () => {
@@ -85,14 +87,14 @@ describe('inspector selections', () => {
   it('a blocked segment reports an absence of evidence, not a fault', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({ vantage: 'local', path: 'data', skipped: true, reason: 'ClusterIP is not routable from your host' })])
     const insp = buildInspector('e:origin-subject', ctx(t, 'local'))
-    expect(insp.chipText).toMatch(/blocked/)
+    expect(insp.chipText).toBe('not tested')
     expect(insp.notProve.join(' ')).toMatch(/not exercised|Anything about this segment/)
   })
 
   it('a node selection redirects to the edges for path truth', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({})])
     const insp = buildInspector('n:Service/store/shop', ctx(t, 'incluster'))
-    expect(insp.scopeHeader).toMatch(/HEALTH ≠ PATH TRUTH/)
+    expect(insp.scopeHeader).toMatch(/HEALTH IS NOT REACHABILITY/)
     expect(insp.notProve.join(' ')).toMatch(/That any request reached this resource/)
   })
 
@@ -100,13 +102,13 @@ describe('inspector selections', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({})])
     const insp = buildInspector('e:subject-endpoints', ctx(t, 'incluster'))
     expect(insp.chipText).toBe('config relationship')
-    expect(insp.body).toMatch(/No packet traverses/)
+    expect(insp.body).toMatch(/Nothing travels along this line/)
   })
 
   it('an unsupported origin explains the limitation instead of offering an action', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({})])
     const insp = buildInspector('origin:caller', ctx(t, 'incluster'))
-    expect(insp.body).toMatch(/cannot run a request from an existing workload/)
+    expect(insp.body).toMatch(/can’t send a request from one of your running Pods/)
   })
 
   it('proposes an origin Radar can actually use, never an impossible one', () => {

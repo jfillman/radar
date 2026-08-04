@@ -54,25 +54,32 @@ export const MARKS: Record<Mark, MarkStyle> = {
   slow: { glyph: '◔', color: 'var(--color-warning-dark)', dash: '3 6', strokeWidth: 1.8, strokeOpacity: 1 },
 }
 
+/** One vocabulary, shared with the lane labels and the sidebar. The legend used
+ *  to say "observed through the dataplane" while the lane said "REAL TRAFFIC"
+ *  for the same thing. */
 export const MARK_LEGEND: { mark: Mark; text: string }[] = [
-  { mark: 'proved', text: 'observed through the dataplane' },
-  { mark: 'proxied', text: 'via API proxy — bypasses dataplane' },
-  { mark: 'answered', text: 'answered, not verified' },
-  { mark: 'config', text: 'config only — predicted' },
-  { mark: 'failed', text: 'confirmed failure' },
-  { mark: 'blocked', text: 'blocked by an earlier failure' },
-  { mark: 'excluded', text: 'excluded from routing' },
-  { mark: 'untested', text: 'not tested' },
-  { mark: 'stale', text: 'stale evidence' },
-  // These three render (slow via node anomalies, running/denied via origins) and
-  // were absent, so a symbol could appear on screen with no legend entry.
-  { mark: 'slow', text: 'answered, far outside the normal latency band' },
-  { mark: 'running', text: 'test in flight' },
-  { mark: 'denied', text: 'not permitted' },
+  { mark: 'proved', text: 'a request got through' },
+  { mark: 'proxied', text: 'answered, but skipped the cluster network' },
+  { mark: 'answered', text: 'answered, but not with what we asked for' },
+  { mark: 'config', text: 'configured this way — not tested' },
+  { mark: 'failed', text: 'a request was refused' },
+  { mark: 'blocked', text: 'never tried — something failed earlier' },
+  { mark: 'excluded', text: 'not sent any traffic' },
+  { mark: 'untested', text: 'not tested from here' },
+  { mark: 'stale', text: 'out of date' },
+  { mark: 'slow', text: 'answered, but very slowly' },
+  { mark: 'running', text: 'testing now' },
+  { mark: 'denied', text: 'not allowed to test this' },
 ]
 
 export function markStyle(m: Mark): MarkStyle {
   return MARKS[m] ?? MARKS.untested
+}
+
+/** Hover text for a mark. The legend sits below the graph and was the ONLY
+ *  decoder, so reading a symbol meant travelling to it and back every time. */
+export function markHelp(m: Mark): string {
+  return MARK_LEGEND.find((l) => l.mark === m)?.text ?? m
 }
 
 /** Inline style for a mark glyph. */
@@ -183,14 +190,14 @@ export function routeChip(r: RouteResult, opts: { stale?: boolean; running?: boo
   const indirect = r.confidence === 'indirect'
   switch (r.outcome) {
     case 'verified':
-      return indirect ? 'answered via proxy only' : 'verified'
+      return indirect ? 'skipped the cluster network' : 'got through'
     case 'reached':
-      return indirect ? 'answered via proxy only' : 'reached, not verified'
+      return indirect ? 'skipped the cluster network' : 'answered, not confirmed'
     case 'server-error':
-      return 'server error'
+      return 'the app returned an error'
     case 'unreachable':
-      if (indirect) return 'proxy failed — real path untested'
-      return r.benign ? 'scaled to zero' : 'unreachable'
+      if (indirect) return 'only the shortcut failed'
+      return r.benign ? 'nothing running (on purpose)' : 'could not get through'
     case 'not-tested':
     default:
       return 'not tested'

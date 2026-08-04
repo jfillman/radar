@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { PILL_MAX_PX, type GraphModel, type GraphNode, type GraphEdge, type LaneBox } from './reachGraphModel'
-import { markStyle, glyphStyle, SEV_COLOR, MARK_LEGEND, type Mark } from './reachMarks'
+import { markStyle, glyphStyle, markHelp, SEV_COLOR, MARK_LEGEND, type Mark } from './reachMarks'
 
 /** Upper bound on scale-up. Past this the graph stops reading as a diagram and
  *  starts reading as zoomed-in text. */
@@ -173,7 +173,9 @@ function EdgePill({ edge }: { edge: GraphEdge }) {
         boxShadow: '0 1px 2px rgba(0,0,0,.05)',
       }}
     >
-      <span style={glyphStyle(edge.mark)}>{s.glyph}</span>
+      <span style={glyphStyle(edge.mark)} title={markHelp(edge.mark)}>
+        {s.glyph}
+      </span>
       <span className="truncate">{edge.label}</span>
     </div>
   )
@@ -220,7 +222,9 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
         <div className="mt-1.5 flex flex-col gap-0.5 border-t border-theme-border-subtle pt-1.5">
           {node.anomalies.map((a, i) => (
             <div key={i} className="flex items-baseline gap-1.5">
-              <span style={glyphStyle(a.mark)}>{markStyle(a.mark).glyph}</span>
+              <span style={glyphStyle(a.mark)} title={markHelp(a.mark)}>
+                {markStyle(a.mark).glyph}
+              </span>
               <span className="text-[9.5px] leading-[1.35] text-theme-text-secondary">{a.text}</span>
             </div>
           ))}
@@ -232,7 +236,9 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
         <div className="mt-1.5 flex flex-col gap-0.5 border-t border-theme-border-subtle pt-1.5">
           {node.podRows.map((r) => (
             <div key={r.name} className="flex items-baseline gap-1.5" title={`${r.name} — ${r.detail}`}>
-              <span style={glyphStyle(r.mark)}>{markStyle(r.mark).glyph}</span>
+              <span style={glyphStyle(r.mark)} title={markHelp(r.mark)}>
+                {markStyle(r.mark).glyph}
+              </span>
               <span className="min-w-0 flex-1 truncate font-mono text-[9.5px] text-theme-text-secondary">{r.name}</span>
               <span className="shrink-0 text-[9px] text-theme-text-tertiary">{r.detail}</span>
             </div>
@@ -244,9 +250,10 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
   )
 }
 
-export function TinyTag({ text, tone }: { text: string; tone: string }) {
+export function TinyTag({ text, tone, title }: { text: string; tone: string; title?: string }) {
   return (
     <span
+      title={title}
       className="whitespace-nowrap rounded-full px-1.5 py-px text-[8.5px] font-bold tracking-[0.05em]"
       style={{
         color: tone,

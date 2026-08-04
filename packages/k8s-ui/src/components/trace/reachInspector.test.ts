@@ -110,11 +110,44 @@ describe('the diagnosis is always present', () => {
   })
 })
 
+// The graph already gates on this; the sidebar is the surface people actually
+// read, so it must gate identically or it states another vantage's result under
+// the selected vantage's name.
+describe('the sidebar is scoped to the selected vantage', () => {
+  it('an unavailable vantage never inherits another vantage\'s success', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    const origins = buildOrigins(t)
+    const caller = origins.find((o) => o.id === 'caller')!
+    const g = buildGraph({ trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: caller })
+    const s = buildSidebar(undefined, { trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: caller, origins, nodes: g.nodes })
+    expect(s.path.body).not.toMatch(/a real request went through/i)
+    expect(s.path.evidence.every((e) => e.mark !== 'proved')).toBe(true)
+    expect(s.path.evidence.map((e) => e.text).join(' ')).toMatch(/cannot test from here/i)
+  })
+
+  it('a vantage that did run still reports its result', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    const s = buildSidebar(undefined, ctx(t, 'incluster'))
+    expect(s.path.body).toMatch(/a real request went through/i)
+  })
+
+  it('a stale result does not lead with its old assertion', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    t.headline = 'Reachable in-cluster on :80'
+    const v = buildVerdict(t, route(), buildOrigins(t), { stale: true })
+    expect(v.title).not.toMatch(/Reachable/)
+    expect(v.title).toMatch(/out of date/i)
+  })
+})
+
 describe('node detail is additive', () => {
   it('a Pods node reports what is and is not taking traffic', () => {
     const t = mk([pod('a', true, '10.0.0.1'), pod('b', false, '10.0.0.2', 'readiness failing')], [p({})])
     const r = buildSidebar(podsNodeId(t), ctx(t, 'incluster')).resource!
     expect(r.facts.find((x) => x.k === 'SITTING OUT')!.v).toMatch(/not ready/)
+    // Derived from readiness, so it must not claim observed delivery.
+    expect(r.facts.some((x) => x.k === 'ELIGIBLE')).toBe(true)
+    expect(r.facts.some((x) => x.k === 'TAKING TRAFFIC')).toBe(false)
     expect(r.notProve.join(' ')).toMatch(/nothing was sent to them/)
     expect(r.rows!.some((x) => x.mark === 'excluded')).toBe(true)
   })

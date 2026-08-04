@@ -6,7 +6,7 @@ import { ReachabilityGraph, TinyTag } from './ReachabilityGraph'
 import { buildGraph } from './reachGraphModel'
 import { buildOrigins, defaultOrigin, type Origin, type OriginId } from './reachOrigins'
 import { buildSidebar, buildVerdict, type Sidebar, type InspectorCTA, type Selection } from './reachInspector'
-import { markStyle, glyphStyle, scenariosFor, routeTone, routeChip, SEV_COLOR, SEV_BADGE, type Scenario } from './reachMarks'
+import { markStyle, glyphStyle, markHelp, scenariosFor, routeTone, routeChip, SEV_COLOR, SEV_BADGE, type Scenario } from './reachMarks'
 import { DEV_STATES, devTrace, type DevState } from './reachFixtures'
 
 export { podReach, podProbeKey } from './podReach'
@@ -228,7 +228,7 @@ function ScenarioStrip({
 }) {
   return (
     <div className="flex items-stretch border-b border-theme-border bg-theme-elevated">
-      <div className="flex flex-none items-center py-2 pl-4.5 pr-3 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">PATHS DIFFER</div>
+      <div className="flex flex-none items-center py-2 pl-4.5 pr-3 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">PATH</div>
       <div className="flex min-w-0 flex-1 overflow-x-auto">
         {scenarios.map((s) => {
           const tone = routeTone(s.primary, { stale, running })
@@ -308,12 +308,23 @@ function VerdictBand({
 
 // ------------------------------------------------------------------ origins
 
+/** Hover-level decoder for the identity tags, which had none anywhere. */
+const KIND_TAG_HELP: Record<string, string> = {
+  synthetic: 'Radar’s own test client — not your application, so anything that checks who is calling may answer differently.',
+  'real-client': 'A real client, but not your application.',
+  'real-caller': 'Your application itself, with its own identity.',
+  relayed: 'Not a caller at all — Kubernetes passes the request along on our behalf.',
+}
+
 function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: OriginId; onPick: (id: OriginId) => void }) {
   return (
     <div className="bg-theme-surface py-2.5">
       <div className="px-3 pb-1 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">TESTED FROM</div>
-      <div className="px-3 pb-2 text-[10.5px] leading-snug text-theme-text-tertiary">
-        Each of these is a different way to reach the resource. Pick one to see what it found.
+      <div
+        className="px-3 pb-2 text-[10.5px] leading-snug text-theme-text-tertiary"
+        title="Each row is a different way to reach this resource. Picking one shows what that test found — and what it cannot tell you."
+      >
+        Pick one to see what it found.
       </div>
       {origins.map((o) => {
         const sel = o.id === active
@@ -335,7 +346,7 @@ function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: O
                 {o.glyph}
               </span>
               <span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-theme-text-primary">{o.name}</span>
-              <span style={glyphStyle(o.mark)} title={o.mark}>
+              <span style={glyphStyle(o.mark)} title={markHelp(o.mark)}>
                 {m.glyph}
               </span>
             </div>
@@ -344,8 +355,20 @@ function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: O
                 selected - repeating them here made the rail taller than the
                 graph and pushed the path off the pane. */}
             <div className="mt-1.5 flex flex-wrap items-center gap-1">
-              <TinyTag text={o.kindTag} tone={o.kind === 'synthetic' ? 'var(--color-warning-dark)' : o.kind === 'relayed' ? 'var(--color-info)' : 'var(--color-success-dark)'} />
-              <TinyTag text={o.lane === 'dataplane' ? 'DATAPLANE' : 'CONTROL PLANE'} tone={o.lane === 'dataplane' ? 'var(--accent-text)' : 'var(--color-info)'} />
+              <TinyTag
+                text={o.kindTag}
+                tone={o.kind === 'synthetic' ? 'var(--color-warning-dark)' : o.kind === 'relayed' ? 'var(--color-info)' : 'var(--color-success-dark)'}
+                title={KIND_TAG_HELP[o.kind]}
+              />
+              <TinyTag
+                text={o.lane === 'dataplane' ? 'CLUSTER NETWORK' : 'SKIPS CLUSTER NETWORK'}
+                tone={o.lane === 'dataplane' ? 'var(--accent-text)' : 'var(--color-info)'}
+                title={
+                  o.lane === 'dataplane'
+                    ? 'Goes the same way your users’ traffic does — through the cluster’s routing, network policy and service mesh.'
+                    : 'Does not go through the cluster’s routing, network policy or service mesh, so it cannot prove those are working.'
+                }
+              />
               {/* That an origin cannot be used stays visible at a glance -
                   hiding it entirely would make synthetic evidence look
                   complete. The why is one click away. */}
@@ -400,7 +423,7 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
             onClick={() => setScopeOpen((v) => !v)}
             className="flex w-full items-center gap-1.5 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary hover:text-theme-text-secondary"
           >
-            <span>DETAILS</span>
+            <span>TEST DETAILS</span>
             <span className="flex-1 text-right font-normal tracking-normal">{path.scope.length}</span>
             <span>{scopeOpen ? '⌄' : '›'}</span>
           </button>
@@ -419,7 +442,9 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
           <div className="mb-1 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">WHAT WE SAW</div>
           {path.evidence.map((e, i) => (
             <div key={i} className="mb-1 flex items-baseline gap-1.5">
-              <span style={glyphStyle(e.mark)}>{markStyle(e.mark).glyph}</span>
+              <span style={glyphStyle(e.mark)} title={markHelp(e.mark)}>
+                {markStyle(e.mark).glyph}
+              </span>
               <span className="text-[11px] leading-snug text-theme-text-secondary">{e.text}</span>
             </div>
           ))}
@@ -519,15 +544,17 @@ function CoverageFooter({ trace, testedAt, stale }: { trace: Trace; testedAt?: D
   // Only skips that actually cost coverage belong in the headline count - a
   // benign skip loses nothing and padding the number would overstate the gap.
   const realGaps = skips.filter((s) => s.reasonClass !== 'benign')
-  const coverageText = c
-    ? `tested ${c.tested} · passed ${c.passed} · failed ${c.failed}${c.skipped ? ` · skipped ${c.skipped}` : ''}${realGaps.length ? ` · ${realGaps.length} not tested` : ''}`
-    : 'no coverage data'
+  // "skipped N · M not tested" read as one thing counted twice. They are
+  // different levels: attempts made, versus paths with no evidence at all.
+  const attempts = c ? `${c.passed} got through · ${c.failed} failed${c.skipped ? ` · ${c.skipped} couldn’t be tried` : ''}` : ''
+  const gaps = realGaps.length ? `${realGaps.length} path${realGaps.length === 1 ? '' : 's'} with no evidence` : ''
+  const coverageText = c ? [attempts, gaps].filter(Boolean).join('  ·  ') : 'nothing tested yet'
   return (
     <div className="flex flex-wrap items-center gap-2.5 border-t border-theme-border bg-theme-surface px-5 py-2 text-[11px] text-theme-text-tertiary">
-      <span className="text-[9.5px] font-bold tracking-[0.07em]">COVERAGE</span>
+      <span className="text-[9.5px] font-bold tracking-[0.07em]">WHAT WAS TESTED</span>
       <span className="font-mono text-theme-text-secondary">{coverageText}</span>
       <span className="text-theme-border">|</span>
-      <span className="text-[9.5px] font-bold tracking-[0.07em]">FRESHNESS</span>
+      <span className="text-[9.5px] font-bold tracking-[0.07em]">WHEN</span>
       <span className="font-mono" style={{ color: stale ? 'var(--color-warning-dark)' : 'var(--text-secondary)' }}>
         {stale
           ? 'cluster state changed since this test — results excluded from the verdict'

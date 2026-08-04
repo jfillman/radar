@@ -3,7 +3,7 @@ import type { Mark, SevTone } from './reachMarks'
 import { routeMark, routeChip, routeTone } from './reachMarks'
 import type { Origin, OriginId } from './reachOrigins'
 import { strongestGap, actionableGap } from './reachOrigins'
-import type { GraphNode } from './reachGraphModel'
+import { originProducedEvidence, type GraphNode } from './reachGraphModel'
 
 export type InspectorAction = 'run-in-cluster' | 'refresh' | 'open-resource' | 'copy-command'
 
@@ -70,8 +70,8 @@ function originScope(o: Origin, trace: Trace): { k: string; v: string }[] {
   return [
     { k: 'TESTED FROM', v: o.name },
     { k: 'RUNS IN', v: runsIn[o.id] },
-    { k: 'AS', v: o.identity },
-    { k: 'HOW', v: o.mech },
+    { k: 'IDENTITY', v: o.identity },
+    { k: 'MECHANISM', v: o.mech },
   ]
 }
 
@@ -97,8 +97,11 @@ function gapNext(origins: Origin[], current: Origin, namespace?: string): Sideba
   }
   if (!actionable || actionable.id === current.id) {
     return {
-      header: 'NOTHING LEFT TO TEST',
-      body: 'Every vantage Radar can use has been tried for this path. Re-run only to refresh how current the evidence is.',
+      header: 'NO STRONGER TEST AVAILABLE',
+      // actionableGap stops at anything weaker than an already-proven origin, so
+      // weaker vantages CAN remain unused - claiming everything had been tried
+      // was false and discouraged useful comparison checks.
+      body: 'Radar already has the strongest evidence it can collect for this path. Weaker vantages stay available as comparison checks.',
       blocked: ceilingNote,
       ctas: [{ text: '⟳ Re-run', action: 'refresh' }],
     }
@@ -127,7 +130,13 @@ interface Ctx {
 /** The persistent diagnosis: did traffic get through, from where, and what next. */
 function pathSection(ctx: Ctx): Sidebar['path'] {
   const { trace, route, origin, origins } = ctx
-  const mark = route ? routeMark(route, { stale: ctx.stale, running: ctx.running }) : 'untested'
+  // The route outcome is merged across origins. Without this gate the panel
+  // rendered another vantage's success under the selected vantage's name - a
+  // permanently unavailable origin could read "a real request went through"
+  // while the graph beside it said "not routable". Same lie the graph already
+  // guards against, in the surface users actually read.
+  const hasEvidence = originProducedEvidence(origin)
+  const mark: Mark = hasEvidence ? (route ? routeMark(route, { stale: ctx.stale, running: ctx.running }) : 'untested') : origin.mark
 
   const notProve: string[] = []
   if (origin.kind === 'synthetic') notProve.push(SYNTHETIC_IDENTITY)
@@ -146,18 +155,29 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     seen.add(key)
     evidence.push({ mark: m, text })
   }
-  if (route?.evidence) add(mark, route.evidence)
-  for (const f of route?.localization ?? []) {
+  if (hasEvidence && route?.evidence) add(mark, route.evidence)
+  for (const f of hasEvidence ? route?.localization ?? [] : []) {
     const layer = f.layer.toUpperCase()
     const detail = f.detail?.trim()
     const body = !detail ? layer : detail.toUpperCase().startsWith(layer) ? detail : `${layer} · ${detail}`
     add(f.ok ? 'proxied' : 'failed', `${body} — checked directly, past the entry point`)
   }
-  if (evidence.length === 0) add(mark, origin.mark === 'denied' ? 'not permitted to run this test' : 'no test has been run from here')
+  if (evidence.length === 0) {
+    add(
+      mark,
+      origin.unsupported
+        ? 'Radar cannot test from here, so nothing has been learned this way'
+        : origin.mark === 'denied'
+          ? 'not permitted to run this test'
+          : 'no test has been run from here',
+    )
+  }
 
   const failed = mark === 'failed'
   const diagnosis = trace.diagnosis
-  const body = failed
+  const body = !hasEvidence
+    ? origin.unavailable || 'Nothing has been tested from here, so this says nothing about whether traffic gets through.'
+    : failed
     ? 'This is the first confirmed failure. Everything after it was never tried, so there is nothing to report past this point.'
     : mark === 'proved'
       ? 'A real request went through and the target answered.'
@@ -211,13 +231,17 @@ function resourceSection(node: GraphNode): Sidebar['resource'] {
     if (notReady.length > 0) notProve.push(`The ${notReady.length} not-ready Pod${notReady.length > 1 ? 's' : ''} — nothing was sent to them, so nothing was learned.`)
     return {
       kind: 'PODS',
-      name: `${ready} of ${selected} taking traffic`,
+      name: `${ready} of ${selected} eligible`,
       chipTone: node.tone,
       chipText: 'backends',
-      body: 'The Pods behind this Service. Kubernetes only sends traffic to the ones that are ready.',
+      body: publishNotReady
+        ? 'The Pods behind this Service. This Service is set to send traffic to Pods even before they report ready.'
+        : 'The Pods behind this Service. Kubernetes only sends traffic to the ones that report ready.',
       facts: [
-        { k: 'SELECTED', v: `${selected} match the selector` },
-        { k: 'TAKING TRAFFIC', v: `${ready}` },
+        { k: 'MATCHING PODS', v: `${selected}` },
+        // Derived from readiness, NOT from observed delivery - "taking traffic"
+        // claimed evidence we do not have.
+        { k: 'ELIGIBLE', v: `${ready}` },
         {
           k: 'SITTING OUT',
           v: publishNotReady ? 'none — not-ready Pods get traffic too' : notReady.length > 0 ? `${notReady.length} not ready` : 'none',
@@ -237,14 +261,14 @@ function resourceSection(node: GraphNode): Sidebar['resource'] {
   if (c?.ports?.length) facts.push({ k: 'PORTS', v: c.ports.map((x) => `${x.port}→${x.targetPort ?? x.port}`).join(', ') })
   if (c?.addresses?.length) facts.push({ k: 'ADDRESS', v: c.addresses.join(', ') })
   if (c?.hostnames?.length) facts.push({ k: 'HOSTS', v: c.hostnames.join(', ') })
-  if (c?.selector) facts.push({ k: 'SELECTS', v: Object.entries(c.selector).map(([k, v]) => `${k}=${v}`).join(', ') })
+  if (c?.selector) facts.push({ k: 'SELECTOR', v: Object.entries(c.selector).map(([k, v]) => `${k}=${v}`).join(', ') })
   if (node.ref?.namespace) facts.push({ k: 'NAMESPACE', v: node.ref.namespace })
 
   return {
     kind: node.kind,
     name: node.name,
     chipTone: node.tone,
-    chipText: node.dim ? 'not on this path' : 'resource',
+    chipText: node.dim ? 'not on this path' : '',
     body: node.dim
       ? 'This entry point is attached to the resource but does not serve the host being tested.'
       : findings.length > 0
@@ -300,13 +324,18 @@ export function buildVerdict(
   return {
     tone,
     chipText: opts.running ? 'testing' : route ? routeChip(route, opts) : 'not tested',
-    title: trace.headline || route?.route || `Reachability · ${trace.subject.name}`,
+    // A stale screen previously led with the old headline ("Reachable...") and
+    // then said underneath that the result was excluded. That is a contradiction,
+    // not an exclusion.
+    title: opts.stale
+      ? 'This result is out of date — re-test'
+      : trace.headline || route?.route || `Reachability · ${trace.subject.name}`,
     // The diagnosis is a named fault with a culprit and a next action - it
     // answers "why not", where the headline only says how much was tested. It
     // is called out rather than rendered as body prose, which made the more
     // important fact read as an explanation of the less important one.
     problem: trace.diagnosis?.summary,
-    body: trace.diagnosis ? '' : trace.reason || 'Select an origin, or any connection in the graph, to read what was actually tested.',
+    body: trace.diagnosis ? '' : trace.reason || '',
     facts,
   }
 }

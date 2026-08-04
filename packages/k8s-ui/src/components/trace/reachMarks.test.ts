@@ -53,9 +53,10 @@ describe('routeTone', () => {
 })
 
 describe('routeChip', () => {
-  it('names the proxy caveat rather than claiming verification', () => {
-    expect(routeChip(r({ outcome: 'verified', confidence: 'indirect' }))).toMatch(/proxy/)
-    expect(routeChip(r({ outcome: 'verified', confidence: 'real' }))).toBe('verified')
+  it('names the caveat rather than claiming verification', () => {
+    // Asserts the meaning: an indirect result must say it skipped the real path.
+    expect(routeChip(r({ outcome: 'verified', confidence: 'indirect' }))).toMatch(/skipped/i)
+    expect(routeChip(r({ outcome: 'verified', confidence: 'real' }))).toBe('got through')
   })
 })
 

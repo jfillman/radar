@@ -83,7 +83,7 @@ export function ReachabilityGraph({
           and oscillate. */}
       <div
         ref={fitRef}
-        className="flex min-h-0 min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden px-2 py-1.5 [scrollbar-gutter:stable]"
+        className="flex min-h-0 min-w-0 flex-1 items-center overflow-auto px-2 py-1.5 [scrollbar-gutter:stable]"
       >
         <div className="relative shrink-0" style={{ width: canvas.w * scale, height: canvas.h * scale }}>
         <div

@@ -387,8 +387,19 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     const publishNotReady = !!hop.meta?.publishNotReadyAddresses
     const probes = probesFromOrigin(hop.probes ?? [], origin)
 
+    // Anomaly-first: keeping the FIRST six rows hid the failing or excluded Pod
+    // behind five healthy ones, which is exactly the row worth showing.
+    const rank = (x: PodStatus): number => {
+      const mine = probesForPod(x, probes).filter((q) => !q.skipped)
+      if (mine.some((q) => !q.ok || q.tone === 'unhealthy')) return 0
+      if (mine.some(isSlow)) return 1
+      if (!x.ready) return 2
+      if (mine.length === 0) return 3
+      return 4
+    }
+    const ordered = [...roster].sort((a, b) => rank(a) - rank(b))
     const podRows: PodRow[] = []
-    for (const p of roster.slice(0, POD_ROW_MAX)) {
+    for (const p of ordered.slice(0, POD_ROW_MAX)) {
       const mine = probesForPod(p, probes).filter((x) => !x.skipped)
       const failed = mine.find((x) => !x.ok || x.tone === 'unhealthy')
       let mark: Mark

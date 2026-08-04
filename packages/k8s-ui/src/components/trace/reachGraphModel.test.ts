@@ -366,6 +366,18 @@ describe('buildGraph aggregation', () => {
     expect(eps.podRows!.length).toBeLessThanOrEqual(POD_ROW_MAX)
   })
 
+  it('shows the anomalous Pods, not merely the first ones', () => {
+    // Keeping the first N rows hid the failing Pod behind healthy siblings.
+    const lots = Array.from({ length: POD_ROW_MAX + 4 }, (_, i) => pod(`p${i}`, true, `10.0.0.${i}`))
+    const badIp = `10.0.0.${POD_ROW_MAX + 3}`
+    const probes = lots.map((x) => p({ target: `${x.ip}:8080`, ok: x.ip !== badIp, tone: x.ip === badIp ? 'unhealthy' : 'healthy' }))
+    const t = trace(lots, probes)
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    const rows = g.nodes.find((n) => n.kind === 'PODS')!.podRows!
+    expect(rows[0].mark).toBe('failed')
+    expect(rows.some((r) => r.name === `p${POD_ROW_MAX + 3}`)).toBe(true)
+  })
+
   it('names the endpoints past the row cap rather than dropping them silently', () => {
     const t = trace(many, many.map((x) => p({ target: `${x.ip}:8080` })))
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })

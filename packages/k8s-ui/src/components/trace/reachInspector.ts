@@ -95,7 +95,19 @@ function gapNext(origins: Origin[], current: Origin, namespace?: string): Sideba
       ctas: [{ text: 'Copy the permission check', action: 'copy-command', command: `kubectl auth can-i create jobs -n ${ns}` }],
     }
   }
-  if (!actionable || actionable.id === current.id) {
+  if (actionable && actionable.id === current.id) {
+    // You are looking at the vantage that is itself the gap.
+    return {
+      header: 'RUN THIS NEXT',
+      body: `Nothing has been tested from ${actionable.name} yet, and it is the strongest evidence Radar can still collect.`,
+      blocked: ceilingNote,
+      ctas:
+        actionable.id === 'incluster'
+          ? [{ text: '⚗ Run in-cluster test', primary: true, action: 'run-in-cluster' }]
+          : [{ text: '⟳ Re-run', action: 'refresh' }],
+    }
+  }
+  if (!actionable) {
     return {
       header: 'NO STRONGER TEST AVAILABLE',
       // actionableGap stops at anything weaker than an already-proven origin, so

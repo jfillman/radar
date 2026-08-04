@@ -98,7 +98,12 @@ export function ReachabilityGraph({
       <div className="relative flex min-h-0 min-w-0 flex-1">
       <div
         ref={fitRef}
-        className="flex min-h-0 min-w-0 flex-1 items-center overflow-auto px-2 py-1.5 [scrollbar-gutter:stable]"
+        // `safe center` on BOTH axes, not plain centring. Plain `center` in a
+        // scroll container pushes the leading edge outside the padding box when
+        // the content overflows, and no amount of scrolling brings it back -
+        // which is why the origin capsule was clipped off the top of a wide
+        // fan-out. `safe` falls back to start exactly when that would happen.
+        className="flex min-h-0 min-w-0 flex-1 overflow-auto px-2 py-1.5 [align-items:safe_center] [justify-content:safe_center] [scrollbar-gutter:stable]"
       >
         <div className="relative shrink-0" style={{ width: canvas.w * scale, height: canvas.h * scale }}>
         <div

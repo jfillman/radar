@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react'
-import type { Trace, RouteResult } from './types'
+import type { Trace, RouteResult, ResourceRef } from './types'
 import { ReachActions, JustTestedNote, CopyableCommand, type TracePanelProps } from './TracePanel'
 import { AlertBanner } from '../ui/drawer-components'
 import { ReachabilityGraph, TinyTag } from './ReachabilityGraph'
 import { buildGraph } from './reachGraphModel'
 import { buildOrigins, defaultOrigin, type Origin, type OriginId } from './reachOrigins'
-import { buildInspector, buildVerdict, type Inspector, type InspectorCTA, type Selection } from './reachInspector'
-import { markStyle, glyphStyle, scenariosFor, routeTone, routeChip, SEV_COLOR, SEV_BADGE, type SevTone, type Scenario } from './reachMarks'
+import { buildSidebar, buildVerdict, type Sidebar, type InspectorCTA, type Selection } from './reachInspector'
+import { markStyle, glyphStyle, scenariosFor, routeTone, routeChip, SEV_COLOR, SEV_BADGE, type Scenario } from './reachMarks'
 import { DEV_STATES, devTrace, type DevState } from './reachFixtures'
 
 export { podReach, podProbeKey } from './podReach'
@@ -157,8 +157,8 @@ function ReachabilityBoard(props: BoardProps) {
   const [selection, setSelection] = useState<Selection>(undefined)
 
   const model = useMemo(() => buildGraph({ trace, route, origin, stale, running }), [trace, route, origin, stale, running])
-  const inspector = useMemo(
-    () => buildInspector(selection, { trace, route, origin, origins, nodes: model.nodes, edges: model.edges, stale, running }),
+  const sidebar = useMemo(
+    () => buildSidebar(selection, { trace, route, origin, origins, nodes: model.nodes, stale, running }),
     [selection, trace, route, origin, origins, model, stale, running],
   )
   const verdict = useMemo(() => buildVerdict(trace, route, origins, { stale, running }), [trace, route, origins, stale, running])
@@ -202,7 +202,7 @@ function ReachabilityBoard(props: BoardProps) {
           <ReachabilityGraph model={model} selected={selection} onSelect={setSelection} />
         </div>
         <div className="col-span-2 min-h-0 overflow-y-auto border-t border-theme-border xl:col-span-1 xl:border-t-0">
-          <InspectorPanel inspector={inspector} onCTA={onCTA} />
+          <InspectorPanel sidebar={sidebar} onCTA={onCTA} onOpen={(r) => onNavigateToResource?.(r)} />
         </div>
       </div>
 
@@ -360,50 +360,64 @@ function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: O
 
 // ---------------------------------------------------------------- inspector
 
-function InspectorPanel({ inspector, onCTA }: { inspector: Inspector; onCTA: (c: InspectorCTA) => void }) {
-  const [scopeOpen, setScopeOpen] = useState(false)
+function Caveats({ items }: { items: string[] }) {
+  if (items.length === 0) return null
+  // Quieter than a fault: these are limits on the claim, not problems with the
+  // cluster. Giving them the same amber box trained people to skip amber boxes.
   return (
-    <div className="flex h-full flex-col gap-2.5 bg-theme-surface px-3.5 py-3 xl:border-l xl:border-theme-border">
+    <div className="border-l-2 border-theme-border pl-2.5">
+      <div className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">WHAT THIS DOESN’T PROVE</div>
+      {items.map((n, i) => (
+        <div key={i} className="mt-1 text-[10.5px] leading-snug text-theme-text-tertiary">
+          {n}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (c: InspectorCTA) => void; onOpen: (r: ResourceRef) => void }) {
+  const [scopeOpen, setScopeOpen] = useState(false)
+  const { path, resource } = sidebar
+  return (
+    <div className="flex h-full flex-col gap-3 bg-theme-surface px-3.5 py-3 xl:border-l xl:border-theme-border">
+      {/* The diagnosis is ALWAYS here. Whether traffic got through must never
+          require a click - it is the question the tab exists to answer. */}
       <div>
         <div className="flex items-center gap-2">
-          <span className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">SELECTED</span>
+          <span className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">THIS PATH</span>
           <div className="flex-1" />
-          <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[inspector.chipTone as SevTone]}`}>{inspector.chipText}</span>
+          <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[path.chipTone]}`}>{path.chipText}</span>
         </div>
-        <div className="mt-1.5 font-mono text-[12.5px] font-semibold leading-snug text-theme-text-primary">{inspector.title}</div>
-        <div className="mt-1 whitespace-pre-line text-[11.5px] leading-relaxed text-theme-text-secondary text-pretty">{inspector.body}</div>
+        <div className="mt-1.5 font-mono text-[12.5px] font-semibold leading-snug text-theme-text-primary">{path.title}</div>
+        <div className="mt-1 text-[11.5px] leading-relaxed text-theme-text-secondary text-pretty">{path.body}</div>
       </div>
 
-      {/* Collapsed by default. The scope is reference detail; leaving it open
-          pushed the evidence and the caveats - the parts that change a
-          decision - below the fold. */}
-      {inspector.scope.length > 0 && (
+      {path.scope.length > 0 && (
         <div>
           <button
             type="button"
             onClick={() => setScopeOpen((v) => !v)}
             className="flex w-full items-center gap-1.5 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary hover:text-theme-text-secondary"
           >
-            <span>{inspector.scopeHeader}</span>
-            <span className="flex-1 text-right font-normal tracking-normal">
-              {inspector.scope.length} field{inspector.scope.length === 1 ? '' : 's'}
-            </span>
+            <span>DETAILS</span>
+            <span className="flex-1 text-right font-normal tracking-normal">{path.scope.length}</span>
             <span>{scopeOpen ? '⌄' : '›'}</span>
           </button>
           {scopeOpen &&
-            inspector.scope.map((p, i) => (
+            path.scope.map((p, i) => (
               <div key={i} className="mt-0.5 flex gap-2 border-b border-theme-border-subtle py-0.5">
-                <span className="w-[70px] flex-none pt-0.5 text-[9px] font-bold tracking-[0.04em] text-theme-text-tertiary">{p.k}</span>
+                <span className="w-[86px] flex-none pt-0.5 text-[9px] font-bold tracking-[0.04em] text-theme-text-tertiary">{p.k}</span>
                 <span className="flex-1 break-words font-mono text-[10px] leading-snug text-theme-text-secondary">{p.v}</span>
               </div>
             ))}
         </div>
       )}
 
-      {inspector.evidence.length > 0 && (
+      {path.evidence.length > 0 && (
         <div>
-          <div className="mb-1 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">EVIDENCE</div>
-          {inspector.evidence.map((e, i) => (
+          <div className="mb-1 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">WHAT WE SAW</div>
+          {path.evidence.map((e, i) => (
             <div key={i} className="mb-1 flex items-baseline gap-1.5">
               <span style={glyphStyle(e.mark)}>{markStyle(e.mark).glyph}</span>
               <span className="text-[11px] leading-snug text-theme-text-secondary">{e.text}</span>
@@ -412,37 +426,17 @@ function InspectorPanel({ inspector, onCTA }: { inspector: Inspector; onCTA: (c:
         </div>
       )}
 
-      {/* The caveats are the point of the panel: what the evidence does NOT
-          establish is what stops a green result being over-read. */}
-      {inspector.notProve.length > 0 && (
-        <div
-          className="rounded-md px-2.5 py-2"
-          style={{ border: '1px solid var(--color-warning)', background: 'color-mix(in srgb, var(--color-warning) 10%, transparent)' }}
-        >
-          <div className="text-[9.5px] font-bold tracking-[0.05em]" style={{ color: 'var(--color-warning-dark)' }}>
-            WHAT THIS DOES NOT PROVE
-          </div>
-          {inspector.notProve.map((n, i) => (
-            <div key={i} className="mt-1 text-[10.5px] leading-snug text-theme-text-secondary">
-              ▲ {n}
-            </div>
-          ))}
-        </div>
-      )}
+      <Caveats items={path.notProve} />
 
       <div className="rounded-md px-2.5 py-2.5" style={{ border: '1px solid var(--accent)', background: 'var(--accent-muted)' }}>
         <div className="text-[9.5px] font-bold tracking-[0.05em]" style={{ color: 'var(--accent-text)' }}>
-          {inspector.next.header}
+          {path.next.header}
         </div>
-        <div className="mt-1 text-[11.5px] leading-snug text-theme-text-secondary text-pretty">{inspector.next.body}</div>
-        {inspector.next.blocked && (
-          <div className="mt-1.5 text-[10.5px] leading-snug" style={{ color: 'var(--color-warning-dark)' }}>
-            ⊘ {inspector.next.blocked}
-          </div>
-        )}
-        {inspector.next.ctas.length > 0 && (
+        <div className="mt-1 text-[11.5px] leading-snug text-theme-text-secondary text-pretty">{path.next.body}</div>
+        {path.next.blocked && <div className="mt-1.5 text-[10.5px] leading-snug text-theme-text-tertiary">{path.next.blocked}</div>}
+        {path.next.ctas.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {inspector.next.ctas.map((c, i) => (
+            {path.next.ctas.map((c, i) => (
               <button
                 key={i}
                 type="button"
@@ -461,6 +455,58 @@ function InspectorPanel({ inspector, onCTA }: { inspector: Inspector; onCTA: (c:
           </div>
         )}
       </div>
+
+      {/* Additive: a selected node appends its own detail below the diagnosis
+          rather than replacing it. */}
+      {resource && (
+        <div className="border-t border-theme-border pt-3">
+          <div className="flex items-center gap-2">
+            <span className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">{resource.kind}</span>
+            <div className="flex-1" />
+            <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[resource.chipTone]}`}>{resource.chipText}</span>
+          </div>
+          <div className="mt-1.5 flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] font-semibold text-theme-text-primary">{resource.name}</span>
+            {resource.openRef?.name && (
+              <button type="button" onClick={() => onOpen(resource.openRef!)} className="shrink-0 text-[11px] text-accent-text hover:underline">
+                Open ↗
+              </button>
+            )}
+          </div>
+          <div className="mt-1 text-[11.5px] leading-relaxed text-theme-text-secondary text-pretty">{resource.body}</div>
+          {resource.facts.map((f, i) => (
+            <div key={i} className="mt-0.5 flex gap-2 border-b border-theme-border-subtle py-0.5">
+              <span className="w-[86px] flex-none pt-0.5 text-[9px] font-bold tracking-[0.04em] text-theme-text-tertiary">{f.k}</span>
+              <span className="flex-1 break-words font-mono text-[10px] leading-snug text-theme-text-secondary">{f.v}</span>
+            </div>
+          ))}
+          {resource.anomalies && resource.anomalies.length > 0 && (
+            <div className="mt-2">
+              {resource.anomalies.map((a, i) => (
+                <div key={i} className="mb-1 flex items-baseline gap-1.5">
+                  <span style={glyphStyle(a.mark)}>{markStyle(a.mark).glyph}</span>
+                  <span className="text-[10.5px] leading-snug text-theme-text-secondary">{a.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {resource.rows && resource.rows.length > 0 && (
+            <div className="mt-2 flex flex-col gap-0.5">
+              {resource.rows.map((r) => (
+                <div key={r.name} className="flex items-baseline gap-1.5" title={`${r.name} — ${r.detail}`}>
+                  <span style={glyphStyle(r.mark)}>{markStyle(r.mark).glyph}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-theme-text-secondary">{r.name}</span>
+                  <span className="shrink-0 text-[9.5px] text-theme-text-tertiary">{r.detail}</span>
+                </div>
+              ))}
+              {!!resource.moreRows && <div className="text-[9.5px] text-theme-text-tertiary">+{resource.moreRows} more not shown</div>}
+            </div>
+          )}
+          <div className="mt-2">
+            <Caveats items={resource.notProve} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

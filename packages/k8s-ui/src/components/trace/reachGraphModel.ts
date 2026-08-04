@@ -24,7 +24,6 @@ export const PILL_MAX_PX = 104
 
 /** Columns are assigned in chain order. Every node belongs to exactly one,
  *  which is what guarantees left-to-right reading order and non-overlap. */
-const COL_ORIGIN = 0
 /** Width per column. The last column (Pods) is wider because it carries rows. */
 const COL_W = { origin: 200, hop: 196, pods: 250 }
 
@@ -246,23 +245,63 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const originIsControl = origin.lane === 'control'
 
   const subjectId = refId(trace.subject)
+  const subjectNodeId = `n:${subjectId}`
   const downstream = trace.downstream ?? []
-  const podsHop = downstream.find(isPodsHop)
+  const subjectHop = downstream.find((h) => refId(h.resource) === subjectId)
   const upstreams = trace.upstreams ?? []
 
   /**
-   * The chain the user configured, in order. Previously only the subject and
-   * the Pods were drawn, so an HTTPRoute lost both the Gateway it attaches to
-   * and the Service it names as its backend - the two objects you would edit
-   * to fix it. Every hop between the entry and the Pods is a real link in that
-   * chain and gets its own column.
+   * Upstreams are PARALLEL entry points, and a subject can have several
+   * backends each with their own Pods. Laying all of that out as one series
+   * invented a path that does not exist - two Ingresses read as
+   * "Ingress A then Ingress B", and only the first backend's Pods survived.
+   * Parentage follows the same rule the topology converter uses.
    */
-  const chain: Hop[] = [
-    ...upstreams,
-    ...downstream.filter((h) => !isPodsHop(h)),
-  ]
+  const backends: { hop: Hop; id: string }[] = []
+  const podGroups: { hop: Hop; id: string; parentId: string }[] = []
+  let lastServiceId = subjectNodeId
+  for (const dn of downstream) {
+    const base = refId(dn.resource)
+    if (base === subjectId) {
+      lastServiceId = subjectNodeId
+      continue
+    }
+    if (isPodsHop(dn)) {
+      // An unnamed Pods hop's id collapses to the same value for every backend,
+      // so it must be scoped to its owning Service or later groups are dropped.
+      podGroups.push({ hop: dn, id: dn.resource?.name ? `n:${base}` : `${lastServiceId}::pods`, parentId: lastServiceId })
+    } else {
+      const id = `n:${base}`
+      backends.push({ hop: dn, id })
+      lastServiceId = id
+    }
+  }
 
-  // ---- placement ----
+  /** The scenario names a host; only the entries serving it are on this path. */
+  const routeHost = (route?.route ?? '').split('/')[0].trim().toLowerCase()
+  const servesRoute = (h: Hop): boolean => {
+    const hosts = [...(h.config?.hostnames ?? []), ...(h.config?.tlsHosts ?? [])].map((x) => x.toLowerCase())
+    return !!routeHost && hosts.some((x) => x === routeHost)
+  }
+  const matched = upstreams.filter(servesRoute)
+  const activeUpstreams = matched.length > 0 ? matched : upstreams
+
+  const hopSub = (h: Hop): string => {
+    const c = h.config
+    if (c?.clusterIP) return `ClusterIP ${c.clusterIP}`
+    if (c?.addresses?.length) return c.addresses.join(', ')
+    if (c?.hostnames?.length) return c.hostnames.join(', ')
+    if (c?.serviceType) return c.serviceType
+    return h.resource?.namespace ?? ''
+  }
+
+  // ---- columns follow depth in the branch, not position in a list ----
+  const COL_ORIGIN = 0
+  const COL_ENTRY = 1
+  const colSubject = upstreams.length > 0 ? COL_ENTRY + 1 : COL_ENTRY
+  const colBackend = colSubject + 1
+  const colPods = backends.length > 0 ? colBackend + 1 : colSubject + 1
+
   placed.push({
     col: COL_ORIGIN,
     row: 0,
@@ -279,70 +318,85 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     },
   })
 
-  const hopSub = (h: Hop): string => {
-    const c = h.config
-    if (c?.clusterIP) return `ClusterIP ${c.clusterIP}`
-    if (c?.addresses?.length) return c.addresses.join(', ')
-    if (c?.hostnames?.length) return c.hostnames.join(', ')
-    if (c?.serviceType) return c.serviceType
-    return h.resource?.namespace ?? ''
-  }
-
-  let col = COL_ORIGIN
-  const chainIds: string[] = []
-  for (const h of chain) {
-    col += 1
-    const id = `n:${refId(h.resource)}`
-    const isSubject = refId(h.resource) === subjectId
-    chainIds.push(id)
+  upstreams.forEach((up, i) => {
+    const active = activeUpstreams.includes(up)
     placed.push({
-      col,
-      row: 0,
+      col: COL_ENTRY,
+      row: i,
       w: COL_W.hop,
       node: {
-        id,
-        kind: (h.resource?.kind || 'RESOURCE').toUpperCase(),
-        name: `${h.resource?.name ?? ''}${isSubject && route?.target ? ` ${route.target}` : ''}`,
-        sub: hopSub(h),
-        tone: hopTone(h),
-        ref: h.resource,
-        hop: h,
+        id: `n:${refId(up.resource)}`,
+        kind: (up.resource?.kind || 'ENTRY').toUpperCase(),
+        name: up.resource?.name ?? 'entry',
+        sub: active ? hopSub(up) : 'does not serve this host',
+        tone: hopTone(up),
+        // Entries that do not serve the selected host are shown, but dimmed -
+        // hiding them would misrepresent what is attached to this resource.
+        dim: !active,
+        ref: up.resource,
+        hop: up,
         lane: 'data',
       },
     })
-  }
+  })
 
-  const roster = podsHop?.config?.pods ?? []
-  const total = podsHop?.config?.podTotal ?? roster.length
-  const ready = typeof podsHop?.meta?.ready === 'number' ? (podsHop.meta.ready as number) : roster.filter((p) => p.ready).length
-  const selected = typeof podsHop?.meta?.selected === 'number' ? (podsHop.meta.selected as number) : total
-  const publishNotReady = !!podsHop?.meta?.publishNotReadyAddresses
-  const originProbes = podsHop ? probesFromOrigin(podsHop.probes ?? [], origin) : []
-  const anomalies = podsHop ? populationAnomalies(roster, total, originProbes, publishNotReady) : []
+  placed.push({
+    col: colSubject,
+    row: 0,
+    w: COL_W.hop,
+    node: {
+      id: subjectNodeId,
+      kind: (trace.subject.kind || 'SERVICE').toUpperCase(),
+      name: `${trace.subject.name}${route?.target ? ` ${route.target}` : ''}`,
+      sub: subjectHop ? hopSub(subjectHop) : trace.subject.namespace || '',
+      tone: hopTone(subjectHop),
+      ref: trace.subject,
+      hop: subjectHop,
+      lane: 'data',
+    },
+  })
+
+  backends.forEach((b, i) => {
+    placed.push({
+      col: colBackend,
+      row: i,
+      w: COL_W.hop,
+      node: {
+        id: b.id,
+        kind: (b.hop.resource?.kind || 'BACKEND').toUpperCase(),
+        name: b.hop.resource?.name ?? '',
+        sub: hopSub(b.hop),
+        tone: hopTone(b.hop),
+        ref: b.hop.resource,
+        hop: b.hop,
+        lane: 'data',
+      },
+    })
+  })
 
   const deliveryBlocked = (route ? routeMark(route, { stale, running }) : 'untested') === 'failed'
-  const podRows: PodRow[] = []
-  if (podsHop) {
-    const probes = originProbes
+  podGroups.forEach((g, i) => {
+    const hop = g.hop
+    const roster = hop.config?.pods ?? []
+    const total = hop.config?.podTotal ?? roster.length
+    const ready = typeof hop.meta?.ready === 'number' ? (hop.meta.ready as number) : roster.filter((p) => p.ready).length
+    const selected = typeof hop.meta?.selected === 'number' ? (hop.meta.selected as number) : total
+    const publishNotReady = !!hop.meta?.publishNotReadyAddresses
+    const probes = probesFromOrigin(hop.probes ?? [], origin)
+
+    const podRows: PodRow[] = []
     for (const p of roster.slice(0, POD_ROW_MAX)) {
       const mine = probesForPod(p, probes).filter((x) => !x.skipped)
       const failed = mine.find((x) => !x.ok || x.tone === 'unhealthy')
       let mark: Mark
       let detail: string
       if (!p.ready && !publishNotReady) {
-        // Excluded is not failed: the dataplane never routed here, so there is
-        // no result about this endpoint's ability to serve. Only true when the
-        // Service withholds not-ready addresses.
         mark = 'excluded'
         detail = 'not ready — nothing sent here'
       } else if (failed) {
-        // An endpoint's OWN failure outranks any upstream verdict. When the
-        // route is unreachable *because* these endpoints refused, they are the
-        // failure - calling them "blocked" would hide the actual fault.
         mark = 'failed'
         detail = failed.detail || failed.error || 'refused'
       } else if (mine.length === 0 && deliveryBlocked) {
-        // No result AND an upstream failure that explains why it never ran.
         mark = 'blocked'
         detail = 'not reached — failed earlier'
       } else if (mine.length === 0) {
@@ -359,29 +413,27 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     }
 
     placed.push({
-      col: col + 1,
-      row: 0,
+      col: colPods,
+      row: i,
       w: COL_W.pods,
       node: {
-        id: 'n:endpoints',
+        id: g.id,
         kind: 'PODS',
         name: `${ready} of ${selected} taking traffic`,
-        // publishNotReadyAddresses makes `ready` a PUBLISHED count, not a
-        // readiness count - saying "N of M ready" there would be false.
         sub: publishNotReady
           ? 'not-ready Pods are sent traffic too'
           : ready === selected
             ? 'every selected Pod is eligible'
             : `${selected - ready} not eligible`,
-        tone: hopTone(podsHop),
-        hop: podsHop,
-        anomalies,
+        tone: hopTone(hop),
+        hop,
+        anomalies: populationAnomalies(roster, total, probes, publishNotReady),
         podRows,
         moreRows: Math.max(0, roster.length - POD_ROW_MAX),
         lane: 'data',
       },
     })
-  }
+  })
 
   // ---- resolve geometry ----
   const usedCols = [...new Set(placed.map((p) => p.col))].sort((a, b) => a - b)
@@ -397,8 +449,6 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
 
   const heightOf = (p: Placed) => estHeight(p.node)
 
-  // Control-plane row sits above the dataplane band; both are packed to their
-  // own content so neither reserves space it does not use.
   const controlPlaced = placed.filter((p) => p.node.lane === 'control')
   const dataPlaced = placed.filter((p) => p.node.lane === 'data')
   const controlH = controlPlaced.reduce((m, p) => Math.max(m, heightOf(p)), 0)
@@ -409,15 +459,11 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const pos = new Map<string, GraphNode>()
 
   for (const p of controlPlaced) {
-    const w = colW.get(p.col)!
-    const h = heightOf(p)
-    const n: GraphNode = { ...p.node, x: colX.get(p.col)!, y: controlTop, w, h }
+    const n: GraphNode = { ...p.node, x: colX.get(p.col)!, y: controlTop, w: colW.get(p.col)!, h: heightOf(p) }
     nodes.push(n)
     pos.set(n.id, n)
   }
 
-  // Within the dataplane, each column stacks its own rows. Columns are then
-  // vertically centred against the tallest column so the spine reads straight.
   const byCol = new Map<number, Placed[]>()
   for (const p of dataPlaced) {
     const arr = byCol.get(p.col) ?? []
@@ -431,12 +477,10 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const dataH = Math.max(0, ...colHeights.values())
 
   for (const [c, list] of byCol) {
-    const colH = colHeights.get(c)!
-    let y = dataTop + (dataH - colH) / 2
+    let y = dataTop + (dataH - colHeights.get(c)!) / 2
     for (const p of list.sort((a, b) => a.row - b.row)) {
-      const w = colW.get(c)!
       const h = heightOf(p)
-      const n: GraphNode = { ...p.node, x: colX.get(c)!, y, w, h }
+      const n: GraphNode = { ...p.node, x: colX.get(c)!, y, w: colW.get(c)!, h }
       nodes.push(n)
       pos.set(n.id, n)
       y += h + ROW_GAP
@@ -446,11 +490,8 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   // ---- edges ----
   const edges: GraphEdge[] = []
   const brackets: { d: string }[] = []
-
   const crossesLanes = new Set<string>()
 
-  /** Connects two placed nodes right-edge to left-edge, with the pill parked in
-   *  the gutter between their columns - which is why it can never overlap a box. */
   const connect = (id: string, fromId: string, toId: string, mark: Mark, label: string) => {
     const a = pos.get(fromId)
     const b = pos.get(toId)
@@ -485,26 +526,25 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const originBlocked = !!origin.unavailable && origin.mark === 'blocked'
   const noEvidenceLabel =
     origin.mark === 'denied' ? 'not permitted' : origin.mark === 'blocked' ? 'not routable' : 'not tested'
+  const entryLabel = !hasEvidence
+    ? noEvidenceLabel
+    : route?.evidence || (originIsControl ? 'relayed by Kubernetes' : 'request')
 
-  // The first link carries how the request got in; the rest of the chain is
-  // configuration the user wrote (route -> service -> pods), drawn dotted.
-  const firstId = chainIds[0]
-  if (firstId) {
-    connect(
-      'e:origin-subject',
-      originNodeId,
-      firstId,
-      originBlocked ? 'blocked' : entryMark,
-      !hasEvidence ? noEvidenceLabel : route?.evidence || (originIsControl ? 'relayed by Kubernetes' : 'request'),
-    )
+  // The request enters at the entry points that serve this host; everything
+  // after is configuration, drawn dotted. There is no segment-local evidence to
+  // claim otherwise.
+  if (upstreams.length > 0) {
+    for (const up of upstreams) {
+      const id = `n:${refId(up.resource)}`
+      const active = activeUpstreams.includes(up)
+      connect(`e:origin-${id}`, originNodeId, id, originBlocked ? 'blocked' : active ? entryMark : 'untested', active ? entryLabel : 'other host')
+      connect(`e:${id}-subject`, id, subjectNodeId, 'config', 'routes to')
+    }
+  } else {
+    connect('e:origin-subject', originNodeId, subjectNodeId, originBlocked ? 'blocked' : entryMark, entryLabel)
   }
-  for (let i = 0; i < chainIds.length - 1; i++) {
-    connect(`e:chain:${i}`, chainIds[i], chainIds[i + 1], 'config', 'routes to')
-  }
-  if (podsHop && chainIds.length > 0) {
-    // Still dotted: the Service selecting Pods is configuration, not a hop.
-    connect('e:subject-endpoints', chainIds[chainIds.length - 1], 'n:endpoints', 'config', 'selects')
-  }
+  for (const b of backends) connect(`e:subject-${b.id}`, subjectNodeId, b.id, 'config', 'sends to')
+  for (const g of podGroups) connect(`e:${g.id}`, g.parentId, g.id, 'config', 'selects')
 
   // ---- lane boxes: bound only their own nodes ----
   const boxFor = (list: GraphNode[], label: string, color: string, dashed?: boolean): LaneBox | undefined => {

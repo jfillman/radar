@@ -105,14 +105,12 @@ export function ReachabilityGraph({
                 strokeDasharray={s.dash}
                 strokeOpacity={s.strokeOpacity}
                 strokeLinecap="round"
-                className="cursor-pointer"
-                onClick={() => onSelect(e.id)}
               />
             )
           })}
         </svg>
         {model.edges.map((e) => (
-          <EdgePill key={e.id} edge={e} selected={selected === e.id} onSelect={onSelect} />
+          <EdgePill key={e.id} edge={e} />
         ))}
         {model.nodes.map((n) => (
           <Node key={n.id} node={n} selected={selected === n.id} onSelect={onSelect} />
@@ -154,27 +152,26 @@ function Lane({ box }: { box: LaneBox }) {
   )
 }
 
-function EdgePill({ edge, selected, onSelect }: { edge: GraphEdge; selected: boolean; onSelect: (id: string) => void }) {
+/** Passive. There is no segment-local evidence behind an edge, so clicking one
+ *  could only repeat the path result the sidebar already shows permanently. */
+function EdgePill({ edge }: { edge: GraphEdge }) {
   const s = markStyle(edge.mark)
-  const style: CSSProperties = {
-    left: edge.px,
-    top: edge.py,
-    transform: 'translate(-50%,-50%)',
-    zIndex: 3,
-    border: `1px solid ${selected ? 'var(--accent)' : 'var(--border-default)'}`,
-    boxShadow: selected ? '0 0 0 2px var(--accent-muted)' : '0 1px 2px rgba(0,0,0,.05)',
-  }
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(edge.id)}
+    <div
       title={edge.title}
-      className="absolute flex items-center gap-1 rounded-full bg-theme-surface px-2 py-0.5 text-[10px] font-semibold text-theme-text-secondary"
-      style={{ ...style, maxWidth: PILL_MAX_PX }}
+      className="absolute flex items-center gap-1 rounded-full border border-theme-border bg-theme-surface px-2 py-0.5 text-[10px] font-semibold text-theme-text-secondary"
+      style={{
+        left: edge.px,
+        top: edge.py,
+        transform: 'translate(-50%,-50%)',
+        zIndex: 3,
+        maxWidth: PILL_MAX_PX,
+        boxShadow: '0 1px 2px rgba(0,0,0,.05)',
+      }}
     >
       <span style={glyphStyle(edge.mark)}>{s.glyph}</span>
       <span className="truncate">{edge.label}</span>
-    </button>
+    </div>
   )
 }
 

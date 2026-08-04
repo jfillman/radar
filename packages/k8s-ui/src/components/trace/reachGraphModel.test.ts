@@ -93,16 +93,16 @@ describe('evidence is scoped to the selected origin', () => {
     const g = buildGraph({ trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: pick(t, 'incluster') })
     // 'proved' is the only solid green mark; nothing on this canvas may carry it.
     expect(g.edges.some((e) => e.mark === 'proved')).toBe(false)
-    expect(g.nodes.find((n) => n.id === 'n:endpoints')!.podRows!.every((r) => r.mark !== 'proved')).toBe(true)
+    expect(g.nodes.find((n) => n.kind === 'PODS')!.podRows!.every((r) => r.mark !== 'proved')).toBe(true)
   })
 
   it('endpoint rows read only the selected origin\'s probes', () => {
     // in-cluster succeeded; the apiserver relay never probed this endpoint.
     const t = trace([pod('a', true, '10.0.0.1')], [p({ vantage: 'in-cluster', path: 'data', target: '10.0.0.1:8080', ok: true })])
     const viaProxy = buildGraph({ trace: t, route: route(), origin: pick(t, 'apiserver') })
-    expect(viaProxy.nodes.find((n) => n.id === 'n:endpoints')!.podRows![0].mark).toBe('untested')
+    expect(viaProxy.nodes.find((n) => n.kind === 'PODS')!.podRows![0].mark).toBe('untested')
     const inCluster = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    expect(inCluster.nodes.find((n) => n.id === 'n:endpoints')!.podRows![0].mark).toBe('proved')
+    expect(inCluster.nodes.find((n) => n.kind === 'PODS')!.podRows![0].mark).toBe('proved')
   })
 
   it('an origin WITH evidence still renders the route outcome', () => {
@@ -115,7 +115,7 @@ describe('evidence is scoped to the selected origin', () => {
     const many = Array.from({ length: 7 }, (_, i) => pod(`p${i}`, true, `10.0.0.${i}`))
     const t = trace(many, many.map((x, i) => p({ vantage: 'in-cluster', path: 'data', target: `${x.ip}:8080`, ok: i !== 2, tone: i === 2 ? 'unhealthy' : 'healthy' })))
     const viaProxy = buildGraph({ trace: t, route: route(), origin: pick(t, 'apiserver') })
-    expect(viaProxy.nodes.find((n) => n.id === 'n:endpoints')!.anomalies?.some((a) => a.mark === 'failed')).toBe(false)
+    expect(viaProxy.nodes.find((n) => n.kind === 'PODS')!.anomalies?.some((a) => a.mark === 'failed')).toBe(false)
   })
 })
 
@@ -177,19 +177,114 @@ describe('the whole configured chain is drawn', () => {
   })
 })
 
+// Upstreams are PARALLEL entries and a subject can have several backends, each
+// with its own Pods. Flattening that into one series invented a path.
+describe('branch-shaped traces keep their shape', () => {
+  const hop = (kind: string, name: string, edge: string, extra: Record<string, unknown> = {}) => ({
+    resource: { kind, name, namespace: 'store' },
+    edge,
+    findings: [],
+    ...extra,
+  })
+  const podsHopFor = (ip: string) =>
+    hop('Pods', '', 'Service->Pods', {
+      meta: { ready: 1, selected: 1 },
+      config: { pods: [pod(`p-${ip}`, true, ip)], podTotal: 1 },
+      probes: [p({ path: 'data', target: `${ip}:8080`, ok: true })],
+    })
+
+  it('draws two Ingresses as parallel entries, never in series', () => {
+    const t: Trace = {
+      subject: { kind: 'Service', name: 'shop', namespace: 'store' },
+      verdict: 'healthy',
+      brokenAt: -1,
+      upstreams: [hop('Ingress', 'a', 'ingress->service'), hop('Ingress', 'b', 'ingress->service')],
+      downstream: [hop('Service', 'shop', 'entry:Service'), podsHopFor('10.0.0.1')],
+    }
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    const ing = g.nodes.filter((n) => n.kind === 'INGRESS')
+    expect(ing).toHaveLength(2)
+    // Same column, different rows - not one after the other.
+    expect(ing[0].x).toBe(ing[1].x)
+    expect(ing[0].y).not.toBe(ing[1].y)
+    // Neither Ingress feeds the other.
+    expect(g.edges.some((e) => e.id === `e:${ing[0].id}-subject`)).toBe(true)
+    expect(g.edges.some((e) => e.id === `e:${ing[1].id}-subject`)).toBe(true)
+  })
+
+  it('keeps a Pods group per backend instead of dropping all but the first', () => {
+    const t: Trace = {
+      subject: { kind: 'Ingress', name: 'shop-ing', namespace: 'store' },
+      verdict: 'healthy',
+      brokenAt: -1,
+      upstreams: [],
+      downstream: [
+        hop('Ingress', 'shop-ing', 'entry:Ingress'),
+        hop('Service', 'svc-a', 'Ingress->Service'),
+        podsHopFor('10.0.0.1'),
+        hop('Service', 'svc-b', 'Ingress->Service'),
+        podsHopFor('10.0.0.2'),
+      ],
+    }
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    expect(g.nodes.filter((n) => n.kind === 'SERVICE')).toHaveLength(2)
+    // Both pod groups survive - unnamed Pods hops previously collided on one id.
+    const pods = g.nodes.filter((n) => n.kind === 'PODS')
+    expect(pods).toHaveLength(2)
+    expect(new Set(pods.map((n) => n.id)).size).toBe(2)
+  })
+
+  it('each Pods group hangs off its own Service, not off the subject', () => {
+    const t: Trace = {
+      subject: { kind: 'Ingress', name: 'shop-ing', namespace: 'store' },
+      verdict: 'healthy',
+      brokenAt: -1,
+      upstreams: [],
+      downstream: [
+        hop('Ingress', 'shop-ing', 'entry:Ingress'),
+        hop('Service', 'svc-a', 'Ingress->Service'),
+        podsHopFor('10.0.0.1'),
+        hop('Service', 'svc-b', 'Ingress->Service'),
+        podsHopFor('10.0.0.2'),
+      ],
+    }
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    for (const svc of g.nodes.filter((n) => n.kind === 'SERVICE')) {
+      expect(g.edges.some((e) => e.id.startsWith(`e:${svc.id}::pods`))).toBe(true)
+    }
+  })
+
+  it('dims an entry that does not serve the host being tested', () => {
+    const t: Trace = {
+      subject: { kind: 'Service', name: 'shop', namespace: 'store' },
+      verdict: 'healthy',
+      brokenAt: -1,
+      upstreams: [
+        hop('Ingress', 'a', 'ingress->service', { config: { hostnames: ['shop.example.com'] } }),
+        hop('Ingress', 'b', 'ingress->service', { config: { hostnames: ['other.example.com'] } }),
+      ],
+      downstream: [hop('Service', 'shop', 'entry:Service'), podsHopFor('10.0.0.1')],
+    }
+    const g = buildGraph({ trace: t, route: route({ route: 'shop.example.com/' }), origin: pick(t, 'incluster') })
+    const byName = (n: string) => g.nodes.find((x) => x.name === n)!
+    expect(byName('a').dim).toBeFalsy()
+    expect(byName('b').dim).toBe(true)
+  })
+})
+
 describe('buildGraph edges', () => {
   it('service to endpoint membership is always config — no packet traverses it', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [p({})])
     for (const id of ['incluster', 'apiserver'] as const) {
       const g = buildGraph({ trace: t, route: route(), origin: pick(t, id) })
-      expect(g.edges.find((e) => e.id === 'e:subject-endpoints')!.mark).toBe('config')
+      expect(g.edges.find((e) => e.label === 'selects')!.mark).toBe('config')
     }
   })
 
   it('a NotReady endpoint is excluded, never failed — it was never in the path', () => {
     const t = trace([pod('a', true, '10.0.0.1'), pod('b', false, '10.0.0.2', 'readiness failing')], [p({})])
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    const rows = g.nodes.find((n) => n.id === 'n:endpoints')!.podRows!
+    const rows = g.nodes.find((n) => n.kind === 'PODS')!.podRows!
     expect(rows.find((r) => r.name === 'b')!.mark).toBe('excluded')
   })
 
@@ -199,7 +294,7 @@ describe('buildGraph edges', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [p({ ok: false, tone: 'unhealthy', detail: 'connection refused' })])
     const g = buildGraph({ trace: t, route: route({ outcome: 'unreachable' }), origin: pick(t, 'incluster') })
     expect(g.edges.find((e) => e.id === 'e:origin-subject')!.mark).toBe('failed')
-    const rows = g.nodes.find((n) => n.id === 'n:endpoints')!.podRows!
+    const rows = g.nodes.find((n) => n.kind === 'PODS')!.podRows!
     expect(rows[0].mark).toBe('failed')
     expect(rows[0].detail).toBe('connection refused')
   })
@@ -209,20 +304,20 @@ describe('buildGraph edges', () => {
     // endpoint was never dialled at all.
     const t = trace([pod('a', true, '10.0.0.1')], [])
     const g = buildGraph({ trace: t, route: route({ outcome: 'unreachable', confidence: 'real' }), origin: pick(t, 'incluster') })
-    const rows = g.nodes.find((n) => n.id === 'n:endpoints')!.podRows!
+    const rows = g.nodes.find((n) => n.kind === 'PODS')!.podRows!
     expect(rows[0].mark).toBe('blocked')
   })
 
   it('an unprobed ready endpoint reads untested, not proved', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [])
     const g = buildGraph({ trace: t, route: route({ outcome: 'not-tested' }), origin: pick(t, 'incluster') })
-    expect(g.nodes.find((n) => n.id === 'n:endpoints')!.podRows![0].mark).toBe('untested')
+    expect(g.nodes.find((n) => n.kind === 'PODS')!.podRows![0].mark).toBe('untested')
   })
 
   it('a pathologically slow endpoint is marked slow rather than simply proved', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [p({ latencyNs: 1_900_000_000 })])
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    expect(g.nodes.find((n) => n.id === 'n:endpoints')!.podRows![0].mark).toBe('slow')
+    expect(g.nodes.find((n) => n.kind === 'PODS')!.podRows![0].mark).toBe('slow')
   })
 })
 
@@ -230,8 +325,8 @@ describe('buildGraph edges', () => {
 // resource's OWN health, and an apiserver-proxy failure is indirect evidence
 // that must never condemn it.
 describe('node health from probes', () => {
-  const toneOf = (t: Trace, originId: string, id: string) =>
-    buildGraph({ trace: t, route: route(), origin: pick(t, originId) }).nodes.find((n) => n.id === id)!.tone
+  const toneOf = (t: Trace, originId: string, _id: string) =>
+    buildGraph({ trace: t, route: route(), origin: pick(t, originId) }).nodes.find((n) => n.kind === 'PODS')!.tone
 
   it('a failed real probe never renders as healthy', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [p({ path: 'data', ok: false, tone: 'unhealthy' })])
@@ -265,7 +360,7 @@ describe('buildGraph aggregation', () => {
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
     // Endpoints are rows inside the selection node - no per-pod node exists.
     expect(g.nodes.filter((n) => n.id.startsWith('n:pod'))).toHaveLength(0)
-    const eps = g.nodes.find((n) => n.id === 'n:endpoints')!
+    const eps = g.nodes.find((n) => n.kind === 'PODS')!
     // The backends are Pods - the user's own vocabulary, not "endpoint population".
     expect(eps.kind).toBe('PODS')
     expect(eps.podRows!.length).toBeLessThanOrEqual(POD_ROW_MAX)
@@ -274,7 +369,7 @@ describe('buildGraph aggregation', () => {
   it('names the endpoints past the row cap rather than dropping them silently', () => {
     const t = trace(many, many.map((x) => p({ target: `${x.ip}:8080` })))
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    const eps = g.nodes.find((n) => n.id === 'n:endpoints')!
+    const eps = g.nodes.find((n) => n.kind === 'PODS')!
     expect(eps.moreRows).toBe(many.length - POD_ROW_MAX)
   })
 
@@ -282,7 +377,7 @@ describe('buildGraph aggregation', () => {
     const probes = many.map((x, i) => p({ target: `${x.ip}:8080`, ok: i !== 2, tone: i === 2 ? 'unhealthy' : 'healthy' }))
     const t = trace(many, probes)
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    const eps = g.nodes.find((n) => n.id === 'n:endpoints')!
+    const eps = g.nodes.find((n) => n.kind === 'PODS')!
     expect(eps.anomalies?.some((a) => a.mark === 'failed')).toBe(true)
     expect(eps.podRows!.some((r) => r.mark === 'failed')).toBe(true)
   })
@@ -290,7 +385,7 @@ describe('buildGraph aggregation', () => {
   it('states the unprobed remainder — unprobed is not proven', () => {
     const t = trace(many, many.map((x) => p({ target: `${x.ip}:8080` })), 240)
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    const eps = g.nodes.find((n) => n.id === 'n:endpoints')!
+    const eps = g.nodes.find((n) => n.kind === 'PODS')!
     const omitted = eps.anomalies?.find((a) => a.mark === 'untested')
     expect(omitted?.text).toMatch(/not probed/)
   })
@@ -299,7 +394,7 @@ describe('buildGraph aggregation', () => {
     const withBad = [...many, pod('bad', false, '10.0.1.1', 'readiness failing')]
     const t = trace(withBad, many.map((x) => p({ target: `${x.ip}:8080` })))
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    const eps = g.nodes.find((n) => n.id === 'n:endpoints')!
+    const eps = g.nodes.find((n) => n.kind === 'PODS')!
     expect(eps.anomalies?.some((a) => a.mark === 'excluded')).toBe(true)
   })
 
@@ -307,7 +402,7 @@ describe('buildGraph aggregation', () => {
     const few = [pod('a', true, '10.0.0.1'), pod('b', true, '10.0.0.2')]
     const t = trace(few, few.map((x) => p({ target: `${x.ip}:8080` })))
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    const eps = g.nodes.find((n) => n.id === 'n:endpoints')!
+    const eps = g.nodes.find((n) => n.kind === 'PODS')!
     expect(eps.kind).toBe('PODS')
     expect(eps.podRows).toHaveLength(2)
     expect(eps.moreRows).toBe(0)
@@ -392,7 +487,7 @@ describe('publishNotReadyAddresses', () => {
   it('does not call a NotReady endpoint excluded when not-ready addresses are published', () => {
     const t = publishing([pod('a', false, '10.0.0.1', 'readiness failing')], [p({ path: 'data', target: '10.0.0.1:8080', ok: true })])
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    const rows = g.nodes.find((n) => n.id === 'n:endpoints')!.podRows!
+    const rows = g.nodes.find((n) => n.kind === 'PODS')!.podRows!
     expect(rows[0].mark).not.toBe('excluded')
     expect(rows[0].detail).toMatch(/sent traffic anyway/)
   })
@@ -400,20 +495,20 @@ describe('publishNotReadyAddresses', () => {
   it('reports no excluded endpoints in the population anomalies', () => {
     const t = publishing([pod('a', false, '10.0.0.1', 'x'), pod('b', true, '10.0.0.2')], [p({ path: 'data', ok: true })])
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    expect(g.nodes.find((n) => n.id === 'n:endpoints')!.anomalies?.some((a) => a.mark === 'excluded')).toBe(false)
+    expect(g.nodes.find((n) => n.kind === 'PODS')!.anomalies?.some((a) => a.mark === 'excluded')).toBe(false)
   })
 
   it('still excludes NotReady endpoints when the Service withholds them', () => {
     const t = trace([pod('a', false, '10.0.0.1', 'x')], [p({ path: 'data', ok: true })])
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    expect(g.nodes.find((n) => n.id === 'n:endpoints')!.podRows![0].mark).toBe('excluded')
+    expect(g.nodes.find((n) => n.kind === 'PODS')!.podRows![0].mark).toBe('excluded')
   })
 
   it('never renders the published count as a readiness count', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [p({})])
     t.downstream[1].meta = { ready: 3, selected: 3, publishNotReadyAddresses: true }
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
-    const eps = g.nodes.find((n) => n.id === 'n:endpoints')!
+    const eps = g.nodes.find((n) => n.kind === 'PODS')!
     expect(eps.sub).toMatch(/not-ready Pods are sent traffic too/)
     // The "N of M ready" phrasing would be a lie here: `ready` is a PUBLISHED
     // count when the Service publishes not-ready addresses.

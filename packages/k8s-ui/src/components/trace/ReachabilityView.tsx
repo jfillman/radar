@@ -195,7 +195,12 @@ function ReachabilityBoard(props: BoardProps) {
           wraps to its own full-width row rather than being clipped. */}
       {/* The board fills the pane. Each column scrolls on its own so a long
           origin list or inspector never pushes the graph out of view. */}
-      <div className="grid min-h-0 flex-1 items-stretch grid-cols-[minmax(190px,210px)_minmax(0,1fr)] xl:grid-cols-[minmax(196px,210px)_minmax(0,1fr)_minmax(290px,21%)]">
+      {/* Always three columns. Below xl the inspector used to wrap onto its own
+          full-width row UNDER the graph, which split one diagnosis into two
+          stacked, separately-scrolling regions and left neither enough room.
+          Narrow widths tighten the two rails instead - they are a picker and a
+          reading column, and both compress better than the path does. */}
+      <div className="grid min-h-0 flex-1 items-stretch grid-cols-[minmax(168px,186px)_minmax(0,1fr)_minmax(248px,278px)] xl:grid-cols-[minmax(196px,210px)_minmax(0,1fr)_minmax(290px,21%)]">
         {/* Picking a vantage re-routes the graph and returns the inspector to
             the PATH result from there. It used to select the origin itself,
             which answered "define this vantage" when the user asked "show me
@@ -208,7 +213,7 @@ function ReachabilityBoard(props: BoardProps) {
         <div className="min-h-0 min-w-0">
           <ReachabilityGraph model={model} selected={selection} onSelect={setSelection} />
         </div>
-        <div className="col-span-2 min-h-0 overflow-y-auto border-t border-theme-border xl:col-span-1 xl:border-t-0 [scrollbar-gutter:stable]">
+        <div className="min-h-0 overflow-y-auto [scrollbar-gutter:stable]">
           <InspectorPanel sidebar={sidebar} onCTA={onCTA} onOpen={(r) => onNavigateToResource?.(r)} />
         </div>
       </div>
@@ -471,7 +476,7 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
   const [scopeOpen, setScopeOpen] = useState(false)
   const { path, resource } = sidebar
   return (
-    <div className="flex h-full flex-col gap-3 bg-theme-surface px-3.5 py-3 xl:border-l xl:border-theme-border">
+    <div className="flex h-full flex-col gap-3 bg-theme-surface px-3.5 py-3 border-l border-theme-border">
       {/* The diagnosis is ALWAYS here. Whether traffic got through must never
           require a click - it is the question the tab exists to answer. */}
       <div>

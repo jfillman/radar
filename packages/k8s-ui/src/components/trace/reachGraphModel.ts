@@ -82,6 +82,10 @@ export interface PodRow {
 /** Rows shown before collapsing into a "+N more" line. */
 export const POD_ROW_MAX = 6
 
+/** Above this many sibling branches, only the selected one and the ones with
+ *  findings stay expanded - the quiet remainder collapses to a single row. */
+export const FAN_EXPANDED_MAX = 4
+
 export interface GraphEdge {
   id: string
   /** SVG path data. */
@@ -186,14 +190,18 @@ function hopNotes(hop?: Hop): HopNote[] {
 
 /** Health from a hop's findings alone - the same rule the topology view uses:
  *  a critical finding is red only when nothing is serving. */
-function hopTone(hop?: Hop): SevTone {
+function hopTone(hop: Hop | undefined, origin: Origin): SevTone {
   if (!hop) return 'unknown'
   const findings = hop.findings ?? []
   const ready = typeof hop.meta?.ready === 'number' ? (hop.meta.ready as number) : undefined
   const serving = typeof ready === 'number' && ready > 0
   if (findings.some((f) => f.severity === 'critical')) return serving ? 'degraded' : 'unhealthy'
   if (findings.some((f) => f.severity === 'warning')) return 'degraded'
-  const live = (hop.probes ?? []).filter((p) => !p.skipped)
+  // Scoped to the SELECTED origin, like every other probe read in this file.
+  // Pooling every vantage here let one origin's failure paint the dot red while
+  // the rows beneath it - which do filter by origin - showed that same vantage
+  // had never run. Same node, two scopes, two answers.
+  const live = probesFromOrigin(hop.probes ?? [], origin).filter((p) => !p.skipped)
   if (live.length === 0) return 'unknown'
   // A FAILED apiserver-proxy probe is indirect evidence: the proxy path itself
   // may be what failed and the real path was never tested, so it must never
@@ -345,6 +353,40 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const matched = upstreams.filter(servesRoute)
   const activeUpstreams = matched.length > 0 ? matched : upstreams
 
+  /**
+   * Fan-out branches are peers, and until now every one of them rendered
+   * identically - so on a Gateway with seven attached routes, changing the
+   * selected scenario changed nothing on screen and there was no way to tell
+   * which branch you were diagnosing. Only entry points were ever dimmed.
+   *
+   * A branch is on the selected path when it serves the scenario's host or
+   * carries its backend. When NOTHING matches we dim nothing: a graph where
+   * every branch is greyed out says "none of this is relevant", which is worse
+   * than saying nothing at all.
+   */
+  const routeTarget = (route?.target ?? '').split(':')[0].trim().toLowerCase()
+  const onSelectedPath = (h: Hop): boolean => {
+    if (servesRoute(h)) return true
+    const name = (h.resource?.name ?? '').toLowerCase()
+    return !!routeTarget && name === routeTarget
+  }
+  const matchedBackends = backends.filter((b) => onSelectedPath(b.hop))
+  const focusBranches = matchedBackends.length > 0 && matchedBackends.length < backends.length
+
+  /**
+   * Exception-first. A Gateway with seven attached routes rendered seven equally
+   * loud cards that overflowed the pane, and six of them were fine. What the
+   * operator needs is the selected branch and anything WRONG; the quiet
+   * remainder is context and can be one line.
+   *
+   * Collapsing is by relevance, never by position - dropping "the last three"
+   * would hide whichever route happened to sort late.
+   */
+  const worthExpanding = (b: { hop: Hop }): boolean =>
+    onSelectedPath(b.hop) || (b.hop.findings ?? []).length > 0
+  const expanded = backends.length > FAN_EXPANDED_MAX ? backends.filter(worthExpanding) : backends
+  const collapsed = backends.filter((b) => !expanded.includes(b))
+
   const hopSub = (h: Hop): string => {
     const c = h.config
     if (c?.clusterIP) return `ClusterIP ${c.clusterIP}`
@@ -408,7 +450,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         kind: (up.resource?.kind || 'ENTRY').toUpperCase(),
         name: up.resource?.name ?? 'entry',
         sub: active ? hopSub(up) : 'does not serve this host',
-        tone: hopTone(up),
+        tone: hopTone(up, origin),
         notes: hopNotes(up),
         // Entries that do not serve the selected host are shown, but dimmed -
         // hiding them would misrepresent what is attached to this resource.
@@ -429,7 +471,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       kind: (trace.subject.kind || 'SERVICE').toUpperCase(),
       name: `${trace.subject.name}${route?.target ? ` ${route.target}` : ''}`,
       sub: subjectHop ? hopSub(subjectHop) : trace.subject.namespace || '',
-      tone: hopTone(subjectHop),
+      tone: hopTone(subjectHop, origin),
       notes: hopNotes(subjectHop),
       ref: trace.subject,
       hop: subjectHop,
@@ -437,7 +479,8 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     },
   })
 
-  backends.forEach((b, i) => {
+  expanded.forEach((b, i) => {
+    const onPath = !focusBranches || matchedBackends.includes(b)
     placed.push({
       col: colBackend,
       row: i,
@@ -446,8 +489,9 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         id: b.id,
         kind: (b.hop.resource?.kind || 'BACKEND').toUpperCase(),
         name: b.hop.resource?.name ?? '',
-        sub: hopSub(b.hop),
-        tone: hopTone(b.hop),
+        sub: onPath ? hopSub(b.hop) : 'not on the selected path',
+        tone: hopTone(b.hop, origin),
+        dim: !onPath,
         notes: hopNotes(b.hop),
         ref: b.hop.resource,
         hop: b.hop,
@@ -455,6 +499,25 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       },
     })
   })
+
+  if (collapsed.length > 0) {
+    placed.push({
+      col: colBackend,
+      row: expanded.length,
+      w: COL_W.hop,
+      node: {
+        id: 'collapsed:backends',
+        kind: `${collapsed.length} MORE`,
+        name: collapsed.length === 1 ? '1 more route' : `${collapsed.length} more routes`,
+        // Named so the row is a statement, not a truncation: these are quiet
+        // because nothing was found on them, not because they were dropped.
+        sub: 'nothing found · not on the selected path',
+        tone: 'unknown',
+        dim: true,
+        lane: 'data',
+      },
+    })
+  }
 
   const deliveryBlocked = (route ? routeMark(route, { stale, running }) : 'untested') === 'failed'
   podGroups.forEach((g, i) => {
@@ -521,7 +584,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
           : ready === selected
             ? 'every selected Pod is eligible'
             : `${selected - ready} not eligible`,
-        tone: hopTone(hop),
+        tone: hopTone(hop, origin),
         hop,
         notes: hopNotes(hop),
         anomalies: populationAnomalies(roster, total, probes, publishNotReady),
@@ -651,7 +714,11 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       originSkipsEntries ? 'direct to backend' : entryLabel,
     )
   }
-  for (const b of backends) connect(`e:subject-${b.id}`, subjectNodeId, b.id, 'config', 'sends to')
+  for (const b of expanded) {
+    const onPath = !focusBranches || matchedBackends.includes(b)
+    connect(`e:subject-${b.id}`, subjectNodeId, b.id, onPath ? 'config' : 'excluded', onPath ? 'sends to' : 'other host')
+  }
+  if (collapsed.length > 0) connect('e:subject-collapsed', subjectNodeId, 'collapsed:backends', 'config', 'also serves')
   for (const g of podGroups) connect(`e:${g.id}`, g.parentId, g.id, 'config', 'selects')
 
   // ---- lane boxes: bound only their own nodes ----

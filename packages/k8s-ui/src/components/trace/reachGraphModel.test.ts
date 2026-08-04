@@ -615,3 +615,138 @@ describe('hop findings are carried onto the node', () => {
     expect(n.notes ?? []).toHaveLength(0)
   })
 })
+
+// On a Gateway with several attached routes, every branch rendered identically:
+// changing the selected scenario changed nothing on screen, so there was no way
+// to tell which branch you were diagnosing. Weakest journey in review at 2/10.
+describe('fan-out branch focus', () => {
+  const routeHop = (name: string, host: string) => ({
+    resource: { kind: 'HTTPRoute', name, namespace: 'edge' },
+    edge: 'Gateway->HTTPRoute',
+    findings: [],
+    config: { hostnames: [host] },
+  })
+  const fanout = (): Trace => ({
+    subject: { kind: 'Gateway', name: 'primary-gateway', namespace: 'edge' },
+    verdict: 'degraded',
+    brokenAt: -1,
+    upstreams: [],
+    downstream: [routeHop('shop', 'shop.example.com'), routeHop('checkout', 'checkout.example.com'), routeHop('admin', 'admin.example.com')],
+  })
+  const branch = (t: Trace, r: RouteResult, name: string) =>
+    buildGraph({ trace: t, route: r, origin: pick(t, 'local') }).nodes.find((n) => n.name === name)!
+
+  it('marks the branch serving the selected host, and dims its siblings', () => {
+    const t = fanout()
+    const r = route({ route: 'checkout.example.com/', target: 'checkout-api:80' })
+    expect(branch(t, r, 'checkout').dim).toBeFalsy()
+    expect(branch(t, r, 'shop').dim).toBe(true)
+    expect(branch(t, r, 'admin').dim).toBe(true)
+  })
+
+  it('selecting a different scenario moves the focus', () => {
+    const t = fanout()
+    expect(branch(t, route({ route: 'shop.example.com/' }), 'shop').dim).toBeFalsy()
+    expect(branch(t, route({ route: 'shop.example.com/' }), 'checkout').dim).toBe(true)
+  })
+
+  it('says WHY a sibling is dimmed rather than just greying it', () => {
+    const t = fanout()
+    expect(branch(t, route({ route: 'checkout.example.com/' }), 'shop').sub).toMatch(/not on the selected path/)
+  })
+
+  it('dims the edge into an off-path branch too', () => {
+    const t = fanout()
+    const g = buildGraph({ trace: t, route: route({ route: 'checkout.example.com/' }), origin: pick(t, 'local') })
+    const off = g.edges.find((e) => e.id.includes('shop'))!
+    const on = g.edges.find((e) => e.id.includes('checkout'))!
+    expect(off.mark).toBe('excluded')
+    expect(on.mark).toBe('config')
+  })
+
+  it('dims NOTHING when the scenario matches no branch', () => {
+    // A graph with every branch greyed out says "none of this is relevant",
+    // which is worse than saying nothing.
+    const t = fanout()
+    const g = buildGraph({ trace: t, route: route({ route: 'unknown.example.com/', target: 'nope:80' }), origin: pick(t, 'local') })
+    expect(g.nodes.filter((n) => n.dim)).toHaveLength(0)
+  })
+
+  it('dims nothing when every branch matches', () => {
+    const t = fanout()
+    t.downstream = [routeHop('a', 'x.example.com'), routeHop('b', 'x.example.com')]
+    const g = buildGraph({ trace: t, route: route({ route: 'x.example.com/' }), origin: pick(t, 'local') })
+    expect(g.nodes.filter((n) => n.dim)).toHaveLength(0)
+  })
+
+  it('falls back to the backend NAME when the scenario names no host', () => {
+    const t = fanout()
+    const g = buildGraph({ trace: t, route: route({ route: ':80 -> 8080', target: 'checkout:80' }), origin: pick(t, 'local') })
+    expect(g.nodes.find((n) => n.name === 'checkout')!.dim).toBeFalsy()
+    expect(g.nodes.find((n) => n.name === 'shop')!.dim).toBe(true)
+  })
+})
+
+describe('exception-first collapsing of a wide fan-out', () => {
+  const rh = (name: string, host: string, findings: Trace['downstream'][number]['findings'] = []) => ({
+    resource: { kind: 'HTTPRoute', name, namespace: 'edge' },
+    edge: 'Gateway->HTTPRoute',
+    findings,
+    config: { hostnames: [host] },
+  })
+  const wide = (): Trace => ({
+    subject: { kind: 'Gateway', name: 'gw', namespace: 'edge' },
+    verdict: 'degraded',
+    brokenAt: -1,
+    upstreams: [],
+    downstream: [
+      rh('shop', 'shop.example.com'),
+      rh('checkout', 'checkout.example.com'),
+      rh('account', 'account.example.com'),
+      rh('admin', 'admin.example.com', [{ code: 'x', severity: 'warning', message: 'Not accepted by the parent Gateway' }]),
+      rh('docs', 'docs.example.com'),
+      rh('status', 'status.example.com'),
+      rh('api', 'api.example.com'),
+    ],
+  })
+
+  it('keeps the selected branch and anything with findings; collapses the quiet rest', () => {
+    const g = buildGraph({ trace: wide(), route: route({ route: 'checkout.example.com/' }), origin: pick(wide(), 'local') })
+    const names = g.nodes.map((n) => n.name)
+    expect(names).toContain('checkout') // selected
+    expect(names).toContain('admin') // has a finding
+    expect(names).toContain('5 more routes') // shop, account, docs, status, api
+    expect(names).not.toContain('shop')
+  })
+
+  it('collapses by relevance, never by position', () => {
+    // "api" sorts last but is the selected branch, so it must survive.
+    const g = buildGraph({ trace: wide(), route: route({ route: 'api.example.com/' }), origin: pick(wide(), 'local') })
+    expect(g.nodes.map((n) => n.name)).toContain('api')
+  })
+
+  it('says the collapsed rows are quiet, not truncated', () => {
+    const g = buildGraph({ trace: wide(), route: route({ route: 'checkout.example.com/' }), origin: pick(wide(), 'local') })
+    const more = g.nodes.find((n) => n.id === 'collapsed:backends')!
+    expect(more.sub).toMatch(/nothing found/)
+    expect(g.edges.find((e) => e.id === 'e:subject-collapsed')?.mark).toBe('config')
+  })
+
+  it('does not collapse a fan-out small enough to read whole', () => {
+    const t = wide()
+    t.downstream = t.downstream.slice(0, 3)
+    const g = buildGraph({ trace: t, route: route({ route: 'checkout.example.com/' }), origin: pick(t, 'local') })
+    expect(g.nodes.some((n) => n.id === 'collapsed:backends')).toBe(false)
+    expect(g.nodes.map((n) => n.name)).toContain('shop')
+  })
+
+  it('no node overlaps once collapsed', () => {
+    const g = buildGraph({ trace: wide(), route: route({ route: 'checkout.example.com/' }), origin: pick(wide(), 'local') })
+    for (let i = 0; i < g.nodes.length; i++)
+      for (let j = i + 1; j < g.nodes.length; j++) {
+        const a = g.nodes[i], b = g.nodes[j]
+        const hit = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+        expect(hit).toBe(false)
+      }
+  })
+})

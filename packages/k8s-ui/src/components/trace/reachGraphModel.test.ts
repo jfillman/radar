@@ -559,3 +559,59 @@ describe('publishNotReadyAddresses', () => {
     expect(eps.sub).not.toMatch(/\d+ of \d+ ready/)
   })
 })
+
+// The backend produces a parsed cause + action per hop. The graph consumed them
+// only to pick a dot colour, so the one sentence answering "what is wrong with
+// this hop" sat behind a click.
+describe('hop findings are carried onto the node', () => {
+  const withFindings = (findings: Trace['downstream'][number]['findings']): Trace => ({
+    subject: { kind: 'Service', name: 'checkout', namespace: 'store' },
+    verdict: 'degraded',
+    brokenAt: -1,
+    upstreams: [],
+    downstream: [{ resource: { kind: 'Service', name: 'checkout', namespace: 'store' }, edge: 'entry:Service', findings }],
+  })
+
+  it('prefers the parsed cause, which is written to be short', () => {
+    const t = withFindings([
+      { code: 'svc:port', severity: 'warning', message: 'Service targetPort 80->:3006 matches no port the ready pods declare', cause: 'Service targetPort likely wrong', action: 'Confirm the targetPort' },
+    ])
+    const n = buildGraph({ trace: t, route: route(), origin: pick(t, 'local') }).nodes.find((x) => x.kind === 'SERVICE')!
+    expect(n.notes?.[0].text).toBe('Service targetPort likely wrong')
+    // the long message and the remediation stay for the hover
+    expect(n.notes?.[0].detail).toMatch(/matches no port/)
+    expect(n.notes?.[0].detail).toMatch(/Confirm the targetPort/)
+  })
+
+  it('falls back to the message when no cause was parsed', () => {
+    const t = withFindings([{ code: 'svc:nopods', severity: 'warning', message: 'Selector matches no pods' }])
+    const n = buildGraph({ trace: t, route: route(), origin: pick(t, 'local') }).nodes.find((x) => x.kind === 'SERVICE')!
+    expect(n.notes?.[0].text).toBe('Selector matches no pods')
+  })
+
+  it('leads with the worst severity and collapses the tail', () => {
+    const t = withFindings([
+      { code: 'a', severity: 'info', message: 'info one' },
+      { code: 'b', severity: 'critical', message: 'critical one' },
+      { code: 'c', severity: 'warning', message: 'warning one' },
+    ])
+    const n = buildGraph({ trace: t, route: route(), origin: pick(t, 'local') }).nodes.find((x) => x.kind === 'SERVICE')!
+    expect(n.notes?.[0].text).toBe('critical one')
+    expect(n.notes?.[1].text).toBe('warning one')
+    expect(n.notes?.[2].text).toMatch(/\+1 more/)
+  })
+
+  it('reserves height for wrapped notes, so a node cannot grow into the row below', () => {
+    const long = 'a'.repeat(120)
+    const t = withFindings([{ code: 'x', severity: 'warning', message: long }])
+    const withNote = buildGraph({ trace: t, route: route(), origin: pick(t, 'local') }).nodes.find((x) => x.kind === 'SERVICE')!
+    const bare = buildGraph({ trace: withFindings([]), route: route(), origin: pick(withFindings([]), 'local') }).nodes.find((x) => x.kind === 'SERVICE')!
+    expect(withNote.h).toBeGreaterThan(bare.h + 40)
+  })
+
+  it('a clean hop carries no notes at all', () => {
+    const t = withFindings([])
+    const n = buildGraph({ trace: t, route: route(), origin: pick(t, 'local') }).nodes.find((x) => x.kind === 'SERVICE')!
+    expect(n.notes ?? []).toHaveLength(0)
+  })
+})

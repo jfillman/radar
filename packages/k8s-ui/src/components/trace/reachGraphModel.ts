@@ -42,6 +42,11 @@ export interface GraphNode {
   /** The resource's OWN health. Never the path's truth - that lives on edges. */
   tone: SevTone
   tag?: string
+  /** The hop's OWN findings, headline-first. The graph used to consume these
+   *  only to pick a dot colour, discarding the cause, action and remediation
+   *  the backend had already produced - so the one sentence that answers
+   *  "what is wrong with this hop" was a click away behind a coloured pixel. */
+  notes?: HopNote[]
   anomalies?: { mark: Mark; text: string }[]
   /** Per-endpoint delivery results, rendered as rows inside the node.
    *  A column of pod boxes cost more width than the whole rest of the path and
@@ -54,6 +59,17 @@ export interface GraphNode {
   hop?: Hop
   isOrigin?: boolean
   lane: 'control' | 'data'
+}
+
+export interface HopNote {
+  /** Resource-health severity, NOT a traffic Mark: findings describe the object,
+   *  marks describe what happened to a request. Keeping the two vocabularies
+   *  apart is why the dot and the edge never mean the same thing. */
+  severity: 'critical' | 'warning' | 'info'
+  /** Short headline - the parsed cause when there is one. */
+  text: string
+  /** Everything the row could not fit, for the hover. */
+  detail: string
 }
 
 export interface PodRow {
@@ -117,18 +133,55 @@ function truncate(s: string, n = PILL_MAX_CHARS): string {
 
 /** Estimated rendered height of a node box. The renderer uses fixed type sizes,
  *  so this stays accurate without a measure pass. */
-function estHeight(n: { anomalies?: unknown[]; podRows?: unknown[]; moreRows?: number; isOrigin?: boolean; sub?: string }): number {
+function estHeight(n: {
+  anomalies?: unknown[]
+  notes?: { text: string }[]
+  podRows?: unknown[]
+  moreRows?: number
+  isOrigin?: boolean
+  sub?: string
+}): number {
   const base = n.isOrigin ? 66 : 60
   const anomalies = n.anomalies?.length ?? 0
   const rows = n.podRows?.length ?? 0
   // Long sub-lines wrap; approximate at ~34 characters per line.
   const subLines = Math.max(1, Math.ceil((n.sub?.length ?? 0) / 34))
+  // Notes wrap too, and a wrapped note that the layout did not reserve room for
+  // is exactly how a node grows into the row beneath it.
+  const noteLines = (n.notes ?? []).reduce((sum, x) => sum + Math.max(1, Math.ceil(x.text.length / 26)), 0)
   return (
     base +
     (subLines - 1) * 13 +
+    (noteLines > 0 ? 8 + noteLines * 13 : 0) +
     (anomalies > 0 ? 8 + anomalies * 17 : 0) +
     (rows > 0 ? 8 + rows * 17 + (n.moreRows ? 15 : 0) : 0)
   )
+}
+
+/** Rendered per node before collapsing; the rest stay one click away. */
+const HOP_NOTE_MAX = 2
+
+/**
+ * A hop's findings as node rows: the parsed `cause` when the detector produced
+ * one (it is written to be short), else the raw message. The full text - and the
+ * remediation - stay in the inspector, so the graph carries the headline and
+ * never becomes the place you read paragraphs.
+ */
+function hopNotes(hop?: Hop): HopNote[] {
+  const findings = hop?.findings ?? []
+  if (findings.length === 0) return []
+  const rank = { critical: 0, warning: 1, info: 2 } as const
+  const ordered = [...findings].sort((a, b) => (rank[a.severity] ?? 3) - (rank[b.severity] ?? 3))
+  const notes = ordered.slice(0, HOP_NOTE_MAX).map((f) => ({
+    severity: f.severity,
+    text: f.cause || f.message,
+    detail: [f.message, f.action || f.remediation].filter((x) => !!x && x !== (f.cause || f.message)).join(' — '),
+  }))
+  const hidden = ordered.length - notes.length
+  if (hidden > 0) {
+    notes.push({ severity: ordered[notes.length].severity, text: `+${hidden} more`, detail: 'Select this resource to read the rest.' })
+  }
+  return notes
 }
 
 /** Health from a hop's findings alone - the same rule the topology view uses:
@@ -356,6 +409,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         name: up.resource?.name ?? 'entry',
         sub: active ? hopSub(up) : 'does not serve this host',
         tone: hopTone(up),
+        notes: hopNotes(up),
         // Entries that do not serve the selected host are shown, but dimmed -
         // hiding them would misrepresent what is attached to this resource.
         dim: !active,
@@ -376,6 +430,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       name: `${trace.subject.name}${route?.target ? ` ${route.target}` : ''}`,
       sub: subjectHop ? hopSub(subjectHop) : trace.subject.namespace || '',
       tone: hopTone(subjectHop),
+      notes: hopNotes(subjectHop),
       ref: trace.subject,
       hop: subjectHop,
       lane: 'data',
@@ -393,6 +448,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         name: b.hop.resource?.name ?? '',
         sub: hopSub(b.hop),
         tone: hopTone(b.hop),
+        notes: hopNotes(b.hop),
         ref: b.hop.resource,
         hop: b.hop,
         lane: 'data',
@@ -467,6 +523,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
             : `${selected - ready} not eligible`,
         tone: hopTone(hop),
         hop,
+        notes: hopNotes(hop),
         anomalies: populationAnomalies(roster, total, probes, publishNotReady),
         podRows,
         moreRows: Math.max(0, roster.length - POD_ROW_MAX),

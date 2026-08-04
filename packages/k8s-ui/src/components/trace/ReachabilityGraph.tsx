@@ -3,6 +3,10 @@ import { PILL_MAX_PX, type GraphModel, type GraphNode, type GraphEdge, type Lane
 import { markStyle, glyphStyle, markHelp, SEV_COLOR, MARK_LEGEND, type Mark } from './reachMarks'
 import { Tooltip } from '../ui/Tooltip'
 
+/** Finding severity -> the shared health tones. Findings describe the OBJECT;
+ *  Marks describe what happened to a request. The two vocabularies stay apart. */
+const FINDING_TONE = { critical: 'unhealthy', warning: 'degraded', info: 'info' } as const
+
 /** Upper bound on scale-up. Past this the graph stops reading as a diagram and
  *  starts reading as zoomed-in text. */
 const MAX_SCALE = 1.5
@@ -259,6 +263,26 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
       </div>
       <div className="mt-0.5 truncate font-mono text-[11.5px] font-semibold text-theme-text-primary">{node.name}</div>
       <div className="mt-px text-[10px] leading-[1.35] text-theme-text-tertiary">{node.sub}</div>
+      {/* What is actually WRONG with this hop, on the hop. The backend already
+          produces a parsed cause per finding; the graph previously spent it on a
+          dot colour and made the reader click to learn the rest. Deliberately a
+          headline only - the message, action and remediation stay in the
+          inspector so this never becomes a place you read paragraphs. */}
+      {node.notes && node.notes.length > 0 && (
+        <div className="mt-1.5 flex flex-col gap-0.5 border-t border-theme-border-subtle pt-1.5">
+          {node.notes.map((n, i) => (
+            <Tooltip key={i} content={n.detail || n.text} wrapperClassName="w-full cursor-help">
+              <div className="flex w-full items-start gap-1.5">
+                <span
+                  className="mt-1 inline-block shrink-0 rounded-full"
+                  style={{ width: 6, height: 6, background: SEV_COLOR[FINDING_TONE[n.severity]] }}
+                />
+                <span className="min-w-0 flex-1 text-left text-[9.5px] leading-[1.35] text-theme-text-secondary">{n.text}</span>
+              </div>
+            </Tooltip>
+          ))}
+        </div>
+      )}
       {node.anomalies && node.anomalies.length > 0 && (
         <div className="mt-1.5 flex flex-col gap-0.5 border-t border-theme-border-subtle pt-1.5">
           {node.anomalies.map((a, i) => (

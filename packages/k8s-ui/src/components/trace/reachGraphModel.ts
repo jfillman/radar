@@ -12,7 +12,7 @@ import { podProbeKey } from './podReach'
  */
 // Chains can reach five columns (origin -> Gateway -> Route -> Service -> Pods),
 // so the gutter is tighter than a 3-column layout would allow.
-const GUTTER = 116
+const GUTTER = 98
 const ROW_GAP = 14
 const LANE_PAD = { x: 14, top: 22, bottom: 14 }
 const LANE_GAP = 20
@@ -20,12 +20,12 @@ const LANE_GAP = 20
 export const PILL_MAX_CHARS = 16
 /** Hard cap on a pill's rendered width. MUST stay under GUTTER, or a pill
  *  overruns its gutter and lands on the node beside it. */
-export const PILL_MAX_PX = 104
+export const PILL_MAX_PX = 88
 
 /** Columns are assigned in chain order. Every node belongs to exactly one,
  *  which is what guarantees left-to-right reading order and non-overlap. */
 /** Width per column. The last column (Pods) is wider because it carries rows. */
-const COL_W = { origin: 200, hop: 196, pods: 250 }
+const COL_W = { origin: 172, hop: 180, pods: 216 }
 
 export interface GraphNode {
   id: string

@@ -5,10 +5,11 @@ import { markStyle, glyphStyle, markHelp, SEV_COLOR, MARK_LEGEND, type Mark } fr
 /** Upper bound on scale-up. Past this the graph stops reading as a diagram and
  *  starts reading as zoomed-in text. */
 const MAX_SCALE = 1.5
-/** Lower bound on scale-down. Shrinking a dense graph to fit a narrow column
- *  makes every label illegible, which is a worse outcome than a scrollbar - so
- *  below this the canvas keeps its size and the column scrolls instead. */
-const MIN_SCALE = 0.82
+/** Lower bound on scale-down. The graph's smallest type is 8.5px by design, so
+ *  every point of scale-down comes straight off legibility - at 0.82 it landed
+ *  near 7px. Below this the canvas keeps its size and the column scrolls
+ *  instead, which is the lesser evil. */
+const MIN_SCALE = 0.96
 
 /**
  * Fits the fixed design canvas to whatever width the column actually has.

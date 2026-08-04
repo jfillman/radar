@@ -10,31 +10,23 @@ import { podProbeKey } from './podReach'
  * or a tag runs long. Columns are laid out left to right with a guaranteed
  * gutter wide enough to hold an edge pill without touching either neighbour.
  */
-const GUTTER = 150
+// Chains can reach five columns (origin -> Gateway -> Route -> Service -> Pods),
+// so the gutter is tighter than a 3-column layout would allow.
+const GUTTER = 116
 const ROW_GAP = 14
 const LANE_PAD = { x: 14, top: 22, bottom: 14 }
 const LANE_GAP = 20
 /** Pills are truncated to this many characters so one never outgrows a gutter. */
-export const PILL_MAX_CHARS = 20
+export const PILL_MAX_CHARS = 16
 /** Hard cap on a pill's rendered width. MUST stay under GUTTER, or a pill
  *  overruns its gutter and lands on the node beside it. */
-export const PILL_MAX_PX = 132
+export const PILL_MAX_PX = 104
 
-/** Column order. Every node belongs to exactly one, which is what guarantees
- *  left-to-right reading order and non-overlap. */
-const enum Col {
-  Origin = 0,
-  Relay = 1,
-  Subject = 2,
-  Endpoints = 3,
-}
-
-const COL_WIDTH: Record<number, number> = {
-  [Col.Origin]: 204,
-  [Col.Relay]: 192,
-  [Col.Subject]: 204,
-  [Col.Endpoints]: 264,
-}
+/** Columns are assigned in chain order. Every node belongs to exactly one,
+ *  which is what guarantees left-to-right reading order and non-overlap. */
+const COL_ORIGIN = 0
+/** Width per column. The last column (Pods) is wider because it carries rows. */
+const COL_W = { origin: 200, hop: 196, pods: 250 }
 
 export interface GraphNode {
   id: string
@@ -226,8 +218,9 @@ const SHORT_KIND_TAG: Record<string, string> = {
 }
 
 interface Placed {
-  col: Col
+  col: number
   row: number
+  w: number
   node: Omit<GraphNode, 'x' | 'y' | 'w' | 'h'>
 }
 
@@ -254,18 +247,26 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
 
   const subjectId = refId(trace.subject)
   const downstream = trace.downstream ?? []
-  const subjectHop = downstream.find((h) => refId(h.resource) === subjectId)
   const podsHop = downstream.find(isPodsHop)
   const upstreams = trace.upstreams ?? []
 
-  const entryHop = upstreams[0]
-  const isFront =
-    !!entryHop && !!route?.route && upstreams.some((u) => (u.resource?.name ? route.route.includes(u.resource.name) : false))
+  /**
+   * The chain the user configured, in order. Previously only the subject and
+   * the Pods were drawn, so an HTTPRoute lost both the Gateway it attaches to
+   * and the Service it names as its backend - the two objects you would edit
+   * to fix it. Every hop between the entry and the Pods is a real link in that
+   * chain and gets its own column.
+   */
+  const chain: Hop[] = [
+    ...upstreams,
+    ...downstream.filter((h) => !isPodsHop(h)),
+  ]
 
   // ---- placement ----
   placed.push({
-    col: Col.Origin,
+    col: COL_ORIGIN,
     row: 0,
+    w: COL_W.origin,
     node: {
       id: `origin:${origin.id}`,
       kind: 'TESTED FROM',
@@ -278,43 +279,38 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     },
   })
 
-  // A relay is not a hop. An explicit kube-apiserver node cost a whole column
-  // to repeat what the origin capsule, the dashed proxy edge, the control-plane
-  // lane label and the inspector's caveat already say - so the relay lives on
-  // the edge instead, and the width goes to the path.
-  if (!originIsControl && isFront && entryHop) {
+  const hopSub = (h: Hop): string => {
+    const c = h.config
+    if (c?.clusterIP) return `ClusterIP ${c.clusterIP}`
+    if (c?.addresses?.length) return c.addresses.join(', ')
+    if (c?.hostnames?.length) return c.hostnames.join(', ')
+    if (c?.serviceType) return c.serviceType
+    return h.resource?.namespace ?? ''
+  }
+
+  let col = COL_ORIGIN
+  const chainIds: string[] = []
+  for (const h of chain) {
+    col += 1
+    const id = `n:${refId(h.resource)}`
+    const isSubject = refId(h.resource) === subjectId
+    chainIds.push(id)
     placed.push({
-      col: Col.Relay,
+      col,
       row: 0,
+      w: COL_W.hop,
       node: {
-        id: `n:${refId(entryHop.resource)}`,
-        kind: `${(entryHop.resource?.kind || 'ENTRY').toUpperCase()} · LISTENER`,
-        name: entryHop.resource?.name ?? 'entry',
-        sub: (entryHop.config?.addresses ?? []).join(', ') || (entryHop.config?.hostnames ?? []).join(', ') || 'entry point',
-        tone: hopTone(entryHop),
-        ref: entryHop.resource,
-        hop: entryHop,
+        id,
+        kind: (h.resource?.kind || 'RESOURCE').toUpperCase(),
+        name: `${h.resource?.name ?? ''}${isSubject && route?.target ? ` ${route.target}` : ''}`,
+        sub: hopSub(h),
+        tone: hopTone(h),
+        ref: h.resource,
+        hop: h,
         lane: 'data',
       },
     })
   }
-
-  placed.push({
-    col: Col.Subject,
-    row: 0,
-    node: {
-      id: `n:${subjectId}`,
-      kind: `${(trace.subject.kind || 'SERVICE').toUpperCase()}${route?.target ? ' · PORT' : ''}`,
-      name: `${trace.subject.name}${route?.target ? ` ${route.target}` : ''}`,
-      sub: subjectHop?.config?.clusterIP
-        ? `ClusterIP ${subjectHop.config.clusterIP}`
-        : subjectHop?.config?.serviceType || trace.subject.namespace || '',
-      tone: hopTone(subjectHop),
-      ref: trace.subject,
-      hop: subjectHop,
-      lane: 'data',
-    },
-  })
 
   const roster = podsHop?.config?.pods ?? []
   const total = podsHop?.config?.podTotal ?? roster.length
@@ -338,7 +334,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         // no result about this endpoint's ability to serve. Only true when the
         // Service withholds not-ready addresses.
         mark = 'excluded'
-        detail = 'NotReady — never routed'
+        detail = 'not ready — nothing sent here'
       } else if (failed) {
         // An endpoint's OWN failure outranks any upstream verdict. When the
         // route is unreachable *because* these endpoints refused, they are the
@@ -351,20 +347,21 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         detail = 'not reached — failed earlier'
       } else if (mine.length === 0) {
         mark = 'untested'
-        detail = 'not probed'
+        detail = 'not tested'
       } else {
         const slowest = mine.filter(isSlow).sort((a, b) => (b.latencyNs ?? 0) - (a.latencyNs ?? 0))[0]
         mark = slowest ? 'slow' : 'proved'
         const best = mine.find((x) => x.layer === 'http') ?? mine[0]
         detail = slowest ? `slow · ${formatLatency(slowest.latencyNs)}` : best?.detail || 'reached'
       }
-      if (!p.ready && publishNotReady) detail = `${detail} · NotReady, published anyway`
+      if (!p.ready && publishNotReady) detail = `${detail} · not ready, sent traffic anyway`
       podRows.push({ name: p.name, mark, detail, ref: { kind: 'Pod', name: p.name, namespace: trace.subject.namespace } })
     }
 
     placed.push({
-      col: Col.Endpoints,
+      col: col + 1,
       row: 0,
+      w: COL_W.pods,
       node: {
         id: 'n:endpoints',
         kind: 'PODS',
@@ -392,7 +389,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const colW = new Map<number, number>()
   let x = 0
   for (const c of usedCols) {
-    const w = COL_WIDTH[c] ?? 200
+    const w = Math.max(...placed.filter((p) => p.col === c).map((p) => p.w))
     colW.set(c, w)
     colX.set(c, x)
     x += w + GUTTER
@@ -476,41 +473,37 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   }
 
   const originNodeId = `origin:${origin.id}`
-  // The route outcome is MERGED across origins (RouteResult holds one outcome).
-  // An origin that produced nothing for this scenario must show its own mark,
-  // not another vantage's success - otherwise the dataplane lane renders a
-  // solid "proved" line for a probe that never ran.
   const hasEvidence = originProducedEvidence(origin)
-  const entryMark: Mark = !hasEvidence ? origin.mark : route ? routeMark(route, { stale, running }) : 'untested'
+  const routeMarkNow: Mark = route ? routeMark(route, { stale, running }) : 'untested'
+  // A relay can never read as proof: it bypassed the real network path however
+  // clean the response was.
+  const entryMark: Mark = !hasEvidence
+    ? origin.mark
+    : originIsControl && routeMarkNow === 'proved'
+      ? 'proxied'
+      : routeMarkNow
   const originBlocked = !!origin.unavailable && origin.mark === 'blocked'
   const noEvidenceLabel =
-    origin.mark === 'denied' ? 'not permitted from here' : origin.mark === 'blocked' ? 'not routable from here' : 'not tested from here'
+    origin.mark === 'denied' ? 'not permitted' : origin.mark === 'blocked' ? 'not routable' : 'not tested'
 
-  if (originIsControl) {
-    // A clean relay can never read as `proved`: it bypassed the dataplane.
+  // The first link carries how the request got in; the rest of the chain is
+  // configuration the user wrote (route -> service -> pods), drawn dotted.
+  const firstId = chainIds[0]
+  if (firstId) {
     connect(
       'e:origin-subject',
       originNodeId,
-      `n:${subjectId}`,
-      originBlocked ? 'blocked' : entryMark === 'proved' ? 'proxied' : entryMark,
-      originBlocked ? noEvidenceLabel : !hasEvidence ? noEvidenceLabel : route?.evidence || 'relayed by the apiserver',
+      firstId,
+      originBlocked ? 'blocked' : entryMark,
+      !hasEvidence ? noEvidenceLabel : route?.evidence || (originIsControl ? 'relayed by Kubernetes' : 'request'),
     )
-  } else if (isFront && entryHop) {
-    const entryNodeId = `n:${refId(entryHop.resource)}`
-    connect('e:origin-entry', originNodeId, entryNodeId, entryMark, !hasEvidence ? noEvidenceLabel : route?.evidence || 'entry point')
-    connect('e:entry-subject', entryNodeId, `n:${subjectId}`, entryMark === 'failed' ? 'blocked' : entryMark, route?.target ? `backendRef · ${route.target}` : 'backendRef')
-  } else {
-    connect('e:origin-subject', originNodeId, `n:${subjectId}`, originBlocked ? 'blocked' : entryMark, !hasEvidence ? noEvidenceLabel : route?.evidence || 'request to the Service')
   }
-
-  if (podsHop) {
-    // Membership is control-plane intent - the Service selector plus slice
-    // contents. No packet traverses it, so it is always drawn as config.
-    // Still drawn dotted, because the Service selecting Pods is configuration
-    // rather than a hop - but it is one line between two things the user
-    // configures, not a third box teaching that distinction.
-    connect('e:subject-endpoints', `n:${subjectId}`, 'n:endpoints', 'config', 'selects')
-
+  for (let i = 0; i < chainIds.length - 1; i++) {
+    connect(`e:chain:${i}`, chainIds[i], chainIds[i + 1], 'config', 'routes to')
+  }
+  if (podsHop && chainIds.length > 0) {
+    // Still dotted: the Service selecting Pods is configuration, not a hop.
+    connect('e:subject-endpoints', chainIds[chainIds.length - 1], 'n:endpoints', 'config', 'selects')
   }
 
   // ---- lane boxes: bound only their own nodes ----

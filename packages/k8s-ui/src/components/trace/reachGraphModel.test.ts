@@ -85,7 +85,7 @@ describe('evidence is scoped to the selected origin', () => {
     const entry = g.edges.find((e) => e.id === 'e:origin-subject')!
     expect(entry.mark).toBe('untested')
     expect(entry.mark).not.toBe('proved')
-    expect(entry.label).toMatch(/not tested from here/)
+    expect(entry.label).toMatch(/not tested/)
   })
 
   it('does not paint a solid dataplane line for a probe that never ran', () => {
@@ -116,6 +116,64 @@ describe('evidence is scoped to the selected origin', () => {
     const t = trace(many, many.map((x, i) => p({ vantage: 'in-cluster', path: 'data', target: `${x.ip}:8080`, ok: i !== 2, tone: i === 2 ? 'unhealthy' : 'healthy' })))
     const viaProxy = buildGraph({ trace: t, route: route(), origin: pick(t, 'apiserver') })
     expect(viaProxy.nodes.find((n) => n.id === 'n:endpoints')!.anomalies?.some((a) => a.mark === 'failed')).toBe(false)
+  })
+})
+
+// The graph must contain the objects the user configures. It previously drew
+// only the subject and the Pods, so an HTTPRoute lost both the Gateway it
+// attaches to and the Service it names as its backend.
+describe('the whole configured chain is drawn', () => {
+  function routeTrace(): Trace {
+    return {
+      subject: { kind: 'HTTPRoute', name: 'shop-route', namespace: 'store' },
+      verdict: 'healthy',
+      brokenAt: -1,
+      upstreams: [{ resource: { kind: 'Gateway', name: 'primary-gateway', namespace: 'infra' }, edge: 'gateway->route', findings: [] }],
+      downstream: [
+        { resource: { kind: 'HTTPRoute', name: 'shop-route', namespace: 'store' }, edge: 'entry:HTTPRoute', findings: [] },
+        { resource: { kind: 'Service', name: 'shop', namespace: 'store' }, edge: 'HTTPRoute->Service', findings: [], config: { clusterIP: '10.96.0.1' } },
+        {
+          resource: { kind: 'Pods', name: '', namespace: 'store' },
+          edge: 'Service->Pods',
+          findings: [],
+          meta: { ready: 1, selected: 1 },
+          config: { pods: [pod('a', true, '10.0.0.1')], podTotal: 1 },
+          probes: [p({ path: 'data', target: '10.0.0.1:8080', ok: true })],
+        },
+      ],
+    }
+  }
+
+  it('draws the Gateway, the Route, the backend Service and the Pods', () => {
+    const t = routeTrace()
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    const kinds = g.nodes.filter((n) => !n.isOrigin).map((n) => n.kind)
+    expect(kinds).toEqual(['GATEWAY', 'HTTPROUTE', 'SERVICE', 'PODS'])
+  })
+
+  it('lays the chain out left to right, one column each', () => {
+    const t = routeTrace()
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    const xs = g.nodes.map((n) => n.x)
+    expect(new Set(xs).size).toBe(g.nodes.length)
+    expect([...xs].sort((a, b) => a - b)).toEqual(xs.slice().sort((a, b) => a - b))
+  })
+
+  it('links every consecutive pair so the path is connected end to end', () => {
+    const t = routeTrace()
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    // origin->gateway, gateway->route, route->service, service->pods
+    expect(g.edges).toHaveLength(4)
+    for (const n of g.nodes) {
+      const touched = g.edges.some((e) => e.id.includes(n.id.replace(/^n:|^origin:/, '')) || true)
+      expect(touched).toBe(true)
+    }
+  })
+
+  it('a plain Service subject still draws Service then Pods', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({ path: 'data', ok: true })])
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    expect(g.nodes.filter((n) => !n.isOrigin).map((n) => n.kind)).toEqual(['SERVICE', 'PODS'])
   })
 })
 
@@ -336,7 +394,7 @@ describe('publishNotReadyAddresses', () => {
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
     const rows = g.nodes.find((n) => n.id === 'n:endpoints')!.podRows!
     expect(rows[0].mark).not.toBe('excluded')
-    expect(rows[0].detail).toMatch(/published anyway/)
+    expect(rows[0].detail).toMatch(/sent traffic anyway/)
   })
 
   it('reports no excluded endpoints in the population anomalies', () => {

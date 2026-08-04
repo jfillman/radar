@@ -10,6 +10,8 @@ const MAX_SCALE = 1.5
  *  near 7px. Below this the canvas keeps its size and the column scrolls
  *  instead, which is the lesser evil. */
 const MIN_SCALE = 0.96
+/** Overflow below this is left to the scrollbar - see `clipped` in useFit. */
+const CLIP_HINT_MIN_PX = 48
 
 /**
  * Fits the fixed design canvas to whatever width the column actually has.
@@ -20,7 +22,7 @@ const MIN_SCALE = 0.96
  * column, in both directions: narrow columns shrink it instead of showing a
  * scrollbar, wide ones grow it instead of stranding dead space.
  */
-function useFit(canvasW: number, canvasH: number): [React.RefObject<HTMLDivElement | null>, number, number] {
+function useFit(canvasW: number, canvasH: number): [React.RefObject<HTMLDivElement | null>, number, number, boolean] {
   const ref = useRef<HTMLDivElement | null>(null)
   const [box, setBox] = useState({ w: 0, h: 0 })
   useLayoutEffect(() => {
@@ -38,9 +40,15 @@ function useFit(canvasW: number, canvasH: number): [React.RefObject<HTMLDivEleme
   // leaving the space empty.
   const raw = box.w > 0 && box.h > 0 ? Math.min(box.w / canvasW, box.h / canvasH) : 1
   const scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, raw))
-  // Available height expressed in canvas units, so the dataplane band can be
-  // stretched to fill the pane rather than hugging its content.
-  return [ref, scale, box.h > 0 ? box.h / scale : canvasH]
+  // A chain long enough to hit the floor no longer fits, and the node that runs
+  // off the right is the DESTINATION - the one the whole diagram is about. The
+  // pane scrolls, but a scrollbar alone does not read as "the path continues".
+  //
+  // Only worth saying when a meaningful amount is hidden: the fade itself
+  // obscures content, so firing it for the last few pixels of a node's padding
+  // would hide more than it reveals.
+  const clipped = box.w > 0 && canvasW * scale - box.w > CLIP_HINT_MIN_PX
+  return [ref, scale, box.h > 0 ? box.h / scale : canvasH, clipped]
 }
 
 /**
@@ -62,7 +70,7 @@ export function ReachabilityGraph({
   onSelect: (id: string) => void
 }) {
   const { canvas, laneControl, laneData } = model
-  const [fitRef, scale, availH] = useFit(canvas.w, canvas.h)
+  const [fitRef, scale, availH, clipped] = useFit(canvas.w, canvas.h)
   // A lane is "these nodes", not "this region" - stretching it to the pane left
   // a tall empty box with the path pinned to its top edge. The card fills the
   // height; the graph is optically centred within its column instead.
@@ -82,6 +90,7 @@ export function ReachabilityGraph({
           The scrollbar gutter is reserved for the same reason: a horizontal
           scrollbar appearing here would shrink clientHeight, change the scale,
           and oscillate. */}
+      <div className="relative flex min-h-0 min-w-0 flex-1">
       <div
         ref={fitRef}
         className="flex min-h-0 min-w-0 flex-1 items-center overflow-auto px-2 py-1.5 [scrollbar-gutter:stable]"
@@ -123,6 +132,19 @@ export function ReachabilityGraph({
         </div>
         </div>
         </div>
+      </div>
+      {clipped && (
+        <>
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 right-0 w-10"
+            style={{ background: 'linear-gradient(to right, transparent, var(--bg-base))' }}
+          />
+          <div className="pointer-events-none absolute bottom-1.5 right-2 rounded-full border border-theme-border bg-theme-surface px-1.5 py-0.5 text-[9px] font-semibold text-theme-text-tertiary">
+            scroll for the rest of the path →
+          </div>
+        </>
+      )}
       </div>
       <Legend model={model} />
     </div>

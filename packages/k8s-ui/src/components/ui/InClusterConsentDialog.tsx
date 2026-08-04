@@ -16,6 +16,27 @@ interface InClusterConsentDialogProps {
   onConfirm: () => void
 }
 
+/**
+ * The fact block the operator confirms against. It is the last screen before
+ * real pod-to-pod traffic, so it must name the request being sent - it used to
+ * show only where the Job would land.
+ *
+ * The path count is stated rather than implied because the view offers a path
+ * picker that the run does not honour: one run probes every declared path.
+ */
+export function inClusterConsentDetails(o: { cluster?: string; namespace: string; httpPath?: string; pathCount?: number }): string {
+  return [
+    o.cluster ? `Cluster:   ${o.cluster}` : '',
+    `Namespace: ${o.namespace}`,
+    `Request:   GET ${o.httpPath || '/'}`,
+    typeof o.pathCount === 'number' && o.pathCount > 0
+      ? `Covers:    all ${o.pathCount} declared path${o.pathCount === 1 ? '' : 's'} on this resource`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 // Confirms the mutating in-cluster reachability test before it spawns a Job/pod,
 // naming the cluster it lands in. Permission is enforced upstream (the button only
 // renders when the capability SSAR allows), so this is a safety confirm, not authz.
@@ -40,18 +61,7 @@ export function InClusterConsentDialog({ open, cluster, namespace, httpPath, pat
       onConfirm={handleConfirm}
       title="Run in-cluster reachability test?"
       message="This creates a short-lived, self-deleting Job that sends real pod-to-pod traffic from inside the cluster, running as your own RBAC."
-      details={[
-        cluster ? `Cluster:   ${cluster}` : '',
-        `Namespace: ${namespace}`,
-        `Request:   GET ${httpPath || '/'}`,
-        // The view lets you select one path; the run does not honour that
-        // selection, so the count has to be stated rather than implied.
-        typeof pathCount === 'number' && pathCount > 0
-          ? `Covers:    all ${pathCount} declared path${pathCount === 1 ? '' : 's'} on this resource`
-          : '',
-      ]
-        .filter(Boolean)
-        .join('\n')}
+      details={inClusterConsentDetails({ cluster, namespace, httpPath, pathCount })}
       confirmLabel="Run test"
       cancelLabel="Cancel"
       variant="warning"

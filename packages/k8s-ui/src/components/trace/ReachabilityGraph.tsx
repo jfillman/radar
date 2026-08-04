@@ -138,7 +138,12 @@ export function ReachabilityGraph({
           <div
             aria-hidden
             className="pointer-events-none absolute inset-y-0 right-0 w-10"
-            style={{ background: 'linear-gradient(to right, transparent, var(--bg-base))' }}
+            // Not `transparent`: it interpolates through transparent BLACK, which
+            // smears grey across a light background. Fade the surface to itself.
+            style={{
+              background:
+                'linear-gradient(to right, color-mix(in srgb, var(--bg-base) 0%, transparent), var(--bg-base))',
+            }}
           />
           <div className="pointer-events-none absolute bottom-1.5 right-2 rounded-full border border-theme-border bg-theme-surface px-1.5 py-0.5 text-[9px] font-semibold text-theme-text-tertiary">
             scroll for the rest of the path →

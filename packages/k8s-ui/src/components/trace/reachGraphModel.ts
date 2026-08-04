@@ -83,6 +83,9 @@ export interface LaneBox {
   w: number
   h: number
   label: string
+  /** Hover text. The band label is the most prominent word in the graph and had
+   *  no explanation anywhere. */
+  help: string
   /** Lane tint + label colour. */
   color: string
   dashed?: boolean
@@ -547,16 +550,27 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   for (const g of podGroups) connect(`e:${g.id}`, g.parentId, g.id, 'config', 'selects')
 
   // ---- lane boxes: bound only their own nodes ----
-  const boxFor = (list: GraphNode[], label: string, color: string, dashed?: boolean): LaneBox | undefined => {
+  const boxFor = (list: GraphNode[], label: string, help: string, color: string, dashed?: boolean): LaneBox | undefined => {
     if (list.length === 0) return undefined
     const x0 = Math.min(...list.map((n) => n.x)) - LANE_PAD.x
     const x1 = Math.max(...list.map((n) => n.x + n.w)) + LANE_PAD.x
     const y0 = Math.min(...list.map((n) => n.y)) - LANE_PAD.top
     const y1 = Math.max(...list.map((n) => n.y + n.h)) + LANE_PAD.bottom
-    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, label, color, dashed }
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, label, help, color, dashed }
   }
-  const laneControl = boxFor(nodes.filter((n) => n.lane === 'control'), 'NOT REAL TRAFFIC', 'var(--color-info)', true)
-  const laneData = boxFor(nodes.filter((n) => n.lane === 'data'), 'REAL TRAFFIC', 'var(--accent-text)')
+  const laneControl = boxFor(
+    nodes.filter((n) => n.lane === 'control'),
+    'SKIPS THE CLUSTER NETWORK',
+    'These tests reach the target without going through the cluster’s own routing, network policy or service mesh — so a success here cannot prove those are working.',
+    'var(--color-info)',
+    true,
+  )
+  const laneData = boxFor(
+    nodes.filter((n) => n.lane === 'data'),
+    'THROUGH THE CLUSTER NETWORK',
+    'These tests take the same route your users’ traffic does — through the cluster’s routing, network policy and service mesh.',
+    'var(--accent-text)',
+  )
 
   // A cross-lane edge's midpoint lands on the dataplane lane's top edge, which
   // is exactly where the lane label sits. Park those pills in the gap between

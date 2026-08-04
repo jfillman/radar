@@ -147,7 +147,8 @@ function Lane({ box }: { box: LaneBox }) {
           far narrower than its label, and as a child the label was clipped by
           the box. */}
       <span
-        className="absolute whitespace-nowrap px-1.5 text-[9px] font-bold tracking-[0.06em] bg-theme-base"
+        title={box.help}
+        className="absolute cursor-help whitespace-nowrap px-1.5 text-[9px] font-bold tracking-[0.06em] bg-theme-base"
         style={{ left: box.x + 12, top: box.y - 8, color: box.color, zIndex: 4 }}
       >
         {box.label}

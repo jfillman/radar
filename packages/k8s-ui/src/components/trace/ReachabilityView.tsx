@@ -195,13 +195,13 @@ function ReachabilityBoard(props: BoardProps) {
             the result from it" - and, for an unusable vantage, replaced a
             working graph with a blocked one. The origin's own detail is still
             one click away on its capsule in the graph. */}
-        <div className="min-h-0 overflow-y-auto border-r border-theme-border">
+        <div className="min-h-0 overflow-y-auto border-r border-theme-border [scrollbar-gutter:stable]">
           <OriginRail origins={origins} active={origin?.id} onPick={(id) => { setOriginId(id); setSelection(undefined) }} />
         </div>
         <div className="min-h-0 min-w-0">
           <ReachabilityGraph model={model} selected={selection} onSelect={setSelection} />
         </div>
-        <div className="col-span-2 min-h-0 overflow-y-auto border-t border-theme-border xl:col-span-1 xl:border-t-0">
+        <div className="col-span-2 min-h-0 overflow-y-auto border-t border-theme-border xl:col-span-1 xl:border-t-0 [scrollbar-gutter:stable]">
           <InspectorPanel sidebar={sidebar} onCTA={onCTA} onOpen={(r) => onNavigateToResource?.(r)} />
         </div>
       </div>

@@ -76,10 +76,14 @@ export function ReachabilityGraph({
           No minHeight on the measured element: the ResizeObserver watches it,
           so sizing it from a scale derived from its own height was a feedback
           loop that ratcheted the graph up to the cap. flex-1 inside a
-          full-height column already gives it a definite height. */}
+          full-height column already gives it a definite height.
+
+          The scrollbar gutter is reserved for the same reason: a horizontal
+          scrollbar appearing here would shrink clientHeight, change the scale,
+          and oscillate. */}
       <div
         ref={fitRef}
-        className="flex min-h-0 min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden px-2 py-1.5"
+        className="flex min-h-0 min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden px-2 py-1.5 [scrollbar-gutter:stable]"
       >
         <div className="relative shrink-0" style={{ width: canvas.w * scale, height: canvas.h * scale }}>
         <div

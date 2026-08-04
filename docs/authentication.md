@@ -103,6 +103,31 @@ auth:
 
 **Scopes:** by default Radar requests `openid profile email groups` at the authorization endpoint. The `groups` scope is required by Dex, Keycloak, and most IdPs to actually include the groups claim in the ID token. If your IdP rejects unknown scopes (Google in particular doesn't define `groups`), override via `auth.oidc.scopes` / `--auth-oidc-scopes` to drop it or substitute the provider-specific equivalent.
 
+**Split public/internal provider URLs:** Kubernetes deployments sometimes need the browser to use the canonical issuer URL while the Radar pod talks to the IdP through service DNS. Keep `issuerURL` set to the canonical browser-facing issuer; Radar still validates the token `iss` claim against that value. Set `internalIssuerURL` when the internal endpoint has the same path layout, and Radar will fetch discovery internally while deriving server-side token, userinfo, and JWKS URLs from the internal base:
+
+```yaml
+auth:
+  mode: oidc
+  oidc:
+    issuerURL: http://authentik.example.com/application/o/radar/
+    internalIssuerURL: http://authentik-server.authentik.svc.cluster.local/application/o/radar/
+    clientID: radar
+    redirectURL: https://radar.example.com/auth/callback
+```
+
+If the endpoints cannot be derived from the two issuer bases, override them explicitly. `authorizationURL` is browser-facing; `tokenURL`, `userInfoURL`, and `jwksURL` are server-side URLs used by the Radar process:
+
+```yaml
+auth:
+  mode: oidc
+  oidc:
+    issuerURL: http://authentik.example.com/application/o/radar/
+    authorizationURL: http://authentik.example.com/application/o/radar/authorize/
+    tokenURL: http://authentik-server.authentik.svc.cluster.local/application/o/radar/token/
+    userInfoURL: http://authentik-server.authentik.svc.cluster.local/application/o/radar/userinfo/
+    jwksURL: http://authentik-server.authentik.svc.cluster.local/application/o/radar/jwks/
+```
+
 **Logout behavior:**
 
 When a user clicks logout, Radar clears the local session cookie and — if the identity provider supports it — redirects the browser to the provider's logout endpoint ([RP-Initiated Logout](https://openid.net/specs/openid-connect-rpinitiated-1_0.html)) to terminate the SSO session as well. This prevents the common issue where the user appears to log out but is silently re-authenticated on the next visit.
@@ -186,10 +211,13 @@ If you see `RADAR_CLOUD_MODE` or `cloud.*` values in the chart, they control a s
 Under cloud-mode (`RADAR_CLOUD_MODE=true`, set automatically by the chart when `cloud.enabled=true`), Radar:
 
 - Forces `--auth-mode=proxy` with pinned `X-Forwarded-User` / `X-Forwarded-Groups` headers. Radar accepts those headers only on requests marked in-process by its authenticated Cloud tunnel; the ordinary pod TCP listener cannot assert Cloud identity.
-- Ships three default ClusterRoleBindings mapping Cloud's `cloud:owner` / `cloud:member` / `cloud:viewer` groups to the standard K8s `admin` / `edit` / `view` ClusterRoles. Configurable via `cloud.defaultRbac.*` in `values.yaml`.
+- Ships three default ClusterRoleBindings mapping Cloud's `radar:owner` / `radar:member` / `radar:viewer` groups (canonical; the legacy `cloud:*` equivalents are still emitted and bound during the deprecation window) to the standard K8s `admin` / `edit` / `view` ClusterRoles. Configurable via `cloud.defaultRbac.*` in `values.yaml`.
+- Adds a **cluster-read add-on** (`cloud.defaultRbac.clusterScopedRead.{viewer,member,owner}`, each default on) granting `get/list/watch` on the cluster-scoped infra the built-in `view`/`edit`/`admin` roles exclude — Nodes, PersistentVolumes, StorageClasses, IngressClasses, PriorityClasses, RuntimeClasses, CRDs, and admission webhook configurations. When the matching collection is enabled, it also grants APIServices, PrometheusRules, Karpenter kinds, and node metrics. It does not grant Secrets, RBAC objects, API-server metrics, or kubelet proxy access. It's an independent axis per tier: set a tier `false` to make it namespaced-only (e.g. `clusterScopedRead.viewer: false`). Owner node cordon/drain is a separate cluster-scoped *write*, off by default (`cloud.defaultRbac.nodeOps`).
 - Restricts the ordinary pod/ClusterIP TCP listener to `/api/health`; the full handler is served only over yamux streams from the outbound Cloud tunnel. Cloud mode also omits `/debug/pprof/*` and narrows auth exemptions to health only.
 
 <a id="cloud-mode-helm-bindings"></a>
+**Optional Upgrade impact metrics evidence.** The default Cloud bindings deliberately omit the broader API server `/metrics` endpoint and kubelet `nodes/proxy` access. Upgrade impact reports checks that depend on those sources as **Incomplete**. To enable deprecated-API request evidence for a tier, bind a separate ClusterRole granting `get` on `nonResourceURLs: ["/metrics"]` to its canonical `radar:viewer`, `radar:member`, or `radar:owner` group. Keep this opt-in separate from the default cluster-read role so operators can make the broader disclosure decision explicitly.
+
 **Helm-specific bindings (when `rbac.helm=true`).** Helm's pre-flight existence check needs cluster-scoped reads/writes that the K8s built-in `admin`/`edit`/`view` ClusterRoles don't grant. The chart emits two add-on ClusterRoles, split by trust tier:
 
 - `radar-helm` — CRDs, StorageClasses, RuntimeClasses, PriorityClasses, PodDisruptionBudgets, Namespaces. Bound to `cloud:owner` AND `cloud:member`.
@@ -406,6 +434,11 @@ Radar uses stateless HMAC-SHA256 signed cookies for sessions. The cookie contain
 | Groups header (proxy) | `--auth-groups-header` | `auth.proxy.groupsHeader` | `X-Forwarded-Groups` |
 | Proxy logout URL (proxy) | `--auth-proxy-logout-url` | `auth.proxy.logoutURL` | — |
 | OIDC issuer | `--auth-oidc-issuer` | `auth.oidc.issuerURL` | — |
+| OIDC internal issuer | `--auth-oidc-internal-issuer` | `auth.oidc.internalIssuerURL` | — |
+| OIDC authorization URL | `--auth-oidc-authorization-url` | `auth.oidc.authorizationURL` | — |
+| OIDC token URL | `--auth-oidc-token-url` | `auth.oidc.tokenURL` | — |
+| OIDC userinfo URL | `--auth-oidc-userinfo-url` | `auth.oidc.userInfoURL` | — |
+| OIDC JWKS URL | `--auth-oidc-jwks-url` | `auth.oidc.jwksURL` | — |
 | OIDC client ID | `--auth-oidc-client-id` | `auth.oidc.clientID` | — |
 | OIDC client secret | `--auth-oidc-client-secret` | `auth.oidc.clientSecret` | — |
 | OIDC client secret (K8s Secret) | — | `auth.oidc.existingSecret` | — |

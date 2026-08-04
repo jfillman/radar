@@ -165,9 +165,18 @@ func (s *Server) invalidatePostContextSwitchCaches() {
 	if s.rbacMemo != nil {
 		s.rbacMemo.Invalidate()
 	}
+	if s.capacityIssueMemo != nil {
+		s.capacityIssueMemo.clear()
+	}
 	k8s.InvalidateUserCapabilitiesCache()
 	clearPackagesCache()
 	clearApplicationsCache()
+	s.yamlSchemaMu.Lock()
+	clear(s.yamlSchemaCache)
+	clear(s.yamlSchemaPathCache)
+	clear(s.yamlSchemaBundleCache)
+	s.yamlSchemaCacheBytes = 0
+	s.yamlSchemaMu.Unlock()
 	s.vitalsMetrics.clear()
 	gitopstree.ResetUnknownKindLogDedup()
 }

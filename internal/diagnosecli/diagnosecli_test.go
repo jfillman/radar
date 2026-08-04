@@ -1,7 +1,9 @@
 package diagnosecli
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -112,5 +114,46 @@ func TestInterleavedFlagParsing(t *testing.T) {
 	}
 	if o.namespace != "prod" || !o.jsonOut {
 		t.Fatalf("flags not parsed: ns=%q json=%v", o.namespace, o.jsonOut)
+	}
+}
+
+func TestExecutionProfile(t *testing.T) {
+	cases := []struct {
+		agent, requested string
+		want             string
+		wantErr          bool
+	}{
+		{"codex", "", "safeguarded", false},
+		{"codex", "full-local", "full-local", false},
+		{"claude", "full-local", "full-local", false},
+		{"cursor-agent", "", "full-local", false},
+		{"", "", "", true},
+	}
+	for _, tc := range cases {
+		got, err := executionProfile(tc.agent, tc.requested)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("executionProfile(%q, %q) succeeded, want error", tc.agent, tc.requested)
+			}
+			continue
+		}
+		if err != nil || string(got) != tc.want {
+			t.Errorf("executionProfile(%q, %q) = %q, %v; want %q", tc.agent, tc.requested, got, err, tc.want)
+		}
+	}
+}
+
+func TestStandaloneEffectiveAgentHonorsCLIOverride(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "cursor-agent-custom")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RADAR_AI_CLI_BIN", bin)
+
+	if got := standaloneEffectiveAgent(context.Background(), ""); got != "cursor-agent" {
+		t.Fatalf("standaloneEffectiveAgent() = %q, want cursor-agent", got)
+	}
+	if got := standaloneEffectiveAgent(context.Background(), "codex"); got != "cursor-agent" {
+		t.Fatalf("unsupported explicit pick should fall back to the override, got %q", got)
 	}
 }

@@ -1,4 +1,6 @@
-export { Tooltip } from './Tooltip'
+export { Tooltip, WithTooltip } from './Tooltip'
+export { Badge } from './Badge'
+export type { BadgeSeverity, BadgeSize, BadgeTone } from './Badge'
 export { FreshnessControl } from './FreshnessControl'
 export type { FreshnessMode, FreshnessConnection } from './FreshnessControl'
 export { PaneLoader } from './PaneLoader'
@@ -29,6 +31,15 @@ export { InClusterConsentDialog } from './InClusterConsentDialog'
 export { ToastProvider, useToast, showApiError, showApiSuccess } from './Toast'
 export { CodeViewer } from './CodeViewer'
 export { YamlEditor, YamlDiffEditor } from './YamlEditor'
+export type {
+  YamlDiagnostic,
+  YamlDocumentIdentity,
+  YamlEditorProps,
+  YamlSchemaLoader,
+  YamlSchemaLoadResult,
+} from './YamlEditor'
+export { YamlReview } from './YamlReview'
+export type { YamlPreviewResult, YamlReviewProps } from './YamlReview'
 export { RowActionMenu } from './RowActionMenu'
 export type { RowActionItem } from './RowActionMenu'
 

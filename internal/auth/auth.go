@@ -32,16 +32,18 @@ const ErrCodeCloudRoleInsufficient = pkgauth.ErrCodeCloudRoleInsufficient
 
 // Re-export functions from pkg/auth
 var (
-	UserFromContext         = pkgauth.UserFromContext
-	ContextWithUser         = pkgauth.ContextWithUser
-	NewPermissionCache      = pkgauth.NewPermissionCache
-	DiscoverNamespaces      = pkgauth.DiscoverNamespaces
-	SubjectCanI             = pkgauth.SubjectCanI
-	FilterNamespacesForUser = pkgauth.FilterNamespacesForUser
-	NewSessionID            = pkgauth.NewSessionID
-	CreateSessionCookie     = pkgauth.CreateSessionCookie
-	ParseSessionCookie      = pkgauth.ParseSessionCookie
-	ClearSessionCookie      = pkgauth.ClearSessionCookie
-	CloudRoleFromGroups     = pkgauth.CloudRoleFromGroups
-	CloudRoleFromContext    = pkgauth.CloudRoleFromContext
+	UserFromContext          = pkgauth.UserFromContext
+	ContextWithUser          = pkgauth.ContextWithUser
+	NewPermissionCache       = pkgauth.NewPermissionCache
+	DiscoverNamespaces       = pkgauth.DiscoverNamespaces
+	SubjectCanI              = pkgauth.SubjectCanI
+	SubjectCanISubresource   = pkgauth.SubjectCanISubresource
+	FilterNamespacesForUser  = pkgauth.FilterNamespacesForUser
+	NewSessionID             = pkgauth.NewSessionID
+	CreateSessionCookie      = pkgauth.CreateSessionCookie
+	ParseSessionCookie       = pkgauth.ParseSessionCookie
+	ClearSessionCookie       = pkgauth.ClearSessionCookie
+	CloudRoleFromGroups      = pkgauth.CloudRoleFromGroups
+	CloudRoleFromContext     = pkgauth.CloudRoleFromContext
+	ForwardedIdentityAllowed = pkgauth.ForwardedIdentityAllowed
 )

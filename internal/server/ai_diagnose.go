@@ -16,6 +16,7 @@ import (
 	"github.com/skyhook-io/radar/internal/ai"
 	"github.com/skyhook-io/radar/internal/config"
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/pkg/checks"
 	"github.com/skyhook-io/radar/pkg/resourcecontext"
 )
 
@@ -36,12 +37,12 @@ func (s *Server) detectManagedBy(ctx context.Context, kind, namespace, name stri
 	return managedByFromMeta(obj)
 }
 
-func (s *Server) detectDiagnoseHealth(ctx context.Context, kind, namespace, name string) *ai.ResourceHealthSignal {
+func (s *Server) detectDiagnoseHealth(r *http.Request, kind, namespace, name string) *ai.ResourceHealthSignal {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
 		return nil
 	}
-	obj, err := cache.GetDynamic(ctx, kind, namespace, name)
+	obj, err := cache.GetDynamic(r.Context(), kind, namespace, name)
 	if err != nil || obj == nil {
 		return nil
 	}
@@ -50,7 +51,7 @@ func (s *Server) detectDiagnoseHealth(ctx context.Context, kind, namespace, name
 	if canonicalKind == "" {
 		canonicalKind = kind
 	}
-	issueSum, issueRows := computeIssueSummaryAndRows(cache, gvk.Group, canonicalKind, namespace, name)
+	issueSum, issueRows := computeIssueSummaryAndRows(cache, s.issueClusterScopedAccess(r), s.issueRelatedResourceAccess(r), gvk.Group, canonicalKind, namespace, name)
 	auditSum, auditRows := computeAuditSummaryAndRows(cache, gvk.Group, canonicalKind, namespace, name)
 
 	var issueCount int
@@ -77,7 +78,7 @@ func (s *Server) detectDiagnoseHealth(ctx context.Context, kind, namespace, name
 		signal.TopFinding = auditSum.TopFinding
 		for _, row := range auditRows[:min(len(auditRows), maxHealthAuditLines)] {
 			signal.AuditFindings = append(signal.AuditFindings, ai.HealthLine{
-				Severity: normalizeAuditSeverity(row.Severity),
+				Severity: string(checks.MapSeverity(row.Severity)),
 				Reason:   row.CheckID,
 				Message:  capHealthMessage(row.Message),
 			})
@@ -123,28 +124,67 @@ func managedByFromMeta(obj *unstructured.Unstructured) string {
 // truth with the CLI). Machine-scoped (~/.radar/config.json): one
 // acknowledgment covers the web panel and the CLI.
 func currentConsents() map[string]bool {
-	return map[string]bool{
-		"standard": config.AIConsentGiven("standard"),
-		"cursor":   config.AIConsentGiven("cursor"),
+	consents := make(map[string]bool)
+	for _, surface := range ai.AllConsentSurfaces() {
+		consents[surface] = config.AIConsentGiven(surface)
 	}
+	return consents
 }
 
-// handleListAgents reports the local agent CLIs detected on PATH, for the OSS
-// "AI Agent" picker. Safe: only fixed known names are probed (see ai.DetectAgents).
+// handleListAgents reports local agent CLIs for the OSS "AI Agent" picker.
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	// Version probing is slow (execs `<cli> --version`); only do it when asked
 	// (e.g. a settings/picker view) so the Diagnose button's check stays instant.
 	withVersions := r.URL.Query().Get("versions") == "1"
+	var agents []ai.AgentInfo
+	if s.aiDiagnoser != nil {
+		// The initialized Diagnoser is authoritative when an explicit CLI override
+		// narrows the backend set or points at a binary outside PATH.
+		agents = ai.DetectAgents(r.Context(), false)
+		agents = mergeDetectedWithDrivable(agents, s.aiDiagnoser.AgentInfos(r.Context(), withVersions))
+	} else {
+		agents = ai.DetectAgents(r.Context(), withVersions)
+	}
+	// eligible: this run mode supports local BYO-agent diagnosis (no proxy/OIDC
+	// auth, /mcp mounted) — the SAME gate the boot-time engine init uses. It's true
+	// even when no agent is installed, so the UI can distinguish "install an agent
+	// to enable this" (eligible && !enabled) from "not available in this deployment"
+	// (auth/cloud/--no-mcp), where nudging an install wouldn't help.
+	eligible := !s.authConfig.Enabled() && s.mcpHandler != nil
 	s.writeJSON(w, map[string]any{
-		"agents":    ai.DetectAgents(r.Context(), withVersions),
+		"agents":    agents,
 		"enabled":   s.aiRuns != nil,
+		"eligible":  eligible,
 		"consented": currentConsents(),
 	})
 }
 
+func mergeDetectedWithDrivable(detected, drivable []ai.AgentInfo) []ai.AgentInfo {
+	byName := make(map[string]ai.AgentInfo, len(drivable))
+	for _, info := range drivable {
+		byName[info.Name] = info
+	}
+	seen := make(map[string]bool, len(detected))
+	for i := range detected {
+		seen[detected[i].Name] = true
+		if actual, ok := byName[detected[i].Name]; ok {
+			detected[i] = actual
+		} else {
+			detected[i].Supported = false
+			detected[i].Profiles = nil
+			detected[i].ConsentSurfaces = nil
+		}
+	}
+	for _, actual := range drivable {
+		if !seen[actual.Name] {
+			detected = append(detected, actual)
+		}
+	}
+	return detected
+}
+
 // handleDiagnoseConsent records the user's acknowledgment of the current
-// disclosure for a surface ("standard" = Claude/Codex, "cursor" = Cursor's
-// distinct trust model). Doesn't require a connected cluster — consent can be
+// disclosure for an execution profile. Doesn't require a connected cluster — consent can be
 // given while Radar is still connecting.
 func (s *Server) handleDiagnoseConsent(w http.ResponseWriter, r *http.Request) {
 	if !localOriginOK(r) {
@@ -163,7 +203,7 @@ func (s *Server) handleDiagnoseConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if config.AIConsentVersion(body.Surface) == "" {
-		s.writeError(w, http.StatusBadRequest, "surface must be \"standard\" or \"cursor\"")
+		s.writeError(w, http.StatusBadRequest, "unknown AI consent surface")
 		return
 	}
 	if err := config.RecordAIConsent(body.Surface); err != nil {
@@ -178,7 +218,7 @@ func (s *Server) handleDiagnoseConsent(w http.ResponseWriter, r *http.Request) {
 // writes the error) when unavailable.
 func (s *Server) aiReady(w http.ResponseWriter) bool {
 	if s.aiRuns == nil {
-		s.writeError(w, http.StatusNotImplemented, "no agent CLI available — install Claude Code or Codex to enable AI diagnosis")
+		s.writeError(w, http.StatusNotImplemented, "no agent CLI available — install Claude Code, Codex, or Cursor (cursor-agent) to enable AI diagnosis")
 		return false
 	}
 	return s.requireConnected(w)
@@ -227,7 +267,7 @@ func (s *Server) handleDiagnoseStart(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Kind, Namespace, Name string
 		Agent                 string `json:"agent"`
-		Isolated              *bool  `json:"isolated"` // pointer: default ISOLATED when omitted
+		Profile               string `json:"profile"`
 		Model                 string `json:"model"`
 		Effort                string `json:"effort"`
 	}
@@ -249,15 +289,22 @@ func (s *Server) handleDiagnoseStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	agent := s.aiRuns.AgentName(strings.TrimSpace(body.Agent))
-	// The server owns the consent store, so it enforces it: spawning an agent
-	// and shipping cluster data to a model provider must not depend on client
-	// code remembering to check. Surface derives from the RESOLVED agent (an
-	// unknown name falls back to the default, never across trust surfaces).
-	if !config.AIConsentGiven(ai.ConsentSurfaceFor(agent)) {
-		s.writeError(w, http.StatusForbidden, "AI disclosure not acknowledged for this agent — approve the consent prompt first")
+	profile := ai.ExecutionProfile(strings.TrimSpace(body.Profile))
+	if profile == "" {
+		profile = ai.DefaultProfileFor(agent)
+	}
+	if !ai.SupportsProfile(agent, profile) {
+		s.writeError(w, http.StatusBadRequest, "selected execution profile is not available for this agent")
 		return
 	}
-	isolated := body.Isolated == nil || *body.Isolated
+	// The server owns the consent store, so it enforces it: spawning an agent
+	// and shipping cluster data to a model provider must not depend on client
+	// code remembering to check. Surface derives from the effective agent and
+	// profile because their disclosures can differ.
+	if !config.AIConsentGiven(ai.ConsentSurfaceFor(agent, profile)) {
+		s.writeError(w, http.StatusForbidden, "AI disclosure not acknowledged for this execution profile — approve the consent prompt first")
+		return
+	}
 	model := strings.TrimSpace(body.Model)
 	if len(model) > 100 {
 		s.writeError(w, http.StatusBadRequest, "model name too long")
@@ -272,8 +319,8 @@ func (s *Server) handleDiagnoseStart(w http.ResponseWriter, r *http.Request) {
 	// the Apply confirmation can warn that a direct change will be reverted — rather
 	// than relying on the agent to self-report it. Best effort: "" (unknown) on miss.
 	managedBy := s.detectManagedBy(r.Context(), kind, namespace, name)
-	health := s.detectDiagnoseHealth(r.Context(), kind, namespace, name)
-	run, err := s.aiRuns.Start(kind, namespace, name, agent, isolated, model, effort, managedBy, health)
+	health := s.detectDiagnoseHealth(r, kind, namespace, name)
+	run, err := s.aiRuns.Start(kind, namespace, name, agent, profile, model, effort, managedBy, health)
 	if err != nil {
 		if errors.Is(err, ai.ErrAtCapacity) {
 			s.writeError(w, http.StatusConflict, "too many investigations running — stop or finish one first")

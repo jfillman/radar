@@ -1,3 +1,5 @@
+import type { CapacityIntegrationState } from './capacity'
+
 // Topology types matching the Go backend
 
 // Per-resource-type RBAC permissions. Field names must match the JSON keys
@@ -57,6 +59,12 @@ export interface WorkloadWritePermissions {
   rollouts: boolean
 }
 
+export interface IntegrationCapability {
+  state: CapacityIntegrationState
+  reasonCode?: string
+  cacheUnavailable?: boolean
+}
+
 // Feature capabilities based on RBAC permissions
 export interface Capabilities {
   exec: boolean           // Terminal feature (pods/exec)
@@ -69,14 +77,26 @@ export interface Capabilities {
   nodeWrite: boolean      // Node write operations (cordon, uncordon, drain)
   workloadWrites?: WorkloadWritePermissions // Workload patch permissions (restart/scale controls)
   mcpEnabled: boolean     // MCP server is running
+  // Karpenter discovery and NodePool read state. Optional on the wire for the
+  // same newer-frontend/older-backend reason as `deployment` below — consumers
+  // must treat absence as "unknown" and fall back to discovery signals.
+  karpenter?: IntegrationCapability
   // How / where this Radar binary is running. Optional on the wire so a
   // newer frontend (e.g. radar-hub-web bundling a fresher @skyhook-io/radar-app)
   // doesn't crash against an older backend that hasn't shipped the field yet —
   // consumers should default to { mode: 'local' } when absent.
   deployment?: Deployment
+  // Optional because Radar Hub can embed a newer frontend against an older
+  // in-cluster Radar agent. Features require an explicit server advertisement.
+  features?: FeatureCapabilities
   resources?: ResourcePermissions // Per-resource-type permissions
   authEnabled?: boolean   // Auth is enabled on the backend
   username?: string       // Authenticated user's username (when auth enabled)
+}
+
+export interface FeatureCapabilities {
+  yamlReview?: boolean
+  yamlSchemas?: boolean
 }
 
 // DeploymentMode is the closed set of topologies Radar can run in.
@@ -461,6 +481,62 @@ export interface ResolvedEnvFromEntry {
 }
 export type ResolvedEnvFromKey = `configmap:${string}` | `secret:${string}`
 export type ResolvedEnvFrom = Partial<Record<ResolvedEnvFromKey, ResolvedEnvFromEntry>>
+
+export type PodEnvironmentValueState = 'resolved' | 'masked' | 'unavailable' | 'missing' | 'denied'
+
+export interface PodEnvironmentSource {
+  kind: string
+  name?: string
+  key?: string
+  variable?: string
+}
+
+export interface PodEnvironmentEvidence {
+  kind: 'modified' | 'removed' | 'added'
+  changedAt: string
+  message?: string
+}
+
+export interface PodEnvironmentRow {
+  name: string
+  value?: string
+  state: PodEnvironmentValueState
+  sensitive?: boolean
+  source: PodEnvironmentSource
+  dependencies?: PodEnvironmentSource[]
+  shadowedSources?: PodEnvironmentSource[]
+  message?: string
+  optional?: boolean
+  missingImpact?: 'startupBlocked' | 'restartBlocked'
+  runtimeDependent?: boolean
+  currentPodValue?: boolean
+  placeholder?: boolean
+  evidence?: PodEnvironmentEvidence
+}
+
+export interface PodEnvironmentContainer {
+  name: string
+  role: 'container' | 'init' | 'sidecar'
+  rows: PodEnvironmentRow[]
+  truncated?: boolean
+}
+
+export interface PodEnvironmentResponse {
+  containers: PodEnvironmentContainer[]
+  coverage: {
+    observedSince?: string
+    degraded?: boolean
+    degradedReason?: string
+    saturated?: boolean
+  }
+  partial?: boolean
+  truncated?: boolean
+}
+
+export interface PodEnvironmentRevealResponse {
+  value: string
+  encoding: 'utf8' | 'base64'
+}
 
 // Resource reference (for relationships)
 export interface ResourceRef {
@@ -1032,21 +1108,35 @@ export type ChartSource = 'local' | 'artifacthub'
 // ============================================================================
 
 // Top metrics types (bulk, for resource table view)
+export interface ContainerResourceMetrics {
+  name: string
+  cpu: number           // nanocores (usage)
+  cpuRequest: number    // nanocores
+  cpuLimit: number      // nanocores
+  memory: number        // bytes (usage)
+  memoryRequest: number // bytes
+  memoryLimit: number   // bytes
+}
+
 export interface TopPodMetrics {
   namespace: string
   name: string
   cpu: number           // nanocores (usage)
   memory: number        // bytes (usage)
-  cpuRequest: number    // nanocores (sum across containers)
-  cpuLimit: number      // nanocores (sum across containers)
-  memoryRequest: number // bytes (sum across containers)
-  memoryLimit: number   // bytes (sum across containers)
+  cpuRequest: number    // nanocores (sum across running containers)
+  cpuLimit: number      // nanocores (sum across running containers)
+  memoryRequest: number // bytes (sum across running containers)
+  memoryLimit: number   // bytes (sum across running containers)
+  // Per-container breakdown; present only for pods with more than one running
+  // container (regular + native sidecars). Absent for single-container pods.
+  containers?: ContainerResourceMetrics[]
 }
 
 export interface TopNodeMetrics {
   name: string
   cpu: number              // nanocores (usage)
   memory: number           // bytes (usage)
+  observedAt?: string      // exact metrics sample time; absent when no sample exists
   podCount: number         // pods scheduled on this node
   cpuAllocatable: number   // nanocores
   memoryAllocatable: number // bytes
@@ -1218,11 +1308,11 @@ export interface TrafficFilters {
   timeRange: string
 }
 
-// Main view type now includes 'traffic', 'cost', 'checks', 'gitops'.
+// Main view type now includes 'traffic', 'cost', 'capacity', 'checks', 'gitops'.
 // Library consumers (Radar Hub) get all GitOps surfaces — the package
 // IS the public surface, so adding new top-level views must extend
 // this type rather than rely on app-local extensions.
-export type ExtendedMainView = MainView | 'traffic' | 'cost' | 'checks' | 'gitops' | 'issues' | 'applications'
+export type ExtendedMainView = MainView | 'traffic' | 'cost' | 'capacity' | 'checks' | 'gitops' | 'issues' | 'applications'
 
 // ============================================================================
 // Image Filesystem Types
@@ -1289,6 +1379,7 @@ export interface WorkloadPodInfo {
   containers: string[]
   ready: boolean
   phase?: string
+  nodeName?: string
   healthLevel?: HealthStatus
   reason?: string
   message?: string

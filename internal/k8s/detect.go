@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/skyhook-io/radar/pkg/health"
+	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 const probeFailureWindow = 10 * time.Minute
@@ -39,6 +40,11 @@ const ScaledToZeroFingerprint = "svc:scaled-to-zero"
 const ScaledToZeroReason = "Backing workload scaled to 0"
 
 const livenessProbeFailedReason = "LivenessProbeFailed"
+
+// Core ConfigMaps and Secrets have no kind-specific graceful termination phase.
+// Once deletion starts, a remaining finalizer is the only thing keeping the
+// object present, so delayed cleanup is actionable sooner than workload drain.
+const configMapSecretTerminatingWarningAfter = 2 * time.Minute
 
 const terminatingWarningAfter = 10 * time.Minute
 const terminatingCriticalAfter = 30 * time.Minute
@@ -124,6 +130,17 @@ type Detection struct {
 	// for self-perpetuating states like a stuck-drift loop.
 	OperationRetryCount int
 	Stuck               bool
+	// CapacityRelevant is set only for unschedulable pods that structurally
+	// pin a Karpenter NodePool (a fact of the pod's own spec — safe to show
+	// anyone who can see the pod). It drives the frontend's "View in
+	// Capacity" link. False for every other detection.
+	CapacityRelevant bool
+	// CapacityRelevantCorrelated marks unschedulable pods whose demand group
+	// evaluates declared-compatible against at least one NodePool. Derived
+	// from cluster-scoped NodePool/NodeClass state, so the issues pipeline
+	// only folds it into the wire flag for callers allowed to list NodePools
+	// — otherwise it would be a probing oracle over hidden pool specs.
+	CapacityRelevantCorrelated bool
 }
 
 // podOwnerKindName resolves a Pod's topmost stable controller for issue
@@ -156,6 +173,35 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 			}
 		}
 	}
+
+	if cmLister := cache.ConfigMaps(); cmLister != nil {
+		var configMaps []*corev1.ConfigMap
+		if namespace != "" {
+			configMaps, _ = cmLister.ConfigMaps(namespace).List(labels.Everything())
+		} else {
+			configMaps, _ = cmLister.List(labels.Everything())
+		}
+		for _, cm := range configMaps {
+			if det, ok := terminatingProblem("ConfigMap", "", cm, now); ok {
+				problems = append(problems, det)
+			}
+		}
+	}
+
+	if secretLister := cache.Secrets(); secretLister != nil {
+		var secrets []*corev1.Secret
+		if namespace != "" {
+			secrets, _ = secretLister.Secrets(namespace).List(labels.Everything())
+		} else {
+			secrets, _ = secretLister.List(labels.Everything())
+		}
+		for _, secret := range secrets {
+			if det, ok := terminatingProblem("Secret", "", secret, now); ok {
+				problems = append(problems, det)
+			}
+		}
+	}
+
 	podsByNamespace := listPodsByNamespace(cache, namespace)
 
 	// Deployment problems: unavailableReplicas > 0
@@ -418,11 +464,13 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				message = init.message
 				fingerprint = init.fingerprint
 			}
-			var cause, action string
-			if reason == crashLoopReason {
-				cause, action = health.PodCrashLoopDiagnosis(pod, now)
-			} else if c, a := imagePullDiagnosis(reason, message); c != "" {
-				cause, action = c, a
+			cause, action := oomLimitDiagnosis(cache, pod, reason, lastTermReason, now)
+			if cause == "" {
+				if reason == crashLoopReason {
+					cause, action = health.PodCrashLoopDiagnosis(pod, now)
+				} else {
+					cause, action = imagePullDiagnosis(reason, message)
+				}
 			}
 			// IssueTiming: classify whether this pod has been failing since the Deployment
 			// was first created (started_at_resource_creation) or broke after a period of
@@ -837,6 +885,15 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 		}
 	}
 
+	var jobs []*batchv1.Job
+	if jobLister := cache.Jobs(); jobLister != nil {
+		if namespace != "" {
+			jobs, _ = jobLister.Jobs(namespace).List(labels.Everything())
+		} else {
+			jobs, _ = jobLister.List(labels.Everything())
+		}
+	}
+
 	// CronJob problems
 	if cjLister := cache.CronJobs(); cjLister != nil {
 		var cronjobs []*batchv1.CronJob
@@ -845,9 +902,9 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 		} else {
 			cronjobs, _ = cjLister.List(labels.Everything())
 		}
-		for _, cp := range DetectCronJobProblems(cronjobs) {
+		for _, cp := range DetectCronJobProblems(cronjobs, jobs, cache.cronJobScheduleObservations, now) {
 			ageDur := resourceAge(now, cronjobs, cp.Namespace, cp.Name)
-			problems = append(problems, Detection{
+			detection := Detection{
 				Kind:       "CronJob",
 				Namespace:  cp.Namespace,
 				Name:       cp.Name,
@@ -857,7 +914,12 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				Message:    cp.Reason,
 				Age:        FormatAge(ageDur),
 				AgeSeconds: int64(ageDur.Seconds()),
-			})
+			}
+			if cp.Duration > 0 {
+				detection.Duration = FormatAge(cp.Duration)
+				detection.DurationSeconds = int64(cp.Duration.Seconds())
+			}
+			problems = append(problems, detection)
 		}
 	}
 
@@ -1104,13 +1166,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 	}
 
 	// Job problems: stuck active (running > 1h with no completions)
-	if jobLister := cache.Jobs(); jobLister != nil {
-		var jobs []*batchv1.Job
-		if namespace != "" {
-			jobs, _ = jobLister.Jobs(namespace).List(labels.Everything())
-		} else {
-			jobs, _ = jobLister.List(labels.Everything())
-		}
+	if cache.Jobs() != nil {
 		for _, job := range jobs {
 			if det, ok := terminatingProblem("Job", "batch", job, now); ok {
 				problems = append(problems, det)
@@ -1148,21 +1204,19 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				})
 				continue
 			}
-			if job.Status.Active > 0 && job.Status.Succeeded == 0 && job.Status.Failed == 0 {
-				if ageDur > time.Hour {
-					problems = append(problems, Detection{
-						Kind:            "Job",
-						Namespace:       job.Namespace,
-						Name:            job.Name,
-						Group:           "batch",
-						Severity:        "high",
-						Reason:          fmt.Sprintf("Running for %s with no completions", FormatAge(ageDur)),
-						Age:             FormatAge(ageDur),
-						AgeSeconds:      int64(ageDur.Seconds()),
-						Duration:        FormatAge(ageDur),
-						DurationSeconds: int64(ageDur.Seconds()),
-					})
-				}
+			if stuckActiveJob(job, now) {
+				problems = append(problems, Detection{
+					Kind:            "Job",
+					Namespace:       job.Namespace,
+					Name:            job.Name,
+					Group:           "batch",
+					Severity:        "high",
+					Reason:          fmt.Sprintf("Running for %s with no completions", FormatAge(ageDur)),
+					Age:             FormatAge(ageDur),
+					AgeSeconds:      int64(ageDur.Seconds()),
+					Duration:        FormatAge(ageDur),
+					DurationSeconds: int64(ageDur.Seconds()),
+				})
 			}
 		}
 	}
@@ -1540,16 +1594,26 @@ func terminatingProblem(kind, group string, obj metav1.Object, now time.Time) (D
 	if obj.GetDeletionTimestamp() == nil {
 		return Detection{}, false
 	}
+	finalizers := obj.GetFinalizers()
+	usesShortWarningWindow := group == "" &&
+		(kind == "ConfigMap" || kind == "Secret") &&
+		hasNonGarbageCollectionFinalizer(finalizers)
+	warningAfter := terminatingWarningAfter
+	if usesShortWarningWindow {
+		warningAfter = configMapSecretTerminatingWarningAfter
+	}
 	duration := now.Sub(obj.GetDeletionTimestamp().Time)
-	if duration < terminatingWarningAfter {
+	if duration < warningAfter {
 		return Detection{}, false
 	}
 	severity := "high"
-	if duration >= terminatingCriticalAfter {
+	if usesShortWarningWindow && duration < terminatingWarningAfter {
+		severity = "medium"
+	} else if duration >= terminatingCriticalAfter {
 		severity = "critical"
 	}
 	msg := "Resource is still present after deletion started"
-	if finalizers := obj.GetFinalizers(); len(finalizers) > 0 {
+	if len(finalizers) > 0 {
 		msg = "Waiting on finalizers: " + strings.Join(finalizers, ", ")
 	}
 	// The stuck-termination issue began when deletion was requested — run the
@@ -1576,6 +1640,17 @@ func terminatingProblem(kind, group string, obj metav1.Object, now time.Time) (D
 		IssueTiming:      timingR.IssueTiming,
 		IssueTimingBasis: timingR.Basis,
 	}, true
+}
+
+func hasNonGarbageCollectionFinalizer(finalizers []string) bool {
+	for _, finalizer := range finalizers {
+		// Garbage collection may legitimately wait for dependents to finish
+		// terminating, so it keeps the generic grace period.
+		if finalizer != metav1.FinalizerDeleteDependents && finalizer != metav1.FinalizerOrphanDependents {
+			return true
+		}
+	}
+	return false
 }
 
 func namespaceTerminatingProblem(ns *corev1.Namespace, now time.Time) (Detection, bool) {
@@ -1619,17 +1694,7 @@ func namespaceTerminationConditionMessage(ns *corev1.Namespace) string {
 }
 
 func pdbStructurallyBlocksEvictions(pdb *policyv1.PodDisruptionBudget) bool {
-	if pdb == nil || pdb.DeletionTimestamp != nil {
-		return false
-	}
-	if pdb.Generation > 0 && pdb.Status.ObservedGeneration > 0 && pdb.Status.ObservedGeneration < pdb.Generation {
-		return false
-	}
-	status := pdb.Status
-	return status.ExpectedPods > 0 &&
-		status.DisruptionsAllowed == 0 &&
-		status.CurrentHealthy >= status.ExpectedPods &&
-		status.DesiredHealthy >= status.ExpectedPods
+	return k8score.PodDisruptionBudgetEvictionState(pdb) == k8score.PDBEvictionBlocked
 }
 
 func pdbBlocksEvictionsMessage(pdb *policyv1.PodDisruptionBudget) string {

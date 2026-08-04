@@ -31,7 +31,179 @@ func detectConfigProblems(cache *ResourceCache, namespace string, now time.Time)
 		out = append(out, detectSuspiciousCoreDNS(cache, now)...)
 	}
 	out = append(out, detectEnvServiceRefs(cache, namespace, now)...)
+	out = append(out, detectDuplicateEnvVars(cache, namespace, now)...)
+	out = append(out, detectStaleSecretEnv(cache, namespace, now)...)
 	return out
+}
+
+const containerCompletionSplitMinimumAge = 2 * time.Minute
+
+// ContainerCompletionSplitShape describes a regular-container completion split
+// without inferring why the sibling container is still running.
+type ContainerCompletionSplitShape struct {
+	Pod               string
+	Job               string
+	ExitedContainer   string
+	RunningContainers []string
+	SinceSeconds      int64
+}
+
+// FindContainerCompletionSplitForObject returns a neutral completion split for
+// an active Job or for an active Job owned by a CronJob.
+func FindContainerCompletionSplitForObject(cache *ResourceCache, obj runtime.Object, now time.Time) *ContainerCompletionSplitShape {
+	if cache == nil || obj == nil || cache.Pods() == nil {
+		return nil
+	}
+
+	var namespace string
+	var activeJobs map[string]*batchv1.Job
+
+	switch subject := obj.(type) {
+	case *batchv1.CronJob:
+		if subject == nil || cache.Jobs() == nil {
+			return nil
+		}
+		jobs, err := cache.Jobs().Jobs(subject.Namespace).List(labels.Everything())
+		if err != nil {
+			return nil
+		}
+		activeJobs = make(map[string]*batchv1.Job)
+		for _, job := range jobs {
+			if !job.DeletionTimestamp.IsZero() {
+				continue
+			}
+			if job.Spec.Suspend != nil && *job.Spec.Suspend {
+				continue
+			}
+			controller := metav1.GetControllerOf(job)
+			if controller == nil || controller.Kind != "CronJob" || controller.Name != subject.Name || controller.UID != subject.UID {
+				continue
+			}
+			if job.Status.Active >= 1 {
+				activeJobs[job.Name] = job
+			}
+		}
+		if len(activeJobs) == 0 {
+			return nil
+		}
+		namespace = subject.Namespace
+
+	case *batchv1.Job:
+		if subject == nil || !subject.DeletionTimestamp.IsZero() || subject.Status.Active < 1 ||
+			subject.Spec.Suspend != nil && *subject.Spec.Suspend {
+			return nil
+		}
+		namespace = subject.Namespace
+		activeJobs = map[string]*batchv1.Job{subject.Name: subject}
+
+	default:
+		return nil
+	}
+
+	pods, err := cache.Pods().Pods(namespace).List(labels.Everything())
+	if err != nil {
+		return nil
+	}
+	evidence, found := findContainerCompletionSplitEvidence(pods, activeJobs, now)
+	if !found {
+		return nil
+	}
+	return &ContainerCompletionSplitShape{
+		Pod:               evidence.podName,
+		Job:               evidence.jobName,
+		ExitedContainer:   evidence.exitedContainer,
+		RunningContainers: evidence.runningContainers,
+		SinceSeconds:      ageSeconds(now, evidence.startedAt),
+	}
+}
+
+type containerCompletionSplitEvidence struct {
+	exitedContainer   string
+	runningContainers []string
+	jobName           string
+	podName           string
+	startedAt         time.Time
+}
+
+func findContainerCompletionSplitEvidence(pods []*corev1.Pod, activeJobs map[string]*batchv1.Job, now time.Time) (containerCompletionSplitEvidence, bool) {
+	var best containerCompletionSplitEvidence
+	for _, pod := range pods {
+		if !pod.DeletionTimestamp.IsZero() || pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		controller := metav1.GetControllerOf(pod)
+		if controller == nil || controller.Kind != "Job" {
+			continue
+		}
+		job := activeJobs[controller.Name]
+		if job == nil || controller.UID != job.UID {
+			continue
+		}
+		exited, running, startedAt, ok := regularContainerCompletionSplit(pod.Status.ContainerStatuses, now)
+		if !ok {
+			continue
+		}
+		candidate := containerCompletionSplitEvidence{
+			exitedContainer:   exited,
+			runningContainers: running,
+			jobName:           job.Name,
+			podName:           pod.Name,
+			startedAt:         startedAt,
+		}
+		// A Pod's latest exit marks its latest progress; across Pods, the
+		// oldest qualifying split is the most established evidence.
+		if earlierContainerCompletionSplitEvidence(candidate, best) {
+			best = candidate
+		}
+	}
+	return best, !best.startedAt.IsZero()
+}
+
+func earlierContainerCompletionSplitEvidence(candidate, current containerCompletionSplitEvidence) bool {
+	return current.startedAt.IsZero() || candidate.startedAt.Before(current.startedAt) ||
+		candidate.startedAt.Equal(current.startedAt) && containerCompletionSplitEvidenceKey(candidate) < containerCompletionSplitEvidenceKey(current)
+}
+
+func laterContainerCompletionSplitEvidence(candidate, current containerCompletionSplitEvidence) bool {
+	return current.startedAt.IsZero() || candidate.startedAt.After(current.startedAt) ||
+		candidate.startedAt.Equal(current.startedAt) && containerCompletionSplitEvidenceKey(candidate) < containerCompletionSplitEvidenceKey(current)
+}
+
+func containerCompletionSplitEvidenceKey(e containerCompletionSplitEvidence) string {
+	return e.jobName + "\x00" + e.podName + "\x00" + e.exitedContainer + "\x00" + strings.Join(e.runningContainers, "\x00")
+}
+
+func regularContainerCompletionSplit(statuses []corev1.ContainerStatus, now time.Time) (string, []string, time.Time, bool) {
+	runningContainers := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		if status.State.Running != nil {
+			runningContainers = append(runningContainers, status.Name)
+		}
+	}
+	if len(runningContainers) == 0 {
+		return "", nil, time.Time{}, false
+	}
+	sort.Strings(runningContainers)
+
+	var best containerCompletionSplitEvidence
+	for _, exited := range statuses {
+		terminated := exited.State.Terminated
+		if terminated == nil || terminated.ExitCode != 0 || terminated.FinishedAt.IsZero() {
+			continue
+		}
+		candidate := containerCompletionSplitEvidence{
+			exitedContainer:   exited.Name,
+			runningContainers: runningContainers,
+			startedAt:         terminated.FinishedAt.Time,
+		}
+		if laterContainerCompletionSplitEvidence(candidate, best) {
+			best = candidate
+		}
+	}
+	if best.startedAt.IsZero() || now.Sub(best.startedAt) < containerCompletionSplitMinimumAge {
+		return "", nil, time.Time{}, false
+	}
+	return best.exitedContainer, best.runningContainers, best.startedAt, true
 }
 
 // DetectSuspiciousCoreDNS returns conservative CoreDNS Corefile findings for
@@ -131,6 +303,124 @@ type EnvServiceRefCheck struct {
 	ServicePorts     []string
 	Message          string
 	AgeSeconds       int64
+}
+
+type DuplicateEnvVarOccurrence struct {
+	Position int
+	Value    string
+}
+
+type DuplicateEnvVarCheck struct {
+	WorkloadGroup     string
+	WorkloadKind      string
+	Namespace         string
+	WorkloadName      string
+	Container         string
+	EnvName           string
+	Occurrences       []DuplicateEnvVarOccurrence
+	LastDeclaredValue string
+	Message           string
+	AgeSeconds        int64
+}
+
+const maxDuplicateEnvVarMessageOccurrences = 5
+
+func detectDuplicateEnvVars(cache *ResourceCache, namespace string, now time.Time) []Detection {
+	checks := findDuplicateEnvVarChecks(envServiceWorkloads(cache, namespace), now)
+	out := make([]Detection, 0, len(checks))
+	for _, check := range checks {
+		out = append(out, Detection{
+			Kind:        check.WorkloadKind,
+			Group:       check.WorkloadGroup,
+			Namespace:   check.Namespace,
+			Name:        check.WorkloadName,
+			Severity:    "warning",
+			Reason:      "DuplicateEnvVar",
+			Message:     check.Message,
+			Age:         FormatAge(time.Duration(check.AgeSeconds) * time.Second),
+			AgeSeconds:  check.AgeSeconds,
+			Fingerprint: FormatDuplicateEnvVarFingerprint(check.Namespace, check.WorkloadName, check.Container, check.EnvName),
+		})
+	}
+	return out
+}
+
+// FindDuplicateEnvVarsForObject returns duplicate environment-variable facts
+// for a single workload object.
+func FindDuplicateEnvVarsForObject(obj runtime.Object) []DuplicateEnvVarCheck {
+	wl, ok := envServiceWorkloadForObject(obj)
+	if !ok {
+		return nil
+	}
+	return findDuplicateEnvVarChecks([]envServiceWorkload{wl}, time.Now())
+}
+
+func findDuplicateEnvVarChecks(workloads []envServiceWorkload, now time.Time) []DuplicateEnvVarCheck {
+	var out []DuplicateEnvVarCheck
+	for _, wl := range workloads {
+		containers := make([]corev1.Container, 0, len(wl.spec.InitContainers)+len(wl.spec.Containers))
+		containers = append(containers, wl.spec.InitContainers...)
+		containers = append(containers, wl.spec.Containers...)
+		for _, container := range containers {
+			byName := make(map[string][]DuplicateEnvVarOccurrence, len(container.Env))
+			for i, env := range container.Env {
+				byName[env.Name] = append(byName[env.Name], DuplicateEnvVarOccurrence{
+					Position: i + 1,
+					Value:    envVarDisplayValue(env),
+				})
+			}
+			for envName, occurrences := range byName {
+				if len(occurrences) < 2 {
+					continue
+				}
+				last := occurrences[len(occurrences)-1]
+				out = append(out, DuplicateEnvVarCheck{
+					WorkloadGroup:     wl.group,
+					WorkloadKind:      wl.kind,
+					Namespace:         wl.namespace,
+					WorkloadName:      wl.name,
+					Container:         container.Name,
+					EnvName:           envName,
+					Occurrences:       occurrences,
+					LastDeclaredValue: last.Value,
+					Message:           duplicateEnvVarMessage(container.Name, envName, occurrences),
+					AgeSeconds:        ageSeconds(now, wl.created),
+				})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		if out[i].WorkloadKind != out[j].WorkloadKind {
+			return out[i].WorkloadKind < out[j].WorkloadKind
+		}
+		if out[i].WorkloadName != out[j].WorkloadName {
+			return out[i].WorkloadName < out[j].WorkloadName
+		}
+		if out[i].Container != out[j].Container {
+			return out[i].Container < out[j].Container
+		}
+		return out[i].EnvName < out[j].EnvName
+	})
+	return out
+}
+
+func duplicateEnvVarMessage(container, envName string, occurrences []DuplicateEnvVarOccurrence) string {
+	displayed := occurrences
+	if len(displayed) > maxDuplicateEnvVarMessageOccurrences {
+		displayed = displayed[:maxDuplicateEnvVarMessageOccurrences]
+	}
+	values := make([]string, 0, len(displayed)+1)
+	for _, occurrence := range displayed {
+		values = append(values, fmt.Sprintf("%d=%q", occurrence.Position, occurrence.Value))
+	}
+	if omitted := len(occurrences) - len(displayed); omitted > 0 {
+		values = append(values, fmt.Sprintf("... and %d more", omitted))
+	}
+	last := occurrences[len(occurrences)-1]
+	return fmt.Sprintf("Container %s defines env %s %d times at positions/values %s; the last definition %q typically takes effect.", container, envName, len(occurrences), strings.Join(values, ", "), last.Value)
 }
 
 func detectEnvServiceRefs(cache *ResourceCache, namespace string, now time.Time) []Detection {

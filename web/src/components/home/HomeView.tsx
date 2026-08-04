@@ -11,6 +11,8 @@ import { CertificateHealthCard } from './CertificateHealthCard'
 import { NetworkPolicyCoverageCard } from './NetworkPolicyCoverageCard'
 import { CostCard } from './CostCard'
 import { GitOpsControllersCard } from './GitOpsControllersCard'
+import { CapacityCard } from './CapacityCard'
+import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
 import { Tooltip } from '../ui/Tooltip'
 import {
   AuditCard,
@@ -45,6 +47,13 @@ interface HomeViewProps {
 }
 
 export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNavigateToView, onNavigateToResourceKind, onNavigateToResource, onNavigateToCerts }: HomeViewProps) {
+  // The card itself decides whether the cluster has a capacity story
+  // (available, softened-denied, or karpenterless-with-managers/groups) and
+  // returns null otherwise — the outer gate only excludes states with nothing
+  // to fetch against.
+  const karpenterState = useCapabilitiesContext().karpenter?.state
+  const capacityCardPossible =
+    karpenterState === 'available' || karpenterState === 'denied' || karpenterState === 'not_detected'
   const { data, isLoading, error, dataUpdatedAt, refetch } = useDashboard(namespaces)
   const { connection } = useConnection()
   const { data: issuesData, isLoading: issuesLoading, isFetching: issuesFetching, error: issuesError } = useIssues(namespaces)
@@ -175,7 +184,7 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
             {/* Posture band — same flex-grow wrap so any subset of compliance cards
                 fills its row instead of stranding the last one (the old 3-col grid
                 left Cluster Audit alone with two empty cells beside it). */}
-            {(data.certificateHealth || data.networkPolicyCoverage || data.audit || data.gitopsControllers) && (
+            {(data.certificateHealth || data.networkPolicyCoverage || data.audit || data.gitopsControllers || capacityCardPossible) && (
               <div className="flex flex-wrap gap-6">
                 {data.certificateHealth && (
                   <BandItem>
@@ -199,6 +208,11 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
                       data={data.gitopsControllers}
                       onNavigate={() => onNavigateToView('gitops')}
                     />
+                  </BandItem>
+                )}
+                {capacityCardPossible && (
+                  <BandItem>
+                    <CapacityCard onNavigate={() => onNavigateToView('capacity')} />
                   </BandItem>
                 )}
                 {data.audit && (

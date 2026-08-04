@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -62,6 +63,12 @@ func TestNewResourceCache_Basic(t *testing.T) {
 	}
 	if rc.Nodes() != nil {
 		t.Error("expected Nodes() lister to be nil (not enabled)")
+	}
+	if !rc.IsKindClusterWide(Pods) {
+		t.Error("legacy cluster-wide ResourceTypes config must report cluster-wide authority")
+	}
+	if got := rc.KindNamespaces(Pods); got != nil {
+		t.Fatalf("cluster-wide Pod namespaces = %v, want nil", got)
 	}
 }
 
@@ -700,6 +707,47 @@ func TestNewResourceCache_OnReceived(t *testing.T) {
 	}
 }
 
+func TestNewResourceCache_OnObservedChangeSurvivesFiltering(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "test-pod", Namespace: "default", UID: "test-uid",
+	}}
+	client := fake.NewSimpleClientset(pod)
+
+	var mu sync.Mutex
+	var observed, delivered []ResourceChange
+	rc, err := NewResourceCache(CacheConfig{
+		Client:        client,
+		ResourceTypes: map[string]bool{Pods: true},
+		IsNoisyResource: func(string, string, string) bool {
+			return true
+		},
+		OnObservedChange: func(change ResourceChange, _, _ any) {
+			mu.Lock()
+			observed = append(observed, change)
+			mu.Unlock()
+		},
+		OnChange: func(change ResourceChange, _, _ any) {
+			mu.Lock()
+			delivered = append(delivered, change)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache failed: %v", err)
+	}
+	defer rc.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(observed) != 1 || observed[0].Kind != "Pod" || observed[0].Name != "test-pod" {
+		t.Fatalf("observed changes = %+v, want filtered Pod add", observed)
+	}
+	if len(delivered) != 0 {
+		t.Fatalf("OnChange received filtered changes: %+v", delivered)
+	}
+}
+
 func TestNewResourceCache_NamespaceScopedValidation(t *testing.T) {
 	client := fake.NewSimpleClientset()
 
@@ -862,6 +910,52 @@ func TestDropManagedFields(t *testing.T) {
 	}
 }
 
+func TestResourceCacheOnTransformSeesManagedFieldsBeforeStripping(t *testing.T) {
+	dataWrite := time.Date(2026, 7, 23, 8, 0, 0, 0, time.UTC)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "credentials",
+			Namespace: "default",
+			ManagedFields: []metav1.ManagedFieldsEntry{
+				{
+					Manager:    "secret-controller",
+					Operation:  metav1.ManagedFieldsOperationUpdate,
+					Time:       &metav1.Time{Time: dataWrite},
+					FieldsType: "FieldsV1",
+					FieldsV1:   &metav1.FieldsV1{Raw: []byte(`{"f:data":{"f:password":{}}}`)},
+				},
+			},
+		},
+		Data: map[string][]byte{"password": []byte("must-not-leak")},
+	}
+	client := fake.NewSimpleClientset(secret)
+	var captured time.Time
+	rc, err := NewResourceCache(CacheConfig{
+		Client:        client,
+		ResourceTypes: map[string]bool{Secrets: true},
+		OnTransform: func(obj any) {
+			if transformed, ok := obj.(*corev1.Secret); ok && len(transformed.ManagedFields) == 1 {
+				captured = transformed.ManagedFields[0].Time.Time
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache failed: %v", err)
+	}
+	defer rc.Stop()
+
+	if !captured.Equal(dataWrite) {
+		t.Fatalf("OnTransform captured %v, want %v", captured, dataWrite)
+	}
+	cached, err := rc.Secrets().Secrets("default").Get("credentials")
+	if err != nil {
+		t.Fatalf("cached Secret lookup failed: %v", err)
+	}
+	if len(cached.ManagedFields) != 0 {
+		t.Fatalf("cached Secret leaked %d managedFields entries", len(cached.ManagedFields))
+	}
+}
+
 func TestDropManagedFields_Event(t *testing.T) {
 	event := &corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{
@@ -913,7 +1007,7 @@ func TestNewResourceCache_ResourceScopesMixed(t *testing.T) {
 		ResourceScopes: map[string]ResourceScope{
 			Pods:        {Enabled: true, Namespace: ns}, // namespace-scoped
 			Deployments: {Enabled: true, Namespace: ns}, // namespace-scoped
-			Nodes:       {Enabled: true, Namespace: ""}, // cluster-wide (cluster-scoped kind)
+			Nodes:       {Enabled: true, Namespace: ns}, // cluster-scoped kinds ignore namespace fallback
 			Services:    {Enabled: false},               // denied — no informer
 		},
 	})
@@ -933,6 +1027,9 @@ func TestNewResourceCache_ResourceScopesMixed(t *testing.T) {
 	}
 	if rc.Services() != nil {
 		t.Error("Services lister should be nil — kind was disabled")
+	}
+	if !rc.IsKindClusterWide(Nodes) || rc.KindNamespaces(Nodes) != nil {
+		t.Fatal("cluster-scoped Node informer did not report its effective cluster-wide scope")
 	}
 
 	enabled := rc.GetEnabledResources()
@@ -1004,6 +1101,14 @@ func TestNewResourceCache_ResourceScopeNamespacesUnion(t *testing.T) {
 	}
 	if rc.IsKindClusterWide(Pods) {
 		t.Fatal("multi-namespace scoped Pods must not report cluster-wide authority")
+	}
+	if got := rc.KindNamespaces(Pods); !slices.Equal(got, []string{nsA, nsB}) {
+		t.Fatalf("Pod informer namespaces = %v, want [%s %s]", got, nsA, nsB)
+	}
+	got := rc.KindNamespaces(Pods)
+	got[0] = "mutated"
+	if next := rc.KindNamespaces(Pods); !slices.Equal(next, []string{nsA, nsB}) {
+		t.Fatalf("caller mutation changed Pod informer namespaces: %v", next)
 	}
 }
 

@@ -129,10 +129,6 @@ func newPagedInformer(
 		WatchFuncWithContext: watchFn,
 	}
 	inf := cache.NewSharedIndexInformer(lw, example, 0, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
-	// Factory informers get DropManagedFields via WithTransform; these are built
-	// outside the factory, so apply the same transform directly. SetTransform
-	// only errors once started, which hasn't happened yet.
-	_ = inf.SetTransform(DropManagedFields)
 	return inf
 }
 
@@ -378,6 +374,20 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 			}
 		}
 	}
+	setups := buildInformerSetups()
+	for _, setup := range setups {
+		if !setup.isClusterScoped {
+			continue
+		}
+		scope, ok := scopes[setup.key]
+		if !ok {
+			continue
+		}
+		scope.Namespace = ""
+		scopes[setup.key] = scope
+		delete(cfg.ResourceScopeNamespaces, setup.key)
+	}
+	cfg.ResourceScopes = scopes
 
 	stopCh := make(chan struct{})
 	changes := make(chan ResourceChange, channelSize)
@@ -385,10 +395,16 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 	// Build one factory per unique scope. The cluster-wide factory is
 	// always created so cluster-scoped kinds (nodes, namespaces, PV…)
 	// have a home; namespace-scoped factories are created on demand.
+	transform := func(obj any) (any, error) {
+		if cfg.OnTransform != nil {
+			cfg.OnTransform(obj)
+		}
+		return DropManagedFields(obj)
+	}
 	clusterFactory := informers.NewSharedInformerFactoryWithOptions(
 		cfg.Client,
 		0, // no resync — updates come via watch
-		informers.WithTransform(DropManagedFields),
+		informers.WithTransform(transform),
 	)
 	nsFactories := make(map[string]informers.SharedInformerFactory)
 	for key, s := range scopes {
@@ -403,7 +419,7 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 			nsFactories[namespace] = informers.NewSharedInformerFactoryWithOptions(
 				cfg.Client,
 				0,
-				informers.WithTransform(DropManagedFields),
+				informers.WithTransform(transform),
 				informers.WithNamespace(namespace),
 			)
 		}
@@ -429,9 +445,6 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 		}
 		return nsFactories[scope.Namespace]
 	}
-
-	// Table-driven informer setup — only create informers for enabled types
-	setups := buildInformerSetups()
 
 	// enabledMap is the boolean projection over `scopes` exposed via
 	// GetEnabledResources for callers that only need "is this kind on?"
@@ -478,7 +491,11 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 
 	buildInformer := func(s informerSetup, factory informers.SharedInformerFactory, namespace string) cache.SharedIndexInformer {
 		if cfg.ListPageSize > 0 && s.pagedSetup != nil {
-			return s.pagedSetup(cfg.Client, namespace, cfg.ListPageSize)
+			inf := s.pagedSetup(cfg.Client, namespace, cfg.ListPageSize)
+			// Paged informers are built outside the factories, so they need the
+			// same caller hook and managed-fields stripping transform here.
+			_ = inf.SetTransform(transform)
+			return inf
 		}
 		return s.setup(factory)
 	}
@@ -1262,6 +1279,10 @@ func (rc *ResourceCache) enqueueChange(ch chan<- ResourceChange, kind string, ob
 		Diff:      diff,
 	}
 
+	if rc.config.OnObservedChange != nil {
+		rc.safeCallback("OnObservedChange", func() { rc.config.OnObservedChange(change, obj, oldObj) })
+	}
+
 	// Fire OnChange callback (before channel send, matching existing behavior)
 	if !skipCallback && rc.config.OnChange != nil {
 		rc.safeCallback("OnChange", func() { rc.config.OnChange(change, obj, oldObj) })
@@ -1455,7 +1476,42 @@ func (rc *ResourceCache) KindCoversNamespace(resource, ns string) bool {
 	if !ok || !s.Enabled {
 		return false
 	}
-	return s.Namespace == "" || s.Namespace == ns
+	if s.Namespace == "" {
+		return true
+	}
+	for _, watched := range resourceScopeNamespaces(resource, s, rc.config.ResourceScopeNamespaces) {
+		if watched == ns {
+			return true
+		}
+	}
+	return false
+}
+
+// KindNamespaces returns the namespaces covered by a namespaced informer.
+// A nil result means the kind is cluster-wide or disabled.
+func (rc *ResourceCache) KindNamespaces(resource string) []string {
+	if rc == nil {
+		return nil
+	}
+	s, ok := rc.config.ResourceScopes[resource]
+	if !ok || !s.Enabled || s.Namespace == "" {
+		return nil
+	}
+	return append([]string(nil), resourceScopeNamespaces(resource, s, rc.config.ResourceScopeNamespaces)...)
+}
+
+func (rc *ResourceCache) IsKindReady(resource string) bool {
+	if rc == nil {
+		return false
+	}
+	rc.informerMu.RLock()
+	defer rc.informerMu.RUnlock()
+	for _, status := range rc.informerStatuses {
+		if status.Key == resource {
+			return status.Synced
+		}
+	}
+	return false
 }
 
 // ChangesRaw returns the bidirectional channel for internal use.

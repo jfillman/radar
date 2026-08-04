@@ -44,7 +44,11 @@ import { buildResourceHierarchy, getAllEventsFromHierarchy, isProblematicEvent, 
 import { TimelineSwimlanes, type TimeWindow } from '../timeline/TimelineSwimlanes'
 import { TimelineList } from '../timeline/TimelineList'
 import { ResourceActionsBar } from '../shared/ResourceActionsBar'
-import { EditableYamlView, SaveSuccessAnimation } from '../shared/EditableYamlView'
+import {
+  EditableYamlView,
+  SaveSuccessAnimation,
+  type EditableYamlViewProps,
+} from '../shared/EditableYamlView'
 import { ResourceRendererDispatch, getResourceStatus, diagnoseHealthHint, type DiagnoseHealthHint, type RendererOverrides } from '../shared/ResourceRendererDispatch'
 import type { ScalerDiagnosis } from '../resources/renderers/WorkloadRenderer'
 import { DetailShell, type DetailShellTab } from '../shared/DetailShell'
@@ -153,6 +157,9 @@ interface WorkloadViewProps {
   workloadPods?: WorkloadPodInfo[]
   workloadPodsLoading?: boolean
   workloadPodsError?: Error | null
+  /** Wired by the host only while this workload has pods awaiting scheduling
+   *  and Karpenter is available — absent otherwise, so no dead affordance. */
+  onEvaluateCapacity?: () => void
   /** Full objects for service/route refs related to this workload. Optional;
    *  overview falls back to relationship refs when hosts do not fetch them. */
   servingResources?: ServingResourceDetail[]
@@ -189,11 +196,19 @@ interface WorkloadViewProps {
 
   // ── Mutations ────────────────────────────────────────────────────────────
   /** Update a resource from YAML */
-  onUpdateResource?: (params: { kind: string; namespace: string; name: string; yaml: string }) => Promise<void>
+  onUpdateResource?: EditableYamlViewProps['onSave']
   /** Whether the resource is being updated */
   isUpdatingResource?: boolean
   /** Error message from the last update attempt */
   updateResourceError?: string | null
+  /** Preview a resource update against Kubernetes before saving. */
+  onPreviewResource?: EditableYamlViewProps['onPreview']
+  /** Whether the resource preview is being prepared. */
+  isPreviewingResource?: boolean
+  /** Error message from the last preview attempt. */
+  previewResourceError?: string | null
+  /** Load cluster schemas for YAML validation and completion. */
+  yamlSchemaLoader?: EditableYamlViewProps['schemaLoader']
 
   // ── Tab state (optional URL sync) ────────────────────────────────────────
   /** Controlled active tab. If not provided, managed internally. */
@@ -347,6 +362,7 @@ export function WorkloadView({
   workloadPods,
   workloadPodsLoading = false,
   workloadPodsError = null,
+  onEvaluateCapacity,
   servingResources,
   renderServicePortAction,
   renderServicePortPanel,
@@ -370,6 +386,10 @@ export function WorkloadView({
   onUpdateResource,
   isUpdatingResource,
   updateResourceError,
+  onPreviewResource,
+  isPreviewingResource,
+  previewResourceError,
+  yamlSchemaLoader,
   // Tab state
   activeTab: controlledTab,
   onTabChange,
@@ -583,6 +603,7 @@ export function WorkloadView({
         namespace,
         name,
         yaml,
+        force: true,
       })
       setTimeout(() => refetch(), 1000)
     } catch {
@@ -818,6 +839,10 @@ export function WorkloadView({
               onSave={onUpdateResource}
               isSaving={isUpdatingResource}
               saveError={updateResourceError}
+              onPreview={onPreviewResource}
+              isPreviewing={isPreviewingResource}
+              previewError={previewResourceError}
+              schemaLoader={yamlSchemaLoader}
               onDuplicate={onDuplicate}
               onDownload={onDownload}
             />
@@ -1018,6 +1043,7 @@ export function WorkloadView({
               extraContent={renderOverviewExtra && renderOverviewExtra({ kind, namespace, name, group, context: 'expanded' })}
               introContent={overviewIntro}
               leadContent={hasOperationalIssues && renderOverviewLead ? renderOverviewLead({ kind, namespace, name }) : undefined}
+              onEvaluateCapacity={onEvaluateCapacity}
             />
         )}
         {effectiveTab === 'topology' && (
@@ -1116,6 +1142,10 @@ export function WorkloadView({
                   onSave={onUpdateResource}
                   isSaving={isUpdatingResource}
                   saveError={updateResourceError}
+                  onPreview={onPreviewResource}
+                  isPreviewing={isPreviewingResource}
+                  previewError={previewResourceError}
+                  schemaLoader={yamlSchemaLoader}
                   onDuplicate={onDuplicate}
                   onDownload={onDownload}
                 />
@@ -1487,6 +1517,7 @@ function InfoTab({
   extraContent,
   introContent,
   leadContent,
+  onEvaluateCapacity,
 }: {
   resource: any
   selectedResource: SelectedResource
@@ -1497,6 +1528,7 @@ function InfoTab({
   workloadPods?: WorkloadPodInfo[]
   workloadPodsLoading?: boolean
   workloadPodsError?: Error | null
+  onEvaluateCapacity?: () => void
   servingResources?: ServingResourceDetail[]
   renderServicePortAction?: (props: ServicePortRenderProps) => ReactNode
   renderServicePortPanel?: (props: ServicePortRenderProps) => ReactNode
@@ -1607,6 +1639,7 @@ function InfoTab({
       extraContent={extraContent}
       introContent={introContent}
       leadContent={leadContent}
+      onEvaluateCapacity={onEvaluateCapacity}
     />
   )
 }
@@ -1662,6 +1695,7 @@ function WorkloadOverviewTab({
   extraContent,
   introContent,
   leadContent,
+  onEvaluateCapacity,
 }: {
   resource: any
   selectedResource: SelectedResource
@@ -1671,6 +1705,7 @@ function WorkloadOverviewTab({
   workloadPods?: WorkloadPodInfo[]
   workloadPodsLoading?: boolean
   workloadPodsError?: Error | null
+  onEvaluateCapacity?: () => void
   servingResources?: ServingResourceDetail[]
   renderServicePortAction?: (props: ServicePortRenderProps) => ReactNode
   renderServicePortPanel?: (props: ServicePortRenderProps) => ReactNode
@@ -1722,6 +1757,18 @@ function WorkloadOverviewTab({
             podSummary={podSummary}
             servingSummary={showServingPath ? buildServingStripSummary(servingRelationshipGroups, servingResources) : undefined}
           />
+
+          {onEvaluateCapacity && (
+            <div>
+              <button
+                type="button"
+                onClick={onEvaluateCapacity}
+                className="text-xs font-medium text-accent-text hover:underline"
+              >
+                Evaluate pending pods against Karpenter NodePools →
+              </button>
+            </div>
+          )}
 
           <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px]">
             <div className="space-y-4">

@@ -71,6 +71,8 @@ type AppConfig struct {
 func SetGlobals(cfg AppConfig) {
 	k8s.DebugEvents = cfg.DebugEvents
 	k8s.TimingLogs = cfg.DevMode
+	// Init-only write, before any goroutine reads it; later reads happen under
+	// clientMu and assume no concurrent mutation.
 	k8s.ForceInCluster = cfg.FakeInCluster
 	k8s.ForceDisableHelmWrite = cfg.DisableHelmWrite
 	k8s.ForceDisableExec = cfg.DisableExec
@@ -525,7 +527,7 @@ func CheckClusterAccess(ctx context.Context) error {
 			// Exception: exec auth timeouts are retryable — the first call
 			// triggers a token refresh, and the cached token is ready by retry.
 			errType := k8s.ClassifyError(lastErr)
-			if errType == "config" || errType == "auth" || errType == "rbac" || errType == "network" || errType == "tls" {
+			if errType == "config" || errType == "auth" || errType == "auth-rejected" || errType == "rbac" || errType == "network" || errType == "tls" {
 				break
 			}
 			// Don't retry if the parent context is already done

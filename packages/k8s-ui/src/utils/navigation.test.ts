@@ -189,6 +189,15 @@ describe('refToSelectedResource', () => {
       group: 'cert-manager.io',
     })
   })
+
+  test('normalizes an omitted namespace for cluster-scoped references', () => {
+    expect(refToSelectedResource({ kind: 'NodePool', name: 'spot' })).toEqual({
+      kind: 'nodepools',
+      name: 'spot',
+      namespace: '',
+      group: undefined,
+    })
+  })
 })
 
 describe('lane identity helpers', () => {

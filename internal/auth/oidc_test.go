@@ -2,8 +2,11 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/coreos/go-oidc/v3/oidc/oidctest"
 	"golang.org/x/oauth2"
 )
 
@@ -431,6 +436,169 @@ func TestNewOIDCHandler_CACertTakesPrecedence(t *testing.T) {
 	}
 	if transport.TLSClientConfig.RootCAs == nil {
 		t.Error("RootCAs should be set when CA cert is provided")
+	}
+}
+
+func TestNewOIDCHandler_InternalIssuerUsesInternalEndpoints(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	publicIssuer := "https://auth.example.com"
+	provider := &oidctest.Server{
+		PublicKeys: []oidctest.PublicKey{{
+			PublicKey: priv.Public(),
+			KeyID:     "test-key",
+			Algorithm: oidc.RS256,
+		}},
+	}
+	provider.SetIssuer(publicIssuer)
+	srv := httptest.NewServer(provider)
+	defer srv.Close()
+
+	h, err := NewOIDCHandler(context.Background(), Config{
+		Mode:               "oidc",
+		OIDCIssuer:         publicIssuer,
+		OIDCInternalIssuer: srv.URL,
+		OIDCClientID:       "radar",
+		OIDCClientSecret:   "secret",
+		OIDCRedirectURL:    "http://localhost/callback",
+	})
+	if err != nil {
+		t.Fatalf("expected success with internal issuer, got: %v", err)
+	}
+
+	if got, want := h.oauth.Endpoint.AuthURL, publicIssuer+"/auth"; got != want {
+		t.Errorf("AuthURL = %q, want %q", got, want)
+	}
+	if got, want := h.oauth.Endpoint.TokenURL, srv.URL+"/token"; got != want {
+		t.Errorf("TokenURL = %q, want %q", got, want)
+	}
+
+	claims := fmt.Sprintf(`{
+		"iss": %q,
+		"aud": "radar",
+		"sub": "alice",
+		"exp": %d
+	}`, publicIssuer, time.Now().Add(time.Hour).Unix())
+	rawIDToken := oidctest.SignIDToken(priv, "test-key", oidc.RS256, claims)
+	if _, err := h.verifier.Verify(context.Background(), rawIDToken); err != nil {
+		t.Fatalf("expected token verification through internal JWKS URL to succeed: %v", err)
+	}
+
+	wrongIssuerClaims := fmt.Sprintf(`{
+		"iss": %q,
+		"aud": "radar",
+		"sub": "alice",
+		"exp": %d
+	}`, srv.URL, time.Now().Add(time.Hour).Unix())
+	wrongIssuerToken := oidctest.SignIDToken(priv, "test-key", oidc.RS256, wrongIssuerClaims)
+	if _, err := h.verifier.Verify(context.Background(), wrongIssuerToken); err == nil {
+		t.Fatal("expected token with internal issuer claim to be rejected")
+	}
+}
+
+func TestNewOIDCHandler_InternalIssuerWithOverridesKeepsDiscoveryMetadata(t *testing.T) {
+	publicIssuer := "https://auth.example.com/application/o/radar"
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/application/o/radar/.well-known/openid-configuration" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                publicIssuer,
+			"authorization_endpoint":                srv.URL + "/application/o/radar/authorize",
+			"token_endpoint":                        srv.URL + "/application/o/radar/token",
+			"userinfo_endpoint":                     srv.URL + "/application/o/radar/userinfo",
+			"jwks_uri":                              srv.URL + "/application/o/radar/jwks",
+			"end_session_endpoint":                  srv.URL + "/application/o/radar/logout",
+			"backchannel_logout_supported":          true,
+			"backchannel_logout_session_supported":  true,
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+	}))
+	defer srv.Close()
+
+	h, err := NewOIDCHandler(context.Background(), Config{
+		Mode:                 "oidc",
+		OIDCIssuer:           publicIssuer,
+		OIDCInternalIssuer:   srv.URL + "/application/o/radar",
+		OIDCAuthorizationURL: publicIssuer + "/authorize",
+		OIDCTokenURL:         srv.URL + "/custom-token",
+		OIDCJWKSURL:          srv.URL + "/custom-jwks",
+		OIDCClientID:         "radar",
+		OIDCClientSecret:     "secret",
+		OIDCRedirectURL:      "http://localhost/callback",
+	})
+	if err != nil {
+		t.Fatalf("expected success with internal issuer and overrides, got: %v", err)
+	}
+
+	if got, want := h.oauth.Endpoint.AuthURL, publicIssuer+"/authorize"; got != want {
+		t.Errorf("AuthURL = %q, want %q", got, want)
+	}
+	if got, want := h.oauth.Endpoint.TokenURL, srv.URL+"/custom-token"; got != want {
+		t.Errorf("TokenURL = %q, want %q", got, want)
+	}
+	if got, want := h.endSessionEndpoint, publicIssuer+"/logout"; got != want {
+		t.Errorf("endSessionEndpoint = %q, want %q", got, want)
+	}
+	if !h.backchannelLogoutSupported || !h.backchannelLogoutSessionSupported {
+		t.Error("backchannel logout support flags should come from discovery")
+	}
+}
+
+func TestNewOIDCHandler_ExplicitEndpointsDoNotRequireDiscovery(t *testing.T) {
+	h, err := NewOIDCHandler(context.Background(), Config{
+		Mode:                 "oidc",
+		OIDCIssuer:           "https://auth.example.com",
+		OIDCAuthorizationURL: "https://auth.example.com/authorize",
+		OIDCTokenURL:         "http://auth.authentik.svc/token",
+		OIDCUserInfoURL:      "http://auth.authentik.svc/userinfo",
+		OIDCJWKSURL:          "http://auth.authentik.svc/jwks",
+		OIDCClientID:         "radar",
+		OIDCClientSecret:     "secret",
+		OIDCRedirectURL:      "http://localhost/callback",
+	})
+	if err != nil {
+		t.Fatalf("expected explicit endpoints to initialize without discovery: %v", err)
+	}
+	if got, want := h.oauth.Endpoint.AuthURL, "https://auth.example.com/authorize"; got != want {
+		t.Errorf("AuthURL = %q, want %q", got, want)
+	}
+	if got, want := h.oauth.Endpoint.TokenURL, "http://auth.authentik.svc/token"; got != want {
+		t.Errorf("TokenURL = %q, want %q", got, want)
+	}
+	if got, want := h.provider.UserInfoEndpoint(), "http://auth.authentik.svc/userinfo"; got != want {
+		t.Errorf("UserInfoEndpoint = %q, want %q", got, want)
+	}
+}
+
+func TestResolveOIDCProviderMetadata_ExplicitEndpointsSeedSigningAlgorithms(t *testing.T) {
+	metadata, err := resolveOIDCProviderMetadata(context.Background(), Config{
+		Mode:                 "oidc",
+		OIDCIssuer:           "https://auth.example.com",
+		OIDCAuthorizationURL: "https://auth.example.com/authorize",
+		OIDCTokenURL:         "http://auth.authentik.svc/token",
+		OIDCJWKSURL:          "http://auth.authentik.svc/jwks",
+		OIDCClientID:         "radar",
+	})
+	if err != nil {
+		t.Fatalf("resolveOIDCProviderMetadata: %v", err)
+	}
+	// Without discovery the verifier would default to RS256 only; the resolver
+	// must seed the supported set so non-RS256 IdPs still verify.
+	got := map[string]bool{}
+	for _, alg := range metadata.ProviderConfig.Algorithms {
+		got[alg] = true
+	}
+	for _, want := range []string{oidc.RS256, oidc.ES256, oidc.PS256, oidc.EdDSA} {
+		if !got[want] {
+			t.Errorf("explicit-endpoint algorithms %v missing %q", metadata.ProviderConfig.Algorithms, want)
+		}
 	}
 }
 

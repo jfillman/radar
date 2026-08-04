@@ -128,6 +128,10 @@ export interface IssueRecentChange {
   timestamp: string;
   change_category?: 'spec_config' | 'lifecycle' | 'runtime_status' | string;
   rank_reason?: string;
+  /** Ranking hint for workload runtime configuration (including the image) or directly consumed ConfigMap data; not a causal claim. */
+  application_configuration_change?: boolean;
+  /** Set only on top-level recent_changes in an eligible, unfiltered issues response with complete linkage evidence. */
+  not_linked_to_returned_issues?: boolean;
   fields?: IssueRecentChangeField[];
   /** Workloads that mount/reference this ConfigMap directly ("Deployment/flagd").
    *  Direct spec references only — runtime consumers via an intermediary
@@ -187,6 +191,12 @@ export interface Issue {
    *  self-recover. */
   operation_retry_count?: number;
   stuck?: boolean;
+  /** True for an unschedulable pod that explicitly requires a Karpenter NodePool.
+   *  Set server-side from a structural pod-spec check (nodeSelector / required
+   *  nodeAffinity on karpenter.sh/nodepool), NOT by parsing the scheduler
+   *  message. The Issues view uses it to link these — and only these — to the
+   *  Capacity / Demand view, so a generic scheduling failure never links. */
+  capacity_relevant?: boolean;
   first_seen?: string;
   last_seen?: string;
   /** Affected-resource fan-out, EXCLUDING the subject (the row header).

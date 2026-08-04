@@ -51,6 +51,7 @@ const (
 	CategoryCronJobFailed     Category = "cronjob_failed"
 
 	CategoryMissingConfigRef         Category = "missing_config_ref"
+	CategoryInvalidConfiguration     Category = "invalid_configuration"
 	CategoryPDBBlocksEvictions       Category = "pdb_blocks_evictions"
 	CategorySecretSyncFailed         Category = "secret_sync_failed"
 	CategoryServiceNoEndpoints       Category = "service_no_endpoints"
@@ -125,6 +126,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryJobFailed:                GroupRuntime,
 	CategoryCronJobFailed:            GroupRuntime,
 	CategoryMissingConfigRef:         GroupConfiguration,
+	CategoryInvalidConfiguration:     GroupConfiguration,
 	CategoryPDBBlocksEvictions:       GroupConfiguration,
 	CategorySecretSyncFailed:         GroupConfiguration,
 	CategoryServiceNoEndpoints:       GroupNetworking,
@@ -292,8 +294,14 @@ const (
 )
 
 type RecentChange struct {
-	Source         string         `json:"source,omitempty"`
-	Kind           string         `json:"kind"`
+	Source string `json:"source,omitempty"`
+	Kind   string `json:"kind"`
+	// APIVersion disambiguates CRD kind collisions when authorizing this change
+	// for per-kind RBAC (a CRD Kind that shadows a builtin resolves to the wrong
+	// GVR without it). Populated from the source timeline event's apiVersion;
+	// may be empty for synthesized rows (e.g. Helm), which carry no builtin
+	// cluster-scoped collision.
+	APIVersion     string         `json:"apiVersion,omitempty"`
 	Namespace      string         `json:"namespace,omitempty"`
 	Name           string         `json:"name"`
 	ChangeType     string         `json:"changeType"`
@@ -301,7 +309,14 @@ type RecentChange struct {
 	Timestamp      string         `json:"timestamp"`
 	ChangeCategory ChangeCategory `json:"change_category,omitempty"`
 	RankReason     string         `json:"rank_reason,omitempty"`
-	Fields         []ChangeField  `json:"fields,omitempty"`
+	// ApplicationConfigurationChange is a ranking hint for workload runtime
+	// configuration (including the image) or data changes on a directly
+	// consumed ConfigMap, not a causal claim.
+	ApplicationConfigurationChange bool `json:"application_configuration_change,omitempty"`
+	// NotLinkedToReturnedIssues is set only on top-level recent_changes in an
+	// eligible, unfiltered issues response with complete linkage evidence.
+	NotLinkedToReturnedIssues bool          `json:"not_linked_to_returned_issues,omitempty"`
+	Fields                    []ChangeField `json:"fields,omitempty"`
 	// ConsumedBy lists workloads that mount or reference this ConfigMap via
 	// their pod spec (volumes, envFrom, env valueFrom). Direct references
 	// only — runtime consumers reading through an intermediary service are
@@ -356,8 +371,15 @@ type Issue struct {
 	// "(retried N times)") — distinct from RestartCount, which is pod/container
 	// restarts. Stuck means the issue is not expected to self-recover (retries
 	// exhausted, or a self-perpetuating drift loop).
-	OperationRetryCount  int                `json:"operation_retry_count,omitempty"`
-	Stuck                bool               `json:"stuck,omitempty"`
+	OperationRetryCount int  `json:"operation_retry_count,omitempty"`
+	Stuck               bool `json:"stuck,omitempty"`
+	// CapacityRelevant marks an unschedulable pod Capacity can diagnose — the
+	// frontend links these to the Capacity/Demand view. Two paths set it: the
+	// pod's own spec explicitly requiring a Karpenter NodePool (structural, not
+	// a message parse), and a correlation against observed NodePool specs. The
+	// correlated path is authorized — a caller who cannot list NodePools never
+	// sees it set, since the bit would otherwise leak cluster-scoped pool state.
+	CapacityRelevant     bool               `json:"capacity_relevant,omitempty"`
 	FirstSeen            time.Time          `json:"first_seen,omitzero"`
 	LastSeen             time.Time          `json:"last_seen,omitzero"`
 	Count                int                `json:"count,omitempty"`
@@ -436,6 +458,15 @@ type Response struct {
 	ClusterContext      *ClusterContext `json:"cluster_context,omitempty"`
 	RecentChanges       []RecentChange  `json:"recent_changes,omitempty"`
 	RecentChangesReason string          `json:"recent_changes_reason,omitempty"`
+	// Agent-facing steer accompanying reasons whose timing evidence could be
+	// misread as "the changes are irrelevant" — advice on how to treat the
+	// feed, never a causal claim about any specific change.
+	RecentChangesGuidance string `json:"recent_changes_guidance,omitempty"`
+	// A missing change under truncation is unknown, not evidence that no
+	// relevant change occurred in the lookback window. False only vouches for
+	// the lookback window itself: changes older than the window are out of
+	// scope either way, not implied absent.
+	RecentChangesTruncated bool `json:"recent_changes_truncated,omitempty"`
 	// CorrelationTruncated is set when per-issue change correlation skipped
 	// some critical or warning issues (shared cap reached; criticals are
 	// checked first). Under truncation, an issue without correlation markers

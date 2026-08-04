@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/skyhook-io/radar/pkg/hpadiag"
+	"github.com/skyhook-io/radar/pkg/rolloutdiag"
 	"github.com/skyhook-io/radar/pkg/topology"
 )
 
@@ -62,6 +63,8 @@ type Options struct {
 	AuditSummary  *AuditSummary
 	PolicyReports PolicyReportLookup // nil = Kyverno not installed / no findings
 	AppReferences *AppReferences
+	// Attached only after the evidence Job and Pod pass the access gate.
+	ContainerCompletionSplit *ContainerCompletionSplit
 
 	// Optional kind-specific lookups. ServiceBackends is used only for
 	// Service resources to attach realized pod-selection state. The raw
@@ -271,6 +274,13 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 	rc.PVCSummary = buildPVCSummary(obj)
 	rc.JobSummary = buildJobSummary(obj)
 	rc.CronJobSummary = buildCronJobSummary(ctx, obj, opts.AccessChecker, omitted)
+	if rc.JobSummary != nil && opts.ContainerCompletionSplit != nil {
+		rc.JobSummary.ContainerCompletionSplit = gateContainerCompletionSplit(
+			ctx, opts.AccessChecker, obj, opts.ContainerCompletionSplit, "jobSummary.containerCompletionSplit", omitted)
+	} else if rc.CronJobSummary != nil && opts.ContainerCompletionSplit != nil {
+		rc.CronJobSummary.ContainerCompletionSplit = gateContainerCompletionSplit(
+			ctx, opts.AccessChecker, obj, opts.ContainerCompletionSplit, "cronJobSummary.containerCompletionSplit", omitted)
+	}
 	rc.HPASummary = buildHPASummary(obj)
 	rc.StatusSummary = buildStatusSummary(obj)
 
@@ -887,13 +897,26 @@ func containerStateSummary(st corev1.ContainerStatus) ContainerStateSummary {
 func buildWorkloadSummary(obj runtime.Object) *WorkloadSummary {
 	switch v := obj.(type) {
 	case *appsv1.Deployment:
-		return &WorkloadSummary{Replicas: &ReplicaSummary{
+		summary := &WorkloadSummary{Replicas: &ReplicaSummary{
 			Desired:     replicasOrZero(v.Spec.Replicas),
 			Ready:       v.Status.ReadyReplicas,
 			Available:   v.Status.AvailableReplicas,
 			Updated:     v.Status.UpdatedReplicas,
 			Unavailable: v.Status.UnavailableReplicas,
 		}}
+		if risk := rolloutdiag.Analyze(v); risk != nil {
+			summary.RolloutRisk = &RolloutRiskSummary{
+				Reason:                 risk.Reason,
+				Replicas:               risk.Replicas,
+				MaxSurge:               risk.MaxSurge,
+				MaxUnavailable:         risk.MaxUnavailable,
+				ResolvedMaxSurge:       risk.ResolvedMaxSurge,
+				ResolvedMaxUnavailable: risk.ResolvedMaxUnavailable,
+				Message:                risk.Message,
+				Action:                 risk.Remediation,
+			}
+		}
+		return summary
 	case *appsv1.StatefulSet:
 		return &WorkloadSummary{Replicas: &ReplicaSummary{
 			Desired:   replicasOrZero(v.Spec.Replicas),
@@ -1410,7 +1433,7 @@ func filterAppReferences(ctx context.Context, refs *AppReferences, ac RefAccessC
 	if refs == nil {
 		return nil
 	}
-	out := &AppReferences{}
+	out := &AppReferences{DuplicateEnv: append([]DuplicateEnvVarReference(nil), refs.DuplicateEnv...)}
 	deniedAny := false
 	for _, ref := range refs.ServiceEnv {
 		if !checkRef(ctx, ac, &ref.Service) {
@@ -1422,7 +1445,32 @@ func filterAppReferences(ctx context.Context, refs *AppReferences, ac RefAccessC
 	if deniedAny {
 		omitted.add("appReferences.serviceEnv", OmittedRBACDenied)
 	}
-	if len(out.ServiceEnv) == 0 {
+	deniedAny = false
+	for _, ref := range refs.RemovedServiceEnv {
+		if !checkRef(ctx, ac, &ref.Service) {
+			deniedAny = true
+			continue
+		}
+		out.RemovedServiceEnv = append(out.RemovedServiceEnv, ref)
+	}
+	if deniedAny {
+		omitted.add("appReferences.removedServiceEnv", OmittedRBACDenied)
+	}
+	deniedAny = false
+	for _, ref := range refs.StaleSecretEnv {
+		if !checkRef(ctx, ac, &ref.Secret) {
+			deniedAny = true
+			continue
+		}
+		out.StaleSecretEnv = append(out.StaleSecretEnv, ref)
+	}
+	if len(out.StaleSecretEnv) > 0 {
+		out.StaleSecretEnvTruncated = refs.StaleSecretEnvTruncated
+	}
+	if deniedAny {
+		omitted.add("appReferences.staleSecretEnv", OmittedRBACDenied)
+	}
+	if len(out.ServiceEnv) == 0 && len(out.DuplicateEnv) == 0 && len(out.RemovedServiceEnv) == 0 && len(out.StaleSecretEnv) == 0 {
 		return nil
 	}
 	return out
@@ -1435,6 +1483,30 @@ func checkRef(ctx context.Context, ac RefAccessChecker, r *ContextRef) bool {
 		return true
 	}
 	return ac.CanRead(ctx, r.Group, r.Kind, r.Namespace)
+}
+
+// gateContainerCompletionSplit requires access to both resources that establish
+// the observation; namespace access alone does not imply access to their state.
+func gateContainerCompletionSplit(ctx context.Context, ac RefAccessChecker, obj runtime.Object, obs *ContainerCompletionSplit, fieldPath string, omitted *omittedTracker) *ContainerCompletionSplit {
+	if obs == nil {
+		return nil
+	}
+	var namespace string
+	switch subject := obj.(type) {
+	case *batchv1.Job:
+		namespace = subject.Namespace
+	case *batchv1.CronJob:
+		namespace = subject.Namespace
+	default:
+		return nil
+	}
+	podRef := ContextRef{Kind: "Pod", Namespace: namespace, Name: obs.Pod}
+	jobRef := ContextRef{Kind: "Job", Group: "batch", Namespace: namespace, Name: obs.Job}
+	if !checkRef(ctx, ac, &podRef) || !checkRef(ctx, ac, &jobRef) {
+		omitted.add(fieldPath, OmittedRBACDenied)
+		return nil
+	}
+	return obs
 }
 
 // ---------------------------------------------------------------------------

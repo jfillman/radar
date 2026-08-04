@@ -1,6 +1,7 @@
 import { useMemo, useEffect, useCallback, useRef, useState } from 'react'
 import { useQueries, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
+import { workloadPodAwaitsScheduling } from '../capacity/podDemandGate'
 import { clsx } from 'clsx'
 import { Terminal, Stethoscope } from 'lucide-react'
 import {
@@ -20,11 +21,10 @@ import {
   gitOpsRouteForOwner,
   gitOpsOwnerFromRelationships,
   getGitOpsResourceStatus,
-  resolvedEnvFromKey,
   isDiagnoseKind,
 } from '@skyhook-io/k8s-ui'
 import type { ServicePortRenderProps } from '@skyhook-io/k8s-ui/components/resources/renderers/ServiceRenderer'
-import type { SelectedResource, ResourceRef, Relationships, ResolvedEnvFrom } from '../../types'
+import type { SelectedResource, ResourceRef, Relationships } from '../../types'
 import {
   kindToPlural,
   pluralToKind,
@@ -38,6 +38,7 @@ import {
   usePodLogs,
   useTopology,
   useUpdateResource,
+  usePreviewResources,
   useDeleteResource,
   useTriggerCronJob,
   useSuspendCronJob,
@@ -63,6 +64,7 @@ import {
   useWorkloadRuns,
   useApplications,
   fetchJSON,
+  fetchYamlSchemas,
 } from '../../api/client'
 import { PrometheusCharts, isPrometheusSupported } from '../resource/PrometheusCharts'
 import { PrometheusChartsGrid } from '../resource/PrometheusChartsGrid'
@@ -82,6 +84,7 @@ import {
   useCanNodeWrite,
   useNamespacedCapabilities,
   useIsLocalDeployment,
+  useCapabilitiesContext,
 } from '../../contexts/CapabilitiesContext'
 import { useOpenTerminal, useOpenLogs, useOpenWorkloadLogs, useOpenNodeTerminal } from '../dock'
 import { PortForwardButton, PortForwardInlineButton } from '../portforward/PortForwardButton'
@@ -95,6 +98,7 @@ import {
 import { useToast } from '../ui/Toast'
 import { Tooltip } from '../ui/Tooltip'
 import { PodRenderer } from '../resources/renderers/PodRenderer'
+import { KarpenterNodePoolRenderer } from '../resources/renderers/KarpenterNodePoolRenderer'
 import { NodeRenderer } from '../resources/renderers/NodeRenderer'
 import { ServiceRenderer } from '../resources/renderers/ServiceRenderer'
 import { WorkloadRenderer } from '../resources/renderers/WorkloadRenderer'
@@ -126,6 +130,7 @@ const BATCH_EXECUTION_KINDS = new Set([
 // Stable reference — web renderer wrappers inject platform hooks internally
 const rendererOverrides: RendererOverrides = {
   PodRenderer,
+  KarpenterNodePoolRenderer,
   NodeRenderer,
   ServiceRenderer,
   WorkloadRenderer,
@@ -291,7 +296,7 @@ function useActionsBarProps(kind: string, namespace: string, name: string) {
   const uncordonMutation = useUncordonNode()
   const drainMutation = useDrainNode()
 
-  const renderDiagnose = useDiagnoseCustomization()
+  const { renderAction: renderDiagnose } = useDiagnoseCustomization()
 
   return {
     canExec,
@@ -550,85 +555,6 @@ export function WorkloadView({
     [helmOwner, helmSourceResource],
   )
 
-  // For pods: extract envFrom ConfigMap/Secret names and resolve their keys
-  const isPod = apiKind === 'pods'
-  const { envFromConfigMapNames, envFromSecretNames } = useMemo(() => {
-    if (!isPod || !resource)
-      return {
-        envFromConfigMapNames: [] as string[],
-        envFromSecretNames: [] as string[],
-      }
-    const cmNames = new Set<string>()
-    const secretNames = new Set<string>()
-    const containers = [
-      ...(resource.spec?.containers || []),
-      ...(resource.spec?.initContainers || []),
-    ]
-    for (const c of containers) {
-      for (const ef of c.envFrom || []) {
-        if (ef.configMapRef?.name) cmNames.add(ef.configMapRef.name)
-        if (ef.secretRef?.name) secretNames.add(ef.secretRef.name)
-      }
-    }
-    return {
-      envFromConfigMapNames: Array.from(cmNames),
-      envFromSecretNames: Array.from(secretNames),
-    }
-  }, [isPod, resource])
-
-  const configMapQueries = useQueries({
-    queries: envFromConfigMapNames.map((cmName) => ({
-      queryKey: ['resources', 'configmaps', namespace, cmName],
-      queryFn: () => fetchJSON<any>(`/resources/configmaps/${namespace}/${cmName}`),
-      enabled: isPod,
-      staleTime: 30000,
-    })),
-  })
-
-  const secretQueries = useQueries({
-    queries: envFromSecretNames.map((secretName) => ({
-      queryKey: ['resources', 'secrets', namespace, secretName],
-      queryFn: () => fetchJSON<any>(`/resources/secrets/${namespace}/${secretName}`),
-      enabled: isPod,
-      staleTime: 30000,
-    })),
-  })
-
-  const resolvedEnvFrom = useMemo(() => {
-    if (!isPod || (envFromConfigMapNames.length === 0 && envFromSecretNames.length === 0))
-      return undefined
-    const result: ResolvedEnvFrom = {}
-    envFromConfigMapNames.forEach((n, i) => {
-      // Single-resource endpoint returns { resource, relationships } wrapper
-      const cm = configMapQueries[i]?.data?.resource ?? configMapQueries[i]?.data
-      if (cm)
-        result[resolvedEnvFromKey('configmap', n)] = {
-          keys: Object.keys(cm.data || {}),
-          values: cm.data || {},
-          isSecret: false,
-        }
-    })
-    envFromSecretNames.forEach((n, i) => {
-      const secret = secretQueries[i]?.data?.resource ?? secretQueries[i]?.data
-      if (secret) {
-        const decodedValues: Record<string, string> = {}
-        for (const [k, v] of Object.entries(secret.data || {})) {
-          try {
-            decodedValues[k] = atob(v as string)
-          } catch {
-            decodedValues[k] = v as string
-          }
-        }
-        result[resolvedEnvFromKey('secret', n)] = {
-          keys: Object.keys(decodedValues),
-          values: decodedValues,
-          isSecret: true,
-        }
-      }
-    })
-    return Object.keys(result).length > 0 ? result : undefined
-  }, [isPod, envFromConfigMapNames, envFromSecretNames, configMapQueries, secretQueries])
-
   // Fetch topology for hierarchy building (only when expanded)
   const { data: topology } = useTopology([namespace], 'resources', {
     enabled: expanded,
@@ -656,6 +582,7 @@ export function WorkloadView({
 
   // RBAC
   const canUpdateSecrets = useCanUpdateSecrets()
+  const { features, karpenter } = useCapabilitiesContext()
   const { canPortForward } = useNamespacedCapabilities(namespace)
   const isLocalDeployment = useIsLocalDeployment()
   const showServingPortForward = canPortForward || !isLocalDeployment
@@ -729,6 +656,7 @@ export function WorkloadView({
     [closeServingCurl, servingCurl],
   )
   const updateResource = useUpdateResource()
+  const previewResources = usePreviewResources()
   const baseActionsBarProps = useActionsBarProps(apiKind, namespace, name)
   const desktopDownload = useDesktopDownload()
 
@@ -766,10 +694,15 @@ export function WorkloadView({
   )
 
   const handleUpdateResource = useCallback(
-    async (params: { kind: string; namespace: string; name: string; yaml: string }) => {
+    async (params: Parameters<typeof updateResource.mutateAsync>[0]) => {
       await updateResource.mutateAsync(params)
     },
     [updateResource],
+  )
+  const handlePreviewResource = useCallback(
+    async (params: Parameters<typeof previewResources.mutateAsync>[0]) =>
+      previewResources.mutateAsync(params),
+    [previewResources],
   )
 
   const navigateRouter = useNavigate()
@@ -843,6 +776,9 @@ export function WorkloadView({
 
   const supportsWorkloadPods = ['deployments', 'statefulsets', 'daemonsets'].includes(apiKind)
   const workloadPodsQuery = useWorkloadPods(supportsWorkloadPods ? apiKind : '', namespace, name)
+  const workloadAwaitsCapacity =
+    karpenter?.state === 'available' &&
+    (workloadPodsQuery.data?.pods ?? []).some(workloadPodAwaitsScheduling)
   const servingRefs = useMemo(() => collectServingRefs(relationships), [relationships])
   const servingQueries = useQueries({
     queries: servingRefs.map((ref) => {
@@ -898,6 +834,14 @@ export function WorkloadView({
         certificateInfo={certificateInfo}
         hpaDiagnosis={hpaDiagnosis}
         workloadPods={supportsWorkloadPods ? workloadPodsQuery.data?.pods : undefined}
+        onEvaluateCapacity={
+          workloadAwaitsCapacity
+            ? () =>
+                navigateRouter(
+                  `/capacity/demand?owner=${encodeURIComponent(`${namespace}/${pluralToKind(apiKind)}/${name}`)}`,
+                )
+            : undefined
+        }
         workloadPodsLoading={supportsWorkloadPods ? workloadPodsQuery.isLoading : false}
         workloadPodsError={supportsWorkloadPods ? (workloadPodsQuery.error as Error | null) : null}
         servingResources={servingResources}
@@ -922,6 +866,10 @@ export function WorkloadView({
         onUpdateResource={handleUpdateResource}
         isUpdatingResource={updateResource.isPending}
         updateResourceError={updateResource.error?.message ?? null}
+        onPreviewResource={features?.yamlReview ? handlePreviewResource : undefined}
+        isPreviewingResource={previewResources.isPending}
+        previewResourceError={previewResources.error?.message ?? null}
+        yamlSchemaLoader={features?.yamlSchemas ? fetchYamlSchemas : undefined}
         // Tab state (URL-synced)
         activeTab={migratedTab}
         onTabChange={handleTabChange}
@@ -982,7 +930,6 @@ export function WorkloadView({
         onDownload={desktopDownload}
         actionsBarProps={actionsBarProps}
         rendererOverrides={rendererOverrides}
-        resolvedEnvFrom={resolvedEnvFrom}
         renderOverviewExtra={({ kind: k, namespace: ns, name: n, group: g, context }) => {
           // Network entry kinds (Service/Ingress/Route/Gateway) ARE the diagnosis
           // target: DiagnoseInlineSection renders in the drawer, no hint. Workload

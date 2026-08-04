@@ -128,6 +128,11 @@ func main() {
 	authGroupsHeader := flag.String("auth-groups-header", "X-Forwarded-Groups", "Header for groups (proxy mode)")
 	authProxyLogoutURL := flag.String("auth-proxy-logout-url", "", "URL the logout button redirects to in proxy mode, to tear down the upstream proxy session (e.g. oauth2-proxy's /oauth2/sign_out). The proxy must actually invalidate the session at this URL — Radar only clears its own cookie (Basic Auth has no logout). Empty = clear Radar's cookie only.")
 	authOIDCIssuer := flag.String("auth-oidc-issuer", "", "OIDC issuer URL")
+	authOIDCInternalIssuer := flag.String("auth-oidc-internal-issuer", "", "Internal OIDC issuer base URL used by Radar for discovery and derived server-side endpoints; tokens are still validated against --auth-oidc-issuer")
+	authOIDCAuthorizationURL := flag.String("auth-oidc-authorization-url", "", "Browser-facing OIDC authorization endpoint URL (overrides discovery)")
+	authOIDCTokenURL := flag.String("auth-oidc-token-url", "", "Server-side OIDC token endpoint URL (overrides discovery)")
+	authOIDCUserInfoURL := flag.String("auth-oidc-userinfo-url", "", "Server-side OIDC userinfo endpoint URL (overrides discovery)")
+	authOIDCJWKSURL := flag.String("auth-oidc-jwks-url", "", "Server-side OIDC JWKS endpoint URL (overrides discovery)")
 	authOIDCClientID := flag.String("auth-oidc-client-id", "", "OIDC client ID")
 	authOIDCClientSecret := flag.String("auth-oidc-client-secret", "", "OIDC client secret")
 	authOIDCRedirectURL := flag.String("auth-oidc-redirect-url", "", "OIDC redirect URL")
@@ -146,6 +151,7 @@ func main() {
 	cloudURL := flag.String("cloud-url", os.Getenv("RADAR_CLOUD_URL"), "Radar Hub WebSocket URL (e.g. wss://api.radarhq.io/agent) — empty = local-only. Env: RADAR_CLOUD_URL")
 	cloudToken := flag.String("cloud-token", os.Getenv("RADAR_CLOUD_TOKEN"), "Connection token from the Radar install flow (rhc_<random>). Env: RADAR_CLOUD_TOKEN")
 	cloudClusterName := flag.String("cluster-name", os.Getenv("RADAR_CLOUD_CLUSTER_NAME"), "Human-readable cluster name shown in Radar (required with --cloud-url). Env: RADAR_CLOUD_CLUSTER_NAME")
+	cloudInsecureSkipVerify := flag.Bool("cloud-insecure-skip-verify", os.Getenv("RADAR_CLOUD_INSECURE_SKIP_VERIFY") == "true", "Skip TLS verification on the Radar Hub tunnel — for trials against a self-hosted hub with a self-signed cert (insecure: encrypted but not authenticated). Env: RADAR_CLOUD_INSECURE_SKIP_VERIFY")
 	// Tunable deadlines for slow / high-latency / SSH-tunneled clusters.
 	// Defaults preserve the original behavior. Each flag falls back to an
 	// environment variable so Kubernetes deployments can source values from
@@ -310,6 +316,11 @@ func main() {
 			GroupsHeader:              *authGroupsHeader,
 			ProxyLogoutURL:            *authProxyLogoutURL,
 			OIDCIssuer:                *authOIDCIssuer,
+			OIDCInternalIssuer:        *authOIDCInternalIssuer,
+			OIDCAuthorizationURL:      *authOIDCAuthorizationURL,
+			OIDCTokenURL:              *authOIDCTokenURL,
+			OIDCUserInfoURL:           *authOIDCUserInfoURL,
+			OIDCJWKSURL:               *authOIDCJWKSURL,
 			OIDCClientID:              *authOIDCClientID,
 			OIDCClientSecret:          *authOIDCClientSecret,
 			OIDCRedirectURL:           *authOIDCRedirectURL,
@@ -436,8 +447,9 @@ func main() {
 				Token:        *cloudToken,
 				ClusterID:    *cloudClusterName,
 				ClusterName:  *cloudClusterName,
-				Namespace:    namespace,
-				APIServerURL: apiServerURL,
+				Namespace:          namespace,
+				APIServerURL:       apiServerURL,
+				InsecureSkipVerify: *cloudInsecureSkipVerify,
 				// The chart sets both env vars only when rbac.selfUpgrade is
 				// enabled. Match handleSelfUpgrade's configuration gate exactly.
 				SelfUpgradeAvailable: namespace != "" && deploymentName != "",

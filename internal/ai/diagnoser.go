@@ -60,11 +60,8 @@ type Request struct {
 	// Agent selects which backend CLI drives this turn ("claude"/"codex"). Empty
 	// uses the Diagnoser's default. A run picks once at Start and reuses it.
 	Agent string
-	// Isolated runs the agent without the user's own CLI config (other MCP servers,
-	// guidelines, project files) — the default. When false ("my setup"), the agent
-	// runs with the user's full environment. Only the Codex backend distinguishes
-	// the two; Claude is always strict-MCP-config contained.
-	Isolated bool
+	// Profile is selected and validated before the run starts.
+	Profile ExecutionProfile
 	// Model optionally overrides the CLI's default model (e.g. "opus", "sonnet" for
 	// Claude; a model slug for Codex). Empty leaves the agent's own default.
 	Model string
@@ -313,6 +310,31 @@ func NewDetected(ctx context.Context) (*Diagnoser, error) {
 // DefaultAgent is the backend chosen when a run doesn't name one.
 func (d *Diagnoser) DefaultAgent() string { return d.defName }
 
+// AgentInfos reports the exact backends this Diagnoser can drive.
+func (d *Diagnoser) AgentInfos(ctx context.Context, withVersions bool) []AgentInfo {
+	var infos []AgentInfo
+	for _, name := range agentCLICandidates {
+		agent, ok := d.agents[name]
+		if !ok {
+			continue
+		}
+		info := AgentInfo{
+			Name:            name,
+			Label:           AgentLabel(name),
+			Path:            agent.Path(),
+			Present:         true,
+			Supported:       true,
+			Profiles:        ProfilesFor(name),
+			ConsentSurfaces: ConsentSurfacesFor(name),
+		}
+		if withVersions {
+			info.Version = probeVersion(ctx, agent.Path())
+		}
+		infos = append(infos, info)
+	}
+	return infos
+}
+
 // AgentName normalizes a client-requested backend name to one that actually
 // exists, falling back to the default — so a run records the agent it really used.
 func (d *Diagnoser) AgentName(name string) string {
@@ -352,6 +374,13 @@ func (d *Diagnoser) DiagnoseStream(ctx context.Context, req Request, onEvent fun
 	if agent == nil {
 		return Diagnosis{}, ErrNoCLI
 	}
+	profile := req.Profile
+	if profile == "" {
+		profile = DefaultProfileFor(agent.Name())
+	}
+	if !SupportsProfile(agent.Name(), profile) {
+		return Diagnosis{}, fmt.Errorf("ai: %s does not support execution profile %q", AgentLabel(agent.Name()), profile)
+	}
 
 	// Read-only investigation turns get the read-only MCP mount; an apply turn
 	// (user-confirmed) gets the full mount with write tools.
@@ -382,7 +411,7 @@ func (d *Diagnoser) DiagnoseStream(ctx context.Context, req Request, onEvent fun
 
 	cmd, cleanup, err := agent.command(ctx, turnSpec{
 		mcpURL: mcpURL, prompt: prompt, systemPrompt: sys,
-		sessionID: sessionID, apply: req.Apply, isolated: req.Isolated,
+		sessionID: sessionID, apply: req.Apply, profile: profile,
 		model: req.Model, effort: req.Effort, maxTurns: maxTurns(),
 		workdir: req.WorkDir,
 	})
@@ -515,7 +544,7 @@ func healthFrame(target string, health *ResourceHealthSignal) string {
 			}
 			b.WriteString(".")
 		}
-		b.WriteString(" Treat audit findings as configuration risk, not proof of a live outage.")
+		b.WriteString(" Treat audit findings as static posture and remediation priority, not evidence of an active outage.")
 	}
 	return b.String()
 }

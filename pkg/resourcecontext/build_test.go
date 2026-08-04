@@ -3,6 +3,7 @@ package resourcecontext
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -15,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/skyhook-io/radar/pkg/topology"
 )
@@ -360,6 +362,71 @@ func TestBuild_Deployment_WorkloadSummaryAndTemplateUses(t *testing.T) {
 	}
 	if rc.Uses.ServiceAccount == nil || rc.Uses.ServiceAccount.Name != "api-sa" {
 		t.Errorf("Uses.ServiceAccount: got %+v", rc.Uses.ServiceAccount)
+	}
+}
+
+func TestBuild_Deployment_RolloutRisk(t *testing.T) {
+	replicas := int32(3)
+	maxSurge := intstr.FromInt32(0)
+	maxUnavailable := intstr.FromString("100%")
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "prod"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RollingUpdateDeploymentStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateDeployment{
+					MaxSurge:       &maxSurge,
+					MaxUnavailable: &maxUnavailable,
+				},
+			},
+		},
+	}
+
+	rc := Build(context.Background(), dep, Options{Tier: TierBasic, AccessChecker: allowAllChecker{}})
+	if rc.WorkloadSummary == nil || rc.WorkloadSummary.RolloutRisk == nil {
+		t.Fatalf("WorkloadSummary.RolloutRisk: got nil; rc=%+v", rc)
+	}
+	risk := rc.WorkloadSummary.RolloutRisk
+	if risk.Reason != "all_replicas_unavailable_without_surge" || risk.Replicas != 3 {
+		t.Errorf("identity facts: got %+v", risk)
+	}
+	if risk.MaxSurge != "0" || risk.MaxUnavailable != "100%" || risk.ResolvedMaxSurge != 0 || risk.ResolvedMaxUnavailable != 3 {
+		t.Errorf("strategy facts: got %+v", risk)
+	}
+	if !strings.Contains(risk.Message, "can drop to zero available pods") || !strings.Contains(risk.Action, "maxSurge") {
+		t.Errorf("guidance: got %+v", risk)
+	}
+}
+
+func TestBuild_Deployment_OmitsSafeRolloutRisk(t *testing.T) {
+	replicas := int32(3)
+	maxSurge := intstr.FromString("25%")
+	maxUnavailable := intstr.FromString("100%")
+	dep := &appsv1.Deployment{Spec: appsv1.DeploymentSpec{
+		Replicas: &replicas,
+		Strategy: appsv1.DeploymentStrategy{
+			Type: appsv1.RollingUpdateDeploymentStrategyType,
+			RollingUpdate: &appsv1.RollingUpdateDeployment{
+				MaxSurge:       &maxSurge,
+				MaxUnavailable: &maxUnavailable,
+			},
+		},
+	}}
+
+	rc := Build(context.Background(), dep, Options{Tier: TierBasic})
+	if rc.WorkloadSummary == nil {
+		t.Fatal("WorkloadSummary: got nil")
+	}
+	if rc.WorkloadSummary.RolloutRisk != nil {
+		t.Fatalf("RolloutRisk: got %+v, want nil", rc.WorkloadSummary.RolloutRisk)
+	}
+	wire, err := json.Marshal(rc)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(wire), "rolloutRisk") {
+		t.Fatalf("safe deployment emitted rolloutRisk: %s", wire)
 	}
 }
 
@@ -786,6 +853,87 @@ func TestBuild_RBACDenied_AppReferences(t *testing.T) {
 	}
 }
 
+func TestBuild_RBACDenied_ServiceReferencePreservesDuplicateEnv(t *testing.T) {
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "frontend", Namespace: "prod"},
+	}
+	rc := Build(context.Background(), dep, Options{
+		Tier:          TierBasic,
+		AccessChecker: denyChecker{group: "", kind: "Service", namespace: "shared"},
+		AppReferences: &AppReferences{
+			ServiceEnv: []ServiceEnvReference{{
+				Status:  "port_mismatch",
+				Service: ContextRef{Kind: "Service", Namespace: "shared", Name: "product-catalog"},
+			}},
+			DuplicateEnv: []DuplicateEnvVarReference{{
+				Container:         "app",
+				Env:               "PRODUCT_CATALOG_URL",
+				Count:             2,
+				LastDeclaredValue: "http://localhost:8080",
+			}},
+		},
+	})
+	if rc.AppReferences == nil || len(rc.AppReferences.DuplicateEnv) != 1 {
+		t.Fatalf("duplicate env facts should survive Service RBAC deny; got %+v", rc.AppReferences)
+	}
+	if len(rc.AppReferences.ServiceEnv) != 0 {
+		t.Fatalf("Service env references should be removed after deny; got %+v", rc.AppReferences.ServiceEnv)
+	}
+	gotOmitted := false
+	for _, o := range rc.Omitted {
+		if o.Field == "appReferences.serviceEnv" && o.Reason == OmittedRBACDenied {
+			gotOmitted = true
+			break
+		}
+	}
+	if !gotOmitted {
+		t.Fatalf("expected omitted [appReferences.serviceEnv, rbac_denied]; got %+v", rc.Omitted)
+	}
+}
+
+func TestBuild_RBACDenied_HistoryAppReferences(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "catalog", Namespace: "prod"}}
+	t.Run("removed Service", func(t *testing.T) {
+		rc := Build(context.Background(), pod, Options{
+			Tier:          TierBasic,
+			AccessChecker: denyChecker{kind: "Service", namespace: "shared"},
+			AppReferences: &AppReferences{RemovedServiceEnv: []RemovedServiceEnvReference{{
+				Service: ContextRef{Kind: "Service", Namespace: "shared", Name: "cart"},
+			}}},
+		})
+		if rc.AppReferences != nil {
+			t.Fatalf("denied removed-Service fact should be omitted: %+v", rc.AppReferences)
+		}
+		if !hasOmitted(rc.Omitted, "appReferences.removedServiceEnv") {
+			t.Fatalf("missing removed-Service omission marker: %+v", rc.Omitted)
+		}
+	})
+	t.Run("stale Secret", func(t *testing.T) {
+		rc := Build(context.Background(), pod, Options{
+			Tier:          TierBasic,
+			AccessChecker: denyChecker{kind: "Secret", namespace: "prod"},
+			AppReferences: &AppReferences{StaleSecretEnv: []StaleSecretEnvReference{{
+				Secret: ContextRef{Kind: "Secret", Namespace: "prod", Name: "db-conn"},
+			}}},
+		})
+		if rc.AppReferences != nil {
+			t.Fatalf("denied stale-Secret fact should be omitted: %+v", rc.AppReferences)
+		}
+		if !hasOmitted(rc.Omitted, "appReferences.staleSecretEnv") {
+			t.Fatalf("missing stale-Secret omission marker: %+v", rc.Omitted)
+		}
+	})
+}
+
+func hasOmitted(items []OmittedField, field string) bool {
+	for _, item := range items {
+		if item.Field == field && item.Reason == OmittedRBACDenied {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuild_NilObj(t *testing.T) {
 	if rc := Build(context.Background(), nil, Options{}); rc != nil {
 		t.Errorf("Build(nil) = %+v, want nil", rc)
@@ -1167,3 +1315,91 @@ func indexOf(s, sub string) int {
 var (
 	_ = policyv1.PodDisruptionBudget{}
 )
+
+func TestBuild_ContainerCompletionSplit_GatedByAccess(t *testing.T) {
+	cj := &batchv1.CronJob{
+		TypeMeta:   metav1.TypeMeta{Kind: "CronJob", APIVersion: "batch/v1"},
+		ObjectMeta: metav1.ObjectMeta{Name: "audit-log-archiver", Namespace: "prod"},
+		Spec:       batchv1.CronJobSpec{Schedule: "* * * * *"},
+	}
+	obs := &ContainerCompletionSplit{
+		Pod: "audit-log-archiver-1-pod", Job: "audit-log-archiver-1",
+		ExitedContainer: "archiver", RunningContainers: []string{"fluent-bit-sidecar"},
+	}
+
+	t.Run("attached when Pod and Job are readable", func(t *testing.T) {
+		rc := Build(context.Background(), cj, Options{
+			Tier: TierBasic, AccessChecker: allowAllChecker{}, ContainerCompletionSplit: obs,
+		})
+		if rc.CronJobSummary == nil || rc.CronJobSummary.ContainerCompletionSplit == nil {
+			t.Fatalf("want ContainerCompletionSplit attached, got %+v", rc.CronJobSummary)
+		}
+	})
+
+	for _, denied := range []denyChecker{
+		{group: "", kind: "Pod", namespace: "prod"},
+		{group: "batch", kind: "Job", namespace: "prod"},
+	} {
+		t.Run("omitted when "+denied.kind+" read is denied", func(t *testing.T) {
+			rc := Build(context.Background(), cj, Options{
+				Tier: TierBasic, AccessChecker: denied, ContainerCompletionSplit: obs,
+			})
+			if rc.CronJobSummary != nil && rc.CronJobSummary.ContainerCompletionSplit != nil {
+				t.Fatalf("want ContainerCompletionSplit omitted when %s read denied", denied.kind)
+			}
+			found := false
+			for _, o := range rc.Omitted {
+				if o.Field == "cronJobSummary.containerCompletionSplit" && o.Reason == OmittedRBACDenied {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("want omitted [cronJobSummary.containerCompletionSplit, rbac_denied]; got %+v", rc.Omitted)
+			}
+		})
+	}
+
+	job := &batchv1.Job{
+		TypeMeta:   metav1.TypeMeta{Kind: "Job", APIVersion: "batch/v1"},
+		ObjectMeta: metav1.ObjectMeta{Name: "audit-log-archiver-1", Namespace: "prod"},
+	}
+	t.Run("attached to Job summary", func(t *testing.T) {
+		rc := Build(context.Background(), job, Options{
+			Tier: TierBasic, AccessChecker: allowAllChecker{}, ContainerCompletionSplit: obs,
+		})
+		if rc.JobSummary == nil || rc.JobSummary.ContainerCompletionSplit == nil {
+			t.Fatalf("want ContainerCompletionSplit attached, got %+v", rc.JobSummary)
+		}
+	})
+
+	for _, denied := range []denyChecker{
+		{group: "", kind: "Pod", namespace: "prod"},
+		{group: "batch", kind: "Job", namespace: "prod"},
+	} {
+		t.Run("Job summary omitted when "+denied.kind+" read is denied", func(t *testing.T) {
+			rc := Build(context.Background(), job, Options{
+				Tier: TierBasic, AccessChecker: denied, ContainerCompletionSplit: obs,
+			})
+			if rc.JobSummary != nil && rc.JobSummary.ContainerCompletionSplit != nil {
+				t.Fatalf("want ContainerCompletionSplit omitted when %s read denied", denied.kind)
+			}
+			found := false
+			for _, o := range rc.Omitted {
+				if o.Field == "jobSummary.containerCompletionSplit" && o.Reason == OmittedRBACDenied {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("want omitted [jobSummary.containerCompletionSplit, rbac_denied]; got %+v", rc.Omitted)
+			}
+		})
+	}
+
+	t.Run("unrelated kind is not gated", func(t *testing.T) {
+		tracker := newOmittedTracker()
+		deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "worker", Namespace: "prod"}}
+		if got := gateContainerCompletionSplit(context.Background(), allowAllChecker{}, deployment, obs, "unused", tracker); got != nil {
+			t.Fatalf("want nil for Deployment, got %+v", got)
+		}
+	})
+}

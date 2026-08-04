@@ -22,6 +22,7 @@ import { HelmView } from './components/helm/HelmView'
 import { HelmCompareRoute } from './components/helm/HelmCompareRoute'
 import { TrafficView } from './components/traffic/TrafficView'
 import { CostView } from './components/cost/CostView'
+import { CapacityView } from './components/capacity/CapacityView'
 import { AuditView } from './components/audit/AuditView'
 import { IssuesPane } from './components/issues/IssuesPane'
 import { GitOpsView } from './components/gitops/GitOpsView'
@@ -50,17 +51,17 @@ import { DiagnosticsOverlay } from './components/ui/DiagnosticsOverlay'
 import { useEventSource } from './hooks/useEventSource'
 import { debugNamespaceLog, useNamespaces, useNamespaceScope, useSetActiveNamespace, useSwitchContext, useAuthMe, useAudit } from './api/client'
 import { buildAuditSeverityMap } from './utils/auditBadges'
-import { routePath, apiUrl, getAuthHeaders, getCredentialsMode } from './api/config'
+import { routePath, apiUrl, getAuthHeaders, getCredentialsMode, stripBasename } from './api/config'
 import { KeyboardShortcutProvider, useRegisterShortcut, useRegisterShortcuts, useSuppressBaseShortcuts } from './hooks/useKeyboardShortcuts'
 import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
 import { useDocumentTitle } from './hooks/useDocumentTitle'
 import type { ClusterLoadState } from './types/clusterLoadState'
 import { useClusterLoadState } from './hooks/useClusterLoadState'
-import { Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, SquareTerminal, ShieldCheck, GitBranch, HelpCircle, Loader2, RefreshCw } from 'lucide-react'
+import { Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, SquareTerminal, ShieldCheck, GitBranch, Gauge, HelpCircle, Loader2, RefreshCw } from 'lucide-react'
 import { useTheme } from './context/ThemeContext'
 import { Tooltip } from './components/ui/Tooltip'
 import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
-import { SettingsDialog } from './components/settings/SettingsDialog'
+import { SettingsDialog, type SettingsSectionId } from './components/settings/SettingsDialog'
 import type { APIResource, TopologyNode, GroupingMode, MainView, SelectedResource, SelectedHelmRelease, NodeKind, TopologyMode, Topology, K8sEvent } from './types'
 import { kindToPlural, pluralToKind, openExternal, apiVersionToGroup, relatedResourcePath, searchHitToSelectedResource } from './utils/navigation'
 import { type OmnibarHandle } from './components/ui/Omnibar'
@@ -114,7 +115,7 @@ const FLEET_MODE_KINDS = new Set<NodeKind>([
 
 // Convert API resource name back to topology node ID prefix
 // Extended MainView type that includes traffic and cost
-type ExtendedMainView = MainView | 'traffic' | 'cost' | 'workload' | 'checks' | 'gitops' | 'compare' | 'helmCompare' | 'issues' | 'applications'
+type ExtendedMainView = MainView | 'traffic' | 'cost' | 'capacity' | 'workload' | 'checks' | 'gitops' | 'compare' | 'helmCompare' | 'issues' | 'applications'
 
 // Extract view from URL path
 function getViewFromPath(pathname: string): ExtendedMainView {
@@ -127,6 +128,7 @@ function getViewFromPath(pathname: string): ExtendedMainView {
   if (path === 'helm') return 'helm'
   if (path === 'traffic') return 'traffic'
   if (path === 'cost') return 'cost'
+  if (path === 'capacity') return 'capacity'
   if (path === 'workload') return 'workload'
   if (path === 'checks' || path === 'audit') return 'checks'  // /audit = legacy → checks
   if (path === 'gitops') return 'gitops'
@@ -143,6 +145,8 @@ function getViewFromPath(pathname: string): ExtendedMainView {
 //     breakdown; a filter would only hide rows).
 //   - A GitOps detail tree spans namespaces — its controller lives in one
 //     namespace but manages workloads across many.
+//   - Upgrade impact evaluates the full readable cluster scope rather than a
+//     browsing filter.
 //   - A cluster-scoped resource kind (Nodes, PVs, ClusterRoles…) has no
 //     namespace at all.
 // The pick itself is preserved so it re-applies when the user returns to a
@@ -160,6 +164,18 @@ function namespaceFilterDisabled(
     return {
       disabled: true,
       tooltip: 'Cost is reported per namespace across the whole cluster — the namespace filter doesn’t apply here.',
+    }
+  }
+  if (view === 'capacity') {
+    return {
+      disabled: true,
+      tooltip: 'Capacity is reported across the cluster — the namespace filter doesn’t apply here.',
+    }
+  }
+  if (view === 'checks' && pathname.startsWith('/checks/upgrade')) {
+    return {
+      disabled: true,
+      tooltip: 'Upgrade impact scans every namespace you can access — the namespace filter doesn’t apply.',
     }
   }
   const segments = pathname.replace(/^\//, '').split('/')
@@ -225,7 +241,15 @@ function radarPageTitle(pathname: string, search = '', apiResources?: APIResourc
     return slash >= 0 && slash < decoded.length - 1 ? decoded.slice(slash + 1) : decoded
   }
 
+  if (view === 'checks' && pathSegments[1] === 'upgrade') return 'Upgrade impact'
+
   // The landing view reads "Overview" rather than "Home" in the tab.
+  if (view === 'capacity') {
+    if (pathSegments[1] === 'pools') return decode(pathSegments[2] ?? '') || 'Capacity'
+    if (pathSegments[1] === 'demand') return 'Capacity Demand'
+    if (pathSegments[1] === 'activity') return 'Capacity Activity'
+  }
+
   if (view === 'home') return 'Overview'
   // Every other view's label is its id capitalized — getViewFromPath has already
   // normalized aliases (e.g. /audit → 'checks'), so no lookup table is needed.
@@ -343,12 +367,19 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   // Auth check — detect if auth is enabled but user is not authenticated
   const { data: authMe, isPending: authMePending } = useAuthMe()
 
-  // Restore navigation path after session-expiry re-auth redirect
+  // Restore navigation path after session-expiry re-auth redirect.
+  // The stored value is basename-relative, but strip defensively anyway:
+  // sessionStorage outlives app upgrades, so a value written by an older
+  // version may still carry the basename — and navigate() re-applies the
+  // basename, which would double it (/c/abc/c/abc/...). Trade-off: if a host
+  // mounts the app at a basename that exactly equals an internal route (e.g.
+  // /topology), this second strip eats the route and re-auth lands on home —
+  // accepted, since a wrong-but-valid landing beats a doubled URL.
   useEffect(() => {
     const returnPath = sessionStorage.getItem('radar_return_path')
     if (returnPath) {
       sessionStorage.removeItem('radar_return_path')
-      navigate(returnPath, { replace: true })
+      navigate(stripBasename(returnPath), { replace: true })
     }
   }, [navigate])
 
@@ -380,6 +411,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
   // Get mainView from URL path
   const mainView = getViewFromPath(location.pathname)
+  const upgradeReadinessRoute = location.pathname.startsWith('/checks/upgrade')
 
   // Initialize the kind→plural discovery map app-wide (not just on ResourcesView
   // mount) so the omnibar can open a CRD hit with an irregular plural from any
@@ -464,7 +496,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   // The host's URL for the CURRENT view, if taken over. Drives the redirect
   // effect and the "Opening…" splash.
   const viewTakeoverHref =
-    mainView === 'issues' || mainView === 'gitops' || mainView === 'checks'
+    (mainView === 'issues' || mainView === 'gitops' || mainView === 'checks') && !upgradeReadinessRoute
       ? takeover[mainView]
       : undefined
   useEffect(() => {
@@ -507,13 +539,23 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
   // Settings dialog state
   const [showSettings, setShowSettings] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>('overview')
+  const openSettings = useCallback((section: SettingsSectionId = 'overview') => {
+    setSettingsSection(section)
+    setShowSettings(true)
+  }, [])
 
   // Listen for "open-settings" DOM event (used by MCPSetupDialog etc.)
   useEffect(() => {
-    const handler = () => setShowSettings(true)
+    const handler = (event: Event) => {
+      const section =
+        (event as CustomEvent<{ section?: SettingsSectionId }>).detail?.section ??
+        'overview'
+      openSettings(section)
+    }
     window.addEventListener('radar:open-settings', handler)
     return () => window.removeEventListener('radar:open-settings', handler)
-  }, [])
+  }, [openSettings])
 
   // Listen for "open-local-terminal" DOM event — the AI surface is portaled above
   // the DockProvider, so it can't call useOpenLocalTerminal directly; it dispatches
@@ -667,6 +709,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     newParams.delete('kind')
     newParams.delete('mode')
     newParams.delete('group')
+    newParams.delete('target')
     // Open as a normal drawer — never inherit a stale ?full=1/tab from an
     // expanded view we're navigating away from (only expand/drill set those).
     newParams.delete('full')
@@ -768,7 +811,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   const VIEW_SHORTCUT_KEYS: Record<ExtendedMainView, string> = {
     home: 'g h', resources: 'g r', issues: 'g i', topology: 'g t',
     applications: 'g a', timeline: 'g l', traffic: 'g f', helm: 'g m',
-    gitops: 'g o', checks: 'g u', cost: 'g c',
+    gitops: 'g o', checks: 'g u', cost: 'g c', capacity: 'g p',
     // Non-rail views (reachable via deep links / actions, not the rail) get no
     // dedicated mnemonic — listed for exhaustiveness so the type stays total.
     workload: '', compare: '', helmCompare: '',
@@ -853,7 +896,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           description: 'Open settings',
           category: 'General' as const,
           scope: 'global' as const,
-          handler: () => setShowSettings(true),
+          handler: () => openSettings(),
         }]
       : []),
   ])
@@ -948,9 +991,11 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   const fastInvalidationRef = useRef<{
     changedKinds: Set<string>   // every changed kind (any op) → detail drawer
     structuralKinds: Set<string> // add/delete kinds → list membership + counts + dashboard
+    environmentNamespaces: Set<string>
+    environmentPods: Map<string, Set<string>>
     secretsChanged: boolean
     timer: number | null
-  }>({ changedKinds: new Set(), structuralKinds: new Set(), secretsChanged: false, timer: null })
+  }>({ changedKinds: new Set(), structuralKinds: new Set(), environmentNamespaces: new Set(), environmentPods: new Map(), secretsChanged: false, timer: null })
   const slowInvalidationRef = useRef<{
     updatedKinds: Set<string>    // update-only churn → throttled list + dashboard
     timer: number | null
@@ -967,6 +1012,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     if (tl.timer === null) {
       tl.timer = window.setTimeout(() => {
         queryClient.invalidateQueries({ queryKey: ['changes'] })
+        // The ring-and-delta timeline path: an invalidation costs one ~KB
+        // cursor delta, so SSE keeps the timeline fresh within seconds and
+        // the hook's 10s poll remains the no-SSE fallback.
+        queryClient.invalidateQueries({ queryKey: ['timeline-ring'] })
         timelineInvalidationRef.current = { timer: null }
       }, 5000)
     }
@@ -981,6 +1030,12 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     fast.changedKinds.add(kind)
     if (structural) fast.structuralKinds.add(kind)
     if (kind === 'secrets') fast.secretsChanged = true
+    if ((kind === 'configmaps' || kind === 'secrets') && event.namespace) fast.environmentNamespaces.add(event.namespace)
+    if (kind === 'pods' && event.namespace && event.name) {
+      const names = fast.environmentPods.get(event.namespace) ?? new Set<string>()
+      names.add(event.name)
+      fast.environmentPods.set(event.namespace, names)
+    }
 
     const slow = slowInvalidationRef.current
     if (!structural) slow.updatedKinds.add(kind)
@@ -1002,11 +1057,19 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         if (f.secretsChanged) {
           queryClient.invalidateQueries({ queryKey: ['secret-cert-expiry'] })
         }
+        for (const namespace of f.environmentNamespaces) {
+          queryClient.invalidateQueries({ queryKey: ['pod-environment', namespace] })
+        }
+        for (const [namespace, names] of f.environmentPods) {
+          for (const name of names) {
+            queryClient.invalidateQueries({ queryKey: ['pod-environment', namespace, name] })
+          }
+        }
         // GitOps behavior unchanged from before — refreshes every batch when a
         // GitOps view is mounted (Phase 2 will make this relevance-aware).
         queryClient.invalidateQueries({ queryKey: ['gitops-tree'] })
         queryClient.invalidateQueries({ queryKey: ['gitops-insights'] })
-        fastInvalidationRef.current = { changedKinds: new Set(), structuralKinds: new Set(), secretsChanged: false, timer: null }
+        fastInvalidationRef.current = { changedKinds: new Set(), structuralKinds: new Set(), environmentNamespaces: new Set(), environmentPods: new Map(), secretsChanged: false, timer: null }
       }, 3000)
     }
 
@@ -1032,7 +1095,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     if (fastInvalidationRef.current.timer !== null) clearTimeout(fastInvalidationRef.current.timer)
     if (slowInvalidationRef.current.timer !== null) clearTimeout(slowInvalidationRef.current.timer)
     if (timelineInvalidationRef.current.timer !== null) clearTimeout(timelineInvalidationRef.current.timer)
-    fastInvalidationRef.current = { changedKinds: new Set(), structuralKinds: new Set(), secretsChanged: false, timer: null }
+    fastInvalidationRef.current = { changedKinds: new Set(), structuralKinds: new Set(), environmentNamespaces: new Set(), environmentPods: new Map(), secretsChanged: false, timer: null }
     slowInvalidationRef.current = { updatedKinds: new Set(), timer: null }
     timelineInvalidationRef.current = { timer: null }
   }, [])
@@ -1055,7 +1118,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
       if (fastInvalidationRef.current.timer !== null) clearTimeout(fastInvalidationRef.current.timer)
       if (slowInvalidationRef.current.timer !== null) clearTimeout(slowInvalidationRef.current.timer)
       if (timelineInvalidationRef.current.timer !== null) clearTimeout(timelineInvalidationRef.current.timer)
-      fastInvalidationRef.current = { changedKinds: new Set(), structuralKinds: new Set(), secretsChanged: false, timer: null }
+      fastInvalidationRef.current = { changedKinds: new Set(), structuralKinds: new Set(), environmentNamespaces: new Set(), environmentPods: new Map(), secretsChanged: false, timer: null }
       slowInvalidationRef.current = { updatedKinds: new Set(), timer: null }
       timelineInvalidationRef.current = { timer: null }
 
@@ -1512,10 +1575,9 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   }, [displayedTopology, visibleKinds, namespaces, topologyMode])
 
   // Cluster Audit findings, joined onto topology nodes by the audit key the
-  // backend stamps on each node (data.auditKey). The graph surfaces DANGER only
-  // (warnings would turn a dense graph into a heatmap); the node component reads
-  // data.auditDanger. Re-runs only when findings change, and copies nodes only
-  // when there are findings to attach — no overhead on clusters with none.
+  // backend stamps on each node (data.auditKey). Only badge-worthy findings
+  // reach the graph; the raw auditDanger/auditWarning property names remain at
+  // this compatibility boundary while the node presents them as High/Medium.
   const audit = useAudit(namespaces)
   const auditSeverityMap = useMemo(
     () => buildAuditSeverityMap(audit.data?.findings, audit.data?.checks),
@@ -1596,7 +1658,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           pinned={navRailEffectivePinned}
           onTogglePinned={toggleNavRailPinned}
           showPinToggle={!railForcedSlim}
-          onOpenSettings={() => setShowSettings(true)}
+          onOpenSettings={() => openSettings()}
           accountSlot={<UserMenu variant="rail" pinned={navRailEffectivePinned} />}
         />
       )}
@@ -1709,6 +1771,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
             { view: 'home' as const, icon: Home, label: 'Home' },
             { view: 'topology' as const, icon: Network, label: 'Topology' },
             { view: 'resources' as const, icon: List, label: 'Resources' },
+            { view: 'capacity' as const, icon: Gauge, label: 'Capacity' },
             { view: 'timeline' as const, icon: Clock, label: 'Timeline' },
             { view: 'helm' as const, icon: Package, label: 'Helm' },
             { view: 'gitops' as const, icon: GitBranch, label: 'GitOps' },
@@ -2183,7 +2246,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
               navigateToResource(resource)
             }}
             onClearNamespaces={clearAllNamespaces}
-            onOpenSettings={() => setShowSettings(true)}
+            onOpenSettings={() => openSettings()}
           />
         )}
 
@@ -2218,6 +2281,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           <CostView namespaces={namespaces} onBack={() => setMainView('home')} onOpenResource={navigateToResource} />
         )}
 
+        {mainView === 'capacity' && (
+          <CapacityView onOpenResource={navigateToResource} />
+        )}
+
         {/* Takeover splash. When the host claims the current view via
             fleetTakeoverHref, the redirect effect above is mid-flight — render a
             brief splash instead of the inline view (which would flash + fire its
@@ -2230,9 +2297,9 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           />
         )}
 
-        {/* Best practices detail view (inline only when the host hasn't taken
-            Checks over — standalone OSS, or Cloud without a checks takeover). */}
-        {mainView === 'checks' && !isViewTakenOver('checks') && (
+        {/* Checks detail view. Cloud can take over fleet best practices while
+            the target-specific upgrade route continues to render locally. */}
+        {mainView === 'checks' && (!isViewTakenOver('checks') || upgradeReadinessRoute) && (
           <AuditView
             namespaces={namespaces}
             onNavigateToResource={navigateToResourceList}
@@ -2414,6 +2481,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
       {/* Settings dialog — My permissions is rendered inline in its own section */}
       <SettingsDialog
         open={showSettings}
+        initialSection={settingsSection}
         onClose={() => setShowSettings(false)}
       />
 

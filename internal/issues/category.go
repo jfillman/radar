@@ -72,6 +72,14 @@ func Classify(in classifyInput) issuesapi.Category {
 		return issuesapi.CategoryMissingConfigRef
 
 	case SourceCondition:
+		switch in.Reason {
+		case ReasonKarpenterNodePoolNotReady,
+			ReasonKarpenterNodeClassNotReady,
+			ReasonKarpenterNodeClassNotFound,
+			ReasonKarpenterNodeClassKindNotInstalled,
+			ReasonKarpenterNodeClaimProvisioningFailed:
+			return issuesapi.CategoryNodeProvisioningFail
+		}
 		// Generic CRD .status.conditions[]=False fallback. Discriminate the
 		// well-known controller families by API group.
 		g := strings.ToLower(in.APIGroup)
@@ -149,6 +157,8 @@ func classifyProblem(in classifyInput) issuesapi.Category {
 	switch in.Reason {
 	case "CoreDNS NXDOMAIN override", "CoreDNS service DNS rewrite":
 		return issuesapi.CategoryDNSFailure
+	case "DuplicateEnvVar", "StaleSecretEnv":
+		return issuesapi.CategoryInvalidConfiguration
 	case "Missing referenced Service":
 		return issuesapi.CategoryMissingConfigRef
 	case "Service port mismatch":
@@ -263,10 +273,10 @@ func classifyProblem(in classifyInput) issuesapi.Category {
 		return issuesapi.CategoryJobFailed
 
 	case "CronJob":
-		// "stale" (no recent run) / "never-scheduled" — the CronJob is not
-		// producing the Jobs it's meant to.
+		// CronJob schedule-level failures: no recent run, no run at all, or
+		// repeated schedules without a recorded success.
 		switch in.Reason {
-		case "stale", "never-scheduled":
+		case "stale", "never-scheduled", "repeated-without-success":
 			return issuesapi.CategoryCronJobFailed
 		}
 		return issuesapi.CategoryUnknown
@@ -327,7 +337,7 @@ func isBatchFailureProblem(kind, reason string) bool {
 	if kind == "Job" {
 		return true
 	}
-	return kind == "CronJob" && (reason == "stale" || reason == "never-scheduled")
+	return kind == "CronJob" && (reason == "stale" || reason == "never-scheduled" || reason == "repeated-without-success")
 }
 
 // classifyGitOpsReason maps a GitOps detector/condition reason to a specific

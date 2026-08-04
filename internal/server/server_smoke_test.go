@@ -994,6 +994,17 @@ func TestSmokeConnection(t *testing.T) {
 	}
 }
 
+func TestSmokeConnectionStatusOnly(t *testing.T) {
+	// The UI's perpetual fallback poll opts out of context enumeration, which
+	// re-reads kubeconfig files under the client write lock on every hit.
+	var body map[string]any
+	assertOK(t, get(t, "/api/connection?contexts=0"), &body)
+	assertKeys(t, body, "state", "context", "authRecoveryOwed")
+	if _, present := body["contexts"]; present {
+		t.Error("contexts should be omitted when the poll asks for status only")
+	}
+}
+
 func TestSmokeSessions(t *testing.T) {
 	var body map[string]any
 	assertOK(t, get(t, "/api/sessions"), &body)
@@ -1820,6 +1831,7 @@ func TestSmokeCapabilitiesShape(t *testing.T) {
 	var body struct {
 		Resources      map[string]bool `json:"resources"`
 		WorkloadWrites map[string]bool `json:"workloadWrites"`
+		Features       map[string]bool `json:"features"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -1860,6 +1872,10 @@ func TestSmokeCapabilitiesShape(t *testing.T) {
 		if _, ok := body.WorkloadWrites[tag]; !ok {
 			t.Errorf("capabilities.workloadWrites missing key %q for WorkloadWritePermissions.%s", tag, field.Name)
 		}
+	}
+
+	if !body.Features["yamlReview"] || !body.Features["yamlSchemas"] {
+		t.Fatalf("capabilities.features = %v, want YAML review and schemas enabled", body.Features)
 	}
 }
 

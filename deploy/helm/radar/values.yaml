@@ -146,7 +146,7 @@ rbac:
     gcpMonitoring: true     # monitoring.googleapis.com
     grafana: true           # monitoring.grafana.com, tempo/loki/grafana.integreatly.org
     istio: true             # networking.istio.io, security.istio.io
-    karpenter: true         # karpenter.sh, karpenter.k8s.aws, karpenter.azure.com, karpenter.k8s.gcp
+    karpenter: true         # karpenter.sh, karpenter.k8s.aws, karpenter.azure.com, karpenter.k8s.gcp, eks.amazonaws.com (EKS Auto Mode NodeClasses)
     keda: true              # keda.sh
     knative: true           # serving.knative.dev, eventing.knative.dev, sources/messaging/flows/networking.internal.knative.dev
     kubeshark: true         # kubeshark.io
@@ -214,6 +214,20 @@ ingress:
   #    hosts:
   #      - radar.example.com
 
+httpRoute:
+  enabled: false
+  apiVersion: gateway.networking.k8s.io/v1
+  annotations: {}
+  labels: {}
+  parentRefs: []
+  hostnames: []
+  # Optional request timeout for chart-generated default rule. Empty means
+  # Gateway deployment default applies. Set 0s to explicitly disable timeout.
+  defaultTimeout: ""
+  # When empty, chart emits a default / Prefix rule to Radar Service.
+  # Non-empty rules replace default and pass through unchanged.
+  rules: []
+
 resources:
   limits:
     cpu: 500m
@@ -280,6 +294,16 @@ auth:
   # OIDC mode settings
   oidc:
     issuerURL: ""
+    # Optional internal issuer base URL used by the Radar pod for discovery and
+    # derived server-side token/userinfo/JWKS endpoints. Tokens are still
+    # validated against issuerURL, and browser redirects stay browser-facing.
+    internalIssuerURL: ""
+    # Optional endpoint overrides. Use these when browser-facing and server-side
+    # OIDC URLs cannot be derived from issuerURL/internalIssuerURL.
+    authorizationURL: ""
+    tokenURL: ""
+    userInfoURL: ""
+    jwksURL: ""
     clientID: ""
     clientSecret: ""
     # Use an existing K8s Secret for the OIDC client secret (avoids storing in Helm values).
@@ -327,6 +351,11 @@ cloud:
   # The Secret must contain a key matching existingSecretKey.
   existingSecret: ""
   existingSecretKey: "token"
+  # Skip TLS verification on the tunnel to the hub — for trials against a
+  # self-hosted hub that serves a self-signed certificate. The tunnel stays
+  # encrypted but is NOT authenticated (a network attacker could impersonate
+  # the hub), so leave false for any hub with a publicly trusted certificate.
+  insecureSkipVerify: false
   # Default ClusterRoleBindings for Radar Cloud identity groups.
   #
   # How it works: Cloud injects X-Forwarded-Groups: cloud:<role>,
@@ -358,10 +387,47 @@ cloud:
     member: true
     viewer: true
     # ClusterRoles the three Cloud roles bind to. Swap for custom ClusterRoles
-    # to tighten or loosen the defaults.
+    # to tighten or loosen the defaults. NOTE: this controls the namespaced
+    # binding only — the cluster-scoped read add-on below is a SEPARATE,
+    # independent binding. Tightening a tier here does not remove its
+    # clusterScopedRead grant; set that tier's flag below too.
     ownerClusterRole: admin
     memberClusterRole: edit
     viewerClusterRole: view
+    # Grant cluster-scoped READ (Nodes, PVs, StorageClasses, IngressClasses,
+    # PriorityClasses, RuntimeClasses, CRDs, and admission webhooks) on top of
+    # the built-in view/edit/admin roles, which exclude cluster-scoped resources.
+    # When their matching collection is enabled, the add-on also grants read on
+    # APIServices, PrometheusRules, Karpenter kinds, and node metrics. Per tier,
+    # each default true — Radar is a cluster-wide observability tool, so by
+    # default every tier (incl. viewer) sees core infrastructure. No Secrets or
+    # RBAC objects.
+    #
+    # Set a tier false to remove this add-on's binding. With the default
+    # built-in role mappings above that leaves the tier namespaced-only —
+    # common for security-conscious orgs (clusterScopedRead.viewer=false →
+    # viewers get stock `view` and cannot enumerate cluster infra). With a
+    # custom *ClusterRole the tier's cluster-scoped reach is whatever that
+    # role grants; this flag only controls our add-on binding.
+    #
+    # Independent of *ClusterRole above: a custom namespaced role does NOT
+    # disable cluster-read (they're separate bindings). Want a tier to read a
+    # DIFFERENT cluster-scoped set (e.g. Nodes but not PVs)? Set its flag false
+    # and bind your own ClusterRole to the cloud:<tier> group — the cloud:*
+    # groups exist regardless of this chart, so your binding composes cleanly.
+    clusterScopedRead:
+      viewer: true
+      member: true
+      owner: true
+    # Grant the owner tier node cordon/drain. Cluster-scoped WRITE, so OFF by
+    # default. Blast radius when enabled: `patch nodes` can't be field-scoped
+    # by RBAC (also permits label/taint edits cluster-wide), and
+    # `create pods/eviction` can't be name-scoped (permits evicting any pod in
+    # any namespace; PDBs bound the impact only where they exist). The role
+    # adds no RBAC-object or Secret access. Composes with the tier toggles:
+    # while owner=false this renders nothing, but it stays latent — re-enabling
+    # owner later activates it. See templates/cloud-rbac-node-ops.yaml.
+    nodeOps: false
 
 # MCP (Model Context Protocol) server for AI tools
 mcp:

@@ -246,18 +246,76 @@ function hostOf(route: string): string {
 }
 
 /**
+ * The request host a route label names, or "" when it names none.
+ *
+ * Route labels are NOT all hostnames: the producer emits "host+path" for
+ * host-based rules but ":80 → 8080" for port-based ones and "default backend"
+ * where no host is declared (internal/trace routeLabel). Feeding those to a
+ * host matcher is how a Gateway listener with no hostname - which legitimately
+ * serves ANY host - ends up claiming a port-based route that never went near it.
+ */
+export function routeHostOf(route: string): string {
+  const candidate = hostOf(route).trim().toLowerCase()
+  // A dot is required. Without it "GET / · :80 → 8080" yields the bare word
+  // "get", which reads as a valid single-label host and gets attributed to a
+  // catch-all listener. A genuinely single-label host loses its front-door tag,
+  // which is the safe direction to fail: no attribution beats a wrong one.
+  return /^[a-z0-9*][a-z0-9*-]*(\.[a-z0-9*-]+)+$/.test(candidate) ? candidate : ''
+}
+
+/**
+ * Whether a declared hostname serves a request host. Gateway API and Ingress
+ * both allow a leading `*.` wildcard, which matches exactly one extra label -
+ * `*.example.com` covers `api.example.com` but NOT `a.b.example.com` or the
+ * apex. An EMPTY declared hostname is the Gateway-API "any host" listener.
+ */
+export function hostMatches(declared: string, host: string): boolean {
+  const d = declared.trim().toLowerCase()
+  const h = host.trim().toLowerCase()
+  if (!h) return false
+  if (d === '') return true
+  if (!d.startsWith('*.')) return d === h
+  const suffix = d.slice(1) // ".example.com"
+  if (!h.endsWith(suffix)) return false
+  return !h.slice(0, h.length - suffix.length).includes('.')
+}
+
+/**
+ * Every hostname a hop declares. Ingress/HTTPRoute/GRPCRoute publish them on
+ * `hostnames` (+ `tlsHosts`); a GATEWAY publishes them per listener and has no
+ * top-level `hostnames` at all - reading only the former made every real Gateway
+ * look like it served nothing.
+ */
+export function declaredHosts(h: Hop): string[] {
+  const listeners = (h.config?.listeners ?? []).map((l) => l.hostname ?? '')
+  return [...(h.config?.hostnames ?? []), ...(h.config?.tlsHosts ?? []), ...listeners]
+}
+
+/**
  * Which declared entry point serves a hostname. Two hosts that land on the same
  * backend with the same outcome are still different situations when they come in
  * through DIFFERENT front doors: one Gateway can be misconfigured while its
  * sibling is fine, and merging them would hide that behind a shared verdict.
+ *
+ * When several entries could serve the host, the most SPECIFIC declaration wins
+ * (exact over wildcard over catch-all), mirroring how the proxies themselves
+ * resolve it - otherwise a catch-all listener would swallow every host and
+ * collapse the scenarios it exists to separate.
  */
 export function entryForHost(host: string, upstreams: Hop[] = []): string {
   const h = host.trim().toLowerCase()
   if (!h) return ''
-  const match = upstreams.find((u) =>
-    [...(u.config?.hostnames ?? []), ...(u.config?.tlsHosts ?? [])].some((x) => x.toLowerCase() === h),
-  )
-  return match?.resource ? `${match.resource.kind}/${match.resource.namespace ?? ''}/${match.resource.name}` : ''
+  const specificity = (d: string): number => (d === '' ? 0 : d.startsWith('*.') ? 1 : 2)
+  let best: { hop: Hop; rank: number } | undefined
+  for (const u of upstreams) {
+    for (const d of declaredHosts(u)) {
+      if (!hostMatches(d, h)) continue
+      const rank = specificity(d.trim().toLowerCase())
+      if (!best || rank > best.rank) best = { hop: u, rank }
+    }
+  }
+  const r = best?.hop.resource
+  return r ? `${r.kind}/${r.namespace ?? ''}/${r.name}` : ''
 }
 
 /**
@@ -275,7 +333,7 @@ export function groupRoutes(routes: RouteResult[], upstreams: Hop[] = []): Scena
     // situations even though both are merely not-tested. Folding them together
     // would hide the distinction the operator needs.
     const distinguishing = r.outcome === 'not-tested' ? r.evidence ?? '' : ''
-    const entry = entryForHost(hostOf(r.route), upstreams)
+    const entry = entryForHost(routeHostOf(r.route), upstreams)
     const key = [r.target ?? '', r.outcome, r.confidence ?? '', r.failedLayer ?? '', r.benign ? 'benign' : '', distinguishing, entry].join('|')
     const arr = groups.get(key) ?? []
     arr.push(r)
@@ -285,7 +343,7 @@ export function groupRoutes(routes: RouteResult[], upstreams: Hop[] = []): Scena
     const primary = rs[0]
     const hosts = [...new Set(rs.map((r) => hostOf(r.route)).filter(Boolean))]
     const grouped = rs.length > 1
-    const entryId = entryForHost(hosts[0] ?? '', upstreams)
+    const entryId = entryForHost(routeHostOf(rs[0].route), upstreams)
     const entry = entryId ? entryId.split('/').pop() : undefined
     const via = entry ? ` · via ${entry}` : ''
     return {

@@ -5,7 +5,10 @@ import type { Origin, OriginId } from './reachOrigins'
 import { strongestGap, actionableGap } from './reachOrigins'
 import { originProducedEvidence, type GraphNode } from './reachGraphModel'
 
-export type InspectorAction = 'run-in-cluster' | 'refresh' | 'open-resource' | 'copy-command'
+// 'run-probes' re-runs the reachability probes. It is deliberately NOT
+// 'refresh': the panel that offers it promises fresh evidence, and a static
+// refetch collects none.
+export type InspectorAction = 'run-in-cluster' | 'run-probes' | 'open-resource' | 'copy-command'
 
 export interface InspectorCTA {
   text: string
@@ -112,7 +115,7 @@ function gapNext(origins: Origin[], current: Origin, namespace?: string, multiPa
       ctas:
         actionable.id === 'incluster'
           ? [{ text: '⚗ Run in-cluster test', primary: true, action: 'run-in-cluster' }]
-          : [{ text: '⟳ Re-run', action: 'refresh' }],
+          : [{ text: '⟳ Re-run', action: 'run-probes' }],
     }
   }
   if (!actionable) {
@@ -123,7 +126,7 @@ function gapNext(origins: Origin[], current: Origin, namespace?: string, multiPa
       // was false and discouraged useful comparison checks.
       body: `Radar already has the strongest evidence it can collect for this path. Weaker vantages stay available as comparison checks.${allPaths}`,
       blocked: ceilingNote,
-      ctas: [{ text: '⟳ Re-run', action: 'refresh' }],
+      ctas: [{ text: '⟳ Re-run', action: 'run-probes' }],
     }
   }
   return {
@@ -133,7 +136,7 @@ function gapNext(origins: Origin[], current: Origin, namespace?: string, multiPa
     ctas:
       actionable.id === 'incluster'
         ? [{ text: '⚗ Run in-cluster test', primary: true, action: 'run-in-cluster' }]
-        : [{ text: '⟳ Re-run', action: 'refresh' }],
+        : [{ text: '⟳ Re-run', action: 'run-probes' }],
   }
 }
 

@@ -1,6 +1,6 @@
 import type { Trace, Hop, ResourceRef, RouteResult, PodStatus, ProbeResult } from './types'
 import type { Mark, SevTone } from './reachMarks'
-import { routeMark, isSlow, formatLatency } from './reachMarks'
+import { routeMark, isSlow, formatLatency, declaredHosts, hostMatches, routeHostOf } from './reachMarks'
 import { originOf, type Origin } from './reachOrigins'
 import { podProbeKey } from './podReach'
 
@@ -284,12 +284,11 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     }
   }
 
-  /** The scenario names a host; only the entries serving it are on this path. */
-  const routeHost = (route?.route ?? '').split('/')[0].trim().toLowerCase()
-  const servesRoute = (h: Hop): boolean => {
-    const hosts = [...(h.config?.hostnames ?? []), ...(h.config?.tlsHosts ?? [])].map((x) => x.toLowerCase())
-    return !!routeHost && hosts.some((x) => x === routeHost)
-  }
+  /** The scenario names a host; only the entries serving it are on this path.
+   *  Shares its matcher with scenario grouping so dimming and grouping can never
+   *  disagree about which front door serves a host. */
+  const routeHost = routeHostOf(route?.route ?? '')
+  const servesRoute = (h: Hop): boolean => !!routeHost && declaredHosts(h).some((d) => hostMatches(d, routeHost))
   const matched = upstreams.filter(servesRoute)
   const activeUpstreams = matched.length > 0 ? matched : upstreams
 
@@ -309,9 +308,29 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const colBackend = colSubject + 1
   const colPods = backends.length > 0 ? colBackend + 1 : colSubject + 1
 
+  /**
+   * Two mechanisms never touch the front door, so drawing them through it is a
+   * lie the picture tells before any label is read:
+   *
+   *  - the API-server proxy dials the Service/Pod subresource directly;
+   *  - the in-cluster Job dials the BACKEND Service - internal/trace's own
+   *    ProbeRequest doc says the in-cluster dial bypasses the front door, and
+   *    the server only stamps its results onto downstream hops.
+   *
+   * Only the workstation vantage actually requests the declared hostname. When
+   * the origin bypasses, it enters beside the declared entries rather than
+   * through them: both then point at the subject, which is the truth - one
+   * exercised, one merely configured.
+   */
+  const bypassesFrontDoor = origin.id === 'apiserver' || origin.id === 'incluster'
+  const originSkipsEntries = upstreams.length > 0 && bypassesFrontDoor
+  const colOrigin = originSkipsEntries ? COL_ENTRY : COL_ORIGIN
+
   placed.push({
-    col: COL_ORIGIN,
-    row: 0,
+    col: colOrigin,
+    // Below the entries it sits beside, so the edge to the subject never has to
+    // cross one of them.
+    row: originSkipsEntries ? upstreams.length : 0,
     w: COL_W.origin,
     node: {
       id: `origin:${origin.id}`,
@@ -551,7 +570,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   // The request enters at the entry points that serve this host; everything
   // after is configuration, drawn dotted. There is no segment-local evidence to
   // claim otherwise.
-  if (upstreams.length > 0) {
+  if (upstreams.length > 0 && !originSkipsEntries) {
     for (const up of upstreams) {
       const id = `n:${refId(up.resource)}`
       const active = activeUpstreams.includes(up)
@@ -559,7 +578,18 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       connect(`e:${id}-subject`, id, subjectNodeId, 'config', 'routes to')
     }
   } else {
-    connect('e:origin-subject', originNodeId, subjectNodeId, originBlocked ? 'blocked' : entryMark, entryLabel)
+    // The declared entries stay drawn, and stay CONFIG: they are how traffic is
+    // meant to arrive, and this run did not use them.
+    for (const up of upstreams) {
+      connect(`e:${`n:${refId(up.resource)}`}-subject`, `n:${refId(up.resource)}`, subjectNodeId, 'config', 'routes to')
+    }
+    connect(
+      'e:origin-subject',
+      originNodeId,
+      subjectNodeId,
+      originBlocked ? 'blocked' : entryMark,
+      originSkipsEntries ? 'direct to backend' : entryLabel,
+    )
   }
   for (const b of backends) connect(`e:subject-${b.id}`, subjectNodeId, b.id, 'config', 'sends to')
   for (const g of podGroups) connect(`e:${g.id}`, g.parentId, g.id, 'config', 'selects')

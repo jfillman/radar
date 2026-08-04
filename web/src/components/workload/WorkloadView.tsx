@@ -1755,6 +1755,33 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
       setSearchParams(next, { replace: true })
     }
   }, [kind, namespace, name, runProbes, searchParams, setSearchParams])
+  // What the in-cluster job will ACTUALLY send, mirroring the server: a bare "/"
+  // is the untouched default, so each route keeps its OWN declared path
+  // (internal/server/reachability_run.go) - anything else overrides every route.
+  // The consent dialog previously showed a single "GET /", which was wrong in
+  // precisely the default case, and counted only `routes`, omitting the declared
+  // paths that landed in `notTested`.
+  const pendingPath = pendingRunPath ?? probePath
+  const override = pendingPath && pendingPath !== '/' ? pendingPath : ''
+  const consentRequests = useMemo(() => {
+    const rows: { route: string; request: string }[] = []
+    for (const r of displayTrace?.routes ?? []) {
+      const req = r.inClusterRequest
+      if (!req) continue
+      const path = override || req.path || '/'
+      const host = req.host ? `${req.scheme || 'http'}://${req.host}` : r.target || ''
+      rows.push({ route: r.route, request: `GET ${host}${path}`.trim() })
+    }
+    return rows
+  }, [displayTrace, override])
+  const consentUntestedCount = useMemo(() => {
+    const derivable = new Set((displayTrace?.routes ?? []).filter((r) => r.inClusterRequest).map((r) => r.route))
+    const declared = new Set<string>([
+      ...(displayTrace?.routes ?? []).map((r) => r.route),
+      ...(displayTrace?.notTested ?? []).map((s) => s.route).filter((x): x is string => !!x),
+    ])
+    return [...declared].filter((r) => !derivable.has(r)).length
+  }, [displayTrace])
   // The full-view Reachability tab fills its pane: the shell supplies the
   // padding and this stays a full-height flex column so the board's three
   // panes can scroll independently instead of the whole page scrolling.
@@ -1788,8 +1815,8 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
         open={pendingRunPath !== null}
         cluster={inClusterCap?.cluster}
         namespace={inClusterCap?.namespace ?? namespace}
-        httpPath={pendingRunPath ?? probePath}
-        pathCount={displayTrace?.routes?.length}
+        requests={consentRequests}
+        untestedCount={consentUntestedCount}
         onClose={() => setPendingRunPath(null)}
         onConfirm={confirmInClusterRun}
       />

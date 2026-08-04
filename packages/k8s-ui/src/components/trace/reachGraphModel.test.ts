@@ -153,7 +153,9 @@ describe('the whole configured chain is drawn', () => {
 
   it('lays the chain out left to right, one column each', () => {
     const t = routeTrace()
-    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    // The workstation vantage DOES request the declared hostname, so it enters
+    // through the front door and every node gets its own column.
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'local') })
     const xs = g.nodes.map((n) => n.x)
     expect(new Set(xs).size).toBe(g.nodes.length)
     expect([...xs].sort((a, b) => a - b)).toEqual(xs.slice().sort((a, b) => a - b))
@@ -161,13 +163,43 @@ describe('the whole configured chain is drawn', () => {
 
   it('links every consecutive pair so the path is connected end to end', () => {
     const t = routeTrace()
-    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'local') })
     // origin->gateway, gateway->route, route->service, service->pods
     expect(g.edges).toHaveLength(4)
     for (const n of g.nodes) {
       const touched = g.edges.some((e) => e.id.includes(n.id.replace(/^n:|^origin:/, '')) || true)
       expect(touched).toBe(true)
     }
+  })
+
+
+  // The API-server proxy dials the Service/Pod subresource; the in-cluster Job
+  // dials the BACKEND Service. Neither touches the front door, so an
+  // evidence-marked edge running through the Gateway claims a hop that never
+  // happened - visible before a single label is read.
+  it.each(['incluster', 'apiserver'] as const)('a %s origin is not drawn through the front door', (id) => {
+    const t = routeTrace()
+    const g = buildGraph({ trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: pick(t, id) })
+    const gatewayId = 'n:Gateway/infra/primary-gateway'
+    expect(g.edges.some((e) => e.id === `e:origin-${gatewayId}`)).toBe(false)
+    expect(g.edges.some((e) => e.id === 'e:origin-subject')).toBe(true)
+  })
+
+  it('still draws the declared front door, as configuration', () => {
+    // Hiding it would misrepresent how traffic is MEANT to arrive; marking it
+    // as evidence would claim this run used it.
+    const t = routeTrace()
+    const g = buildGraph({ trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: pick(t, 'incluster') })
+    expect(g.nodes.some((n) => n.kind === 'GATEWAY')).toBe(true)
+    const toSubject = g.edges.find((e) => e.id === 'e:n:Gateway/infra/primary-gateway-subject')
+    expect(toSubject?.mark).toBe('config')
+  })
+
+  it('the workstation vantage DOES enter through the front door', () => {
+    const t = routeTrace()
+    const g = buildGraph({ trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: pick(t, 'local') })
+    expect(g.edges.some((e) => e.id === 'e:origin-n:Gateway/infra/primary-gateway')).toBe(true)
+    expect(g.edges.some((e) => e.id === 'e:origin-subject')).toBe(false)
   })
 
   it('a plain Service subject still draws Service then Pods', () => {

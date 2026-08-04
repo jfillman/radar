@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, isSlow, formatLatency, MARKS } from './reachMarks'
+import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, isSlow, formatLatency, hostMatches, declaredHosts, routeHostOf, MARKS } from './reachMarks'
 import type { RouteResult, Hop } from './types'
 
 const r = (o: Partial<RouteResult>): RouteResult => ({ route: 'GET /', outcome: 'verified', ...o })
@@ -196,8 +196,17 @@ describe('scenariosFor', () => {
     expect(s[0].label).toBe('only.example.com/')
   })
 
+  // A GATEWAY declares hostnames per listener and has NO top-level hostnames -
+  // reading only `hostnames` (an Ingress/HTTPRoute field) made every real
+  // Gateway look like it served nothing. See internal/trace gatewayConfig.
   const gw = (name: string, ...hostnames: string[]): Hop => ({
     resource: { kind: 'Gateway', namespace: 'infra', name },
+    edge: 'routes',
+    findings: [],
+    config: { listeners: hostnames.map((hostname, i) => ({ name: `l${i}`, port: 443, hostname })) },
+  })
+  const ingress = (name: string, ...hostnames: string[]): Hop => ({
+    resource: { kind: 'Ingress', namespace: 'infra', name },
     edge: 'routes',
     findings: [],
     config: { hostnames },
@@ -236,5 +245,108 @@ describe('scenariosFor', () => {
     const s = scenariosFor([r2({ route: 'a.example.com/', target: 'svc:80' })], [], [gw('other-gw', 'z.example.com')])
     expect(s[0].entry).toBeUndefined()
     expect(s[0].sub).not.toMatch(/via /)
+  })
+
+  it('reads an Ingress top-level hostname too, not only Gateway listeners', () => {
+    const s = scenariosFor(
+      [
+        r2({ route: 'a.example.com/', target: 'svc:80', outcome: 'verified', confidence: 'real' }),
+        r2({ route: 'b.example.com/', target: 'svc:80', outcome: 'verified', confidence: 'real' }),
+      ],
+      [],
+      [ingress('public-ing', 'a.example.com'), gw('gw', 'b.example.com')],
+    )
+    expect(s.map((x) => x.entry).sort()).toEqual(['gw', 'public-ing'])
+  })
+
+  it('a wildcard listener serves its subdomains and keeps them one scenario', () => {
+    const s = scenariosFor(
+      [
+        r2({ route: 'api.example.com/', target: 'svc:80', outcome: 'verified', confidence: 'real' }),
+        r2({ route: 'web.example.com/', target: 'svc:80', outcome: 'verified', confidence: 'real' }),
+      ],
+      [],
+      [gw('wild-gw', '*.example.com')],
+    )
+    expect(s).toHaveLength(1)
+    expect(s[0].entry).toBe('wild-gw')
+  })
+
+  it('a catch-all listener does not claim a port-based route', () => {
+    // The front-door fixture declares a listener with no hostname. Without the
+    // route-label guard it matched ":80 → 8080" and reported a Gateway the
+    // request never touched.
+    const s = scenariosFor([r2({ route: 'GET / · :80 → 8080', target: ':80 → 8080' })], [], [gw('catch-all', '')])
+    expect(s[0].entry).toBeUndefined()
+  })
+
+  it('an exact listener wins over a catch-all that would swallow every host', () => {
+    // Otherwise a hostname-less listener matches everything and collapses the
+    // scenarios the grouping exists to keep apart.
+    const s = scenariosFor(
+      [r2({ route: 'api.example.com/', target: 'svc:80', outcome: 'verified', confidence: 'real' })],
+      [],
+      [gw('catch-all', ''), gw('exact-gw', 'api.example.com')],
+    )
+    expect(s[0].entry).toBe('exact-gw')
+  })
+})
+
+describe('routeHostOf', () => {
+  it('reads the host out of a host-based label', () => {
+    expect(routeHostOf('example.com/api')).toBe('example.com')
+    expect(routeHostOf('*.example.com/')).toBe('*.example.com')
+  })
+
+  it('returns nothing for labels that are not hostnames', () => {
+    // A catch-all Gateway listener legitimately serves ANY host, so feeding it
+    // a port label would make it claim a route that never went near it.
+    expect(routeHostOf(':80 → 8080')).toBe('')
+    expect(routeHostOf('GET / · :80 → 8080')).toBe('')
+    expect(routeHostOf('default backend')).toBe('')
+    expect(routeHostOf('/api')).toBe('')
+  })
+})
+
+describe('hostMatches', () => {
+  it('matches exactly, case-insensitively', () => {
+    expect(hostMatches('API.example.com', 'api.example.com')).toBe(true)
+    expect(hostMatches('api.example.com', 'other.example.com')).toBe(false)
+  })
+
+  it('a wildcard covers exactly one extra label - never the apex or a deeper name', () => {
+    expect(hostMatches('*.example.com', 'api.example.com')).toBe(true)
+    expect(hostMatches('*.example.com', 'a.b.example.com')).toBe(false)
+    expect(hostMatches('*.example.com', 'example.com')).toBe(false)
+  })
+
+  it('an empty declared hostname is the Gateway-API "any host" listener', () => {
+    expect(hostMatches('', 'anything.example.com')).toBe(true)
+    // ...but an empty REQUEST host matches nothing - there is no host to serve.
+    expect(hostMatches('', '')).toBe(false)
+  })
+})
+
+describe('declaredHosts', () => {
+  it('collects Gateway listener hostnames, which live nowhere else on the hop', () => {
+    expect(
+      declaredHosts({
+        resource: { kind: 'Gateway', name: 'g' },
+        edge: '',
+        findings: [],
+        config: { listeners: [{ port: 443, hostname: 'a.example.com' }, { port: 80 }] },
+      }),
+    ).toEqual(['a.example.com', ''])
+  })
+
+  it('collects Ingress hostnames and TLS hosts', () => {
+    expect(
+      declaredHosts({
+        resource: { kind: 'Ingress', name: 'i' },
+        edge: '',
+        findings: [],
+        config: { hostnames: ['a.example.com'], tlsHosts: ['b.example.com'] },
+      }),
+    ).toEqual(['a.example.com', 'b.example.com'])
   })
 })

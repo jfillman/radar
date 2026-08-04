@@ -136,7 +136,7 @@ interface BoardProps extends TracePanelProps {
 }
 
 function ReachabilityBoard(props: BoardProps) {
-  const { trace, running, stale, onNavigateToResource, onRunInCluster, inClusterAllowed, onRefresh, testedAt, runNonce } = props
+  const { trace, running, stale, onNavigateToResource, onRunInCluster, onRunProbes, inClusterAllowed, testedAt, runNonce } = props
 
   // Scenarios group routes that agree in every respect - a Gateway route with
   // three hostnames and one backend is one situation, not three.
@@ -171,7 +171,9 @@ function ReachabilityBoard(props: BoardProps) {
   const onCTA = (cta: InspectorCTA) => {
     if (cta.disabledReason) return
     if (cta.action === 'run-in-cluster') onRunInCluster?.()
-    else if (cta.action === 'refresh') onRefresh?.()
+    // onRefresh refetches the STATIC trace and collects no evidence - wrong for a
+    // CTA whose own copy offers to go and test something.
+    else if (cta.action === 'run-probes') onRunProbes?.()
     else if (cta.action === 'open-resource' && cta.ref) onNavigateToResource?.(cta.ref)
     else if (cta.action === 'copy-command' && cta.command) void navigator.clipboard?.writeText(cta.command)
   }

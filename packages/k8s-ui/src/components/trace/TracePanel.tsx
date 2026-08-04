@@ -349,7 +349,7 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
           type="button"
           onClick={onRunInCluster}
           disabled={inClusterRunning}
-          title="Run the probe from a short-lived Job INSIDE the cluster - real pod-to-pod traffic - to confirm the in-cluster data path"
+          title="Run the probe from a short-lived Job INSIDE the cluster - real pod-to-pod traffic - to confirm the in-cluster data path. Covers EVERY path on this resource, not only the one selected above."
           className="btn-brand-muted px-2.5 py-1 text-xs inline-flex items-center gap-1.5"
         >
           {inClusterRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Network className="w-3 h-3" />}
@@ -359,7 +359,13 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
       {/* Primary: the reachability test. The refresh icon signals it's
           re-runnable (it auto-ran on load), so re-running reads as a refresh. */}
       {onRunProbes && (
-        <button type="button" onClick={onRunProbes} disabled={probeRequested} className="btn-brand px-2.5 py-1 text-xs inline-flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={onRunProbes}
+          disabled={probeRequested}
+          title="Re-test reachability from your machine and through the API server. Covers EVERY path on this resource, not only the one selected above."
+          className="btn-brand px-2.5 py-1 text-xs inline-flex items-center gap-1.5"
+        >
           {probeRequested ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
           {probeRequested ? 'Testing…' : probed ? 'Re-run reachability test' : 'Run reachability test'}
         </button>

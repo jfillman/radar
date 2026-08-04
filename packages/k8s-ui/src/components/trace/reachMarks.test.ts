@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, isSlow, formatLatency, MARKS } from './reachMarks'
-import type { RouteResult } from './types'
+import type { RouteResult, Hop } from './types'
 
 const r = (o: Partial<RouteResult>): RouteResult => ({ route: 'GET /', outcome: 'verified', ...o })
 
@@ -194,5 +194,47 @@ describe('scenariosFor', () => {
   it('uses the single route label verbatim when nothing was grouped', () => {
     const s = scenariosFor([r2({ route: 'only.example.com/', target: 'svc:80' })], [])
     expect(s[0].label).toBe('only.example.com/')
+  })
+
+  const gw = (name: string, ...hostnames: string[]): Hop => ({
+    resource: { kind: 'Gateway', namespace: 'infra', name },
+    edge: 'routes',
+    findings: [],
+    config: { hostnames },
+  })
+
+  it('splits two hosts that reach the same backend through DIFFERENT front doors', () => {
+    // One Gateway can be broken while its sibling is fine. Folding them behind a
+    // shared verdict hides exactly the difference worth debugging.
+    const s = scenariosFor(
+      [
+        r2({ route: 'a.example.com/', target: 'svc:8080', outcome: 'verified', confidence: 'real' }),
+        r2({ route: 'b.example.com/', target: 'svc:8080', outcome: 'verified', confidence: 'real' }),
+      ],
+      [],
+      [gw('public-gw', 'a.example.com'), gw('internal-gw', 'b.example.com')],
+    )
+    expect(s).toHaveLength(2)
+    expect(s.map((x) => x.entry).sort()).toEqual(['internal-gw', 'public-gw'])
+    expect(s[0].sub).toMatch(/via /)
+  })
+
+  it('still folds hosts that share one front door', () => {
+    const s = scenariosFor(
+      [
+        r2({ route: 'a.example.com/', target: 'svc:8080', outcome: 'verified', confidence: 'real' }),
+        r2({ route: 'b.example.com/', target: 'svc:8080', outcome: 'verified', confidence: 'real' }),
+      ],
+      [],
+      [gw('public-gw', 'a.example.com', 'b.example.com')],
+    )
+    expect(s).toHaveLength(1)
+    expect(s[0].entry).toBe('public-gw')
+  })
+
+  it('does not invent a front door when no upstream serves the host', () => {
+    const s = scenariosFor([r2({ route: 'a.example.com/', target: 'svc:80' })], [], [gw('other-gw', 'z.example.com')])
+    expect(s[0].entry).toBeUndefined()
+    expect(s[0].sub).not.toMatch(/via /)
   })
 })

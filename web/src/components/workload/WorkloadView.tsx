@@ -1841,6 +1841,8 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
         open={pendingRunPath !== null}
         cluster={inClusterCap?.cluster}
         namespace={inClusterCap?.namespace ?? namespace}
+        httpPath={pendingRunPath ?? probePath}
+        pathCount={displayTrace?.routes?.length}
         onClose={() => setPendingRunPath(null)}
         onConfirm={confirmInClusterRun}
       />

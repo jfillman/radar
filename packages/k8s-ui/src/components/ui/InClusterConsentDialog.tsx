@@ -6,6 +6,12 @@ interface InClusterConsentDialogProps {
   open: boolean
   cluster?: string
   namespace: string
+  /** The HTTP path the probe requests, as chosen in "what to test". */
+  httpPath?: string
+  /** How many declared paths the run covers. The dialog is the last screen
+   *  before real traffic, so it must name what is actually about to be sent -
+   *  it used to show only the cluster and namespace. */
+  pathCount?: number
   onClose: () => void
   onConfirm: () => void
 }
@@ -13,7 +19,7 @@ interface InClusterConsentDialogProps {
 // Confirms the mutating in-cluster reachability test before it spawns a Job/pod,
 // naming the cluster it lands in. Permission is enforced upstream (the button only
 // renders when the capability SSAR allows), so this is a safety confirm, not authz.
-export function InClusterConsentDialog({ open, cluster, namespace, onClose, onConfirm }: InClusterConsentDialogProps) {
+export function InClusterConsentDialog({ open, cluster, namespace, httpPath, pathCount, onClose, onConfirm }: InClusterConsentDialogProps) {
   const [dontAskAgain, setDontAskAgain] = useState(false)
 
   function handleClose() {
@@ -34,7 +40,18 @@ export function InClusterConsentDialog({ open, cluster, namespace, onClose, onCo
       onConfirm={handleConfirm}
       title="Run in-cluster reachability test?"
       message="This creates a short-lived, self-deleting Job that sends real pod-to-pod traffic from inside the cluster, running as your own RBAC."
-      details={cluster ? `Cluster:   ${cluster}\nNamespace: ${namespace}` : `Namespace: ${namespace}`}
+      details={[
+        cluster ? `Cluster:   ${cluster}` : '',
+        `Namespace: ${namespace}`,
+        `Request:   GET ${httpPath || '/'}`,
+        // The view lets you select one path; the run does not honour that
+        // selection, so the count has to be stated rather than implied.
+        typeof pathCount === 'number' && pathCount > 0
+          ? `Covers:    all ${pathCount} declared path${pathCount === 1 ? '' : 's'} on this resource`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n')}
       confirmLabel="Run test"
       cancelLabel="Cancel"
       variant="warning"

@@ -1,4 +1,4 @@
-import type { RouteResult, RouteOutcome, ProbeResult } from './types'
+import type { RouteResult, RouteOutcome, ProbeResult, Hop } from './types'
 
 /**
  * A Mark is the evidence class of ONE path segment for one scenario and one
@@ -235,6 +235,8 @@ export interface Scenario {
   primary: RouteResult
   /** The distinct entry hostnames, when this scenario groups several. */
   hosts: string[]
+  /** Name of the front door serving this scenario, when one is declared. */
+  entry?: string
 }
 
 /** The host part of a route label like "example.com/path". */
@@ -244,12 +246,28 @@ function hostOf(route: string): string {
 }
 
 /**
- * Groups routes that are indistinguishable in outcome. Splitting them out again
- * happens exactly when it carries information - a differing outcome, layer or
- * confidence - so identical hosts collapse but a host that behaves differently
- * always keeps its own tab.
+ * Which declared entry point serves a hostname. Two hosts that land on the same
+ * backend with the same outcome are still different situations when they come in
+ * through DIFFERENT front doors: one Gateway can be misconfigured while its
+ * sibling is fine, and merging them would hide that behind a shared verdict.
  */
-export function groupRoutes(routes: RouteResult[]): Scenario[] {
+export function entryForHost(host: string, upstreams: Hop[] = []): string {
+  const h = host.trim().toLowerCase()
+  if (!h) return ''
+  const match = upstreams.find((u) =>
+    [...(u.config?.hostnames ?? []), ...(u.config?.tlsHosts ?? [])].some((x) => x.toLowerCase() === h),
+  )
+  return match?.resource ? `${match.resource.kind}/${match.resource.namespace ?? ''}/${match.resource.name}` : ''
+}
+
+/**
+ * Groups routes that are indistinguishable in outcome. Splitting them out again
+ * happens exactly when it carries information - a differing outcome, layer,
+ * confidence or serving entry point - so identical hosts collapse but a host
+ * that behaves differently, or arrives through a different front door, always
+ * keeps its own tab.
+ */
+export function groupRoutes(routes: RouteResult[], upstreams: Hop[] = []): Scenario[] {
   const groups = new Map<string, RouteResult[]>()
   for (const r of orderRoutes(routes)) {
     // For an untested route the REASON is the whole content - "port 443 can't
@@ -257,7 +275,8 @@ export function groupRoutes(routes: RouteResult[]): Scenario[] {
     // situations even though both are merely not-tested. Folding them together
     // would hide the distinction the operator needs.
     const distinguishing = r.outcome === 'not-tested' ? r.evidence ?? '' : ''
-    const key = [r.target ?? '', r.outcome, r.confidence ?? '', r.failedLayer ?? '', r.benign ? 'benign' : '', distinguishing].join('|')
+    const entry = entryForHost(hostOf(r.route), upstreams)
+    const key = [r.target ?? '', r.outcome, r.confidence ?? '', r.failedLayer ?? '', r.benign ? 'benign' : '', distinguishing, entry].join('|')
     const arr = groups.get(key) ?? []
     arr.push(r)
     groups.set(key, arr)
@@ -266,15 +285,19 @@ export function groupRoutes(routes: RouteResult[]): Scenario[] {
     const primary = rs[0]
     const hosts = [...new Set(rs.map((r) => hostOf(r.route)).filter(Boolean))]
     const grouped = rs.length > 1
+    const entryId = entryForHost(hosts[0] ?? '', upstreams)
+    const entry = entryId ? entryId.split('/').pop() : undefined
+    const via = entry ? ` · via ${entry}` : ''
     return {
       key,
       label: grouped ? primary.target || `${rs.length} routes` : primary.route,
       sub: grouped
-        ? `${hosts.length} hostname${hosts.length === 1 ? '' : 's'}${primary.target ? ` · ${primary.target}` : ''}`
-        : primary.target || '',
+        ? `${hosts.length} hostname${hosts.length === 1 ? '' : 's'}${primary.target ? ` · ${primary.target}` : ''}${via}`
+        : `${primary.target || ''}${via}`,
       routes: rs,
       primary,
       hosts,
+      entry,
     }
   })
 }
@@ -284,11 +307,15 @@ export function groupRoutes(routes: RouteResult[]): Scenario[] {
  * scenarios too. Without this an untested resource renders no strip at all and
  * the paths it has are invisible.
  */
-export function scenariosFor(routes: RouteResult[], notTested: { route?: string; reason: string }[]): Scenario[] {
+export function scenariosFor(
+  routes: RouteResult[],
+  notTested: { route?: string; reason: string }[],
+  upstreams: Hop[] = [],
+): Scenario[] {
   const synthesized: RouteResult[] = notTested
     .filter((s) => !!s.route)
     .map((s) => ({ route: s.route as string, outcome: 'not-tested' as RouteOutcome, evidence: s.reason }))
-  return groupRoutes([...routes, ...synthesized])
+  return groupRoutes([...routes, ...synthesized], upstreams)
 }
 
 /**

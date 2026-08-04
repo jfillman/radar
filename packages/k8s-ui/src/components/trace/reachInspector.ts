@@ -34,6 +34,10 @@ export interface Sidebar {
     chipTone: SevTone
     chipText: string
     title: string
+    /** The concrete path under test. Always visible: it was inside the collapsed
+     *  details, so the panel described a result without ever naming what was
+     *  requested. */
+    request?: string
     body: string
     scope: { k: string; v: string }[]
     evidence: { mark: Mark; text: string }[]
@@ -80,11 +84,15 @@ function originScope(o: Origin, trace: Trace): { k: string; v: string }[] {
  * unreachable ceiling is stated underneath as a caveat instead of being offered
  * as an action - a button that can never be pressed is not a next step.
  */
-function gapNext(origins: Origin[], current: Origin, namespace?: string): Sidebar['path']['next'] {
+function gapNext(origins: Origin[], current: Origin, namespace?: string, multiPath?: boolean): Sidebar['path']['next'] {
   const actionable = actionableGap(origins)
   const ceiling = strongestGap(origins)
   const ceilingNote = ceiling?.unsupported ? `Even then, ${ceiling.name.toLowerCase()} stays untested — ${ceiling.unavailable}` : undefined
   const denied = origins.find((o) => o.mark === 'denied')
+  // A run is never scoped to the selected path - the server tests every declared
+  // path in one pass. Saying so here stops the picker above from reading as a
+  // filter on what the button will do.
+  const allPaths = multiPath ? ' The test covers every path on this resource, not only this one.' : ''
 
   if (!actionable && denied) {
     const ns = namespace || '<namespace>'
@@ -99,7 +107,7 @@ function gapNext(origins: Origin[], current: Origin, namespace?: string): Sideba
     // You are looking at the vantage that is itself the gap.
     return {
       header: 'RUN THIS NEXT',
-      body: `Nothing has been tested from ${actionable.name} yet, and it is the strongest evidence Radar can still collect.`,
+      body: `Nothing has been tested from ${actionable.name} yet, and it is the strongest evidence Radar can still collect.${allPaths}`,
       blocked: ceilingNote,
       ctas:
         actionable.id === 'incluster'
@@ -113,14 +121,14 @@ function gapNext(origins: Origin[], current: Origin, namespace?: string): Sideba
       // actionableGap stops at anything weaker than an already-proven origin, so
       // weaker vantages CAN remain unused - claiming everything had been tried
       // was false and discouraged useful comparison checks.
-      body: 'Radar already has the strongest evidence it can collect for this path. Weaker vantages stay available as comparison checks.',
+      body: `Radar already has the strongest evidence it can collect for this path. Weaker vantages stay available as comparison checks.${allPaths}`,
       blocked: ceilingNote,
       ctas: [{ text: '⟳ Re-run', action: 'refresh' }],
     }
   }
   return {
     header: 'RUN THIS NEXT',
-    body: `${actionable.name} has not been used for this path, and is the strongest evidence Radar can still collect.`,
+    body: `${actionable.name} has not been used for this path, and is the strongest evidence Radar can still collect.${allPaths}`,
     blocked: ceilingNote,
     ctas:
       actionable.id === 'incluster'
@@ -137,6 +145,10 @@ interface Ctx {
   nodes: GraphNode[]
   stale?: boolean
   running?: boolean
+  /** More than one scenario is on screen, so scope has to be stated explicitly. */
+  multiPath?: boolean
+  /** The HTTP path the run requests, as chosen in "what to test". */
+  httpPath?: string
 }
 
 /** The persistent diagnosis: did traffic get through, from where, and what next. */
@@ -207,6 +219,7 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     chipTone: route ? routeTone(route, { stale: ctx.stale, running: ctx.running }) : 'unknown',
     chipText: route ? routeChip(route, { stale: ctx.stale, running: ctx.running }) : 'not tested',
     title: `${origin.name} → ${route?.target || trace.subject.name}`,
+    request: route ? `${route.route}${ctx.httpPath && ctx.httpPath !== '/' ? ` · HTTP path ${ctx.httpPath}` : ''}` : undefined,
     body,
     scope: [...originScope(origin, trace), ...(route ? [{ k: 'PATH', v: route.route }] : [])],
     evidence,
@@ -221,7 +234,7 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
               ...(diagnosis.command ? [{ text: 'Copy the command', action: 'copy-command' as InspectorAction, command: diagnosis.command }] : []),
             ],
           }
-        : gapNext(origins, origin, trace.subject.namespace),
+        : gapNext(origins, origin, trace.subject.namespace, ctx.multiPath),
   }
 }
 
@@ -310,8 +323,19 @@ export function buildVerdict(
   trace: Trace,
   route: RouteResult | undefined,
   origins: Origin[],
-  opts: { stale?: boolean; running?: boolean } = {},
-): { tone: SevTone; chipText: string; title: string; problem?: string; body: string; facts: { k: string; v: string }[] } {
+  opts: { stale?: boolean; running?: boolean; pathLabel?: string } = {},
+): {
+  tone: SevTone
+  chipText: string
+  /** Set when the resource has more than one path, so the reader can tell the
+   *  route-scoped badge apart from the resource-wide headline beside it. */
+  chipScope?: string
+  scopeLabel?: string
+  title: string
+  problem?: string
+  body: string
+  facts: { k: string; v: string }[]
+} {
   const used = origins.filter((o) => !['untested', 'blocked', 'denied'].includes(o.mark))
   // The headline gap names what can still be DONE. Naming the permanently
   // unavailable real-caller test here made every resource carry the same
@@ -336,6 +360,11 @@ export function buildVerdict(
   return {
     tone,
     chipText: opts.running ? 'testing' : route ? routeChip(route, opts) : 'not tested',
+    // Title, problem and coverage describe the WHOLE resource; tone and chip
+    // follow the selected path. With several paths on screen that difference is
+    // invisible unless each side says which scope it speaks for.
+    chipScope: opts.pathLabel,
+    scopeLabel: opts.pathLabel ? 'THIS RESOURCE' : undefined,
     // A stale screen previously led with the old headline ("Reachable...") and
     // then said underneath that the result was excluded. That is a contradiction,
     // not an exclusion.

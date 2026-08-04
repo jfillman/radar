@@ -139,7 +139,7 @@ function ReachabilityBoard(props: BoardProps) {
 
   // Scenarios group routes that agree in every respect - a Gateway route with
   // three hostnames and one backend is one situation, not three.
-  const scenarios = useMemo(() => scenariosFor(trace.routes ?? [], trace.notTested ?? []), [trace])
+  const scenarios = useMemo(() => scenariosFor(trace.routes ?? [], trace.notTested ?? [], trace.upstreams ?? []), [trace])
   // Keyed by identity, never by position: the strip is sorted worst-first, so a
   // re-run that changes an outcome re-sorts it and a stored index would silently
   // move the user to a different path.
@@ -157,11 +157,15 @@ function ReachabilityBoard(props: BoardProps) {
   const [selection, setSelection] = useState<Selection>(undefined)
 
   const model = useMemo(() => buildGraph({ trace, route, origin, stale, running }), [trace, route, origin, stale, running])
+  const multiPath = scenarios.length > 1
   const sidebar = useMemo(
-    () => buildSidebar(selection, { trace, route, origin, origins, nodes: model.nodes, stale, running }),
-    [selection, trace, route, origin, origins, model, stale, running],
+    () => buildSidebar(selection, { trace, route, origin, origins, nodes: model.nodes, stale, running, multiPath, httpPath: props.probePath }),
+    [selection, trace, route, origin, origins, model, stale, running, multiPath, props.probePath],
   )
-  const verdict = useMemo(() => buildVerdict(trace, route, origins, { stale, running }), [trace, route, origins, stale, running])
+  const verdict = useMemo(
+    () => buildVerdict(trace, route, origins, { stale, running, pathLabel: multiPath ? scenario?.primary.target || scenario?.label : undefined }),
+    [trace, route, origins, stale, running, multiPath, scenario],
+  )
 
   const onCTA = (cta: InspectorCTA) => {
     if (cta.disabledReason) return
@@ -188,7 +192,7 @@ function ReachabilityBoard(props: BoardProps) {
           wraps to its own full-width row rather than being clipped. */}
       {/* The board fills the pane. Each column scrolls on its own so a long
           origin list or inspector never pushes the graph out of view. */}
-      <div className="grid min-h-0 flex-1 items-stretch grid-cols-[minmax(200px,232px)_minmax(0,1fr)] xl:grid-cols-[minmax(232px,258px)_minmax(0,1fr)_minmax(310px,23%)]">
+      <div className="grid min-h-0 flex-1 items-stretch grid-cols-[minmax(190px,210px)_minmax(0,1fr)] xl:grid-cols-[minmax(196px,210px)_minmax(0,1fr)_minmax(290px,21%)]">
         {/* Picking a vantage re-routes the graph and returns the inspector to
             the PATH result from there. It used to select the origin itself,
             which answered "define this vantage" when the user asked "show me
@@ -278,9 +282,17 @@ function VerdictBand({
         style={{ width: 12, height: 12, background: c, boxShadow: `0 0 0 4px color-mix(in srgb, ${c} 15%, transparent)` }}
       />
       <div className="min-w-0 flex-1">
+        {/* The headline covers the whole resource while the badge follows the
+            selected path. Unlabelled, the two read as one claim. */}
+        {verdict.scopeLabel && (
+          <div className="mb-0.5 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">{verdict.scopeLabel}</div>
+        )}
         <div className="flex flex-wrap items-baseline gap-2">
           <span className="text-[14.5px] font-semibold text-theme-text-primary">{verdict.title}</span>
           <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[verdict.tone]}`}>{verdict.chipText}</span>
+          {verdict.chipScope && (
+            <span className="truncate font-mono text-[10.5px] text-theme-text-tertiary">for {verdict.chipScope}</span>
+          )}
           <JustTestedNote nonce={runNonce} />
         </div>
         {verdict.problem && (
@@ -413,6 +425,12 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
           <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[path.chipTone]}`}>{path.chipText}</span>
         </div>
         <div className="mt-1.5 font-mono text-[12.5px] font-semibold leading-snug text-theme-text-primary">{path.title}</div>
+        {path.request && (
+          <div className="mt-1 flex items-baseline gap-1.5">
+            <span className="flex-none text-[9px] font-bold tracking-[0.04em] text-theme-text-tertiary">ASKED FOR</span>
+            <span className="min-w-0 flex-1 break-words font-mono text-[10.5px] text-theme-text-secondary">{path.request}</span>
+          </div>
+        )}
         <div className="mt-1 text-[11.5px] leading-relaxed text-theme-text-secondary text-pretty">{path.body}</div>
       </div>
 

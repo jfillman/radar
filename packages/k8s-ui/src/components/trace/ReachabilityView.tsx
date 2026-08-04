@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import type { Trace, RouteResult, ResourceRef } from './types'
 import { ReachActions, JustTestedNote, CopyableCommand, type TracePanelProps } from './TracePanel'
 import { AlertBanner } from '../ui/drawer-components'
-import { ReachabilityGraph, TinyTag } from './ReachabilityGraph'
+import { ReachabilityGraph, TinyTag, MarkGlyph } from './ReachabilityGraph'
+import { Tooltip } from '../ui/Tooltip'
 import { buildGraph } from './reachGraphModel'
 import { buildOrigins, defaultOrigin, type Origin, type OriginId } from './reachOrigins'
 import { buildSidebar, buildVerdict, type Sidebar, type InspectorCTA, type Selection } from './reachInspector'
@@ -217,6 +218,29 @@ function ReachabilityBoard(props: BoardProps) {
 
 // ---------------------------------------------------------------- scenarios
 
+/** The hostnames folded into one tab. Only a hover when there is more than one -
+ *  a single host is already the tab's own label. */
+function TabTooltip({ hosts, children }: { hosts: string[]; children: React.ReactNode }) {
+  if (hosts.length < 2) return <>{children}</>
+  return (
+    <Tooltip
+      content={
+        <span className="flex flex-col gap-0.5">
+          <span className="font-semibold">Same result on {hosts.length} hostnames</span>
+          {hosts.map((h) => (
+            <span key={h} className="font-mono">
+              {h}
+            </span>
+          ))}
+        </span>
+      }
+      wrapperClassName="flex-none cursor-help"
+    >
+      {children}
+    </Tooltip>
+  )
+}
+
 function ScenarioStrip({
   scenarios,
   activeKey,
@@ -238,11 +262,10 @@ function ScenarioStrip({
           const tone = routeTone(s.primary, { stale, running })
           const active = s.key === activeKey
           return (
+            <TabTooltip hosts={s.hosts} key={s.key}>
             <button
-              key={s.key}
               type="button"
               onClick={() => onPick(s.key)}
-              title={s.hosts.length > 1 ? s.hosts.join('\n') : undefined}
               className="flex-none cursor-pointer border-r border-theme-border-subtle px-3.5 py-1.5 text-left"
               style={{
                 background: active ? 'var(--bg-surface)' : 'transparent',
@@ -256,6 +279,7 @@ function ScenarioStrip({
               </div>
               {s.sub && <div className="mt-0.5 truncate text-[10.5px] text-theme-text-tertiary">{s.sub}</div>}
             </button>
+            </TabTooltip>
           )
         })}
       </div>
@@ -332,15 +356,14 @@ function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: O
   return (
     <div className="bg-theme-surface py-2.5">
       <div className="px-3 pb-1 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">TESTED FROM</div>
-      <div
-        className="px-3 pb-2 text-[10.5px] leading-snug text-theme-text-tertiary"
-        title="Each row is a different way to reach this resource. Picking one shows what that test found — and what it cannot tell you."
+      <Tooltip
+        content="Each row is a different way to reach this resource. Picking one shows what that test found — and what it cannot tell you."
+        wrapperClassName="block cursor-help px-3 pb-2"
       >
-        Pick one to see what it found.
-      </div>
+        <span className="text-[10.5px] leading-snug text-theme-text-tertiary">Pick one to see what it found.</span>
+      </Tooltip>
       {origins.map((o) => {
         const sel = o.id === active
-        const m = markStyle(o.mark)
         return (
           <button
             key={o.id}
@@ -358,9 +381,7 @@ function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: O
                 {o.glyph}
               </span>
               <span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-theme-text-primary">{o.name}</span>
-              <span style={glyphStyle(o.mark)} title={markHelp(o.mark)}>
-                {m.glyph}
-              </span>
+              <MarkGlyph mark={o.mark} />
             </div>
             {/* Deliberately terse. The mechanism, identity and the reason an
                 origin is unusable all render in the inspector the moment it is
@@ -384,7 +405,11 @@ function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: O
               {/* That an origin cannot be used stays visible at a glance -
                   hiding it entirely would make synthetic evidence look
                   complete. The why is one click away. */}
-              {o.unavailable && <span className="text-[9px] text-theme-text-tertiary" title={o.unavailable}>⊘ unavailable</span>}
+              {o.unavailable && (
+                <Tooltip content={o.unavailable} wrapperClassName="cursor-help">
+                  <span className="text-[9px] text-theme-text-tertiary">⊘ unavailable</span>
+                </Tooltip>
+              )}
             </div>
           </button>
         )
@@ -460,9 +485,7 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
           <div className="mb-1 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">WHAT WE SAW</div>
           {path.evidence.map((e, i) => (
             <div key={i} className="mb-1 flex items-baseline gap-1.5">
-              <span style={glyphStyle(e.mark)} title={markHelp(e.mark)}>
-                {markStyle(e.mark).glyph}
-              </span>
+              <MarkGlyph mark={e.mark} />
               <span className="text-[11px] leading-snug text-theme-text-secondary">{e.text}</span>
             </div>
           ))}
@@ -480,12 +503,11 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
         {path.next.ctas.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {path.next.ctas.map((c, i) => (
+              <Tooltip key={i} content={c.disabledReason ?? ''} wrapperClassName="cursor-help">
               <button
-                key={i}
                 type="button"
                 onClick={() => onCTA(c)}
                 disabled={!!c.disabledReason}
-                title={c.disabledReason}
                 className={
                   c.primary && !c.disabledReason
                     ? 'btn-brand cursor-pointer whitespace-nowrap rounded-md px-2.5 py-1.5 text-[11px] font-semibold'
@@ -494,6 +516,7 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
               >
                 {c.text}
               </button>
+              </Tooltip>
             ))}
           </div>
         )}
@@ -536,11 +559,22 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
           {resource.rows && resource.rows.length > 0 && (
             <div className="mt-2 flex flex-col gap-0.5">
               {resource.rows.map((r) => (
-                <div key={r.name} className="flex items-baseline gap-1.5" title={`${r.name} — ${r.detail}`}>
-                  <span style={glyphStyle(r.mark)}>{markStyle(r.mark).glyph}</span>
-                  <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-theme-text-secondary">{r.name}</span>
-                  <span className="shrink-0 text-[9.5px] text-theme-text-tertiary">{r.detail}</span>
-                </div>
+                <Tooltip
+                  key={r.name}
+                  content={
+                    <>
+                      <span className="font-mono font-semibold">{r.name}</span>
+                      <span className="text-theme-text-tertiary"> — {r.detail} · {markHelp(r.mark)}</span>
+                    </>
+                  }
+                  wrapperClassName="w-full cursor-help"
+                >
+                  <div className="flex w-full items-baseline gap-1.5">
+                    <span style={glyphStyle(r.mark)}>{markStyle(r.mark).glyph}</span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-theme-text-secondary">{r.name}</span>
+                    <span className="shrink-0 text-[9.5px] text-theme-text-tertiary">{r.detail}</span>
+                  </div>
+                </Tooltip>
               ))}
               {!!resource.moreRows && <div className="text-[9.5px] text-theme-text-tertiary">+{resource.moreRows} more not shown</div>}
             </div>

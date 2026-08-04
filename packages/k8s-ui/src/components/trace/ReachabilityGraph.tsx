@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { PILL_MAX_PX, type GraphModel, type GraphNode, type GraphEdge, type LaneBox } from './reachGraphModel'
 import { markStyle, glyphStyle, markHelp, SEV_COLOR, MARK_LEGEND, type Mark } from './reachMarks'
+import { Tooltip } from '../ui/Tooltip'
 
 /** Upper bound on scale-up. Past this the graph stops reading as a diagram and
  *  starts reading as zoomed-in text. */
@@ -174,13 +175,18 @@ function Lane({ box }: { box: LaneBox }) {
       {/* Sibling of the box, not a child: a lane that bounds one narrow node is
           far narrower than its label, and as a child the label was clipped by
           the box. */}
-      <span
-        title={box.help}
-        className="absolute cursor-help whitespace-nowrap px-1.5 text-[9px] font-bold tracking-[0.06em] bg-theme-base"
-        style={{ left: box.x + 12, top: box.y - 8, color: box.color, zIndex: 4 }}
+      <Tooltip
+        content={box.help}
+        wrapperClassName="absolute cursor-help"
+        wrapperStyle={{ left: box.x + 12, top: box.y - 8, zIndex: 4 }}
       >
-        {box.label}
-      </span>
+        <span
+          className="whitespace-nowrap px-1.5 text-[9px] font-bold tracking-[0.06em] bg-theme-base"
+          style={{ color: box.color }}
+        >
+          {box.label}
+        </span>
+      </Tooltip>
     </>
   )
 }
@@ -190,23 +196,29 @@ function Lane({ box }: { box: LaneBox }) {
 function EdgePill({ edge }: { edge: GraphEdge }) {
   const s = markStyle(edge.mark)
   return (
-    <div
-      title={edge.title}
-      className="absolute flex items-center gap-1 rounded-full border border-theme-border bg-theme-surface px-2 py-0.5 text-[10px] font-semibold text-theme-text-secondary"
-      style={{
-        left: edge.px,
-        top: edge.py,
-        transform: 'translate(-50%,-50%)',
-        zIndex: 3,
-        maxWidth: PILL_MAX_PX,
-        boxShadow: '0 1px 2px rgba(0,0,0,.05)',
-      }}
+    <Tooltip
+      content={
+        <>
+          <span className="font-semibold">{edge.title}</span>
+          <span className="text-theme-text-tertiary"> — {markHelp(edge.mark)}</span>
+        </>
+      }
+      wrapperClassName="absolute cursor-help"
+      wrapperStyle={{ left: edge.px, top: edge.py, transform: 'translate(-50%,-50%)', zIndex: 3, maxWidth: PILL_MAX_PX }}
     >
-      <span style={glyphStyle(edge.mark)} title={markHelp(edge.mark)}>
-        {s.glyph}
-      </span>
-      <span className="truncate">{edge.label}</span>
-    </div>
+      {/* Two lines, not one: the pill is capped to fit inside a gutter, which
+          leaves room for about ten characters per line. On one line that turned
+          every phrase into its first word plus an ellipsis. */}
+      <div
+        className="flex max-w-full items-start gap-1 rounded-full border border-theme-border bg-theme-surface px-2 py-0.5 text-[10px] font-semibold leading-[1.25] text-theme-text-secondary"
+        style={{ boxShadow: '0 1px 2px rgba(0,0,0,.05)' }}
+      >
+        <span className="mt-px" style={glyphStyle(edge.mark)}>
+          {s.glyph}
+        </span>
+        <span className="line-clamp-2 min-w-0">{edge.label}</span>
+      </div>
+    </Tooltip>
   )
 }
 
@@ -251,9 +263,7 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
         <div className="mt-1.5 flex flex-col gap-0.5 border-t border-theme-border-subtle pt-1.5">
           {node.anomalies.map((a, i) => (
             <div key={i} className="flex items-baseline gap-1.5">
-              <span style={glyphStyle(a.mark)} title={markHelp(a.mark)}>
-                {markStyle(a.mark).glyph}
-              </span>
+              <MarkGlyph mark={a.mark} />
               <span className="text-[9.5px] leading-[1.35] text-theme-text-secondary">{a.text}</span>
             </div>
           ))}
@@ -264,13 +274,22 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
       {node.podRows && node.podRows.length > 0 && (
         <div className="mt-1.5 flex flex-col gap-0.5 border-t border-theme-border-subtle pt-1.5">
           {node.podRows.map((r) => (
-            <div key={r.name} className="flex items-baseline gap-1.5" title={`${r.name} — ${r.detail}`}>
-              <span style={glyphStyle(r.mark)} title={markHelp(r.mark)}>
-                {markStyle(r.mark).glyph}
-              </span>
-              <span className="min-w-0 flex-1 truncate font-mono text-[9.5px] text-theme-text-secondary">{r.name}</span>
-              <span className="shrink-0 text-[9px] text-theme-text-tertiary">{r.detail}</span>
-            </div>
+            <Tooltip
+              key={r.name}
+              content={
+                <>
+                  <span className="font-mono font-semibold">{r.name}</span>
+                  <span className="text-theme-text-tertiary"> — {r.detail} · {markHelp(r.mark)}</span>
+                </>
+              }
+              wrapperClassName="w-full cursor-help"
+            >
+              <div className="flex w-full items-baseline gap-1.5">
+                <span style={glyphStyle(r.mark)}>{markStyle(r.mark).glyph}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[9.5px] text-theme-text-secondary">{r.name}</span>
+                <span className="shrink-0 text-[9px] text-theme-text-tertiary">{r.detail}</span>
+              </div>
+            </Tooltip>
           ))}
           {!!node.moreRows && <div className="text-[9px] text-theme-text-tertiary">+{node.moreRows} more not shown</div>}
         </div>
@@ -280,9 +299,8 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
 }
 
 export function TinyTag({ text, tone, title }: { text: string; tone: string; title?: string }) {
-  return (
+  const tag = (
     <span
-      title={title}
       className="whitespace-nowrap rounded-full px-1.5 py-px text-[8.5px] font-bold tracking-[0.05em]"
       style={{
         color: tone,
@@ -294,6 +312,23 @@ export function TinyTag({ text, tone, title }: { text: string; tone: string; tit
     >
       {text}
     </span>
+  )
+  if (!title) return tag
+  return (
+    <Tooltip content={title} wrapperClassName="cursor-help">
+      {tag}
+    </Tooltip>
+  )
+}
+
+/** A mark's symbol with its meaning on hover. The symbol set is the graph's
+ *  whole evidence vocabulary and appears in six places; without one component
+ *  each site had to remember to attach the decoder, and some did not. */
+export function MarkGlyph({ mark }: { mark: Mark }) {
+  return (
+    <Tooltip content={markHelp(mark)} wrapperClassName="cursor-help">
+      <span style={glyphStyle(mark)}>{markStyle(mark).glyph}</span>
+    </Tooltip>
   )
 }
 

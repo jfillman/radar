@@ -243,15 +243,16 @@ export function RequestIndicator({ path, onApplyProbePath, testedAt }: { path?: 
         tested{testedAt ? ` ${testedAt.toLocaleTimeString(undefined, { hour12: false })}` : ''} with <span className="font-mono text-theme-text-secondary">GET {path || '/'}</span>
       </span>
       {onApplyProbePath && (
-        <button
-          type="button"
-          onClick={() => setEditing(true)}
-          title="Edit the request path"
-          aria-label="Edit the request path"
-          className="rounded p-0.5 text-theme-text-tertiary transition-colors hover:bg-theme-hover hover:text-theme-text-secondary"
-        >
-          <Pencil className="h-3 w-3" />
-        </button>
+        <Tooltip content="Edit the request path">
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            aria-label="Edit the request path"
+            className="rounded p-0.5 text-theme-text-tertiary transition-colors hover:bg-theme-hover hover:text-theme-text-secondary"
+          >
+            <Pencil className="h-3 w-3" />
+          </button>
+        </Tooltip>
       )}
     </div>
   )
@@ -281,9 +282,11 @@ function ProbeOptionsMenu({ probePath, onApplyProbePath }: { probePath?: string;
   }
   return (
     <div ref={ref} className="relative">
-      <button type="button" onClick={() => setOpen((o) => !o)} title="More options" aria-label="More options" className="btn-brand-muted px-1.5 py-1 text-xs">
-        <MoreHorizontal className="w-3.5 h-3.5" />
-      </button>
+      <Tooltip content="More options">
+        <button type="button" onClick={() => setOpen((o) => !o)} aria-label="More options" className="btn-brand-muted px-1.5 py-1 text-xs">
+          <MoreHorizontal className="w-3.5 h-3.5" />
+        </button>
+      </Tooltip>
       {open && (
         <div className="absolute right-0 mt-1 z-20 w-72 rounded-lg border border-theme-border bg-theme-surface shadow-theme-lg p-1 text-xs">
           {!editing ? (
@@ -345,30 +348,32 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
           (it mutates: spawns a Job), clearly subordinate to the primary, with an
           in-cluster glyph so it's distinguishable without hover. */}
       {showInCluster && (
-        <button
-          type="button"
-          onClick={onRunInCluster}
-          disabled={inClusterRunning}
-          title="Run the probe from a short-lived Job INSIDE the cluster - real pod-to-pod traffic - to confirm the in-cluster data path. Covers EVERY path on this resource, not only the one selected above."
-          className="btn-brand-muted px-2.5 py-1 text-xs inline-flex items-center gap-1.5"
-        >
-          {inClusterRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Network className="w-3 h-3" />}
-          {inClusterRunning ? 'Running in-cluster test…' : inClusterTested ? 'Re-run in-cluster' : 'Test in-cluster'}
-        </button>
+        <Tooltip content="Runs the probe from a short-lived Job INSIDE the cluster — real pod-to-pod traffic — to confirm the in-cluster data path. Covers EVERY path on this resource, not only the one selected above.">
+          <button
+            type="button"
+            onClick={onRunInCluster}
+            disabled={inClusterRunning}
+            className="btn-brand-muted px-2.5 py-1 text-xs inline-flex items-center gap-1.5"
+          >
+            {inClusterRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Network className="w-3 h-3" />}
+            {inClusterRunning ? 'Running in-cluster test…' : inClusterTested ? 'Re-run in-cluster' : 'Test in-cluster'}
+          </button>
+        </Tooltip>
       )}
       {/* Primary: the reachability test. The refresh icon signals it's
           re-runnable (it auto-ran on load), so re-running reads as a refresh. */}
       {onRunProbes && (
-        <button
-          type="button"
-          onClick={onRunProbes}
-          disabled={probeRequested}
-          title="Re-test reachability from your machine and through the API server. Covers EVERY path on this resource, not only the one selected above."
-          className="btn-brand px-2.5 py-1 text-xs inline-flex items-center gap-1.5"
-        >
-          {probeRequested ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-          {probeRequested ? 'Testing…' : probed ? 'Re-run reachability test' : 'Run reachability test'}
-        </button>
+        <Tooltip content="Tests reachability from your machine and through the API server. Covers EVERY path on this resource, not only the one selected above.">
+          <button
+            type="button"
+            onClick={onRunProbes}
+            disabled={probeRequested}
+            className="btn-brand px-2.5 py-1 text-xs inline-flex items-center gap-1.5"
+          >
+            {probeRequested ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            {probeRequested ? 'Testing…' : probed ? 'Re-run reachability test' : 'Run reachability test'}
+          </button>
+        </Tooltip>
       )}
       {/* Overflow: customize what we test (path), room for more options later. */}
       <ProbeOptionsMenu probePath={probePath} onApplyProbePath={onApplyProbePath} />
@@ -388,16 +393,19 @@ export function CopyableCommand({ command }: { command: string }) {
   }, [command])
   return (
     <div className="mt-1.5 flex items-center gap-2 bg-theme-base rounded px-2 py-1 font-mono text-[11px] text-theme-text-secondary group">
-      <code className="flex-1 truncate" title={command}>{command}</code>
-      <button
-        type="button"
-        onClick={onCopy}
-        className="shrink-0 text-theme-text-tertiary hover:text-theme-text-primary"
-        aria-label="Copy command"
-        title={copied ? 'Copied!' : 'Copy'}
-      >
-        {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
-      </button>
+      <Tooltip content={<span className="font-mono">{command}</span>} wrapperClassName="min-w-0 flex-1">
+        <code className="w-full truncate">{command}</code>
+      </Tooltip>
+      <Tooltip content={copied ? 'Copied!' : 'Copy'} wrapperClassName="shrink-0">
+        <button
+          type="button"
+          onClick={onCopy}
+          className="text-theme-text-tertiary hover:text-theme-text-primary"
+          aria-label="Copy command"
+        >
+          {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+        </button>
+      </Tooltip>
     </div>
   )
 }
@@ -441,14 +449,11 @@ export function FindingRow({ finding, onNavigate }: { finding: Finding; onNaviga
               <span className="text-[11px] text-theme-text-tertiary mr-0.5">{finding.chipsLabel}:</span>
             )}
             {finding.chips.map((c, i) => (
-              <Badge
-                key={i}
-                size="sm"
-                severity={c.tone === 'accent' ? 'info' : 'neutral'}
-                title={c.title}
-              >
-                {c.text}
-              </Badge>
+              <Tooltip key={i} content={c.title ?? ''} wrapperClassName="cursor-help">
+                <Badge size="sm" severity={c.tone === 'accent' ? 'info' : 'neutral'}>
+                  {c.text}
+                </Badge>
+              </Tooltip>
             ))}
           </div>
         )}
@@ -474,11 +479,6 @@ export function FindingRow({ finding, onNavigate }: { finding: Finding; onNaviga
         )}
         {finding.command && <CopyableCommand command={finding.command} />}
       </div>
-      {/* The finding code is a stable identifier for agents/MCP, not operator
-          copy - rendering the raw truncated enum (e.g. "PROBLEM:COMPLETED")
-          leaks internals and misleads (it read as "success" next to a critical).
-          Keep it as a hover title only. */}
-      <span className="shrink-0 w-0 overflow-hidden" title={`code: ${finding.code}`} aria-hidden />
     </div>
   )
 }

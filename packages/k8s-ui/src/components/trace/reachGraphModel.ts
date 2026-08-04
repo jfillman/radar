@@ -16,8 +16,10 @@ const GUTTER = 98
 const ROW_GAP = 14
 const LANE_PAD = { x: 14, top: 22, bottom: 14 }
 const LANE_GAP = 20
-/** Pills are truncated to this many characters so one never outgrows a gutter. */
-export const PILL_MAX_CHARS = 16
+/** Pills wrap to two lines, so the cap is what fits on two - not on one.
+ *  At 16 it cut "HTTP 404 - reached" down to "HTTP 404...", which reports the
+ *  status code and hides the only word that says what it meant. */
+export const PILL_MAX_CHARS = 26
 /** Hard cap on a pill's rendered width. MUST stay under GUTTER, or a pill
  *  overruns its gutter and lands on the node beside it. */
 export const PILL_MAX_PX = 88
@@ -70,8 +72,10 @@ export interface GraphEdge {
   d: string
   mark: Mark
   label: string
-  /** Full label, when `label` was truncated to fit the gutter. */
-  title?: string
+  /** The untruncated label. ALWAYS set: the pill has a pixel cap as well as a
+   *  character cap, so text can be visually cut without `label` being shortened,
+   *  and a hover that only appears sometimes is worse than one that always does. */
+  title: string
   /** Pill centre, in canvas coordinates. Always inside a gutter. */
   px: number
   py: number
@@ -521,7 +525,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       d: `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`,
       mark,
       label: truncate(label),
-      title: label.length > PILL_MAX_CHARS ? label : undefined,
+      title: label,
       px: (x1 + x2) / 2,
       py: (y1 + y2) / 2,
     })

@@ -71,11 +71,15 @@ export function ReachabilityGraph({
       {/* The path is wide and short, so the space is used by SCALING the graph
           up to whichever axis binds - not by stretching the lane, which just
           floats the content in an empty band. Whatever height is left over is
-          split evenly by centring. */}
+          split evenly by centring.
+
+          No minHeight on the measured element: the ResizeObserver watches it,
+          so sizing it from a scale derived from its own height was a feedback
+          loop that ratcheted the graph up to the cap. flex-1 inside a
+          full-height column already gives it a definite height. */}
       <div
         ref={fitRef}
         className="flex min-h-0 min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden px-2 py-1.5"
-        style={{ minHeight: canvas.h * scale + 16 }}
       >
         <div className="relative shrink-0" style={{ width: canvas.w * scale, height: canvas.h * scale }}>
         <div

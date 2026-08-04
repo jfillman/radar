@@ -167,6 +167,29 @@ describe('scenariosFor', () => {
     expect(s).toHaveLength(1)
   })
 
+  it('gives a scenario a key that survives re-sorting', () => {
+    // The strip is sorted worst-first, so a re-run that changes an outcome
+    // re-orders it. Selection is stored by key precisely because a positional
+    // index would silently move the user to a different path.
+    const before = scenariosFor(
+      [r2({ route: 'a/', target: 'svc:80', outcome: 'unreachable', confidence: 'real' }), r2({ route: 'b/', target: 'svc:90', outcome: 'verified', confidence: 'real' })],
+      [],
+    )
+    expect(before[0].primary.target).toBe('svc:80')
+    const bKey = before[1].key
+
+    // Outcomes swap on the next run; worst-first now puts svc:90 first.
+    const after = scenariosFor(
+      [r2({ route: 'a/', target: 'svc:80', outcome: 'verified', confidence: 'real' }), r2({ route: 'b/', target: 'svc:90', outcome: 'unreachable', confidence: 'real' })],
+      [],
+    )
+    expect(after[0].primary.target).toBe('svc:90')
+    // The old index 1 now points at a different scenario - which is why the key,
+    // not the index, is what selection must be stored by.
+    expect(after[1].key).not.toBe(bKey)
+    expect(new Set(after.map((x) => x.key)).size).toBe(after.length)
+  })
+
   it('uses the single route label verbatim when nothing was grouped', () => {
     const s = scenariosFor([r2({ route: 'only.example.com/', target: 'svc:80' })], [])
     expect(s[0].label).toBe('only.example.com/')

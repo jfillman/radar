@@ -140,8 +140,11 @@ function ReachabilityBoard(props: BoardProps) {
   // Scenarios group routes that agree in every respect - a Gateway route with
   // three hostnames and one backend is one situation, not three.
   const scenarios = useMemo(() => scenariosFor(trace.routes ?? [], trace.notTested ?? []), [trace])
-  const [scenarioIdx, setScenarioIdx] = useState(0)
-  const scenario = scenarios[Math.min(scenarioIdx, Math.max(0, scenarios.length - 1))]
+  // Keyed by identity, never by position: the strip is sorted worst-first, so a
+  // re-run that changes an outcome re-sorts it and a stored index would silently
+  // move the user to a different path.
+  const [scenarioKey, setScenarioKey] = useState<string | null>(null)
+  const scenario = scenarios.find((s) => s.key === scenarioKey) ?? scenarios[0]
   const route: RouteResult | undefined = scenario?.primary
 
   const origins = useMemo(
@@ -174,7 +177,7 @@ function ReachabilityBoard(props: BoardProps) {
           distinct outcome the verdict already speaks for the whole resource, and
           a one-tab picker would just be a step before reading anything. */}
       {scenarios.length > 1 && (
-        <ScenarioStrip scenarios={scenarios} active={scenarioIdx} onPick={(i) => { setScenarioIdx(i); setSelection(undefined) }} stale={stale} running={running} />
+        <ScenarioStrip scenarios={scenarios} activeKey={scenario?.key} onPick={(k) => { setScenarioKey(k); setSelection(undefined) }} stale={stale} running={running} />
       )}
 
       <VerdictBand verdict={verdict} runNonce={runNonce} actions={<ReachActions {...props} inClusterTested={origins.some((o) => o.id === 'incluster' && o.mark !== 'untested')} />} />
@@ -212,14 +215,14 @@ function ReachabilityBoard(props: BoardProps) {
 
 function ScenarioStrip({
   scenarios,
-  active,
+  activeKey,
   onPick,
   stale,
   running,
 }: {
   scenarios: Scenario[]
-  active: number
-  onPick: (i: number) => void
+  activeKey?: string
+  onPick: (key: string) => void
   stale: boolean
   running: boolean
 }) {
@@ -227,18 +230,19 @@ function ScenarioStrip({
     <div className="flex items-stretch border-b border-theme-border bg-theme-elevated">
       <div className="flex flex-none items-center py-2 pl-4.5 pr-3 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">PATHS DIFFER</div>
       <div className="flex min-w-0 flex-1 overflow-x-auto">
-        {scenarios.map((s, i) => {
+        {scenarios.map((s) => {
           const tone = routeTone(s.primary, { stale, running })
+          const active = s.key === activeKey
           return (
             <button
               key={s.key}
               type="button"
-              onClick={() => onPick(i)}
+              onClick={() => onPick(s.key)}
               title={s.hosts.length > 1 ? s.hosts.join('\n') : undefined}
               className="flex-none cursor-pointer border-r border-theme-border-subtle px-3.5 py-1.5 text-left"
               style={{
-                background: i === active ? 'var(--bg-surface)' : 'transparent',
-                boxShadow: i === active ? 'inset 0 -2px 0 var(--accent)' : 'none',
+                background: active ? 'var(--bg-surface)' : 'transparent',
+                boxShadow: active ? 'inset 0 -2px 0 var(--accent)' : 'none',
               }}
             >
               <div className="flex items-center gap-1.5">

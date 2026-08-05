@@ -90,6 +90,12 @@ type Generator struct {
 	cfg     Config
 	mu      sync.Mutex
 	current int // pods materialized after the last Seed/ScaleTo
+	// currentApps is the number of app skeletons (Deployment/ReplicaSet/Service/
+	// ConfigMap/Secret) actually materialized. Tracked independently of current
+	// because a scale that fails after mutating pods but before mutating apps
+	// leaves the two out of step; deriving the app count from current would then
+	// skip cleanup and orphan skeletons on retry.
+	currentApps int
 }
 
 // New returns a Generator for cfg (with defaults applied).
@@ -100,12 +106,12 @@ func New(cfg Config) *Generator {
 // Config returns the effective (defaulted) configuration.
 func (g *Generator) Config() Config { return g.cfg }
 
-// AppCount returns the number of Deployment/ReplicaSet/Service apps materialized
-// for the current pod count.
+// AppCount returns the number of Deployment/ReplicaSet/Service/ConfigMap/Secret
+// apps currently materialized.
 func (g *Generator) AppCount() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return appsFor(g.current, g.cfg.PodsPerApp)
+	return g.currentApps
 }
 
 // Result reports the outcome of a scale operation.
@@ -329,6 +335,7 @@ func (g *Generator) SeedObjects() []runtime.Object {
 		objs = append(objs, g.buildPod(i))
 	}
 	g.current = g.cfg.Pods
+	g.currentApps = apps
 	return objs
 }
 
@@ -357,7 +364,7 @@ func (g *Generator) ScaleTo(ctx context.Context, client kubernetes.Interface, ta
 	}
 
 	from := g.current
-	appsHave := appsFor(from, g.cfg.PodsPerApp)
+	appsHave := g.currentApps
 	appsWant := appsFor(target, g.cfg.PodsPerApp)
 
 	if appsWant > appsHave {
@@ -388,6 +395,7 @@ func (g *Generator) ScaleTo(ctx context.Context, client kubernetes.Interface, ta
 	}
 
 	g.current = target
+	g.currentApps = appsWant
 	converged := waitFor(ctx, func() bool { return count("Pod") == target }, 60*time.Second)
 
 	return Result{
@@ -428,6 +436,7 @@ func (g *Generator) createApps(ctx context.Context, client kubernetes.Interface,
 		if !waitFor(ctx, func() bool { return count("Deployment") >= created }, 30*time.Second) {
 			return fmt.Errorf("informer did not drain after creating %d apps (Deployment=%d)", created, count("Deployment"))
 		}
+		g.currentApps = created
 	}
 	return nil
 }
@@ -450,6 +459,7 @@ func (g *Generator) deleteApps(ctx context.Context, client kubernetes.Interface,
 		if !waitFor(ctx, func() bool { return count("Deployment") <= remaining }, 30*time.Second) {
 			return fmt.Errorf("informer did not drain after deleting apps down to %d (Deployment=%d)", remaining, count("Deployment"))
 		}
+		g.currentApps = remaining
 	}
 	return nil
 }

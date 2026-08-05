@@ -140,6 +140,67 @@ func TestScaleRoundTripThroughInformer(t *testing.T) {
 	}
 }
 
+// TestScaleDownAfterPartialProgressLeavesNoOrphanApps reproduces the case where
+// a scale-down deletes pods (advancing the pod counter) but fails before
+// deleting the app skeletons. A retry must still remove every orphaned
+// Deployment/ReplicaSet/Service/ConfigMap/Secret — it must not derive the app
+// count from pod progress.
+func TestScaleDownAfterPartialProgressLeavesNoOrphanApps(t *testing.T) {
+	g := New(Config{Pods: 1000, Nodes: 4, Namespaces: 2, PodsPerApp: 200}) // 5 apps
+	client := fake.NewClientset(g.SeedObjects()...)
+
+	factory := informers.NewSharedInformerFactory(client, 0)
+	podInformer := factory.Core().V1().Pods().Informer()
+	deployInformer := factory.Apps().V1().Deployments().Informer()
+	svcInformer := factory.Core().V1().Services().Informer()
+	cmInformer := factory.Core().V1().ConfigMaps().Informer()
+	stop := make(chan struct{})
+	defer close(stop)
+	factory.Start(stop)
+	if !cache.WaitForCacheSync(stop, podInformer.HasSynced, deployInformer.HasSynced, svcInformer.HasSynced, cmInformer.HasSynced) {
+		t.Fatal("informer failed to sync")
+	}
+	count := func(kind string) int {
+		switch kind {
+		case "Pod":
+			return len(podInformer.GetStore().ListKeys())
+		case "Deployment":
+			return len(deployInformer.GetStore().ListKeys())
+		case "Service":
+			return len(svcInformer.GetStore().ListKeys())
+		case "ConfigMap":
+			return len(cmInformer.GetStore().ListKeys())
+		}
+		return 0
+	}
+	waitCount(func() int { return count("Pod") }, 1000, 5*time.Second)
+
+	ctx := context.Background()
+	// Simulate the partial failure: pods deleted down to 400 (current advances),
+	// but the app skeletons are left untouched (currentApps stays 5).
+	if err := g.deletePods(ctx, client, 400, 1000, count); err != nil {
+		t.Fatalf("setup deletePods: %v", err)
+	}
+	if g.AppCount() != 5 {
+		t.Fatalf("precondition: AppCount=%d want 5 (apps must be untouched)", g.AppCount())
+	}
+
+	// Retry the scale-down; it must clean up the orphaned apps.
+	res, err := g.ScaleTo(ctx, client, 200, count)
+	if err != nil {
+		t.Fatalf("ScaleTo: %v", err)
+	}
+	if !res.Converged || count("Pod") != 200 {
+		t.Fatalf("pods=%d converged=%v want 200/true", count("Pod"), res.Converged)
+	}
+	// 200 pods / 200 per app = 1 app. Every other app kind must match — no orphans.
+	for _, kind := range []string{"Deployment", "Service", "ConfigMap"} {
+		if got := count(kind); got != 1 {
+			t.Fatalf("orphan %s skeletons: %s=%d want 1", kind, kind, got)
+		}
+	}
+}
+
 func waitCount(count func() int, want int, timeout time.Duration) int {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

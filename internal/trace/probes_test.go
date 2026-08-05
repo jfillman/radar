@@ -1939,3 +1939,39 @@ func TestProbeExternalName_SSRFGuardDemotesToSkip(t *testing.T) {
 		t.Errorf("raw SSRF-guard string must not surface; got %+v", *portRow)
 	}
 }
+
+// A port NAMED http-webhook on 7000 was rejected as non-HTTP because 7000 sits
+// in the misc-TCP number list - so an operator who had said exactly what speaks
+// there was overruled by the number, the route never became testable, and the
+// in-cluster test then reported "not supported for this subject".
+func TestPortNameHTTPOutranksTheMiscTCPPortNumber(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		port int32
+		want bool
+	}{
+		{"http-webhook", 7000, true},
+		{"https-api", 7001, true},
+		{"http", 7000, true},
+		{"metrics", 7000, false}, // no positive name signal: the number still decides
+		{"grpc", 8080, false},    // an explicit non-HTTP name still loses
+		{"h2c", 80, false},
+	} {
+		if got := isHTTPProbablePort(tc.name, "", tc.port); got != tc.want {
+			t.Errorf("isHTTPProbablePort(%q, %d) = %v, want %v", tc.name, tc.port, got, tc.want)
+		}
+	}
+}
+
+// The skip reason must name the signal that actually fired. Reporting the port
+// name whenever one existed sent the reader to rename a port that was fine.
+func TestNonHTTPReasonBlamesTheSignalThatFired(t *testing.T) {
+	byNumber := nonHTTPBaseReason("webhook", "", 7000)
+	if !strings.Contains(byNumber, "7000") {
+		t.Errorf("a number-triggered skip must name the port: %q", byNumber)
+	}
+	byName := nonHTTPBaseReason("postgres", "", 5432)
+	if !strings.Contains(byName, "postgres") {
+		t.Errorf("a name-triggered skip must name the name: %q", byName)
+	}
+}

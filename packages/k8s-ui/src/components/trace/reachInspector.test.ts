@@ -13,6 +13,10 @@ function mk(pods: PodStatus[], probes: ProbeResult[]): Trace {
     verdict: 'healthy',
     brokenAt: -1,
     upstreams: [],
+    // The producer attaches a concrete request to every probed route; without
+    // one the server has nothing to send, so a fixture that omits it is not a
+    // realistic trace.
+    routes: [{ route: 'GET /', target: 'shop:80', outcome: 'verified', confidence: 'real', inClusterRequest: { scheme: 'http', path: '/' } }],
     downstream: [
       { resource: { kind: 'Service', name: 'shop', namespace: 'store' }, edge: 'service', findings: [], config: { clusterIP: '10.96.0.1', selector: { app: 'shop' } } },
       {
@@ -227,5 +231,36 @@ describe('verdict band', () => {
     const v = buildVerdict(t, route(), buildOrigins(t), { running: true })
     expect(v.tone).toBe('info')
     expect(v.chipText).toBe('testing')
+  })
+})
+
+describe('an in-cluster test that could not run says so first', () => {
+  // A route whose probes were all skipped never gets a concrete request, so the
+  // server answers "not supported for this subject". The panel used to
+  // recommend the run as the strongest evidence available and let the operator
+  // discover the failure by spending a Job on it.
+  const noRunnableRoute = (): Trace => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({ path: 'apiserver' })])
+    t.routes = [{ route: 'port 7000', target: 'shop:7000', outcome: 'not-tested', evidence: 'port looks non-HTTP' }]
+    return t
+  }
+
+  it('disables the action instead of offering it', () => {
+    const s = buildSidebar(undefined, ctx(noRunnableRoute(), 'apiserver'))
+    const cta = s.path.next.ctas.find((c) => c.action === 'run-in-cluster')
+    expect(cta?.disabledReason).toMatch(/nothing to run/i)
+    expect(cta?.primary).toBeFalsy()
+  })
+
+  it('explains it in the body rather than promising stronger evidence', () => {
+    const s = buildSidebar(undefined, ctx(noRunnableRoute(), 'apiserver'))
+    expect(s.path.next.body).not.toMatch(/strongest evidence/i)
+    expect(s.path.next.body).toMatch(/skipped before a request could be formed/i)
+  })
+
+  it('still offers it when a route does carry a request', () => {
+    const s = buildSidebar(undefined, ctx(mk([pod('a', true, '10.0.0.1')], [p({ path: 'apiserver' })]), 'apiserver'))
+    const cta = s.path.next.ctas.find((c) => c.action === 'run-in-cluster')
+    expect(cta?.disabledReason).toBeUndefined()
   })
 })

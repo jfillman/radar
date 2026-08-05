@@ -761,6 +761,14 @@ func isHTTPProbablePort(name, appProtocol string, port int32) bool {
 		}
 		return false
 	}
+	// An explicit http/https name outranks the port NUMBER below. An operator who
+	// names a port "http-webhook" has said what speaks there, and Kubernetes
+	// treats the port name as the protocol hint - so a number that happens to sit
+	// in the misc-TCP list must not overrule it. Checked after the non-HTTP names
+	// so "grpc-web" and "h2c" keep losing.
+	if nameSaysHTTP(name) {
+		return true
+	}
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "grpc", "grpc-web", "h2", "h2c",
 		"postgres", "postgresql", "pg",
@@ -962,10 +970,48 @@ func nonHTTPBaseReason(portName, appProtocol string, port int32) string {
 	if appProtocol != "" {
 		return fmt.Sprintf("Port is declared as %q, not HTTP. The Kubernetes API path only carries HTTP traffic.", appProtocol)
 	}
-	if portName != "" {
+	// Name the signal that ACTUALLY fired. Reporting the port name whenever one
+	// exists blamed the name for a decision the port NUMBER made, sending the
+	// reader to rename a port that was never the problem.
+	if nameLooksNonHTTP(portName) {
 		return fmt.Sprintf("Port named %q looks non-HTTP. The Kubernetes API path only carries HTTP traffic.", portName)
 	}
+	if portName != "" {
+		return fmt.Sprintf("Port %d (%q) is a well-known non-HTTP port. The Kubernetes API path only carries HTTP traffic.", port, portName)
+	}
 	return fmt.Sprintf("Port %d is a well-known non-HTTP port. The Kubernetes API path only carries HTTP traffic.", port)
+}
+
+// nameSaysHTTP reports whether a port NAME positively declares HTTP. Kept
+// narrow: an exact http/https, or an http-/https- prefixed name such as
+// "http-webhook" or "https-api".
+func nameSaysHTTP(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == "http" || n == "https" || strings.HasPrefix(n, "http-") || strings.HasPrefix(n, "https-")
+}
+
+// nameLooksNonHTTP reports whether the port NAME is what disqualified it, as
+// opposed to the port number.
+func nameLooksNonHTTP(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "grpc", "grpc-web", "h2", "h2c",
+		"postgres", "postgresql", "pg",
+		"mysql", "mariadb",
+		"redis",
+		"mongo", "mongodb",
+		"kafka",
+		"amqp", "rabbitmq",
+		"smtp", "imap", "pop3",
+		"ssh", "ftp", "sftp",
+		"dns",
+		"udp", "tcp",
+		"mqtt",
+		"memcached",
+		"cassandra",
+		"elasticsearch-transport":
+		return true
+	}
+	return false
 }
 
 // portKey extracts the trailing port number from a probe target so

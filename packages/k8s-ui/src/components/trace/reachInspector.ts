@@ -88,7 +88,22 @@ function originScope(o: Origin, trace: Trace): { k: string; v: string }[] {
  * unreachable ceiling is stated underneath as a caveat instead of being offered
  * as an action - a button that can never be pressed is not a next step.
  */
-function gapNext(origins: Origin[], current: Origin, namespace?: string, multiPath?: boolean): Sidebar['path']['next'] {
+function gapNext(
+  origins: Origin[],
+  current: Origin,
+  namespace?: string,
+  multiPath?: boolean,
+  inClusterRunnable = true,
+): Sidebar['path']['next'] {
+  // The server can only test a route that carries a concrete in-cluster request.
+  // When none does, the run fails with "not supported for this subject" - so the
+  // panel must say that HERE, instead of recommending it as the strongest
+  // evidence available and letting the operator find out by clicking.
+  const notRunnable = 'No path on this resource has a request Radar can send from inside the cluster, so this test would have nothing to run.'
+  const inClusterCTA = (): InspectorCTA[] =>
+    inClusterRunnable
+      ? [{ text: '⚗ Run in-cluster test', primary: true, action: 'run-in-cluster' }]
+      : [{ text: '⚗ Run in-cluster test', action: 'run-in-cluster', disabledReason: notRunnable }]
   const actionable = actionableGap(origins)
   const ceiling = strongestGap(origins)
   const ceilingNote = ceiling?.unsupported ? `Even then, ${ceiling.name.toLowerCase()} stays untested — ${ceiling.unavailable}` : undefined
@@ -111,12 +126,11 @@ function gapNext(origins: Origin[], current: Origin, namespace?: string, multiPa
     // You are looking at the vantage that is itself the gap.
     return {
       header: 'RUN THIS NEXT',
-      body: `Nothing has been tested from ${actionable.name} yet, and it is the strongest evidence Radar can still collect.${allPaths}`,
+      body: inClusterRunnable
+        ? `Nothing has been tested from ${actionable.name} yet, and it is the strongest evidence Radar can still collect.${allPaths}`
+        : `${notRunnable} Every declared path here was skipped before a request could be formed.`,
       blocked: ceilingNote,
-      ctas:
-        actionable.id === 'incluster'
-          ? [{ text: '⚗ Run in-cluster test', primary: true, action: 'run-in-cluster' }]
-          : [{ text: '⟳ Re-run', action: 'run-probes' }],
+      ctas: actionable.id === 'incluster' ? inClusterCTA() : [{ text: '⟳ Re-run', action: 'run-probes' }],
     }
   }
   if (!actionable) {
@@ -132,12 +146,12 @@ function gapNext(origins: Origin[], current: Origin, namespace?: string, multiPa
   }
   return {
     header: 'RUN THIS NEXT',
-    body: `${actionable.name} has not been used for this path, and is the strongest evidence Radar can still collect.${allPaths}`,
+    body:
+      actionable.id === 'incluster' && !inClusterRunnable
+        ? `${notRunnable} Every declared path here was skipped before a request could be formed.`
+        : `${actionable.name} has not been used for this path, and is the strongest evidence Radar can still collect.${allPaths}`,
     blocked: ceilingNote,
-    ctas:
-      actionable.id === 'incluster'
-        ? [{ text: '⚗ Run in-cluster test', primary: true, action: 'run-in-cluster' }]
-        : [{ text: '⟳ Re-run', action: 'run-probes' }],
+    ctas: actionable.id === 'incluster' ? inClusterCTA() : [{ text: '⟳ Re-run', action: 'run-probes' }],
   }
 }
 
@@ -153,6 +167,18 @@ interface Ctx {
   multiPath?: boolean
   /** The HTTP path the run requests, as chosen in "what to test". */
   httpPath?: string
+}
+
+/**
+ * Whether an in-cluster run has anything to send.
+ *
+ * The server tests a route only when it carries a concrete InClusterRequest; a
+ * route whose probes were all skipped never becomes one, so a subject can offer
+ * paths and still have nothing runnable. Knowing this from the trace is what
+ * lets the panel say so BEFORE the operator spends a Job on it.
+ */
+function inClusterRunnable(trace: Trace): boolean {
+  return (trace.routes ?? []).some((r) => !!r.inClusterRequest && !r.benign)
 }
 
 /** The persistent diagnosis: did traffic get through, from where, and what next. */
@@ -266,7 +292,7 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
               ...(diagnosis.command ? [{ text: 'Copy the command', action: 'copy-command' as InspectorAction, command: diagnosis.command }] : []),
             ],
           }
-        : gapNext(origins, origin, trace.subject.namespace, ctx.multiPath),
+        : gapNext(origins, origin, trace.subject.namespace, ctx.multiPath, inClusterRunnable(trace)),
   }
 }
 

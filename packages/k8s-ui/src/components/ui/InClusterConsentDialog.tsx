@@ -53,7 +53,13 @@ export function inClusterConsentDetails(o: {
   const lines = [cluster(o.cluster), `Namespace: ${o.namespace}`]
   if (total > 0) {
     lines.push(`Declared:  ${total} path${total === 1 ? '' : 's'} on this resource`)
-    lines.push(`Will run:  ${willRun} request${willRun === 1 ? '' : 's'}, one Pod each`)
+    // "0 requests, one Pod each" is nonsense, and it describes a run that would
+    // create nothing at all - so say that instead of counting to zero.
+    lines.push(
+      willRun === 0
+        ? 'Will run:  nothing — no request could be derived from these paths'
+        : `Will run:  ${willRun} request${willRun === 1 ? '' : 's'}, one Pod each`,
+    )
   }
   for (const r of reqs.slice(0, MAX_LISTED_REQUESTS)) {
     lines.push(`  → ${r.request}`)
@@ -98,9 +104,15 @@ export function InClusterConsentDialog({ open, cluster, namespace, requests, unt
       open={open}
       onClose={handleClose}
       onConfirm={handleConfirm}
+      // Wide enough for a real cluster identity: a GKE context name runs past
+      // 50 characters and wrapped mid-name at the default width.
+      className="w-full max-w-xl"
       title="Run in-cluster reachability test?"
       message="This creates one short-lived, self-deleting Job per request, sending real pod-to-pod traffic from inside the cluster. Each Pod runs under the target namespace’s default ServiceAccount with no token mounted — not as you — and your cluster may inject sidecars into it."
       details={inClusterConsentDetails({ cluster, namespace, requests, untestedCount, maxProbes })}
+      // Nothing to send means nothing to confirm. The button was live for a run
+      // that would create no Pods and change no evidence.
+      confirmDisabled={(requests?.length ?? 0) === 0}
       confirmLabel="Run test"
       cancelLabel="Cancel"
       variant="warning"

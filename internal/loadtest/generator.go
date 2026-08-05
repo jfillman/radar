@@ -90,12 +90,18 @@ type Generator struct {
 	cfg     Config
 	mu      sync.Mutex
 	current int // pods materialized after the last Seed/ScaleTo
-	// currentApps is the number of app skeletons (Deployment/ReplicaSet/Service/
-	// ConfigMap/Secret) actually materialized. Tracked independently of current
-	// because a scale that fails after mutating pods but before mutating apps
-	// leaves the two out of step; deriving the app count from current would then
-	// skip cleanup and orphan skeletons on retry.
-	currentApps int
+	// App skeletons need two high-water marks because a partially-written app
+	// (some of its five objects created, then a failure) must be handled two
+	// different ways: cleanup must delete it, but a create retry must finish it.
+	//   appsCompleted   — apps whose five objects all succeeded; where a create
+	//                     resumes, so a partial app is re-completed rather than
+	//                     skipped.
+	//   appsMaterialized — the furthest app index any object was written for; the
+	//                     upper bound cleanup deletes down from, so a partial
+	//                     app's stray objects are never orphaned.
+	// On success both equal the app count; they only diverge after a failure.
+	appsCompleted    int
+	appsMaterialized int
 }
 
 // New returns a Generator for cfg (with defaults applied).
@@ -106,12 +112,12 @@ func New(cfg Config) *Generator {
 // Config returns the effective (defaulted) configuration.
 func (g *Generator) Config() Config { return g.cfg }
 
-// AppCount returns the number of Deployment/ReplicaSet/Service/ConfigMap/Secret
-// apps currently materialized.
+// AppCount returns the number of fully-created Deployment/ReplicaSet/Service/
+// ConfigMap/Secret apps.
 func (g *Generator) AppCount() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.currentApps
+	return g.appsCompleted
 }
 
 // Result reports the outcome of a scale operation.
@@ -335,7 +341,8 @@ func (g *Generator) SeedObjects() []runtime.Object {
 		objs = append(objs, g.buildPod(i))
 	}
 	g.current = g.cfg.Pods
-	g.currentApps = apps
+	g.appsCompleted = apps
+	g.appsMaterialized = apps
 	return objs
 }
 
@@ -364,11 +371,12 @@ func (g *Generator) ScaleTo(ctx context.Context, client kubernetes.Interface, ta
 	}
 
 	from := g.current
-	appsHave := g.currentApps
 	appsWant := appsFor(target, g.cfg.PodsPerApp)
 
-	if appsWant > appsHave {
-		if err := g.createApps(ctx, client, appsHave, appsWant, target, count); err != nil {
+	// Create resumes from the last fully-completed app, so a partially-written
+	// app from an earlier failed attempt is finished rather than skipped.
+	if appsWant > g.appsCompleted {
+		if err := g.createApps(ctx, client, g.appsCompleted, appsWant, target, count); err != nil {
 			return Result{}, err
 		}
 	}
@@ -384,18 +392,21 @@ func (g *Generator) ScaleTo(ctx context.Context, client kubernetes.Interface, ta
 		}
 	}
 
-	if err := g.reconcileBoundaryApps(ctx, client, appsHave, appsWant, target); err != nil {
+	if err := g.reconcileBoundaryApps(ctx, client, appsFor(from, g.cfg.PodsPerApp), appsWant, target); err != nil {
 		return Result{}, err
 	}
 
-	if appsWant < appsHave {
-		if err := g.deleteApps(ctx, client, appsWant, appsHave, count); err != nil {
+	// Cleanup deletes down from the furthest app any object was written for, so a
+	// partial app's stray objects are removed, not orphaned.
+	if g.appsMaterialized > appsWant {
+		if err := g.deleteApps(ctx, client, appsWant, g.appsMaterialized, count); err != nil {
 			return Result{}, err
 		}
 	}
 
 	g.current = target
-	g.currentApps = appsWant
+	g.appsCompleted = appsWant
+	g.appsMaterialized = appsWant
 	converged := waitFor(ctx, func() bool { return count("Pod") == target }, 60*time.Second)
 
 	return Result{
@@ -408,15 +419,19 @@ func (g *Generator) ScaleTo(ctx context.Context, client kubernetes.Interface, ta
 // Service) for indices [first, last). Each app touches five distinct watchers
 // with one event apiece, so it batches below the fake watch buffer and paces
 // against the Deployment informer between batches — the same drain discipline
-// as pods, extended to every watched kind. currentApps is advanced to cover app
-// j BEFORE its objects are written, so a mid-app failure still leaves the app in
-// the cleanup range and nothing is orphaned.
+// as pods, extended to every watched kind. appsMaterialized is bumped to cover
+// app j BEFORE its objects are written (so a mid-app failure still leaves the
+// app in the cleanup range) and appsCompleted only AFTER all five succeed (so a
+// retry resumes on the unfinished app rather than skipping it). Creates are
+// idempotent, so re-running over an already-complete app is a no-op.
 func (g *Generator) createApps(ctx context.Context, client kubernetes.Interface, first, last, target int, count func(kind string) int) error {
 	j := first
 	for j < last {
 		end := min(j+appBatchSize, last)
 		for ; j < end; j++ {
-			g.currentApps = j + 1
+			if j+1 > g.appsMaterialized {
+				g.appsMaterialized = j + 1
+			}
 			r := podsInApp(j, target, g.cfg.PodsPerApp)
 			ns := g.nsName(j)
 			if _, err := client.CoreV1().ConfigMaps(ns).Create(ctx, g.buildConfigMap(j), metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -434,6 +449,7 @@ func (g *Generator) createApps(ctx context.Context, client kubernetes.Interface,
 			if _, err := client.CoreV1().Services(ns).Create(ctx, g.buildService(j), metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 				return err
 			}
+			g.appsCompleted = j + 1
 		}
 		created := j
 		if !waitFor(ctx, func() bool { return count("Deployment") >= created }, 30*time.Second) {
@@ -456,7 +472,10 @@ func (g *Generator) deleteApps(ctx context.Context, client kubernetes.Interface,
 			_ = client.AppsV1().Deployments(ns).Delete(ctx, g.appName(j-1), metav1.DeleteOptions{})
 			_ = client.CoreV1().Secrets(ns).Delete(ctx, g.secretName(j-1), metav1.DeleteOptions{})
 			_ = client.CoreV1().ConfigMaps(ns).Delete(ctx, g.cmName(j-1), metav1.DeleteOptions{})
-			g.currentApps = j - 1
+			if g.appsCompleted > j-1 {
+				g.appsCompleted = j - 1
+			}
+			g.appsMaterialized = j - 1
 		}
 		remaining := j
 		if !waitFor(ctx, func() bool { return count("Deployment") <= remaining }, 30*time.Second) {

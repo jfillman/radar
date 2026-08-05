@@ -251,10 +251,10 @@ func TestScaleUpCreateFailureThenScaleDownLeavesNoOrphanApps(t *testing.T) {
 	if _, err := g.ScaleTo(ctx, client, 1000, count); err == nil {
 		t.Fatal("expected ScaleTo to fail on injected create error")
 	}
-	// The high-water mark must include the partially-written app 2 (>=3), else
-	// its ConfigMap/Secret would be orphaned by cleanup.
-	if g.AppCount() < 3 {
-		t.Fatalf("AppCount=%d want >=3 (partial app must be recorded)", g.AppCount())
+	// Precondition: app 2 is partially written (its ConfigMap exists, its
+	// Deployment does not) — the state cleanup must fully remove.
+	if _, err := client.CoreV1().ConfigMaps("loadtest-00").Get(ctx, "app-0002-config", metav1.GetOptions{}); err != nil {
+		t.Fatalf("expected partial app 2 ConfigMap to exist: %v", err)
 	}
 
 	// Scale back down to 0; every skeleton — including the partial app — must go.
@@ -292,6 +292,65 @@ func TestScaleUpCreateFailureThenScaleDownLeavesNoOrphanApps(t *testing.T) {
 		l, e := client.CoreV1().Secrets("").List(ctx, metav1.ListOptions{})
 		return len(l.Items), e
 	})
+}
+
+// TestScaleUpRetryCompletesPartialApp reproduces a scale-up that fails partway
+// through an app, then retries: the retry must finish the partially-written app
+// (create its missing Deployment/ReplicaSet/Service) rather than skip it, so no
+// pod ends up referencing a nonexistent workload.
+func TestScaleUpRetryCompletesPartialApp(t *testing.T) {
+	g := New(Config{Pods: 0, Nodes: 4, Namespaces: 2, PodsPerApp: 200})
+	client := fake.NewClientset(g.SeedObjects()...)
+
+	failed := false
+	client.PrependReactor("create", "deployments", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		d := a.(clienttesting.CreateAction).GetObject().(*appsv1.Deployment)
+		if d.Name == "app-0002" && !failed {
+			failed = true
+			return true, nil, fmt.Errorf("injected create failure")
+		}
+		return false, nil, nil
+	})
+
+	factory := informers.NewSharedInformerFactory(client, 0)
+	podInformer := factory.Core().V1().Pods().Informer()
+	deployInformer := factory.Apps().V1().Deployments().Informer()
+	stop := make(chan struct{})
+	defer close(stop)
+	factory.Start(stop)
+	if !cache.WaitForCacheSync(stop, podInformer.HasSynced, deployInformer.HasSynced) {
+		t.Fatal("informer failed to sync")
+	}
+	count := func(kind string) int {
+		switch kind {
+		case "Pod":
+			return len(podInformer.GetStore().ListKeys())
+		case "Deployment":
+			return len(deployInformer.GetStore().ListKeys())
+		}
+		return 0
+	}
+
+	ctx := context.Background()
+	if _, err := g.ScaleTo(ctx, client, 1000, count); err == nil {
+		t.Fatal("expected first ScaleTo to fail on injected error")
+	}
+	// Retry the same target; the reactor now passes, so app 2 must be finished.
+	res, err := g.ScaleTo(ctx, client, 1000, count)
+	if err != nil {
+		t.Fatalf("retry ScaleTo: %v", err)
+	}
+	if !res.Converged || count("Pod") != 1000 {
+		t.Fatalf("pods=%d converged=%v want 1000/true", count("Pod"), res.Converged)
+	}
+	// The previously-partial app 2 must now have its Deployment, and all 5 apps
+	// must be fully present — no pod references a missing workload.
+	if _, err := client.AppsV1().Deployments("loadtest-00").Get(ctx, "app-0002", metav1.GetOptions{}); err != nil {
+		t.Fatalf("app 2 Deployment missing after retry: %v", err)
+	}
+	if got := count("Deployment"); got != 5 {
+		t.Fatalf("deployments=%d want 5 (all apps complete)", got)
+	}
 }
 
 func waitCount(count func() int, want int, timeout time.Duration) int {

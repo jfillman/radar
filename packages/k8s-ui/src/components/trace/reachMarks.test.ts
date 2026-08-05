@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, isSlow, formatLatency, hostMatches, declaredHosts, routeHostOf, MARKS } from './reachMarks'
+import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, isSlow, formatLatency, hostMatches, declaredHosts, routeHostOf, routeForOrigin, routeAsSeenFrom, MARKS } from './reachMarks'
 import type { RouteResult, Hop } from './types'
 
 const r = (o: Partial<RouteResult>): RouteResult => ({ route: 'GET /', outcome: 'verified', ...o })
@@ -348,5 +348,73 @@ describe('declaredHosts', () => {
         config: { hostnames: ['a.example.com'], tlsHosts: ['b.example.com'] },
       }),
     ).toEqual(['a.example.com', 'b.example.com'])
+  })
+})
+
+describe('per-vantage route resolution', () => {
+  // The rollup buckets by mechanism and takes worst-wins, so in-cluster success
+  // + laptop failure collapses to unreachable. byVantage keeps both.
+  const disagreeing: RouteResult = {
+    route: 'checkout.example.com/',
+    target: 'checkout:80',
+    outcome: 'unreachable',
+    confidence: 'real',
+    evidence: 'connection refused',
+    byVantage: [
+      { vantage: 'in-cluster', path: 'data', outcome: 'verified', confidence: 'real', evidence: 'HTTP 200' },
+      { vantage: 'local', path: 'data', outcome: 'unreachable', confidence: 'real', evidence: 'connection refused' },
+      { vantage: 'local', path: 'apiserver', outcome: 'verified', confidence: 'indirect', evidence: 'HTTP 200 via proxy' },
+    ],
+  }
+
+  it('gives each origin its OWN result, not the merged one', () => {
+    expect(routeAsSeenFrom(disagreeing, 'incluster')!.outcome).toBe('verified')
+    expect(routeAsSeenFrom(disagreeing, 'local')!.outcome).toBe('unreachable')
+  })
+
+  it('the vantage that worked no longer inherits the merged failure', () => {
+    // This is the misattribution the whole change exists to remove.
+    expect(routeMark(routeAsSeenFrom(disagreeing, 'incluster')!)).toBe('proved')
+    expect(routeMark(routeAsSeenFrom(disagreeing, 'local')!)).toBe('failed')
+  })
+
+  it('the apiserver origin reads the relayed row, whatever machine issued it', () => {
+    const v = routeForOrigin(disagreeing, 'apiserver')!
+    expect(v.path).toBe('apiserver')
+    expect(v.confidence).toBe('indirect')
+    // ...and a relay can still never be proof.
+    expect(routeMark(routeAsSeenFrom(disagreeing, 'apiserver')!)).toBe('proxied')
+  })
+
+  it('never hands a data-path row to the apiserver origin, or vice versa', () => {
+    const dataOnly: RouteResult = {
+      route: 'r',
+      outcome: 'verified',
+      byVantage: [{ vantage: 'local', path: 'data', outcome: 'verified', confidence: 'real' }],
+    }
+    expect(routeForOrigin(dataOnly, 'apiserver')).toBeUndefined()
+  })
+
+  it('reports nothing for an origin that produced nothing', () => {
+    expect(routeForOrigin(disagreeing, 'incluster')).toBeDefined()
+    const laptopOnly: RouteResult = {
+      route: 'r',
+      outcome: 'verified',
+      byVantage: [{ vantage: 'local', path: 'data', outcome: 'verified', confidence: 'real' }],
+    }
+    expect(routeForOrigin(laptopOnly, 'incluster')).toBeUndefined()
+  })
+
+  it('falls back to the rollup when the producer sent no breakdown', () => {
+    // Older backend, or a route with no probes: behave exactly as before rather
+    // than blanking the view.
+    const legacy: RouteResult = { route: 'r', outcome: 'verified', confidence: 'real', evidence: 'HTTP 200' }
+    expect(routeAsSeenFrom(legacy, 'incluster')).toEqual(legacy)
+    expect(routeForOrigin(legacy, 'incluster')).toBeUndefined()
+  })
+
+  it('is undefined for no route at all', () => {
+    expect(routeAsSeenFrom(undefined, 'local')).toBeUndefined()
+    expect(routeForOrigin(undefined, 'local')).toBeUndefined()
   })
 })

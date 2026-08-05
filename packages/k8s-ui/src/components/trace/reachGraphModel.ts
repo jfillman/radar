@@ -1,6 +1,6 @@
 import type { Trace, Hop, ResourceRef, RouteResult, PodStatus, ProbeResult } from './types'
 import type { Mark, SevTone } from './reachMarks'
-import { routeMark, isSlow, formatLatency, declaredHosts, hostMatches, routeHostOf } from './reachMarks'
+import { routeMark, isSlow, formatLatency, declaredHosts, hostMatches, routeHostOf, routeAsSeenFrom, routeForOrigin } from './reachMarks'
 import { originOf, type Origin } from './reachOrigins'
 import { podProbeKey } from './podReach'
 
@@ -350,6 +350,13 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
    *  disagree about which front door serves a host. */
   const routeHost = routeHostOf(route?.route ?? '')
   const servesRoute = (h: Hop): boolean => !!routeHost && declaredHosts(h).some((d) => hostMatches(d, routeHost))
+  // Prefer this origin's OWN result over the merged rollup. Without it the graph
+  // painted whatever the worst vantage saw under the selected vantage's name -
+  // the central misattribution this view exists to prevent. originProducedEvidence
+  // remains the fallback gate for traces carrying no per-vantage breakdown.
+  const ownResult = routeForOrigin(route, origin.id)
+  const asSeen = routeAsSeenFrom(route, origin.id)
+
   const matched = upstreams.filter(servesRoute)
   const activeUpstreams = matched.length > 0 ? matched : upstreams
 
@@ -519,7 +526,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     })
   }
 
-  const deliveryBlocked = (route ? routeMark(route, { stale, running }) : 'untested') === 'failed'
+  const deliveryBlocked = (asSeen ? routeMark(asSeen, { stale, running }) : 'untested') === 'failed'
   podGroups.forEach((g, i) => {
     const hop = g.hop
     const roster = hop.config?.pods ?? []
@@ -674,8 +681,8 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   }
 
   const originNodeId = `origin:${origin.id}`
-  const hasEvidence = originProducedEvidence(origin)
-  const routeMarkNow: Mark = route ? routeMark(route, { stale, running }) : 'untested'
+  const hasEvidence = ownResult !== undefined || originProducedEvidence(origin)
+  const routeMarkNow: Mark = asSeen ? routeMark(asSeen, { stale, running }) : 'untested'
   // A relay can never read as proof: it bypassed the real network path however
   // clean the response was.
   const entryMark: Mark = !hasEvidence
@@ -688,7 +695,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     origin.mark === 'denied' ? 'not permitted' : origin.mark === 'blocked' ? 'not routable' : 'not tested'
   const entryLabel = !hasEvidence
     ? noEvidenceLabel
-    : route?.evidence || (originIsControl ? 'relayed by Kubernetes' : 'request')
+    : asSeen?.evidence || (originIsControl ? 'relayed by Kubernetes' : 'request')
 
   // The request enters at the entry points that serve this host; everything
   // after is configuration, drawn dotted. There is no segment-local evidence to

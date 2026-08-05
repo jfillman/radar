@@ -107,6 +107,33 @@ type RouteResult struct {
 	// faithful request, so PathGuessed marks it as a guess. nil for routes that
 	// aren't testable that way (a known static break with no backend).
 	InClusterRequest *ProbeRequest `json:"inClusterRequest,omitempty"`
+	// ByVantage is each vantage's OWN view of this route.
+	//
+	// Outcome/Confidence/Evidence above are a documented lossy rollup: they
+	// bucket by mechanism and then take worst-wins, so a route that works
+	// in-cluster and fails from a laptop collapses to "unreachable" with no
+	// field left to say where it did work. Consumers that need to answer "did
+	// THIS path work from THIS vantage" must read this instead.
+	//
+	// It costs nothing to produce: the probes handed to routeFromProbes are
+	// already scoped to one route by the caller, and each one already carries
+	// its vantage - the rollup simply discarded it.
+	ByVantage []VantageResult `json:"byVantage,omitempty"`
+}
+
+// VantageResult is one vantage's unmerged view of a route. Keyed by
+// (Vantage, Path) because those two together are what an operator picks
+// between: the same in-cluster vantage relayed through the API server is a
+// different claim from one that used the real network path.
+type VantageResult struct {
+	Vantage string `json:"vantage"` // in-cluster | local
+	Path    string `json:"path"`    // data | apiserver
+	Outcome string `json:"outcome"`
+	// Confidence mirrors the rollup's rule per group: anything relayed by the
+	// API server is indirect no matter how clean the response was.
+	Confidence  string `json:"confidence,omitempty"`
+	Evidence    string `json:"evidence,omitempty"`
+	FailedLayer string `json:"failedLayer,omitempty"`
 }
 
 // ProbeRequest is a concrete HTTP request a user can run against a Service from
@@ -267,6 +294,39 @@ func InClusterResultKey(route, target, targetNamespace string) string {
 	return route + "\x00" + target + "\x00" + targetNamespace
 }
 
+// mergeVantages upserts fresh per-vantage results over prior ones, keyed by
+// (vantage, path). A vantage the new run did not exercise keeps its previous
+// result rather than disappearing; a vantage it did exercise is replaced,
+// because the newer observation of the SAME vantage supersedes the older one.
+// Prior order is preserved so the UI's rows do not jump on a re-run.
+func mergeVantages(prior, fresh []VantageResult) []VantageResult {
+	if len(fresh) == 0 {
+		return prior
+	}
+	key := func(v VantageResult) string { return v.Vantage + "\x00" + v.Path }
+	byKey := make(map[string]VantageResult, len(fresh))
+	for _, v := range fresh {
+		byKey[key(v)] = v
+	}
+	out := make([]VantageResult, 0, len(prior)+len(fresh))
+	seen := make(map[string]bool, len(prior))
+	for _, v := range prior {
+		k := key(v)
+		seen[k] = true
+		if updated, ok := byKey[k]; ok {
+			out = append(out, updated)
+			continue
+		}
+		out = append(out, v)
+	}
+	for _, v := range fresh {
+		if !seen[key(v)] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // ApplyInClusterResults folds in-cluster probe results (keyed by InClusterResultKey)
 // into the finalized trace. The in-cluster data path IS real traffic, so a route
 // the apiserver proxy could only reach INDIRECTLY is re-derived from the live
@@ -302,6 +362,13 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 		// request; the outcome/confidence/evidence now reflect the live dataplane.
 		rr.InClusterRequest = t.Routes[i].InClusterRequest
 		rr.TargetNamespace = t.Routes[i].TargetNamespace
+		// The ROLLUP is still replaced - an in-cluster result is real traffic and
+		// supersedes a proxy-only verdict, which is the whole point of this fold.
+		// The per-vantage list is MERGED instead: this run only observed the
+		// in-cluster vantage, and replacing the list wholesale would delete the
+		// laptop's and the proxy's own results, which are still true and are
+		// exactly the disagreement ByVantage exists to preserve.
+		rr.ByVantage = mergeVantages(t.Routes[i].ByVantage, rr.ByVantage)
 		t.Routes[i] = rr
 		folded = true
 	}
@@ -1497,6 +1564,53 @@ func isNameByte(b byte) bool {
 
 // routeFromProbes computes a route's outcome from its probe set. Returns ok=false
 // when no non-skipped probe ran (the route is "not tested", handled elsewhere).
+// perVantage splits an ALREADY route-scoped probe set into one result per
+// (vantage, path) and reuses worstOutcome per group, so a group's verdict is
+// derived by exactly the same rule as the rollup - just not merged across
+// vantages. Skipped probes carry no observation and are dropped, matching
+// routeFromProbes.
+//
+// Order is deterministic (first appearance) so a re-run cannot reshuffle the
+// UI's rows when nothing changed.
+func perVantage(probes []probe.Result) []VantageResult {
+	type key struct {
+		vantage probe.Vantage
+		path    probe.Path
+	}
+	groups := map[key][]probe.Result{}
+	var order []key
+	for _, p := range probes {
+		if p.Skipped {
+			continue
+		}
+		k := key{vantage: p.Vantage, path: p.Path}
+		if _, seen := groups[k]; !seen {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], p)
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	out := make([]VantageResult, 0, len(order))
+	for _, k := range order {
+		outcome, evidence, failedLayer := worstOutcome(groups[k])
+		confidence := ConfidenceReal
+		if k.path == probe.PathAPIServer {
+			confidence = ConfidenceIndirect
+		}
+		out = append(out, VantageResult{
+			Vantage:     string(k.vantage),
+			Path:        string(k.path),
+			Outcome:     outcome,
+			Confidence:  confidence,
+			Evidence:    evidence,
+			FailedLayer: failedLayer,
+		})
+	}
+	return out
+}
+
 func routeFromProbes(routeID, target string, probes []probe.Result) (RouteResult, bool) {
 	var real, indirect []probe.Result
 	var localization []ProbeFact
@@ -1527,6 +1641,7 @@ func routeFromProbes(routeID, target string, probes []probe.Result) (RouteResult
 		r.Outcome, r.Evidence, r.FailedLayer = worstOutcome(indirect)
 		r.Confidence = ConfidenceIndirect
 	}
+	r.ByVantage = perVantage(probes)
 	return r, true
 }
 

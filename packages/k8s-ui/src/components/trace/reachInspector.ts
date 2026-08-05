@@ -1,6 +1,6 @@
 import type { Trace, RouteResult, ResourceRef } from './types'
 import type { Mark, SevTone } from './reachMarks'
-import { routeMark, routeChip, routeTone } from './reachMarks'
+import { routeMark, routeChip, routeTone, routeAsSeenFrom, routeForOrigin } from './reachMarks'
 import type { Origin, OriginId } from './reachOrigins'
 import { strongestGap, actionableGap } from './reachOrigins'
 import { originProducedEvidence, type GraphNode } from './reachGraphModel'
@@ -162,8 +162,12 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
   // permanently unavailable origin could read "a real request went through"
   // while the graph beside it said "not routable". Same lie the graph already
   // guards against, in the surface users actually read.
-  const hasEvidence = originProducedEvidence(origin)
-  const mark: Mark = hasEvidence ? (route ? routeMark(route, { stale: ctx.stale, running: ctx.running }) : 'untested') : origin.mark
+  // This origin's OWN result when the producer sent one; the coarse
+  // "did this origin produce anything" gate only remains as the fallback.
+  const own = routeForOrigin(route, origin.id)
+  const asSeen = routeAsSeenFrom(route, origin.id)
+  const hasEvidence = own !== undefined || originProducedEvidence(origin)
+  const mark: Mark = hasEvidence ? (asSeen ? routeMark(asSeen, { stale: ctx.stale, running: ctx.running }) : 'untested') : origin.mark
 
   const notProve: string[] = []
   if (origin.kind === 'synthetic') notProve.push(SYNTHETIC_IDENTITY)
@@ -182,7 +186,7 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     seen.add(key)
     evidence.push({ mark: m, text })
   }
-  if (hasEvidence && route?.evidence) add(mark, route.evidence)
+  if (hasEvidence && asSeen?.evidence) add(mark, asSeen.evidence)
   for (const f of hasEvidence ? route?.localization ?? [] : []) {
     const layer = f.layer.toUpperCase()
     const detail = f.detail?.trim()
@@ -219,8 +223,8 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
               : 'The target answered, but not with what was asked for.'
 
   return {
-    chipTone: route ? routeTone(route, { stale: ctx.stale, running: ctx.running }) : 'unknown',
-    chipText: route ? routeChip(route, { stale: ctx.stale, running: ctx.running }) : 'not tested',
+    chipTone: asSeen ? routeTone(asSeen, { stale: ctx.stale, running: ctx.running }) : 'unknown',
+    chipText: asSeen ? routeChip(asSeen, { stale: ctx.stale, running: ctx.running }) : 'not tested',
     title: `${origin.name} → ${route?.target || trace.subject.name}`,
     request: route ? `${route.route}${ctx.httpPath && ctx.httpPath !== '/' ? ` · HTTP path ${ctx.httpPath}` : ''}` : undefined,
     body,

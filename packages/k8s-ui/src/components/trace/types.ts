@@ -292,6 +292,26 @@ export interface RouteResult {
    *  A STARTING POINT the user edits before running; pathGuessed marks a path
    *  derived from a pattern (no single faithful request exists). */
   inClusterRequest?: ProbeRequest
+  /** Each vantage's OWN view of this route.
+   *
+   *  `outcome` / `confidence` / `evidence` above are a documented lossy rollup:
+   *  the producer buckets by mechanism and takes worst-wins, so a route that
+   *  works in-cluster and fails from a laptop collapses to "unreachable" with no
+   *  field left to say where it DID work. Anything answering "did this path work
+   *  from THIS vantage" must read this instead of the rollup. */
+  byVantage?: VantageResult[]
+}
+
+/** One vantage's unmerged view of a route. Keyed by (vantage, path): the same
+ *  vantage relayed through the API server is a different claim from one that
+ *  used the real network path. */
+export interface VantageResult {
+  vantage: ProbeVantage
+  path: ProbePath
+  outcome: RouteOutcome
+  confidence?: RouteConfidence
+  evidence?: string
+  failedLayer?: 'tcp' | 'tls' | 'http' | 'upstream'
 }
 
 /** A concrete HTTP request the in-cluster runner can send to the Service. */

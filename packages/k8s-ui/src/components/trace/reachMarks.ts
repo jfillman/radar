@@ -1,4 +1,4 @@
-import type { RouteResult, RouteOutcome, ProbeResult, Hop } from './types'
+import type { RouteResult, RouteOutcome, ProbeResult, Hop, VantageResult } from './types'
 
 /**
  * A Mark is the evidence class of ONE path segment for one scenario and one
@@ -111,6 +111,36 @@ const MARK_RANK: Record<Mark, number> = {
 export function worstMark(marks: Mark[]): Mark {
   if (marks.length === 0) return 'untested'
   return marks.reduce((a, b) => (MARK_RANK[b] > MARK_RANK[a] ? b : a))
+}
+
+/**
+ * The selected origin's OWN result for a route, or undefined when that origin
+ * produced nothing for it.
+ *
+ * Origin ids map onto (vantage, path) exactly as originOf() derives them in the
+ * other direction: anything relayed by the API server is the apiserver origin
+ * whatever machine issued it, and everything else is named by its vantage.
+ */
+export function routeForOrigin(route: RouteResult | undefined, originId: string): VantageResult | undefined {
+  const rows = route?.byVantage
+  if (!rows || rows.length === 0) return undefined
+  if (originId === 'apiserver') return rows.find((v) => v.path === 'apiserver')
+  const vantage = originId === 'incluster' ? 'in-cluster' : 'local'
+  return rows.find((v) => v.path !== 'apiserver' && v.vantage === vantage)
+}
+
+/**
+ * The route as ONE origin saw it, falling back to the merged rollup when the
+ * producer sent no per-vantage breakdown (older backend, or a route with no
+ * probes at all). The fallback is the pre-existing behaviour, so nothing
+ * regresses when the field is absent - it simply stops being a claim about a
+ * specific vantage.
+ */
+export function routeAsSeenFrom(route: RouteResult | undefined, originId: string): RouteResult | undefined {
+  if (!route) return undefined
+  const own = routeForOrigin(route, originId)
+  if (!own) return route
+  return { ...route, outcome: own.outcome, confidence: own.confidence, evidence: own.evidence, failedLayer: own.failedLayer }
 }
 
 /**

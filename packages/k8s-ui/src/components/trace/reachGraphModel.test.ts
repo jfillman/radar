@@ -750,3 +750,44 @@ describe('exception-first collapsing of a wide fan-out', () => {
       }
   })
 })
+
+// End-to-end proof that the misattribution is gone: one trace, one route, two
+// vantages that disagree - each origin must render its OWN truth.
+describe('the graph reads the selected origin\'s own result', () => {
+  const disagreeing = (): RouteResult => ({
+    route: 'checkout.example.com/',
+    target: 'checkout:80',
+    // the merged rollup says the whole route failed...
+    outcome: 'unreachable',
+    confidence: 'real',
+    evidence: 'connection refused',
+    // ...while in-cluster actually succeeded.
+    byVantage: [
+      { vantage: 'in-cluster', path: 'data', outcome: 'verified', confidence: 'real', evidence: 'HTTP 200' },
+      { vantage: 'local', path: 'data', outcome: 'unreachable', confidence: 'real', evidence: 'connection refused' },
+    ],
+  })
+
+  const edgeMark = (originId: 'incluster' | 'local') => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({ vantage: originId === 'incluster' ? 'in-cluster' : 'local', path: 'data', ok: true })])
+    const g = buildGraph({ trace: t, route: disagreeing(), origin: pick(t, originId) })
+    return g.edges.find((e) => e.id === 'e:origin-subject')!.mark
+  }
+
+  it('shows the in-cluster vantage as proved even though the rollup says unreachable', () => {
+    expect(edgeMark('incluster')).toBe('proved')
+  })
+
+  it('shows the laptop vantage as failed', () => {
+    expect(edgeMark('local')).toBe('failed')
+  })
+
+  it('does not mark Pods "blocked by an earlier failure" for the vantage that got through', () => {
+    // deliveryBlocked previously followed the merged outcome, so a working
+    // vantage's Pods were labelled as never-reached.
+    const t = trace([pod('a', true, '10.0.0.1')], [p({ vantage: 'in-cluster', path: 'data', ok: true })])
+    const g = buildGraph({ trace: t, route: disagreeing(), origin: pick(t, 'incluster') })
+    const rows = g.nodes.find((n) => n.kind === 'PODS')!.podRows!
+    expect(rows[0].mark).not.toBe('blocked')
+  })
+})

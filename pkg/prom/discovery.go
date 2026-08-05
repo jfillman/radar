@@ -376,11 +376,12 @@ func promPortScore(port int32) int {
 // ScoreService computes a heuristic score for a service being
 // Prometheus-compatible. It returns the ranking score, an inferred BasePath for
 // vmselect-style services, and whether the service carries a Prometheus-family
-// *identity* signal (a name/label/port match). identity gates admission:
-// namespace membership alone contributes to the score for ranking but must not,
-// on its own, make an unrelated Service a candidate — discovery probes
-// candidates with the operator's configured Prometheus headers, so an
-// unrecognized neighbor must not be admitted just for sharing a namespace.
+// *identity* signal (a name, label, or port-NAME match — NOT a bare port number).
+// identity gates admission: a matched port number and namespace membership
+// contribute to the score for ranking but must not, on their own, make an
+// unrelated Service a candidate — discovery probes candidates with the operator's
+// configured Prometheus headers, so a neighbor that merely shares a popular port
+// (9090 is a common gRPC/plugin default too) or a namespace must not be admitted.
 func ScoreService(svc corev1.Service) (score int, basePath string, identity bool) {
 	if svc.Spec.Type == corev1.ServiceTypeExternalName {
 		return 0, "", false
@@ -400,23 +401,30 @@ func ScoreService(svc corev1.Service) (score int, basePath string, identity bool
 	switch appName {
 	case "prometheus":
 		score += 100
+		identity = true
 	case "victoria-metrics-single", "vmsingle":
 		score += 100
+		identity = true
 	case "vmselect":
 		score += 90
 		basePath = "/select/0/prometheus"
+		identity = true
 	case "thanos-query", "thanos-querier":
 		score += 80
+		identity = true
 	}
 
 	switch appLabel {
 	case "prometheus", "prometheus-server":
 		score += 80
+		identity = true
 	case "vmsingle":
 		score += 80
+		identity = true
 	case "vmselect":
 		score += 80
 		basePath = "/select/0/prometheus"
+		identity = true
 	}
 
 	if score > 0 && component == "server" {
@@ -426,7 +434,12 @@ func ScoreService(svc corev1.Service) (score int, basePath string, identity bool
 	for _, p := range svc.Spec.Ports {
 		// Credit a recognized port on either the service port or the container
 		// targetPort — a real Prometheus is often fronted by a service port of
-		// 80/http with targetPort 9090 — but only once per port entry.
+		// 80/http with targetPort 9090 — but only once per port entry. A bare port
+		// NUMBER is a ranking signal only: it must NOT set identity, because
+		// popular defaults like 9090 are shared with unrelated components (e.g. a
+		// gRPC plugin), and admitting on the number alone sends the operator's
+		// Prometheus headers to — and wastes a doomed port-forward on — that
+		// neighbor. A port explicitly NAMED "prometheus" is a genuine family signal.
 		if s := promPortScore(p.Port); s > 0 {
 			score += s
 		} else {
@@ -434,27 +447,32 @@ func ScoreService(svc corev1.Service) (score int, basePath string, identity bool
 		}
 		if strings.Contains(strings.ToLower(p.Name), "prometheus") {
 			score += 10
+			identity = true
 		}
 	}
 
 	nameLower := strings.ToLower(svc.Name)
 	if strings.Contains(nameLower, "prometheus") {
 		score += 20
+		identity = true
 	}
 	if strings.Contains(nameLower, "victoria") || strings.Contains(nameLower, "vmsingle") || strings.Contains(nameLower, "vmselect") {
 		score += 20
+		identity = true
 		if strings.Contains(nameLower, "vmselect") && basePath == "" {
 			basePath = "/select/0/prometheus"
 		}
 	}
 	if strings.Contains(nameLower, "thanos") {
 		score += 15
+		identity = true
 	}
 
-	// Everything above is a Prometheus-family identity signal; the namespace
-	// bonus below only nudges ranking and must not admit on its own.
-	identity = score > 0
-
+	// identity is set above only by a name, label, or port-name signal — genuine
+	// Prometheus-family membership. A bare port number and the metrics-namespace
+	// bonus below rank a candidate but must never admit one on their own, so the
+	// caller never probes (and never sends the operator's configured Prometheus
+	// headers to) an unrelated neighbor that merely shares port 9090 or a namespace.
 	if metricsNamespaces[svc.Namespace] {
 		score += 10
 	}

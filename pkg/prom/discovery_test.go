@@ -700,3 +700,83 @@ func TestDiscover_CarettaVMLastEvenWithNonStandardServicePort(t *testing.T) {
 		t.Fatalf("caretta-vm at idx %d, want last (%d): %+v", carettaIdx, len(cands)-1, cands)
 	}
 }
+
+// TestDiscover_ExcludesPortOnlyPortMatch reproduces issue #1356: a Service that
+// matches only on a well-known port NUMBER (9090 here, shared with gRPC plugins
+// such as CloudNativePG's barman-cloud) carries no Prometheus-family identity —
+// no name, label, or port-name signal — and must NOT be admitted as a candidate.
+// Admitting it wastes a doomed port-forward that, in-cluster on a read-only
+// ServiceAccount, surfaces to the user as a confusing "Prometheus not connected".
+func TestDiscover_ExcludesPortOnlyPortMatch(t *testing.T) {
+	barman := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "barman-cloud",
+			Namespace:   "cnpg-system",
+			Annotations: map[string]string{"cnpg.io/pluginPort": "9090"},
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: "10.0.0.20",
+			Ports:     []corev1.ServicePort{{Port: 9090}},
+		},
+	}
+
+	// Ranking signal is present (port scores) but identity must be false.
+	score, _, identity := ScoreService(*barman)
+	if identity {
+		t.Fatalf("barman-cloud identity=true (a bare port number must not admit); score=%d", score)
+	}
+	if score == 0 {
+		t.Fatalf("expected a non-zero ranking score from the port number, got 0")
+	}
+
+	k8s := fake.NewSimpleClientset(barman)
+	cands, err := Discover(context.Background(), k8s, DiscoverOptions{IncludeDynamic: true, MaxDynamic: 5})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	for _, c := range cands {
+		if c.Name == "barman-cloud" {
+			t.Fatalf("port-only gRPC service admitted as a Prometheus candidate: %+v", cands)
+		}
+	}
+}
+
+// TestScoreService_IdentityRequiresFamilySignal locks the issue #1356 contract at
+// the scoring layer: identity is set by a name/label/port-name signal, never by a
+// bare port number.
+func TestScoreService_IdentityRequiresFamilySignal(t *testing.T) {
+	cases := []struct {
+		name      string
+		svc       corev1.Service
+		wantIdent bool
+	}{
+		{"port-number only", corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "some-grpc-svc", Namespace: "apps"},
+			Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 9090}}},
+		}, false},
+		{"metrics namespace + port only", corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "some-grpc-svc", Namespace: "monitoring"},
+			Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 8428}}},
+		}, false},
+		{"label signal admits", corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: "apps", Labels: map[string]string{"app.kubernetes.io/name": "prometheus"}},
+			Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 9090}}},
+		}, true},
+		{"name signal admits", corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "team-prometheus", Namespace: "apps"},
+			Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 9090}}},
+		}, true},
+		{"port-name signal admits", corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "custom", Namespace: "apps"},
+			Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 9090, Name: "prometheus"}}},
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, identity := ScoreService(tc.svc)
+			if identity != tc.wantIdent {
+				t.Fatalf("identity=%v, want %v", identity, tc.wantIdent)
+			}
+		})
+	}
+}

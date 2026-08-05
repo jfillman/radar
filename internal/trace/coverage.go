@@ -143,6 +143,10 @@ type RouteResult struct {
 type VantageResult struct {
 	Vantage string `json:"vantage"` // in-cluster | local
 	Path    string `json:"path"`    // data | apiserver
+	// Source is WHO dialled - radar | probe-job. Empty means radar. Kept apart
+	// from Vantage because a throwaway Job and Radar-as-a-Pod share a vantage
+	// and a path but are different observers with different identities.
+	Source string `json:"source,omitempty"`
 	Outcome string `json:"outcome"`
 	// Confidence mirrors the rollup's rule per group: anything relayed by the
 	// API server is indirect no matter how clean the response was.
@@ -506,7 +510,10 @@ func mergeVantages(prior, fresh []VantageResult) []VantageResult {
 	if len(fresh) == 0 {
 		return prior
 	}
-	key := func(v VantageResult) string { return v.Vantage + "\x00" + v.Path }
+	// Source is part of the key: Radar's own in-cluster dial and a throwaway
+	// Job's are both (in-cluster, data), so keying without it let a Job run
+	// silently replace Radar's own observation instead of adding to it.
+	key := func(v VantageResult) string { return v.Vantage + "\x00" + v.Path + "\x00" + vantageSource(v) }
 	byKey := make(map[string]VantageResult, len(fresh))
 	for _, v := range fresh {
 		byKey[key(v)] = v
@@ -1786,6 +1793,7 @@ func perVantage(probes []probe.Result) []VantageResult {
 	type key struct {
 		vantage probe.Vantage
 		path    probe.Path
+		source  string
 	}
 	groups := map[key][]probe.Result{}
 	var order []key
@@ -1793,7 +1801,7 @@ func perVantage(probes []probe.Result) []VantageResult {
 		if p.Skipped {
 			continue
 		}
-		k := key{vantage: p.Vantage, path: p.Path}
+		k := key{vantage: p.Vantage, path: p.Path, source: probeSource(p)}
 		if _, seen := groups[k]; !seen {
 			order = append(order, k)
 		}
@@ -1812,6 +1820,7 @@ func perVantage(probes []probe.Result) []VantageResult {
 		out = append(out, VantageResult{
 			Vantage:     string(k.vantage),
 			Path:        string(k.path),
+			Source:      k.source,
 			Outcome:     outcome,
 			Confidence:  confidence,
 			Evidence:    evidence,
@@ -2604,4 +2613,21 @@ func singleRouteHeadline(r RouteResult, skipped int) string {
 	default:
 		return "Not tested" + suffix
 	}
+}
+
+// probeSource normalises a probe's issuer; an unset Source means Radar itself,
+// which is what every inline probe is.
+func probeSource(p probe.Result) string {
+	if p.Source == "" {
+		return probe.SourceRadar
+	}
+	return p.Source
+}
+
+// vantageSource mirrors probeSource for an already-projected vantage row.
+func vantageSource(v VantageResult) string {
+	if v.Source == "" {
+		return probe.SourceRadar
+	}
+	return v.Source
 }

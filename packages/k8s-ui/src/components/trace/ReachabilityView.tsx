@@ -354,6 +354,7 @@ function VerdictBand({
 /** Hover-level decoder for the identity tags, which had none anywhere. */
 const KIND_TAG_HELP: Record<string, string> = {
   synthetic: 'Radar’s own test client — not your application, so anything that checks who is calling may answer differently.',
+  radar: 'Radar itself, dialling from its own Pod with its own ServiceAccount — a real in-cluster client, but not your application.',
   'real-client': 'A real client, but not your application.',
   'real-caller': 'Your application itself, with its own identity.',
   relayed: 'Not a caller at all — Kubernetes passes the request along on our behalf.',

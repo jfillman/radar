@@ -190,7 +190,7 @@ function hopNotes(hop?: Hop): HopNote[] {
 
 /** Health from a hop's findings alone - the same rule the topology view uses:
  *  a critical finding is red only when nothing is serving. */
-function hopTone(hop: Hop | undefined, origin: Origin): SevTone {
+function hopTone(hop: Hop | undefined, origin: Origin, runVantage?: string): SevTone {
   if (!hop) return 'unknown'
   const findings = hop.findings ?? []
   const ready = typeof hop.meta?.ready === 'number' ? (hop.meta.ready as number) : undefined
@@ -201,7 +201,7 @@ function hopTone(hop: Hop | undefined, origin: Origin): SevTone {
   // Pooling every vantage here let one origin's failure paint the dot red while
   // the rows beneath it - which do filter by origin - showed that same vantage
   // had never run. Same node, two scopes, two answers.
-  const live = probesFromOrigin(hop.probes ?? [], origin).filter((p) => !p.skipped)
+  const live = probesFromOrigin(hop.probes ?? [], origin, runVantage).filter((p) => !p.skipped)
   if (live.length === 0) return 'unknown'
   // A FAILED apiserver-proxy probe is indirect evidence: the proxy path itself
   // may be what failed and the real path was never tested, so it must never
@@ -238,8 +238,8 @@ export function originProducedEvidence(origin: Origin): boolean {
  * vantage that never ran inherits another's result and a laptop's success is
  * painted as a solid proved line inside the dataplane lane.
  */
-function probesFromOrigin(probes: ProbeResult[], origin: Origin): ProbeResult[] {
-  return probes.filter((p) => originOf(p) === origin.id)
+function probesFromOrigin(probes: ProbeResult[], origin: Origin, runVantage?: string): ProbeResult[] {
+  return probes.filter((p) => originOf(p, runVantage) === origin.id)
 }
 
 /**
@@ -465,7 +465,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         kind: (up.resource?.kind || 'ENTRY').toUpperCase(),
         name: up.resource?.name ?? 'entry',
         sub: active ? hopSub(up) : 'does not serve this host',
-        tone: hopTone(up, origin),
+        tone: hopTone(up, origin, trace.runVantage),
         notes: hopNotes(up),
         // Entries that do not serve the selected host are shown, but dimmed -
         // hiding them would misrepresent what is attached to this resource.
@@ -486,7 +486,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       kind: (trace.subject.kind || 'SERVICE').toUpperCase(),
       name: `${trace.subject.name}${route?.target ? ` ${route.target}` : ''}`,
       sub: subjectHop ? hopSub(subjectHop) : trace.subject.namespace || '',
-      tone: hopTone(subjectHop, origin),
+      tone: hopTone(subjectHop, origin, trace.runVantage),
       notes: hopNotes(subjectHop),
       ref: trace.subject,
       hop: subjectHop,
@@ -505,7 +505,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         kind: (b.hop.resource?.kind || 'BACKEND').toUpperCase(),
         name: b.hop.resource?.name ?? '',
         sub: onPath ? hopSub(b.hop) : 'not on the selected path',
-        tone: hopTone(b.hop, origin),
+        tone: hopTone(b.hop, origin, trace.runVantage),
         dim: !onPath,
         notes: hopNotes(b.hop),
         ref: b.hop.resource,
@@ -542,7 +542,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     const ready = typeof hop.meta?.ready === 'number' ? (hop.meta.ready as number) : roster.filter((p) => p.ready).length
     const selected = typeof hop.meta?.selected === 'number' ? (hop.meta.selected as number) : total
     const publishNotReady = !!hop.meta?.publishNotReadyAddresses
-    const probes = probesFromOrigin(hop.probes ?? [], origin)
+    const probes = probesFromOrigin(hop.probes ?? [], origin, trace.runVantage)
 
     // Anomaly-first: keeping the FIRST six rows hid the failing or excluded Pod
     // behind five healthy ones, which is exactly the row worth showing.
@@ -607,7 +607,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
           : ready === selected
             ? 'every selected Pod is eligible'
             : `${selected - ready} not eligible`,
-        tone: hopTone(hop, origin),
+        tone: hopTone(hop, origin, trace.runVantage),
         hop,
         notes: hopNotes(hop),
         anomalies: populationAnomalies(roster, total, probes, publishNotReady),

@@ -116,6 +116,17 @@ const (
 	VantageLocal     Vantage = "local"
 )
 
+// Source names WHO issued a probe. Vantage says where on the network the
+// request started; Source says which process started it. They are independent:
+// when Radar runs as a Pod, its own dials and a throwaway probe Job are both
+// in-cluster over the data path, but they carry different identities (Radar's
+// ServiceAccount vs the target namespace's default), different sidecar
+// exposure, and are separate observations that must not overwrite each other.
+const (
+	SourceRadar    = "radar"     // Radar's own process, inline with the trace
+	SourceProbeJob = "probe-job" // a throwaway Job Radar created in the cluster
+)
+
 // Layer names which network layer this Result attests to. Higher layers
 // strictly imply lower layers succeeded - if HTTP returns ok, TCP and DNS
 // did too.
@@ -215,7 +226,13 @@ type Result struct {
 	// port). 0 for host-level probes (DNS) that aren't port-specific. The
 	// coverage projection groups routes by (backend, Port) so a multi-port
 	// backend reports each port honestly instead of collapsing to one outcome.
-	Port    int32         `json:"port,omitempty"`
+	Port int32 `json:"port,omitempty"`
+	// Source is WHO issued this probe, which (Vantage, Path) cannot express:
+	// Radar's own process and a throwaway probe Job are both in-cluster/data.
+	// Without it the two collide - a Job result silently replaces Radar's own
+	// in-cluster observation on merge - and the UI credits Radar's direct dials
+	// to a Job that was never created. Empty means SourceRadar.
+	Source  string        `json:"source,omitempty"`
 	OK      bool          `json:"ok"`
 	Tone    Tone          `json:"tone,omitempty"`
 	Skipped bool          `json:"skipped,omitempty"`

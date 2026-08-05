@@ -14,13 +14,13 @@ import { originRouteEvidence, routeMark } from './reachMarks'
  * genuine request from outside the cluster - is absent, not merely unrun.
  * Hiding them would make synthetic evidence look complete.
  */
-export type OriginId = 'incluster' | 'apiserver' | 'local' | 'caller' | 'external'
+export type OriginId = 'incluster' | 'radar-incluster' | 'apiserver' | 'local' | 'caller' | 'external'
 
 /** Which lane an origin's traffic belongs to. */
 export type Lane = 'dataplane' | 'control'
 
 /** What the origin's identity means for the result's strength. */
-export type OriginKind = 'synthetic' | 'real-client' | 'real-caller' | 'relayed'
+export type OriginKind = 'synthetic' | 'radar' | 'real-client' | 'real-caller' | 'relayed'
 
 export interface Origin {
   id: OriginId
@@ -42,13 +42,14 @@ export interface Origin {
 
 export const ORIGIN_KIND_TAG: Record<OriginKind, string> = {
   synthetic: 'SYNTHETIC',
+  radar: 'RADAR ITSELF',
   'real-client': 'REAL CLIENT',
   'real-caller': 'REAL CALLER',
   relayed: 'RELAYED · NOT A CALLER',
 }
 
 /** Evidence strength, strongest first. Drives the "next strongest test" prompt. */
-export const ORIGIN_STRENGTH: OriginId[] = ['caller', 'external', 'incluster', 'local', 'apiserver']
+export const ORIGIN_STRENGTH: OriginId[] = ['caller', 'external', 'incluster', 'radar-incluster', 'local', 'apiserver']
 
 export function allProbes(trace?: Trace): ProbeResult[] {
   if (!trace) return []
@@ -57,9 +58,16 @@ export function allProbes(trace?: Trace): ProbeResult[] {
 
 /** Which origin produced a probe. The apiserver path wins over vantage: a proxy
  *  relay is a control-plane mechanism no matter where the process calling it runs. */
-export function originOf(p: ProbeResult): OriginId {
+export function originOf(p: ProbeResult, runVantage?: string): OriginId {
   if (p.path === 'apiserver') return 'apiserver'
-  return p.vantage === 'in-cluster' ? 'incluster' : 'local'
+  if (p.vantage !== 'in-cluster') return 'local'
+  if (p.source === 'probe-job') return 'incluster'
+  if (p.source === 'radar') return 'radar-incluster'
+  // No source: an older producer. An in-cluster dataplane probe can only be
+  // Radar's own when Radar itself runs in the cluster; from a laptop the only
+  // way to get one is the throwaway Job. runVantage is what the producer knows
+  // about itself, so it settles the ambiguity without guessing.
+  return runVantage === 'in-cluster' ? 'radar-incluster' : 'incluster'
 }
 
 interface OriginContext {
@@ -125,7 +133,7 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
   const probes = allProbes(trace)
   const byOrigin = new Map<OriginId, ProbeResult[]>()
   for (const p of probes) {
-    const id = originOf(p)
+    const id = originOf(p, trace?.runVantage)
     const arr = byOrigin.get(id) ?? []
     arr.push(p)
     byOrigin.set(id, arr)
@@ -207,7 +215,28 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
     unavailable: localMark === 'blocked' ? skipReason(localProbes) : undefined,
   }
 
-  const all: Record<OriginId, Origin> = { caller, external, incluster, local, apiserver }
+  const radarProbes = byOrigin.get('radar-incluster') ?? []
+  // Radar running AS a Pod is not the throwaway Job: it dials with Radar's own
+  // ServiceAccount from Radar's own namespace, and whatever sidecars Radar has.
+  // Collapsing the two credited Radar's direct dials to a Job never created.
+  const radarInCluster: Origin = {
+    id: 'radar-incluster',
+    glyph: '◈',
+    name: 'Radar, inside the cluster',
+    mech: 'Radar\u2019s own process, running as a Pod',
+    identity: 'Radar\u2019s own namespace and ServiceAccount',
+    kind: 'radar',
+    kindTag: ORIGIN_KIND_TAG.radar,
+    lane: 'dataplane',
+    mark: markFor(radarProbes, 'radar-incluster', ctx),
+    unsupported: trace?.runVantage !== 'in-cluster' && radarProbes.length === 0,
+    unavailable:
+      trace?.runVantage !== 'in-cluster' && radarProbes.length === 0
+        ? 'Radar is not running in this cluster, so it cannot dial from inside on its own. The in-cluster test starts a throwaway Pod instead.'
+        : undefined,
+  }
+
+  const all: Record<OriginId, Origin> = { caller, external, incluster, 'radar-incluster': radarInCluster, local, apiserver }
   return ORIGIN_STRENGTH.map((id) => all[id])
 }
 

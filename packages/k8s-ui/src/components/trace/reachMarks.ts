@@ -121,12 +121,20 @@ export function worstMark(marks: Mark[]): Mark {
  * other direction: anything relayed by the API server is the apiserver origin
  * whatever machine issued it, and everything else is named by its vantage.
  */
-export function routeForOrigin(route: RouteResult | undefined, originId: string): VantageResult | undefined {
+export function routeForOrigin(route: RouteResult | undefined, originId: string, runVantage?: string): VantageResult | undefined {
   const rows = route?.byVantage
   if (!rows || rows.length === 0) return undefined
   if (originId === 'apiserver') return rows.find((v) => v.path === 'apiserver')
-  const vantage = originId === 'incluster' ? 'in-cluster' : 'local'
-  return rows.find((v) => v.path !== 'apiserver' && v.vantage === vantage)
+  if (originId === 'local') return rows.find((v) => v.path !== 'apiserver' && v.vantage === 'local')
+  // Both in-cluster origins share (in-cluster, data); `source` is what tells
+  // Radar's own dial apart from the throwaway Job's. An absent source resolves
+  // the same way originOf does, so the rail and the rows can't disagree.
+  const wantJob = originId === 'incluster'
+  return rows.find((v) => {
+    if (v.path === 'apiserver' || v.vantage !== 'in-cluster') return false
+    const src = v.source || (runVantage === 'in-cluster' ? 'radar' : 'probe-job')
+    return wantJob ? src === 'probe-job' : src === 'radar'
+  })
 }
 
 /**
@@ -155,13 +163,13 @@ export type OriginEvidence =
   | { kind: 'rollup'; result: RouteResult }
   | { kind: 'none' }
 
-export function originRouteEvidence(route: RouteResult | undefined, originId: string): OriginEvidence {
+export function originRouteEvidence(route: RouteResult | undefined, originId: string, runVantage?: string): OriginEvidence {
   if (!route) return { kind: 'none' }
   // Checked before the per-vantage rows: a config-derived break has none by
   // construction, and without this it would fall through to the rollup branch
   // and be attributed to whichever origin happened to be selected.
   if (route.basis) return { kind: 'config', result: route }
-  const own = routeForOrigin(route, originId)
+  const own = routeForOrigin(route, originId, runVantage)
   if (own) {
     return {
       kind: 'own',
@@ -404,7 +412,7 @@ export function entryForHost(host: string, upstreams: Hop[] = []): string {
  *  different sequence still compare equal. */
 export function vantageSignature(r: RouteResult): string {
   return (r.byVantage ?? [])
-    .map((v) => `${v.vantage}/${v.path}=${v.outcome}${v.failedBoundary ? `@${v.failedBoundary}` : ''}`)
+    .map((v) => `${v.vantage}/${v.path}/${v.source || 'radar'}=${v.outcome}${v.failedBoundary ? `@${v.failedBoundary}` : ''}`)
     .sort()
     .join(',')
 }

@@ -206,6 +206,7 @@ func stampInClusterProbes(tr *trace.Trace, tests []reachability.InClusterTestRes
 			}
 			for _, pr := range tst.Results {
 				pr.Vantage = probe.VantageInCluster
+				pr.Source = probe.SourceProbeJob
 				if pr.Path == "" {
 					pr.Path = probe.PathData
 				}

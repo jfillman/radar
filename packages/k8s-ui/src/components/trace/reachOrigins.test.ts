@@ -33,7 +33,7 @@ describe('buildOrigins', () => {
 
   it('orders by evidence strength, strongest first', () => {
     const os = buildOrigins(traceWith([]))
-    expect(os.map((o) => o.id)).toEqual(['caller', 'external', 'incluster', 'local', 'apiserver'])
+    expect(os.map((o) => o.id)).toEqual(['caller', 'external', 'incluster', 'radar-incluster', 'local', 'apiserver'])
   })
 
   it('marks the in-cluster probe proved on clean dataplane evidence', () => {
@@ -175,5 +175,45 @@ describe('the laptop vantage says where it actually dialled', () => {
   it('does not make the external vantage supported - that is a different claim', () => {
     const t = traceWith([{ layer: 'dns', target: 'h', vantage: 'local', ok: true, addressScope: 'public' }])
     expect(buildOrigins(t, {}).find((o) => o.id === 'external')!.unsupported).toBe(true)
+  })
+})
+
+describe('Radar-as-a-Pod is not the throwaway probe Job', () => {
+  // Both are (in-cluster, data). Collapsed into one origin, Radar's own dials
+  // were credited to a Job that was never created, under the namespace default
+  // account rather than Radar's own.
+  it('routes an explicitly-sourced probe to its own origin', () => {
+    expect(originOf(p({ vantage: 'in-cluster', path: 'data', source: 'radar' }))).toBe('radar-incluster')
+    expect(originOf(p({ vantage: 'in-cluster', path: 'data', source: 'probe-job' }))).toBe('incluster')
+  })
+
+  // An older producer sends no source. Radar can only have dialled in-cluster
+  // itself when it IS in the cluster; otherwise the only way to get such a
+  // probe is the Job. runVantage is the producer's own statement about itself.
+  it('resolves an unsourced in-cluster probe from runVantage', () => {
+    const probe = p({ vantage: 'in-cluster', path: 'data' })
+    expect(originOf(probe, 'in-cluster')).toBe('radar-incluster')
+    expect(originOf(probe, 'local')).toBe('incluster')
+    expect(originOf(probe)).toBe('incluster')
+  })
+
+  it('never reassigns an apiserver relay, whatever the source', () => {
+    expect(originOf(p({ vantage: 'in-cluster', path: 'apiserver', source: 'radar' }), 'in-cluster')).toBe('apiserver')
+  })
+
+  it('marks Radar-in-cluster unsupported when Radar runs on a laptop', () => {
+    const os = buildOrigins(traceWith([]))
+    const radar = os.find((o) => o.id === 'radar-incluster')
+    expect(radar?.unsupported).toBe(true)
+    expect(radar?.unavailable).toMatch(/not running in this cluster/)
+  })
+
+  it('describes Radar-in-cluster with Radar\'s own identity, not the Job\'s', () => {
+    const t = traceWith([p({ vantage: 'in-cluster', path: 'data', source: 'radar', ok: true })])
+    t.runVantage = 'in-cluster'
+    const radar = buildOrigins(t).find((o) => o.id === 'radar-incluster')
+    expect(radar?.identity).toMatch(/Radar/)
+    expect(radar?.identity).not.toMatch(/default account/)
+    expect(radar?.mark).toBe('proved')
   })
 })

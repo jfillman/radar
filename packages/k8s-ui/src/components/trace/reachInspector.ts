@@ -68,7 +68,8 @@ const SYNTHETIC_IDENTITY =
 
 function originScope(o: Origin, trace: Trace): { k: string; v: string }[] {
   const runsIn: Record<OriginId, string> = {
-    incluster: `a Pod in ${trace.subject.namespace || 'the cluster'}`,
+    incluster: `a throwaway Pod in ${trace.subject.namespace || 'the cluster'}`,
+    'radar-incluster': 'Radar\u2019s own Pod',
     apiserver: 'the kube-apiserver process',
     local: 'your workstation (outside the cluster)',
     caller: 'the application workload’s own Pod',

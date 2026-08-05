@@ -338,3 +338,47 @@ func TestKnownStaticBreakIsMarkedAsConfigDerived(t *testing.T) {
 		t.Errorf("a config-derived break was dialled by nobody, so it carries no vantage rows: %+v", r.ByVantage)
 	}
 }
+
+// Radar-as-a-Pod and a throwaway probe Job are both (in-cluster, data). Keyed
+// on that pair alone, running the Job REPLACED Radar's own observation instead
+// of adding a second one - the stronger, more specific evidence silently
+// overwriting the evidence that came from Radar's real identity.
+func TestMergeVantagesKeepsRadarAndProbeJobApart(t *testing.T) {
+	prior := []VantageResult{{Vantage: "in-cluster", Path: "data", Source: probe.SourceRadar, Outcome: OutcomeVerified}}
+	fresh := []VantageResult{{Vantage: "in-cluster", Path: "data", Source: probe.SourceProbeJob, Outcome: OutcomeUnreachable}}
+	got := mergeVantages(prior, fresh)
+	if len(got) != 2 {
+		t.Fatalf("want Radar's own result kept alongside the Job's, got %+v", got)
+	}
+	if got[0].Source != probe.SourceRadar || got[0].Outcome != OutcomeVerified {
+		t.Errorf("Radar's own in-cluster observation was overwritten: %+v", got)
+	}
+}
+
+func TestMergeVantagesStillReplacesTheSameSource(t *testing.T) {
+	prior := []VantageResult{{Vantage: "in-cluster", Path: "data", Source: probe.SourceProbeJob, Outcome: OutcomeUnreachable}}
+	fresh := []VantageResult{{Vantage: "in-cluster", Path: "data", Source: probe.SourceProbeJob, Outcome: OutcomeVerified}}
+	if got := mergeVantages(prior, fresh); len(got) != 1 || got[0].Outcome != OutcomeVerified {
+		t.Errorf("a re-run of the SAME source supersedes its own older result: %+v", got)
+	}
+}
+
+// An unset Source is Radar's own probe, so a legacy row and a fresh Radar row
+// must be the same observer rather than accumulating duplicates.
+func TestMergeVantagesTreatsEmptySourceAsRadar(t *testing.T) {
+	prior := []VantageResult{{Vantage: "local", Path: "data", Outcome: OutcomeUnreachable}}
+	fresh := []VantageResult{{Vantage: "local", Path: "data", Source: probe.SourceRadar, Outcome: OutcomeVerified}}
+	if got := mergeVantages(prior, fresh); len(got) != 1 || got[0].Outcome != OutcomeVerified {
+		t.Errorf("empty Source must mean radar, not a distinct observer: %+v", got)
+	}
+}
+
+func TestPerVantageSplitsRadarFromProbeJob(t *testing.T) {
+	radar := httpProbe(probe.VantageInCluster, probe.PathData, true, "HTTP 200")
+	job := httpProbe(probe.VantageInCluster, probe.PathData, false, "connection refused")
+	job.Source = probe.SourceProbeJob
+	r, _ := routeFromProbes("r", "checkout:80", []probe.Result{radar, job})
+	if len(r.ByVantage) != 2 {
+		t.Fatalf("two observers at the same vantage must stay apart: %+v", r.ByVantage)
+	}
+}

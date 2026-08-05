@@ -1,4 +1,4 @@
-.PHONY: build install clean dev frontend backend test test-e2e test-chart lint help restart restart-fe kill watch-backend watch-frontend
+.PHONY: build install clean dev frontend backend test test-e2e test-chart lint help restart restart-fe kill watch-backend watch-frontend loadtest
 .PHONY: release release-binaries-dry docker docker-test docker-multiarch docker-push
 .PHONY: desktop desktop-binary desktop-dev desktop-package-darwin desktop-package-windows desktop-package-linux
 
@@ -169,6 +169,19 @@ crossplane-demo-down:
 
 crossplane-demo-status:
 	./scripts/crossplane-demo.sh status
+
+# Load-test the UI at high object counts against a synthetic, resource-free fake
+# cluster (no real workloads, no kubelet, no etcd). Radar treats the fakes as a
+# real cluster. Seeds a topology-realistic Deployment->ReplicaSet->Pod population
+# with matching Services/ConfigMaps/Secrets, spread across nodes and namespaces.
+# The pod count is live-controllable via the admin listener (default <port>+1):
+#   curl -XPOST localhost:9282/loadtest/scale -d '{"pods":10000}'
+#   curl localhost:9282/loadtest/status
+# Override the count with PODS and the port with LOADTEST_PORT.
+LOADTEST_PORT ?= 9281
+PODS ?= 50000
+loadtest: frontend embed
+	go run ./cmd/testserver -port $(LOADTEST_PORT) -pods $(PODS)
 
 # Run linter
 lint:

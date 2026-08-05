@@ -353,6 +353,60 @@ func TestScaleUpRetryCompletesPartialApp(t *testing.T) {
 	}
 }
 
+// TestReconcileFixesFormerBoundaryReplicasAfterPodDivergence covers the case
+// where a scale created a partial boundary app but the pod count then diverged
+// from the app count; a later scale-up must still bring that former-boundary
+// Deployment's replica count up to full rather than leave it stale.
+func TestReconcileFixesFormerBoundaryReplicasAfterPodDivergence(t *testing.T) {
+	g := New(Config{Pods: 0, Nodes: 4, Namespaces: 2, PodsPerApp: 10})
+	client := fake.NewClientset(g.SeedObjects()...)
+
+	factory := informers.NewSharedInformerFactory(client, 0)
+	podInformer := factory.Core().V1().Pods().Informer()
+	deployInformer := factory.Apps().V1().Deployments().Informer()
+	stop := make(chan struct{})
+	defer close(stop)
+	factory.Start(stop)
+	if !cache.WaitForCacheSync(stop, podInformer.HasSynced, deployInformer.HasSynced) {
+		t.Fatal("informer failed to sync")
+	}
+	count := func(kind string) int {
+		switch kind {
+		case "Pod":
+			return len(podInformer.GetStore().ListKeys())
+		case "Deployment":
+			return len(deployInformer.GetStore().ListKeys())
+		}
+		return 0
+	}
+
+	ctx := context.Background()
+	// 45 pods over PodsPerApp=10 => 5 apps, app 4 partial (5 replicas).
+	if _, err := g.ScaleTo(ctx, client, 45, count); err != nil {
+		t.Fatalf("ScaleTo(45): %v", err)
+	}
+	d, _ := client.AppsV1().Deployments("loadtest-00").Get(ctx, "app-0004", metav1.GetOptions{})
+	if *d.Spec.Replicas != 5 {
+		t.Fatalf("app 4 replicas=%d want 5 (partial boundary)", *d.Spec.Replicas)
+	}
+
+	// Simulate pods diverging below the app count (as after a partial pod
+	// failure): the pod counter drops but the 5 apps remain.
+	g.mu.Lock()
+	g.current = 5
+	g.mu.Unlock()
+
+	// Grow to 250 pods (25 apps). App 4 is now a full interior app and its
+	// replica count must be corrected to PodsPerApp, not left at 5.
+	if _, err := g.ScaleTo(ctx, client, 250, count); err != nil {
+		t.Fatalf("ScaleTo(250): %v", err)
+	}
+	d, _ = client.AppsV1().Deployments("loadtest-00").Get(ctx, "app-0004", metav1.GetOptions{})
+	if *d.Spec.Replicas != 10 {
+		t.Fatalf("app 4 replicas=%d want 10 (former boundary must be re-fulled)", *d.Spec.Replicas)
+	}
+}
+
 func waitCount(count func() int, want int, timeout time.Duration) int {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

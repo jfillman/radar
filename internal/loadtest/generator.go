@@ -372,6 +372,11 @@ func (g *Generator) ScaleTo(ctx context.Context, client kubernetes.Interface, ta
 
 	from := g.current
 	appsWant := appsFor(target, g.cfg.PodsPerApp)
+	// The app count before this scale's mutations — the correct basis for
+	// reconciling the old boundary app's replica count. Derived from the tracked
+	// app mark, not appsFor(from): pods can lag the app count after a partial
+	// failure, which would otherwise point the reconcile at the wrong app.
+	prevApps := g.appsCompleted
 
 	// Create resumes from the last fully-completed app, so a partially-written
 	// app from an earlier failed attempt is finished rather than skipped.
@@ -392,7 +397,7 @@ func (g *Generator) ScaleTo(ctx context.Context, client kubernetes.Interface, ta
 		}
 	}
 
-	if err := g.reconcileBoundaryApps(ctx, client, appsFor(from, g.cfg.PodsPerApp), appsWant, target); err != nil {
+	if err := g.reconcileBoundaryApps(ctx, client, prevApps, appsWant, target); err != nil {
 		return Result{}, err
 	}
 

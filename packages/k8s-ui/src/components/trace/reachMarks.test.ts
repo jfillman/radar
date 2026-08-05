@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, isSlow, formatLatency, hostMatches, declaredHosts, routeHostOf, routeForOrigin, routeAsSeenFrom, MARKS } from './reachMarks'
+import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, isSlow, formatLatency, hostMatches, declaredHosts, routeHostOf, routeForOrigin, routeAsSeenFrom, originRouteEvidence, MARKS } from './reachMarks'
 import type { RouteResult, Hop } from './types'
 
 const r = (o: Partial<RouteResult>): RouteResult => ({ route: 'GET /', outcome: 'verified', ...o })
@@ -416,5 +416,47 @@ describe('per-vantage route resolution', () => {
   it('is undefined for no route at all', () => {
     expect(routeAsSeenFrom(undefined, 'local')).toBeUndefined()
     expect(routeForOrigin(undefined, 'local')).toBeUndefined()
+  })
+})
+
+describe('missing-row semantics', () => {
+  // The subtle one: falling back to the rollup when the producer DID send a
+  // breakdown and this origin simply is not in it re-creates the exact
+  // misattribution byVantage exists to remove.
+  const laptopOnly: RouteResult = {
+    route: 'checkout.example.com/',
+    outcome: 'unreachable',
+    confidence: 'real',
+    byVantage: [{ vantage: 'local', path: 'data', outcome: 'unreachable', confidence: 'real' }],
+  }
+
+  it('an origin absent from a breakdown is "not tested", not the rollup', () => {
+    expect(originRouteEvidence(laptopOnly, 'incluster').kind).toBe('none')
+    expect(routeAsSeenFrom(laptopOnly, 'incluster')).toBeUndefined()
+  })
+
+  it('what an origin found on OTHER routes cannot vouch for this one', () => {
+    // in-cluster may well have probed a sibling route; this route says nothing
+    // about it, and the absence is the evidence.
+    const ev = originRouteEvidence(laptopOnly, 'incluster')
+    expect(ev.kind).not.toBe('rollup')
+  })
+
+  it('a trace with NO breakdown still yields the rollup, flagged as such', () => {
+    const legacy: RouteResult = { route: 'r', outcome: 'verified', confidence: 'real' }
+    const ev = originRouteEvidence(legacy, 'incluster')
+    expect(ev.kind).toBe('rollup')
+    expect(ev.kind === 'rollup' && ev.result.outcome).toBe('verified')
+  })
+
+  it('an empty breakdown array counts as no breakdown', () => {
+    const empty: RouteResult = { route: 'r', outcome: 'verified', byVantage: [] }
+    expect(originRouteEvidence(empty, 'incluster').kind).toBe('rollup')
+  })
+
+  it("the origin that IS in the breakdown still gets its own row", () => {
+    const ev = originRouteEvidence(laptopOnly, 'local')
+    expect(ev.kind).toBe('own')
+    expect(ev.kind === 'own' && ev.result.outcome).toBe('unreachable')
   })
 })

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildOrigins, defaultOrigin, strongestGap, originOf } from './reachOrigins'
-import type { Trace, ProbeResult } from './types'
+import type { Trace, ProbeResult, RouteResult } from './types'
 
 const p = (o: Partial<ProbeResult>): ProbeResult => ({ layer: 'http', target: 'svc:80', vantage: 'in-cluster', ok: true, ...o })
 
@@ -97,5 +97,47 @@ describe('strongestGap', () => {
     const os = buildOrigins(traceWith([p({ vantage: 'in-cluster', path: 'data' })]))
     // caller is unsupported+blocked and is the strongest thing still missing.
     expect(strongestGap(os)?.id).toBe('caller')
+  })
+})
+
+// Once the graph and inspector became route-scoped, the rail scoring an origin
+// across EVERY route at once could contradict them: a vantage that failed on one
+// path read as failed while the graph showed it succeeding on the selected one.
+describe('rail marks follow the selected route', () => {
+  const twoRoutes = (): RouteResult => ({
+    route: 'a.example.com/',
+    target: 'a:80',
+    outcome: 'unreachable',
+    confidence: 'real',
+    byVantage: [
+      { vantage: 'in-cluster', path: 'data', outcome: 'verified', confidence: 'real' },
+      { vantage: 'local', path: 'data', outcome: 'unreachable', confidence: 'real' },
+    ],
+  })
+  const t = traceWith([
+    { layer: 'http', target: 'a:80', vantage: 'in-cluster', path: 'data', ok: false, tone: 'unhealthy' },
+  ])
+
+  it('scores each origin by its own result for THIS route', () => {
+    const os = buildOrigins(t, { route: twoRoutes() })
+    expect(os.find((o) => o.id === 'incluster')!.mark).toBe('proved')
+    expect(os.find((o) => o.id === 'local')!.mark).toBe('failed')
+  })
+
+  it('without a route it falls back to the pooled scan, as before', () => {
+    // A failing in-cluster probe is on the trace, so the pooled path marks it failed.
+    const os = buildOrigins(t, {})
+    expect(os.find((o) => o.id === 'incluster')!.mark).toBe('failed')
+  })
+
+  it('an origin with no result for this route is untested, not inherited', () => {
+    const onlyLocal: RouteResult = {
+      route: 'a/',
+      outcome: 'verified',
+      byVantage: [{ vantage: 'local', path: 'data', outcome: 'verified', confidence: 'real' }],
+    }
+    const os = buildOrigins(traceWith([]), { route: onlyLocal })
+    expect(os.find((o) => o.id === 'local')!.mark).toBe('proved')
+    expect(os.find((o) => o.id === 'incluster')!.mark).toBe('untested')
   })
 })

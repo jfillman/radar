@@ -1,5 +1,6 @@
-import type { Trace, ProbeResult } from './types'
+import type { Trace, ProbeResult, RouteResult } from './types'
 import type { Mark } from './reachMarks'
+import { originRouteEvidence, routeMark } from './reachMarks'
 
 /**
  * An Origin is a vantage point - WHERE a test ran from, and as WHOM. It is a
@@ -63,6 +64,10 @@ export function originOf(p: ProbeResult): OriginId {
 
 interface OriginContext {
   inClusterAllowed?: boolean
+  /** The scenario on screen. Marks are scored against THIS route when the
+   *  producer sent per-vantage results, so the rail cannot disagree with the
+   *  graph about what a vantage found. */
+  route?: RouteResult
   inClusterRunning?: boolean
   inClusterDeniedReason?: string
   stale?: boolean
@@ -78,6 +83,21 @@ interface OriginContext {
  */
 function markFor(probes: ProbeResult[], id: OriginId, ctx: OriginContext): Mark {
   if (id === 'incluster' && ctx.inClusterRunning) return 'running'
+  // The SELECTED route's own result for this origin wins when the producer sent
+  // one. Without it the rail scored an origin across EVERY route at once, so a
+  // vantage that failed on one path read as failed while the graph beside it -
+  // now route-scoped - showed that same vantage succeeding on the selected one.
+  const ev = ctx.route ? originRouteEvidence(ctx.route, id) : undefined
+  if (ev?.kind === 'own') {
+    if (ctx.stale) return 'stale'
+    return routeMark(ev.result, {})
+  }
+  // The producer sent a breakdown and this origin is not in it: untested for
+  // THIS route, whatever it may have found on others.
+  if (ev?.kind === 'none') {
+    if (id === 'incluster' && ctx.inClusterAllowed === false) return 'denied'
+    return 'untested'
+  }
   if (probes.length === 0) {
     if (id === 'incluster' && ctx.inClusterAllowed === false) return 'denied'
     return 'untested'

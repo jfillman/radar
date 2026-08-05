@@ -1,6 +1,6 @@
 import type { Trace, Hop, ResourceRef, RouteResult, PodStatus, ProbeResult } from './types'
 import type { Mark, SevTone } from './reachMarks'
-import { routeMark, isSlow, formatLatency, declaredHosts, hostMatches, routeHostOf, routeAsSeenFrom, routeForOrigin } from './reachMarks'
+import { routeMark, isSlow, formatLatency, declaredHosts, hostMatches, routeHostOf, originRouteEvidence } from './reachMarks'
 import { originOf, type Origin } from './reachOrigins'
 import { podProbeKey } from './podReach'
 
@@ -354,8 +354,8 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   // painted whatever the worst vantage saw under the selected vantage's name -
   // the central misattribution this view exists to prevent. originProducedEvidence
   // remains the fallback gate for traces carrying no per-vantage breakdown.
-  const ownResult = routeForOrigin(route, origin.id)
-  const asSeen = routeAsSeenFrom(route, origin.id)
+  const ev = originRouteEvidence(route, origin.id)
+  const asSeen = ev.kind === 'none' ? undefined : ev.result
 
   const matched = upstreams.filter(servesRoute)
   const activeUpstreams = matched.length > 0 ? matched : upstreams
@@ -681,7 +681,10 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   }
 
   const originNodeId = `origin:${origin.id}`
-  const hasEvidence = ownResult !== undefined || originProducedEvidence(origin)
+  // 'own' is this origin's result. 'none' means the producer told us it did not
+  // test this route, which outranks anything it did on OTHER routes - so the
+  // coarse pooled gate only applies to legacy traces with no breakdown at all.
+  const hasEvidence = ev.kind === 'own' || (ev.kind === 'rollup' && originProducedEvidence(origin))
   const routeMarkNow: Mark = asSeen ? routeMark(asSeen, { stale, running }) : 'untested'
   // A relay can never read as proof: it bypassed the real network path however
   // clean the response was.

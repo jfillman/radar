@@ -149,8 +149,8 @@ function ReachabilityBoard(props: BoardProps) {
   const route: RouteResult | undefined = scenario?.primary
 
   const origins = useMemo(
-    () => buildOrigins(trace, { inClusterAllowed, inClusterRunning: running, stale }),
-    [trace, inClusterAllowed, running, stale],
+    () => buildOrigins(trace, { inClusterAllowed, inClusterRunning: running, stale, route }),
+    [trace, inClusterAllowed, running, stale, route],
   )
   const [originId, setOriginId] = useState<OriginId | null>(null)
   const origin = origins.find((o) => o.id === (originId ?? defaultOrigin(origins))) ?? origins[0]
@@ -164,8 +164,8 @@ function ReachabilityBoard(props: BoardProps) {
     [selection, trace, route, origin, origins, model, stale, running, multiPath, props.probePath],
   )
   const verdict = useMemo(
-    () => buildVerdict(trace, route, origins, { stale, running, pathLabel: multiPath ? scenario?.primary.target || scenario?.label : undefined }),
-    [trace, route, origins, stale, running, multiPath, scenario],
+    () => buildVerdict(trace, route, origins, { stale, running, originId: origin?.id, originName: origin?.name, pathLabel: multiPath ? scenario?.primary.target || scenario?.label : undefined }),
+    [trace, route, origins, stale, running, multiPath, scenario, origin],
   )
 
   const onCTA = (cta: InspectorCTA) => {

@@ -1,6 +1,6 @@
 import type { Trace, RouteResult, ResourceRef } from './types'
 import type { Mark, SevTone } from './reachMarks'
-import { routeMark, routeChip, routeTone, routeAsSeenFrom, routeForOrigin } from './reachMarks'
+import { routeMark, routeChip, routeTone, routeAsSeenFrom, originRouteEvidence } from './reachMarks'
 import type { Origin, OriginId } from './reachOrigins'
 import { strongestGap, actionableGap } from './reachOrigins'
 import { originProducedEvidence, type GraphNode } from './reachGraphModel'
@@ -164,9 +164,9 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
   // guards against, in the surface users actually read.
   // This origin's OWN result when the producer sent one; the coarse
   // "did this origin produce anything" gate only remains as the fallback.
-  const own = routeForOrigin(route, origin.id)
-  const asSeen = routeAsSeenFrom(route, origin.id)
-  const hasEvidence = own !== undefined || originProducedEvidence(origin)
+  const ev = originRouteEvidence(route, origin.id)
+  const asSeen = ev.kind === 'none' ? undefined : ev.result
+  const hasEvidence = ev.kind === 'own' || (ev.kind === 'rollup' && originProducedEvidence(origin))
   const mark: Mark = hasEvidence ? (asSeen ? routeMark(asSeen, { stale: ctx.stale, running: ctx.running }) : 'untested') : origin.mark
 
   const notProve: string[] = []
@@ -187,7 +187,11 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     evidence.push({ mark: m, text })
   }
   if (hasEvidence && asSeen?.evidence) add(mark, asSeen.evidence)
-  for (const f of hasEvidence ? route?.localization ?? [] : []) {
+  // Localization facts are behind-the-gate (apiserver / direct-pod) evidence.
+  // They belong to the relayed origin, not to whichever origin is selected -
+  // listing them under the in-cluster probe credited it with observations it
+  // never made.
+  for (const f of origin.id === 'apiserver' && hasEvidence ? route?.localization ?? [] : []) {
     const layer = f.layer.toUpperCase()
     const detail = f.detail?.trim()
     const body = !detail ? layer : detail.toUpperCase().startsWith(layer) ? detail : `${layer} · ${detail}`
@@ -330,7 +334,7 @@ export function buildVerdict(
   trace: Trace,
   route: RouteResult | undefined,
   origins: Origin[],
-  opts: { stale?: boolean; running?: boolean; pathLabel?: string } = {},
+  opts: { stale?: boolean; running?: boolean; pathLabel?: string; originId?: string; originName?: string } = {},
 ): {
   tone: SevTone
   chipText: string
@@ -353,11 +357,17 @@ export function buildVerdict(
   // still reached a verdict (e.g. a config fault found without probing). Falling
   // through to 'unknown' showed a grey dot on a resource the tracer called
   // degraded.
-  const tone: SevTone = opts.running ? 'info' : route ? routeTone(route, opts) : VERDICT_TONE[trace.verdict] ?? 'unknown'
-  const mark = route ? routeMark(route, opts) : 'untested'
+  // The band sits directly above the inspector, which reads the SELECTED
+  // origin's own result. Leaving the band on the merged rollup let the two
+  // contradict each other in adjacent panes - "could not get through" over
+  // "got through" - on exactly the disagreeing traces per-vantage evidence
+  // exists to represent.
+  const seen = opts.originId ? routeAsSeenFrom(route, opts.originId) : route
+  const tone: SevTone = opts.running ? 'info' : seen ? routeTone(seen, opts) : VERDICT_TONE[trace.verdict] ?? 'unknown'
+  const mark = seen ? routeMark(seen, opts) : 'untested'
   const facts = [
     { k: 'origins:', v: used.length > 0 ? used.map((o) => o.name).join(' · ') : 'none used yet' },
-    { k: 'proven to:', v: mark === 'proved' ? route?.target || 'the backend' : mark === 'proxied' ? 'a serving process exists' : 'nothing' },
+    { k: 'proven to:', v: mark === 'proved' ? seen?.target || 'the backend' : mark === 'proxied' ? 'a serving process exists' : 'nothing' },
     { k: 'first failure:', v: mark === 'failed' ? trace.diagnosis?.summary || route?.target || 'the backend' : 'none' },
     {
       k: 'next:',
@@ -366,12 +376,16 @@ export function buildVerdict(
   ]
   return {
     tone,
-    chipText: opts.running ? 'testing' : route ? routeChip(route, opts) : 'not tested',
+    chipText: opts.running ? 'testing' : seen ? routeChip(seen, opts) : 'not tested',
     // Title, problem and coverage describe the WHOLE resource; tone and chip
     // follow the selected path. With several paths on screen that difference is
     // invisible unless each side says which scope it speaks for.
-    chipScope: opts.pathLabel,
-    scopeLabel: opts.pathLabel ? 'THIS RESOURCE' : undefined,
+    // The badge now follows the selected path AND vantage while the headline,
+    // problem and coverage stay resource-wide. Both scopes are legitimate; what
+    // is not legitimate is leaving the reader to guess which is which, so the
+    // badge names its own scope in full.
+    chipScope: [opts.pathLabel, opts.originName ? `from ${opts.originName}` : ''].filter(Boolean).join(' · ') || undefined,
+    scopeLabel: opts.pathLabel || opts.originName ? 'THIS RESOURCE' : undefined,
     // A stale screen previously led with the old headline ("Reachable...") and
     // then said underneath that the result was excluded. That is a contradiction,
     // not an exclusion.

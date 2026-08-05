@@ -130,17 +130,45 @@ export function routeForOrigin(route: RouteResult | undefined, originId: string)
 }
 
 /**
- * The route as ONE origin saw it, falling back to the merged rollup when the
- * producer sent no per-vantage breakdown (older backend, or a route with no
- * probes at all). The fallback is the pre-existing behaviour, so nothing
- * regresses when the field is absent - it simply stops being a claim about a
- * specific vantage.
+ * What we can honestly say about a route FROM one origin. Three cases that must
+ * never be collapsed:
+ *
+ *  - `own`     this origin's own result for this route. Use it.
+ *  - `none`    the producer DID send per-vantage results and this origin has no
+ *              row, so it did not test this route. Not "unknown, guess from the
+ *              rollup" - the absence is itself the evidence, and inheriting the
+ *              merged verdict here is precisely the misattribution byVantage
+ *              exists to remove. What the origin did on OTHER routes is
+ *              irrelevant to this one.
+ *  - `rollup`  no per-vantage results at all (a trace from a producer that
+ *              predates the field). The merged verdict is all there is; it is
+ *              NOT a claim about the selected origin, and callers must keep
+ *              treating it with the coarse pre-existing gate.
  */
-export function routeAsSeenFrom(route: RouteResult | undefined, originId: string): RouteResult | undefined {
-  if (!route) return undefined
+export type OriginEvidence =
+  | { kind: 'own'; result: RouteResult }
+  | { kind: 'rollup'; result: RouteResult }
+  | { kind: 'none' }
+
+export function originRouteEvidence(route: RouteResult | undefined, originId: string): OriginEvidence {
+  if (!route) return { kind: 'none' }
   const own = routeForOrigin(route, originId)
-  if (!own) return route
-  return { ...route, outcome: own.outcome, confidence: own.confidence, evidence: own.evidence, failedLayer: own.failedLayer }
+  if (own) {
+    return {
+      kind: 'own',
+      result: { ...route, outcome: own.outcome, confidence: own.confidence, evidence: own.evidence, failedLayer: own.failedLayer },
+    }
+  }
+  const hasBreakdown = !!route.byVantage && route.byVantage.length > 0
+  return hasBreakdown ? { kind: 'none' } : { kind: 'rollup', result: route }
+}
+
+/** The route as ONE origin saw it, or undefined when that origin has nothing to
+ *  say about it. Prefer originRouteEvidence when the caller needs to tell a
+ *  legacy rollup apart from a genuine "not tested from here". */
+export function routeAsSeenFrom(route: RouteResult | undefined, originId: string): RouteResult | undefined {
+  const ev = originRouteEvidence(route, originId)
+  return ev.kind === 'none' ? undefined : ev.result
 }
 
 /**

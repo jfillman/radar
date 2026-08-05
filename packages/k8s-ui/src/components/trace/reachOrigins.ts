@@ -237,7 +237,11 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
   }
 
   const all: Record<OriginId, Origin> = { caller, external, incluster, 'radar-incluster': radarInCluster, local, apiserver }
-  return ORIGIN_STRENGTH.map((id) => all[id])
+  // Radar not being a Pod is not an evidence GAP - the in-cluster Job covers the
+  // same ground. Listing it as "never tested" would pad the coverage caveat with
+  // a deployment detail, next to genuine holes like "as your application".
+  const radarIsAbsent = radarProbes.length === 0 && trace?.runVantage !== 'in-cluster'
+  return ORIGIN_STRENGTH.filter((id) => !(id === 'radar-incluster' && radarIsAbsent)).map((id) => all[id])
 }
 
 /**

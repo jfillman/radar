@@ -451,6 +451,14 @@ export function WorkloadView({
   } = useResourceWithRelationships<any>(apiKind, namespace, name, rest.group)
   const resource = resourceResponse?.resource
   const relationships = resourceResponse?.relationships
+  // Reachability for a workload IS the reachability of the Services in front of
+  // it - a Deployment has no address of its own. Empty for a workload nothing
+  // selects, which correctly leaves the tab hidden: there is no path to trace.
+  // Entry kinds trace themselves and ignore this.
+  const servingServices = useMemo(
+    () => (isDiagnoseKind(apiKind, rest.group) ? [] : (relationships?.services ?? [])),
+    [apiKind, rest.group, relationships],
+  )
   const refetchResourceAndRuns = useCallback(async () => {
     await Promise.all([
       refetchResource(),
@@ -916,11 +924,20 @@ export function WorkloadView({
             <WorkloadCostTab kind={kind} namespace={ns} name={n} />
           </div>
         )}
+        reachableVia={servingServices}
         renderDiagnoseTab={({ kind, namespace: ns, name: n }) => (
           // Key by resource identity so the tab REMOUNTS on A→B navigation - without
           // this, the first render with B's identity but A's still-set probeTrace
           // paints A's verdict under B for one commit before the reset effect runs.
-          <DiagnoseTabContent key={`${kind}/${ns}/${n}`} kind={kind} namespace={ns} name={n} onNavigate={rest.onNavigateToResource} />
+          <WorkloadReachabilityTab
+            key={`${kind}/${ns}/${n}`}
+            kind={kind}
+            namespace={ns}
+            name={n}
+            group={rest.group}
+            servingServices={servingServices}
+            onNavigate={rest.onNavigateToResource}
+          />
         )}
         isMetricsAvailable={(kind, res) =>
           isPrometheusSupported(kind) && !(kind === 'Pod' && res?.status?.phase === 'Pending')
@@ -941,7 +958,7 @@ export function WorkloadView({
             <DiagnoseInlineSection kind={k} namespace={ns} name={n} group={g} onOpenReachability={openReachability} />
           ) : null
           const diagnoseHint = context === 'drawer' && !isNetworkKind ? (
-            <DiagnoseFromWorkloadHint kind={k} namespace={ns} name={n} onNavigate={rest.onNavigateToResource} />
+            <DiagnoseFromWorkloadHint kind={k} namespace={ns} name={n} onOpenReachability={openReachability} />
           ) : null
           return (
           <>
@@ -1463,16 +1480,20 @@ function AuditOverviewSection({
 // to link to. The relationships fetch is the same query the drawer
 // infrastructure already uses, so React Query dedupes - no extra
 // network cost.
-function DiagnoseFromWorkloadHint({ kind, namespace, name, onNavigate }: { kind: string; namespace: string; name: string; onNavigate?: NavigateToResource }) {
+function DiagnoseFromWorkloadHint({
+  kind,
+  namespace,
+  name,
+  onOpenReachability,
+}: {
+  kind: string
+  namespace: string
+  name: string
+  onOpenReachability: () => void
+}) {
   const { relationships } = useResource<unknown>(kind, namespace, name)
   const services = relationships?.services ?? []
-  if (services.length === 0 || !onNavigate) return null
-  const open = (svc: ResourceRef) => onNavigate({
-    kind: 'services',
-    namespace: svc.namespace ?? '',
-    name: svc.name,
-    group: '',
-  })
+  if (services.length === 0) return null
   return (
     <Section title="Diagnose network path">
       <div className="flex items-start gap-2 text-xs text-theme-text-secondary">
@@ -1481,17 +1502,17 @@ function DiagnoseFromWorkloadHint({ kind, namespace, name, onNavigate }: { kind:
           {services.length === 1 ? 'Exposed by Service ' : 'Exposed by Services '}
           {services.map((svc, i) => (
             <span key={`${svc.namespace ?? ''}/${svc.name}`}>
-              <button
-                type="button"
-                onClick={() => open(svc)}
-                className="text-accent-text hover:underline font-medium"
-              >
-                {svc.name}
-              </button>
+              <span className="font-medium text-theme-text-primary">{svc.name}</span>
               {i < services.length - 1 ? <span className="text-theme-text-tertiary">{', '}</span> : null}
             </span>
           ))}
-          <span className="text-theme-text-tertiary">. Open to trace the traffic path and run probes.</span>
+          {/* Opens the workload's OWN Reachability tab, which traces that
+              Service in place. Linking to the Service instead made the operator
+              navigate away and restart the investigation somewhere else. */}
+          <span className="text-theme-text-tertiary">. </span>
+          <button type="button" onClick={onOpenReachability} className="font-medium text-accent-text hover:underline">
+            Trace the traffic path →
+          </button>
         </div>
       </div>
     </Section>
@@ -1624,6 +1645,85 @@ function useInClusterTest(base: NetworkTrace | undefined, kind: string, namespac
     }
   }, [base, running, kind, namespace, name])
   return { run, running, allowed, cap, merged, error, fallback, partial, evidenceOnly, evidence }
+}
+
+/**
+ * Reachability for a resource that has no address of its own.
+ *
+ * A Deployment cannot be dialled; what can be dialled is the Service in front of
+ * it, so this traces that Service while keeping the workload as the thing the
+ * operator opened. Previously a workload offered only a link to the Service,
+ * which meant navigating away and restarting the investigation - the workload
+ * half of "Service/workload reachability" did not exist as a journey.
+ *
+ * An entry kind traces itself and never reaches the picker below.
+ */
+function WorkloadReachabilityTab({
+  kind,
+  namespace,
+  name,
+  group,
+  servingServices,
+  onNavigate,
+}: {
+  kind: string
+  namespace: string
+  name: string
+  group?: string
+  servingServices: ResourceRef[]
+  onNavigate?: NavigateToResource
+}) {
+  const tracesItself = isDiagnoseKind(kind, group)
+  const [pick, setPick] = useState(0)
+  if (tracesItself) {
+    return <DiagnoseTabContent kind={kind} namespace={namespace} name={name} onNavigate={onNavigate} />
+  }
+  const svc = servingServices[pick] ?? servingServices[0]
+  if (!svc) return null
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2 rounded border border-theme-border bg-theme-surface px-3 py-2 text-[11.5px] text-theme-text-secondary">
+        <span className="text-theme-text-tertiary">
+          {kind} <span className="font-medium text-theme-text-primary">{name}</span> has no address of its own — traffic reaches it through
+          {servingServices.length > 1 ? ' one of these Services:' : ' Service'}
+        </span>
+        {servingServices.length > 1 ? (
+          servingServices.map((s, i) => (
+            <button
+              key={`${s.namespace ?? ''}/${s.name}`}
+              type="button"
+              onClick={() => setPick(i)}
+              className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${
+                i === pick ? 'bg-theme-hover font-semibold text-theme-text-primary' : 'text-accent-text hover:underline'
+              }`}
+            >
+              {s.name}
+            </button>
+          ))
+        ) : (
+          <span className="font-mono text-[11px] font-semibold text-theme-text-primary">{svc.name}</span>
+        )}
+        {onNavigate && (
+          <button
+            type="button"
+            onClick={() => onNavigate({ kind: 'services', namespace: svc.namespace ?? namespace, name: svc.name, group: '' })}
+            className="ml-auto text-[11px] text-accent-text hover:underline"
+          >
+            Open Service →
+          </button>
+        )}
+      </div>
+      <div className="min-h-0 flex-1">
+        <DiagnoseTabContent
+          key={`${svc.namespace ?? namespace}/${svc.name}`}
+          kind="Service"
+          namespace={svc.namespace ?? namespace}
+          name={svc.name}
+          onNavigate={onNavigate}
+        />
+      </div>
+    </div>
+  )
 }
 
 function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: string; namespace: string; name: string; onNavigate?: NavigateToResource }) {

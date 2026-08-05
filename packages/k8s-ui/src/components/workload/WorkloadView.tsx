@@ -277,8 +277,14 @@ interface WorkloadViewProps {
   /** Render the Diagnose tab content - a path-shaped trace for network
    *  entry kinds (Service / Ingress / HTTPRoute / GRPCRoute / Gateway). The
    *  tab is hidden when this callback is not provided OR when the focused
-   *  kind is not a network entry kind. */
+   *  kind is neither a network entry kind nor reachable through one. */
   renderDiagnoseTab?: (props: { kind: string; namespace: string; name: string }) => ReactNode
+  /** Set when the focused resource is NOT itself a network entry kind but is
+   *  served by one - a Deployment behind a Service. Reachability for a workload
+   *  IS the reachability of the Services in front of it, so the tab opens here
+   *  instead of sending the operator to another page to start over. Empty or
+   *  omitted keeps the tab hidden for non-entry kinds. */
+  reachableVia?: { kind: string; namespace?: string; name: string }[]
   /** Render the cost tab content */
   renderCostTab?: (props: { kind: string; namespace: string; name: string }) => ReactNode
   /** Render a read-only YAML view for a related object from the workload's
@@ -396,6 +402,7 @@ export function WorkloadView({
   // Render props
   renderLogsTab,
   renderDiagnoseTab,
+  reachableVia,
   renderExpandedOverview,
   renderRelatedYaml,
   renderMetricsTab,
@@ -706,7 +713,12 @@ export function WorkloadView({
     },
     { id: 'logs', label: 'Logs', icon: <Terminal className="w-4 h-4" />, hidden: !logsTabVisible },
     { id: 'metrics', label: 'Metrics', icon: <BarChart3 className="w-4 h-4" />, hidden: !metricsTabVisible },
-    { id: 'reachability', label: 'Reachability', icon: <Stethoscope className="w-4 h-4" />, hidden: !(renderDiagnoseTab && isDiagnoseKind(apiKind, group)) },
+    {
+      id: 'reachability',
+      label: 'Reachability',
+      icon: <Stethoscope className="w-4 h-4" />,
+      hidden: !(renderDiagnoseTab && (isDiagnoseKind(apiKind, group) || (reachableVia?.length ?? 0) > 0)),
+    },
     { id: 'cost', label: 'Cost', icon: <DollarSign className="w-4 h-4" />, hidden: !costTabVisible },
     { id: 'yaml', label: 'YAML', icon: <FileText className="w-4 h-4" /> },
   ]

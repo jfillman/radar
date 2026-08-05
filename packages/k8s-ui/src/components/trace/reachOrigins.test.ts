@@ -33,7 +33,8 @@ describe('buildOrigins', () => {
 
   it('orders by evidence strength, strongest first', () => {
     const os = buildOrigins(traceWith([]))
-    expect(os.map((o) => o.id)).toEqual(['caller', 'external', 'incluster', 'radar-incluster', 'local', 'apiserver'])
+    // radar-incluster is absent here: this fixture's Radar runs on a laptop.
+    expect(os.map((o) => o.id)).toEqual(['caller', 'external', 'incluster', 'local', 'apiserver'])
   })
 
   it('marks the in-cluster probe proved on clean dataplane evidence', () => {
@@ -201,11 +202,20 @@ describe('Radar-as-a-Pod is not the throwaway probe Job', () => {
     expect(originOf(p({ vantage: 'in-cluster', path: 'apiserver', source: 'radar' }), 'in-cluster')).toBe('apiserver')
   })
 
-  it('marks Radar-in-cluster unsupported when Radar runs on a laptop', () => {
+  // Radar not being a Pod is a deployment detail, not a hole in the evidence -
+  // the throwaway Job covers the same ground. Listing it as "never tested" pads
+  // the coverage caveat beside genuine gaps like "as your application".
+  it('omits Radar-in-cluster entirely when Radar runs on a laptop', () => {
     const os = buildOrigins(traceWith([]))
-    const radar = os.find((o) => o.id === 'radar-incluster')
-    expect(radar?.unsupported).toBe(true)
-    expect(radar?.unavailable).toMatch(/not running in this cluster/)
+    expect(os.find((o) => o.id === 'radar-incluster')).toBeUndefined()
+    expect(os.map((o) => o.id)).toEqual(['caller', 'external', 'incluster', 'local', 'apiserver'])
+  })
+
+  it('offers it once Radar actually runs in the cluster', () => {
+    const t = traceWith([p({ vantage: 'in-cluster', path: 'data', source: 'radar', ok: true })])
+    t.runVantage = 'in-cluster'
+    const radar = buildOrigins(t).find((o) => o.id === 'radar-incluster')
+    expect(radar?.unsupported).toBeFalsy()
   })
 
   it('describes Radar-in-cluster with Radar\'s own identity, not the Job\'s', () => {

@@ -448,24 +448,47 @@ function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: O
   )
 }
 
-/** The vantages Radar cannot run, stated rather than offered. These are the
- *  biggest holes in the evidence, so they must stay on screen - but as a limit
- *  on the claim, not as buttons that refuse. */
+/** The vantages Radar cannot run, stated rather than offered. These are real
+ *  holes in the evidence, so they must stay on screen - but as ONE limit on the
+ *  claim, not a list. A per-origin line charged the rail a row for each thing
+ *  Radar can't do, teaching the reader its limitations before its findings. */
 function UntestableNote({ origins }: { origins: Origin[] }) {
   const out = origins.filter((o) => o.unsupported)
   if (out.length === 0) return null
   return (
     <div className="mx-2 mt-2 border-t border-theme-border pt-2">
       <div className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">NEVER TESTED</div>
-      {out.map((o) => (
-        <Tooltip key={o.id} content={o.unavailable ?? ''} wrapperClassName="mt-1 block cursor-help">
-          <span className="text-[10px] leading-snug text-theme-text-tertiary">
-            {o.glyph} {o.name}
+      <Tooltip
+        content={
+          <span className="flex flex-col gap-1">
+            {out.map((o) => (
+              <span key={o.id}>
+                <span className="font-semibold">{o.name}</span> — {o.unavailable}
+              </span>
+            ))}
           </span>
-        </Tooltip>
-      ))}
+        }
+        wrapperClassName="mt-1 block cursor-help"
+      >
+        <span className="text-[10px] leading-snug text-theme-text-tertiary">
+          {out.map((o) => o.glyph).join(' ')} {untestableSummary(out)}
+        </span>
+      </Tooltip>
     </div>
   )
+}
+
+/** One phrase for every vantage Radar can't run, named by what it would have
+ *  proven rather than by Radar's internal origin names. */
+function untestableSummary(out: Origin[]): string {
+  const phrase: Partial<Record<OriginId, string>> = {
+    caller: 'as your application',
+    external: 'from the public internet',
+    'radar-incluster': 'as Radar inside the cluster',
+  }
+  const parts = out.map((o) => phrase[o.id] ?? o.name.toLowerCase())
+  if (parts.length === 1) return `Not tested ${parts[0]}.`
+  return `Not tested ${parts.slice(0, -1).join(', ')} or ${parts[parts.length - 1]}.`
 }
 
 // ---------------------------------------------------------------- inspector

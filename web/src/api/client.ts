@@ -68,6 +68,49 @@ const COST_TREND_REFRESH_INTERVAL_MS = 120_000;
 const CHANGES_REFRESH_INTERVAL_MS = 60_000;
 const APPLICATIONS_REFRESH_INTERVAL_MS = 60_000;
 
+// Throttle window for the OIDC login redirect. On first paint (and again on
+// mid-session session expiry) many protected /api/* requests can 401 in the same
+// tick; without a guard each 401 independently navigates to /auth/login, and each
+// /auth/login regenerates the single radar_oidc_state cookie — so callbacks from
+// earlier redirects fail state validation (or get their token exchange canceled)
+// and the login loops until one happens to win. A short time gate collapses the
+// burst to one navigation while still self-recovering if that navigation is
+// canceled or the page is restored from bfcache (module/JS-realm state survives
+// bfcache, so a plain latch would stick). Mirrors the proxy branch's reload
+// throttle below.
+const OIDC_LOGIN_REDIRECT_THROTTLE_MS = 5000;
+const OIDC_LOGIN_REDIRECT_KEY = "radar_oidc_login_redirect";
+
+// In-memory fallback for when sessionStorage is unavailable (private mode,
+// sandboxed/blocked storage). A timestamp, not a boolean latch, so it still
+// self-heals within the throttle window instead of sticking.
+let lastOidcLoginRedirectAt = 0;
+
+// Fail open: if reading storage throws, fall back to the in-memory timestamp so
+// the redirect still fires. Otherwise the 401 handler would reject before
+// redirecting and strand the user on a "not signed in" screen.
+function lastOidcLoginRedirect(): number {
+  try {
+    const stored = sessionStorage.getItem(OIDC_LOGIN_REDIRECT_KEY);
+    if (stored) {
+      const parsed = parseInt(stored);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+  } catch {
+    /* storage blocked — use the in-memory fallback */
+  }
+  return lastOidcLoginRedirectAt;
+}
+
+function markOidcLoginRedirect(now: number): void {
+  lastOidcLoginRedirectAt = now;
+  try {
+    sessionStorage.setItem(OIDC_LOGIN_REDIRECT_KEY, String(now));
+  } catch {
+    /* best-effort — the in-memory fallback still throttles this realm */
+  }
+}
+
 // Wrapper around fetch that always includes credentials (for session cookies)
 // and handles 401 responses globally. Merges caller-provided headers with
 // auth headers from the config module so library consumers (Radar Hub) can
@@ -112,7 +155,15 @@ export function apiFetch(
       }
 
       if (authMode === "oidc") {
-        window.location.href = routePath("/auth/login");
+        // Only the first 401 in a burst navigates; concurrent 401s within the
+        // window are suppressed so they don't rotate radar_oidc_state. The gate
+        // is time-based, so a canceled navigation or bfcache Back re-auths on the
+        // next 401 instead of stalling until a hard reload.
+        const now = Date.now();
+        if (now - lastOidcLoginRedirect() > OIDC_LOGIN_REDIRECT_THROTTLE_MS) {
+          markOidcLoginRedirect(now);
+          window.location.href = routePath("/auth/login");
+        }
       } else {
         // Proxy mode or unknown — reload is safe for both (proxy re-injects headers,
         // unknown avoids redirecting to /auth/login which doesn't exist in proxy mode).

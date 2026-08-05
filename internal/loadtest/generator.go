@@ -408,12 +408,15 @@ func (g *Generator) ScaleTo(ctx context.Context, client kubernetes.Interface, ta
 // Service) for indices [first, last). Each app touches five distinct watchers
 // with one event apiece, so it batches below the fake watch buffer and paces
 // against the Deployment informer between batches — the same drain discipline
-// as pods, extended to every watched kind.
+// as pods, extended to every watched kind. currentApps is advanced to cover app
+// j BEFORE its objects are written, so a mid-app failure still leaves the app in
+// the cleanup range and nothing is orphaned.
 func (g *Generator) createApps(ctx context.Context, client kubernetes.Interface, first, last, target int, count func(kind string) int) error {
 	j := first
 	for j < last {
 		end := min(j+appBatchSize, last)
 		for ; j < end; j++ {
+			g.currentApps = j + 1
 			r := podsInApp(j, target, g.cfg.PodsPerApp)
 			ns := g.nsName(j)
 			if _, err := client.CoreV1().ConfigMaps(ns).Create(ctx, g.buildConfigMap(j), metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -436,7 +439,6 @@ func (g *Generator) createApps(ctx context.Context, client kubernetes.Interface,
 		if !waitFor(ctx, func() bool { return count("Deployment") >= created }, 30*time.Second) {
 			return fmt.Errorf("informer did not drain after creating %d apps (Deployment=%d)", created, count("Deployment"))
 		}
-		g.currentApps = created
 	}
 	return nil
 }
@@ -454,12 +456,12 @@ func (g *Generator) deleteApps(ctx context.Context, client kubernetes.Interface,
 			_ = client.AppsV1().Deployments(ns).Delete(ctx, g.appName(j-1), metav1.DeleteOptions{})
 			_ = client.CoreV1().Secrets(ns).Delete(ctx, g.secretName(j-1), metav1.DeleteOptions{})
 			_ = client.CoreV1().ConfigMaps(ns).Delete(ctx, g.cmName(j-1), metav1.DeleteOptions{})
+			g.currentApps = j - 1
 		}
 		remaining := j
 		if !waitFor(ctx, func() bool { return count("Deployment") <= remaining }, 30*time.Second) {
 			return fmt.Errorf("informer did not drain after deleting apps down to %d (Deployment=%d)", remaining, count("Deployment"))
 		}
-		g.currentApps = remaining
 	}
 	return nil
 }
@@ -506,9 +508,9 @@ func patchReplicas(ctx context.Context, client kubernetes.Interface, ns, deploy,
 }
 
 // createPods materializes pods [from, to), batched below the fake watch buffer
-// and paced against the Pod informer. g.current advances per drained batch so a
-// mid-scale failure leaves the generator's idea of the population consistent
-// with what the client actually holds.
+// and paced against the Pod informer. g.current advances per pod actually
+// written, so a mid-batch failure leaves the generator's idea of the population
+// consistent with what the client holds (and cleanup covers every written pod).
 func (g *Generator) createPods(ctx context.Context, client kubernetes.Interface, from, to int, count func(kind string) int) error {
 	i := from
 	for i < to {
@@ -517,18 +519,19 @@ func (g *Generator) createPods(ctx context.Context, client kubernetes.Interface,
 			if _, err := client.CoreV1().Pods(g.nsName(g.appIndex(i))).Create(ctx, g.buildPod(i), metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 				return err
 			}
+			g.current = i + 1
 		}
 		created := i
 		if !waitFor(ctx, func() bool { return count("Pod") >= created }, 30*time.Second) {
 			return fmt.Errorf("informer did not drain after creating %d pods (observed %d)", created, count("Pod"))
 		}
-		g.current = created
 	}
 	return nil
 }
 
 // deletePods removes pods [from, to) — the tail above the new target — batched
-// and paced against the Pod informer, advancing g.current per drained batch.
+// and paced against the Pod informer, advancing g.current per pod actually
+// removed.
 func (g *Generator) deletePods(ctx context.Context, client kubernetes.Interface, from, to int, count func(kind string) int) error {
 	i := to
 	for i > from {
@@ -537,12 +540,12 @@ func (g *Generator) deletePods(ctx context.Context, client kubernetes.Interface,
 			if err := client.CoreV1().Pods(g.nsName(g.appIndex(i-1))).Delete(ctx, g.podName(i-1), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 				return err
 			}
+			g.current = i - 1
 		}
 		remaining := i
 		if !waitFor(ctx, func() bool { return count("Pod") <= remaining }, 30*time.Second) {
 			return fmt.Errorf("informer did not drain after deleting down to %d pods (observed %d)", remaining, count("Pod"))
 		}
-		g.current = remaining
 	}
 	return nil
 }

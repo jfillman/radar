@@ -2,13 +2,17 @@ package loadtest
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -199,6 +203,95 @@ func TestScaleDownAfterPartialProgressLeavesNoOrphanApps(t *testing.T) {
 			t.Fatalf("orphan %s skeletons: %s=%d want 1", kind, kind, got)
 		}
 	}
+}
+
+// TestScaleUpCreateFailureThenScaleDownLeavesNoOrphanApps reproduces a scale-up
+// that fails partway through creating app skeletons: the app count must still
+// reflect what was written, so a later scale-down cleans up every skeleton
+// (including the partially-written app whose Deployment create failed).
+func TestScaleUpCreateFailureThenScaleDownLeavesNoOrphanApps(t *testing.T) {
+	g := New(Config{Pods: 0, Nodes: 4, Namespaces: 2, PodsPerApp: 200})
+	client := fake.NewClientset(g.SeedObjects()...)
+
+	// Fail the Deployment create for app index 2 exactly once, mid scale-up.
+	failed := false
+	client.PrependReactor("create", "deployments", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		d := a.(clienttesting.CreateAction).GetObject().(*appsv1.Deployment)
+		if d.Name == "app-0002" && !failed {
+			failed = true
+			return true, nil, fmt.Errorf("injected create failure")
+		}
+		return false, nil, nil
+	})
+
+	factory := informers.NewSharedInformerFactory(client, 0)
+	deployInformer := factory.Apps().V1().Deployments().Informer()
+	svcInformer := factory.Core().V1().Services().Informer()
+	cmInformer := factory.Core().V1().ConfigMaps().Informer()
+	stop := make(chan struct{})
+	defer close(stop)
+	factory.Start(stop)
+	if !cache.WaitForCacheSync(stop, deployInformer.HasSynced, svcInformer.HasSynced, cmInformer.HasSynced) {
+		t.Fatal("informer failed to sync")
+	}
+	count := func(kind string) int {
+		switch kind {
+		case "Deployment":
+			return len(deployInformer.GetStore().ListKeys())
+		case "Service":
+			return len(svcInformer.GetStore().ListKeys())
+		case "ConfigMap":
+			return len(cmInformer.GetStore().ListKeys())
+		}
+		return 0
+	}
+
+	ctx := context.Background()
+	// Scale up to 1000 pods (5 apps). createApps fails at app 2's Deployment.
+	if _, err := g.ScaleTo(ctx, client, 1000, count); err == nil {
+		t.Fatal("expected ScaleTo to fail on injected create error")
+	}
+	// The high-water mark must include the partially-written app 2 (>=3), else
+	// its ConfigMap/Secret would be orphaned by cleanup.
+	if g.AppCount() < 3 {
+		t.Fatalf("AppCount=%d want >=3 (partial app must be recorded)", g.AppCount())
+	}
+
+	// Scale back down to 0; every skeleton — including the partial app — must go.
+	if _, err := g.ScaleTo(ctx, client, 0, count); err != nil {
+		t.Fatalf("cleanup ScaleTo(0): %v", err)
+	}
+	// Assert against the client (authoritative truth, no informer lag): no app
+	// skeleton of any kind may survive.
+	assertNoneInClient := func(kind string, list func() (int, error)) {
+		n, err := list()
+		if err != nil {
+			t.Fatalf("list %s: %v", kind, err)
+		}
+		if n != 0 {
+			t.Fatalf("orphan %s skeletons in client after cleanup: %d want 0", kind, n)
+		}
+	}
+	assertNoneInClient("Deployment", func() (int, error) {
+		l, e := client.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
+		return len(l.Items), e
+	})
+	assertNoneInClient("ReplicaSet", func() (int, error) {
+		l, e := client.AppsV1().ReplicaSets("").List(ctx, metav1.ListOptions{})
+		return len(l.Items), e
+	})
+	assertNoneInClient("Service", func() (int, error) {
+		l, e := client.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+		return len(l.Items), e
+	})
+	assertNoneInClient("ConfigMap", func() (int, error) {
+		l, e := client.CoreV1().ConfigMaps("").List(ctx, metav1.ListOptions{})
+		return len(l.Items), e
+	})
+	assertNoneInClient("Secret", func() (int, error) {
+		l, e := client.CoreV1().Secrets("").List(ctx, metav1.ListOptions{})
+		return len(l.Items), e
+	})
 }
 
 func waitCount(count func() int, want int, timeout time.Duration) int {

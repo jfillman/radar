@@ -77,10 +77,11 @@ if (-not (Test-Path $InstallDir)) {
 
 Move-Item -Path (Join-Path $TmpDir $BinaryName) -Destination $InstallDir -Force
 
-# Install both command names from the same binary. This directory is managed by
-# the installer, so a reinstall must advance both executables together.
+# Create radar.exe symlink/copy for convenience
 $RadarExe = Join-Path $InstallDir "radar.exe"
-Copy-Item -Path (Join-Path $InstallDir $BinaryName) -Destination $RadarExe -Force
+if (-not (Test-Path $RadarExe)) {
+    Copy-Item -Path (Join-Path $InstallDir $BinaryName) -Destination $RadarExe
+}
 
 # Cleanup
 Remove-Item -Path $TmpDir -Recurse -Force -ErrorAction SilentlyContinue

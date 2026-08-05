@@ -15,7 +15,7 @@ set -e
 
 REPO="skyhook-io/radar"
 BINARY_NAME="kubectl-radar"
-INSTALL_DIR="${RADAR_INSTALL_DIR:-/usr/local/bin}"
+INSTALL_DIR="/usr/local/bin"
 
 # Detect OS and architecture
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')

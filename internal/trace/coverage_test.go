@@ -411,8 +411,14 @@ func TestComputeCoverage_MissingBackendIsFailedRoute(t *testing.T) {
 	if ghost.Outcome != OutcomeUnreachable {
 		t.Errorf("ghost outcome = %q, want unreachable", ghost.Outcome)
 	}
-	if tr.Coverage == nil || tr.Coverage.Failed < 1 {
-		t.Errorf("coverage = %+v, want failed >= 1", tr.Coverage)
+	// Counted as Derived, not Failed: nothing dialled this route, so reporting it
+	// among the test results would claim a request that was never sent. It must
+	// still register as a break - the headline assertion below is what pins that.
+	if tr.Coverage == nil || tr.Coverage.Derived < 1 {
+		t.Errorf("coverage = %+v, want derived >= 1", tr.Coverage)
+	}
+	if tr.Coverage.Failed != 0 {
+		t.Errorf("coverage = %+v, want a never-dialled route kept out of Failed", tr.Coverage)
 	}
 	if h := CoverageHeadline(tr); strings.HasPrefix(h, "All ") || !strings.Contains(h, "unreachable") {
 		t.Errorf("headline = %q, want honest 'N of M reachable · K unreachable', not green-ish", h)

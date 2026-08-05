@@ -262,6 +262,11 @@ export interface Coverage {
   passed: number
   failed: number
   skipped: number
+  /** Routes known broken WITHOUT being dialled - from what is declared, or from
+   *  current cluster state. Real breaks, but not test results, so they are
+   *  reported apart from tested/passed/failed rather than as requests that
+   *  failed. */
+  derived?: number
 }
 
 export interface ProbeFact {
@@ -298,10 +303,16 @@ export interface RouteResult {
    *  derived from a pattern (no single faithful request exists). */
   inClusterRequest?: ProbeRequest
   /** Where this route's `outcome` came from. Absent (the normal case) means it
-   *  was OBSERVED and `byVantage` says by whom; 'config' means it was derived
-   *  from declared configuration and NO vantage dialled it, so it must never be
-   *  rendered as the selected origin's observation. */
-  basis?: 'config'
+   *  was OBSERVED and `byVantage` says by whom. Otherwise it was DERIVED and no
+   *  vantage dialled it, so it must never be rendered as the selected origin's
+   *  observation nor in the language of a request:
+   *
+   *   - 'declared-config'  read off what is declared (a backendRef naming a
+   *                        Service that does not exist) - broken regardless of
+   *                        what the cluster is currently doing.
+   *   - 'cluster-state'    read off current state (no ready endpoints) - true
+   *                        now, and changes when the workload does. */
+  basis?: 'declared-config' | 'cluster-state'
   /** Each vantage's OWN view of this route.
    *
    *  `outcome` / `confidence` / `evidence` above are a documented lossy rollup:

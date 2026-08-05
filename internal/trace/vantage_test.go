@@ -326,13 +326,13 @@ func TestKnownStaticBreakIsMarkedAsConfigDerived(t *testing.T) {
 		Downstream: []Hop{{Resource: ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"}}},
 		Routes: []RouteResult{{
 			Route: "a.example.com/", Target: "missing:80", Outcome: OutcomeUnreachable,
-			Evidence: "backend Service does not exist", Basis: BasisConfig,
+			Evidence: "backend Service does not exist", Basis: BasisDeclared,
 		}},
 	}
 	localizeBoundaries(tr)
 	r := tr.Routes[0]
-	if r.Basis != BasisConfig {
-		t.Errorf("Basis = %q, want %q", r.Basis, BasisConfig)
+	if r.Basis != BasisDeclared {
+		t.Errorf("Basis = %q, want %q", r.Basis, BasisDeclared)
 	}
 	if len(r.ByVantage) != 0 {
 		t.Errorf("a config-derived break was dialled by nobody, so it carries no vantage rows: %+v", r.ByVantage)

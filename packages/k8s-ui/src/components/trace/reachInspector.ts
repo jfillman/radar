@@ -400,7 +400,11 @@ export function buildVerdict(
     // problem and coverage stay resource-wide. Both scopes are legitimate; what
     // is not legitimate is leaving the reader to guess which is which, so the
     // badge names its own scope in full.
-    chipScope: [opts.pathLabel, opts.originName ? `from ${opts.originName}` : ''].filter(Boolean).join(' · ') || undefined,
+    // Prefixed here rather than at the render site: with no pathLabel the old
+    // template produced the visible "for from Radar on your machine".
+    chipScope: [opts.pathLabel ? `for ${opts.pathLabel}` : '', opts.originName ? `from ${opts.originName}` : '']
+      .filter(Boolean)
+      .join(' · ') || undefined,
     scopeLabel: opts.pathLabel || opts.originName ? 'THIS RESOURCE' : undefined,
     // A stale screen previously led with the old headline ("Reachable...") and
     // then said underneath that the result was excluded. That is a contradiction,

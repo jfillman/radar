@@ -519,7 +519,7 @@ describe('groupRoutes keeps apart what the board would otherwise speak for', () 
 describe('a config-derived break belongs to no vantage', () => {
   const known: RouteResult = {
     route: 'a.example.com/', target: 'missing:80', outcome: 'unreachable',
-    evidence: 'backend Service does not exist', basis: 'config',
+    evidence: 'backend Service does not exist', basis: 'declared-config',
   }
 
   // It has no byVantage by construction, and the rollup fallback would otherwise
@@ -542,5 +542,37 @@ describe('a config-derived break belongs to no vantage', () => {
       byVantage: [{ vantage: 'local', path: 'data', outcome: 'verified' }],
     }
     expect(originRouteEvidence(observed, 'local').kind).toBe('own')
+  })
+})
+
+describe('derived breaks are never described as requests', () => {
+  const declared: RouteResult = {
+    route: 'a/', target: 'missing:80', outcome: 'unreachable', basis: 'declared-config',
+  }
+  const state: RouteResult = {
+    route: 'b/', target: 'shop:80', outcome: 'unreachable', basis: 'cluster-state',
+  }
+
+  // 'failed' is the mark for a request that was sent and did not arrive. Using
+  // it for something never dialled is what made the page contradict itself:
+  // "could not get through" beside "read from configuration".
+  it('marks a derived break as config, not failed', () => {
+    expect(routeMark(declared)).toBe('config')
+    expect(routeMark(state)).toBe('config')
+  })
+
+  it('never says "could not get through" for either class', () => {
+    expect(routeChip(declared)).not.toMatch(/get through/)
+    expect(routeChip(state)).not.toMatch(/get through/)
+  })
+
+  // The two derived classes are different facts: one is broken regardless of
+  // what the cluster is doing, the other changes when the workload does.
+  it('distinguishes declared config from current cluster state', () => {
+    expect(routeChip(declared)).not.toBe(routeChip(state))
+  })
+
+  it('an observed failure is still a failure', () => {
+    expect(routeMark({ route: 'c/', target: 's:80', outcome: 'unreachable', confidence: 'real' })).toBe('failed')
   })
 })

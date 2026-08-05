@@ -322,7 +322,7 @@ function VerdictBand({
           <span className="text-[14.5px] font-semibold text-theme-text-primary">{verdict.title}</span>
           <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[verdict.tone]}`}>{verdict.chipText}</span>
           {verdict.chipScope && (
-            <span className="truncate font-mono text-[10.5px] text-theme-text-tertiary">for {verdict.chipScope}</span>
+            <span className="truncate font-mono text-[10.5px] text-theme-text-tertiary">{verdict.chipScope}</span>
           )}
           <JustTestedNote nonce={runNonce} />
         </div>
@@ -634,9 +634,12 @@ function CoverageFooter({ trace, testedAt, stale }: { trace: Trace; testedAt?: D
   const realGaps = skips.filter((s) => s.reasonClass !== 'benign')
   // "skipped N · M not tested" read as one thing counted twice. They are
   // different levels: attempts made, versus paths with no evidence at all.
-  const attempts = c ? `${c.passed} got through · ${c.failed} failed${c.skipped ? ` · ${c.skipped} couldn’t be tried` : ''}` : ''
+  const attempts = c && c.tested > 0 ? `${c.passed} got through · ${c.failed} failed${c.skipped ? ` · ${c.skipped} couldn’t be tried` : ''}` : ''
+  // Derived breaks were never dialled, so they are counted apart from attempts -
+  // folding them in reported requests that failed when none were sent.
+  const derived = c?.derived ? `${c.derived} broken without testing` : ''
   const gaps = realGaps.length ? `${realGaps.length} path${realGaps.length === 1 ? '' : 's'} with no evidence` : ''
-  const coverageText = c ? [attempts, gaps].filter(Boolean).join('  ·  ') : 'nothing tested yet'
+  const coverageText = c ? [attempts, derived, gaps].filter(Boolean).join('  ·  ') || 'nothing tested yet' : 'nothing tested yet'
   return (
     <div className="flex flex-wrap items-center gap-2.5 border-t border-theme-border bg-theme-surface px-5 py-2 text-[11px] text-theme-text-tertiary">
       <span className="text-[9.5px] font-bold tracking-[0.07em]">WHAT WAS TESTED</span>

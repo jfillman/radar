@@ -134,10 +134,10 @@ export function routeForOrigin(route: RouteResult | undefined, originId: string)
  * never be collapsed:
  *
  *  - `own`     this origin's own result for this route. Use it.
- *  - `config`  the producer says the outcome came from DECLARED CONFIGURATION
- *              (`basis: 'config'`) - a backend that does not exist, say. It is
- *              true of every origin and observed by none, so it is rendered as a
- *              configuration fact and never as the selected origin's dial.
+ *  - `config`  the producer says the outcome was DERIVED, not dialled (`basis`):
+ *              read off what is declared, or off current cluster state. It is
+ *              true of every origin and observed by none, so it is rendered as
+ *              the fact it is and never as the selected origin's dial.
  *  - `none`    the producer DID send per-vantage results and this origin has no
  *              row, so it did not test this route. Not "unknown, guess from the
  *              rollup" - the absence is itself the evidence, and inheriting the
@@ -160,7 +160,7 @@ export function originRouteEvidence(route: RouteResult | undefined, originId: st
   // Checked before the per-vantage rows: a config-derived break has none by
   // construction, and without this it would fall through to the rollup branch
   // and be attributed to whichever origin happened to be selected.
-  if (route.basis === 'config') return { kind: 'config', result: route }
+  if (route.basis) return { kind: 'config', result: route }
   const own = routeForOrigin(route, originId)
   if (own) {
     return {
@@ -191,6 +191,10 @@ export function routeAsSeenFrom(route: RouteResult | undefined, originId: string
 export function routeMark(r: RouteResult, opts: { stale?: boolean; running?: boolean } = {}): Mark {
   if (opts.running) return 'running'
   if (opts.stale) return 'stale'
+  // A derived break was never dialled. 'failed' is the mark for a request that
+  // was sent and did not arrive, so using it here claims an observation that
+  // never happened - the contradiction the basis field exists to end.
+  if (r.basis) return 'config'
   const indirect = r.confidence === 'indirect'
   switch (r.outcome) {
     case 'verified':
@@ -254,6 +258,10 @@ export function routeTone(r: RouteResult, opts: { stale?: boolean; running?: boo
 export function routeChip(r: RouteResult, opts: { stale?: boolean; running?: boolean } = {}): string {
   if (opts.running) return 'probing…'
   if (opts.stale) return 'stale'
+  // Named for what was read, not for a request: "could not get through" would
+  // describe traffic that was never sent.
+  if (r.basis === 'declared-config') return 'broken as declared'
+  if (r.basis === 'cluster-state') return 'nothing ready to serve'
   const indirect = r.confidence === 'indirect'
   switch (r.outcome) {
     case 'verified':

@@ -58,6 +58,11 @@ type Coverage struct {
 	Passed  int `json:"passed"`
 	Failed  int `json:"failed"`
 	Skipped int `json:"skipped"`
+	// Derived counts routes known broken WITHOUT dialling them - from what is
+	// declared, or from current cluster state. They are real breaks, but they are
+	// not test results, so they are counted apart from Tested/Passed/Failed
+	// rather than reported as requests that failed.
+	Derived int `json:"derived,omitempty"`
 }
 
 // ProbeFact is a minimal, JSON-light record of one probe, used for the
@@ -109,13 +114,13 @@ type RouteResult struct {
 	InClusterRequest *ProbeRequest `json:"inClusterRequest,omitempty"`
 	// Basis says where this route's Outcome came from. Empty (the normal case)
 	// means it was OBSERVED - some vantage dialled it and ByVantage carries who.
-	// BasisConfig means it was DERIVED FROM DECLARED CONFIGURATION and no vantage
-	// dialled it at all, so it must never be attributed to whichever vantage the
-	// reader happens to have selected.
+	// BasisDeclared / BasisState mean it was DERIVED and no vantage dialled it at
+	// all, so it must never be attributed to whichever vantage the reader happens
+	// to have selected, nor described as a request that failed.
 	//
 	// This is stated rather than inferred from an empty ByVantage: absence is
-	// ambiguous, and a consumer guessing at it is how a config-known break came
-	// to be rendered as a laptop's failed observation.
+	// ambiguous, and a consumer guessing at it is how a derived break came to be
+	// rendered as a laptop's failed observation.
 	Basis string `json:"basis,omitempty"`
 	// ByVantage is each vantage's OWN view of this route.
 	//
@@ -158,11 +163,21 @@ type VantageResult struct {
 // - is where it breaks.
 const BoundaryServiceRouting = "service-routing"
 
-// BasisConfig marks a route whose Outcome was read off DECLARED CONFIGURATION -
-// a backend that does not exist, say - rather than observed by dialling it. Such
-// a route has no ByVantage rows because no vantage tested it, and consumers must
-// present it as a configuration fact rather than as any vantage's observation.
-const BasisConfig = "config"
+// A route's Outcome is either OBSERVED (some vantage dialled it; ByVantage says
+// who) or DERIVED. Derived splits in two, because they are different classes of
+// fact and describing them alike overstates one of them:
+//
+//   - BasisDeclared - read off what is DECLARED. A backendRef naming a Service
+//     that does not exist is broken no matter what the cluster is doing.
+//   - BasisState - read off CURRENT CLUSTER STATE, such as a backend with no
+//     ready endpoints. True right now; it changes when the workload does.
+//
+// Neither was dialled, so neither carries ByVantage rows and neither may be
+// rendered in the language of a request that got through or failed.
+const (
+	BasisDeclared = "declared-config"
+	BasisState    = "cluster-state"
+)
 
 // localizeBoundaries attributes a route failure to a specific boundary, but
 // only where two observations on OPPOSITE sides of that boundary establish it.
@@ -437,6 +452,12 @@ func recountCoverage(t *Trace) {
 	consumedHosts := map[string]bool{}
 	cov := Coverage{}
 	for _, r := range t.Routes {
+		// A derived break was never dialled, so counting it as Tested/Failed made
+		// the coverage line report a request that failed when none was sent.
+		if r.Basis != "" {
+			cov.Derived++
+			continue
+		}
 		switch r.Outcome {
 		case OutcomeVerified, OutcomeReached:
 			cov.Tested++
@@ -1360,7 +1381,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 		// route REGARDLESS of whether the shared front door dialed OK - a working
 		// front door doesn't make a route to a non-existent backend reachable.
 		// Every rule pointing at the broken backend is genuinely broken.
-		if ev, broken := branchKnownBreak(t, entry, b); broken {
+		if ev, basis, broken := branchKnownBreak(t, entry, b); broken {
 			for _, rr := range rules {
 				out = append(out, RouteResult{
 					Route:           rr.label,
@@ -1368,7 +1389,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 					TargetNamespace: backend.Resource.Namespace,
 					Outcome:         OutcomeUnreachable,
 					Evidence:        ev,
-					Basis:           BasisConfig,
+					Basis:           basis,
 				})
 			}
 			continue
@@ -1655,11 +1676,11 @@ func resolveBackendPort(portStr string, cfg *HopConfig) int32 {
 // a missing-backend ref on the entry naming this backend (reuses the shared
 // missingRefCodePrefix - no prose-sniffing), a critical finding on the branch,
 // or a backend Service that didn't resolve (no Config).
-func branchKnownBreak(t *Trace, entry Hop, b branchSpan) (string, bool) {
+func branchKnownBreak(t *Trace, entry Hop, b branchSpan) (evidence, basis string, broken bool) {
 	backend := t.Downstream[b.start]
 	for _, f := range entry.Findings {
 		if strings.HasPrefix(f.Code, missingRefCodePrefix) && backend.Resource.Name != "" && missingRefMatchesBackend(f.Message, backend.Resource.Name, backend.Resource.Namespace) {
-			return f.Message, true
+			return f.Message, BasisDeclared, true
 		}
 	}
 	for i := b.start; i < b.end && i < len(t.Downstream); i++ {
@@ -1671,7 +1692,7 @@ func branchKnownBreak(t *Trace, entry Hop, b branchSpan) (string, bool) {
 		}
 		for _, f := range t.Downstream[i].Findings {
 			if f.Severity == SeverityCritical {
-				return f.Message, true
+				return f.Message, BasisState, true
 			}
 		}
 	}
@@ -1682,16 +1703,16 @@ func branchKnownBreak(t *Trace, entry Hop, b branchSpan) (string, bool) {
 		// route the caller can't see - fall through to the unprobed/NotTested path
 		// so it reads as not-tested/unknown, matching the verdict layer.
 		if src, _ := backend.Meta["endpointSource"].(string); src == "unknown" {
-			return "", false
+			return "", "", false
 		}
 		for _, f := range backend.Findings {
 			if f.Code == "rbac:cross-namespace-redacted" {
-				return "", false
+				return "", "", false
 			}
 		}
-		return fmt.Sprintf("backend %s %s could not be resolved", backend.Resource.Kind, backend.Resource.Name), true
+		return fmt.Sprintf("backend %s %s could not be resolved", backend.Resource.Kind, backend.Resource.Name), BasisDeclared, true
 	}
-	return "", false
+	return "", "", false
 }
 
 // missingRefMatchesBackend reports whether a missing-ref finding message names
@@ -2396,13 +2417,19 @@ func CoverageHeadline(t *Trace) string {
 		return "Configuration only - not yet tested"
 	}
 	c := t.Coverage
+	// A derived break is a route we KNOW cannot work, so the headline counts it
+	// among the unreachable - "All N reachable" beside a missing backend would be
+	// false. That it was never dialled is a coverage nuance, carried by the
+	// footer and the route's own chip, not by the top-line verdict.
+	tested := c.Tested + c.Derived
+	failed := c.Failed + c.Derived
 	// A bare Service subject's intended routes ARE its ports, so the headline
 	// speaks of "ports"; an Ingress/Gateway/Route entry speaks of "routes".
 	noun := "routes"
 	if t.Subject.Kind == "Service" {
 		noun = "ports"
 	}
-	if c.Tested == 0 {
+	if tested == 0 {
 		// "Couldn't actively test" is only honest when a probe ACTUALLY ran and every
 		// route skipped from this vantage. An un-probed/static trace (the drawer) has
 		// skipped routes only because nothing was tried yet → "not tested yet".
@@ -2412,7 +2439,7 @@ func CoverageHeadline(t *Trace) string {
 		return "Configuration only - not yet tested"
 	}
 	// Single intended route/port: speak in the singular, no fraction.
-	if c.Tested == 1 && len(t.Routes) == 1 {
+	if tested == 1 && len(t.Routes) == 1 {
 		return singleRouteHeadline(t.Routes[0], c.Skipped)
 	}
 	notTested := ""
@@ -2423,7 +2450,7 @@ func CoverageHeadline(t *Trace) string {
 	// "unreachable" would wrongly imply a dead network path. Separate the two so
 	// the headline never says "none reachable" about routes that did respond.
 	errored, benignFailed := failureKinds(t.Routes)
-	unreachable := c.Failed - errored - benignFailed
+	unreachable := failed - errored - benignFailed
 	if unreachable < 0 {
 		unreachable = 0
 	}
@@ -2437,31 +2464,31 @@ func CoverageHeadline(t *Trace) string {
 	// would contradict with unknown (the B3 headline/verdict contradiction).
 	proxyOnly := allPassesIndirect(t.Routes)
 	switch {
-	case c.Failed == 0 && c.Skipped == 0:
+	case failed == 0 && c.Skipped == 0:
 		if proxyOnly {
-			return fmt.Sprintf("All %d %s reached - checked only via API server, real path not confirmed", c.Tested, noun)
+			return fmt.Sprintf("All %d %s reached - checked only via API server, real path not confirmed", tested, noun)
 		}
-		return fmt.Sprintf("All %d %s reachable", c.Tested, noun)
-	case c.Failed == 0:
+		return fmt.Sprintf("All %d %s reachable", tested, noun)
+	case failed == 0:
 		// All tested routes passed, but a real coverage gap exists (1A footnote-green).
 		if proxyOnly {
-			return fmt.Sprintf("All %d tested %s reached - checked only via API server, real path not confirmed%s", c.Tested, noun, notTested)
+			return fmt.Sprintf("All %d tested %s reached - checked only via API server, real path not confirmed%s", tested, noun, notTested)
 		}
-		return fmt.Sprintf("All %d tested %s reachable%s", c.Tested, noun, notTested)
+		return fmt.Sprintf("All %d tested %s reachable%s", tested, noun, notTested)
 	case c.Passed == 0 && allFailuresBenign(t.Routes):
 		// Every route is a deliberate scale-to-0, not an outage. "None reachable"
 		// would frame intentional dormancy as a failure and contradict
 		// CoverageVerdict, which softens this to amber degraded.
-		return fmt.Sprintf("All %d %s intentionally scaled to 0 (no running backends)%s", c.Tested, noun, notTested)
+		return fmt.Sprintf("All %d %s intentionally scaled to 0 (no running backends)%s", tested, noun, notTested)
 	case c.Passed == 0 && errored > 0:
 		// At least one route answered (5xx) - "none reachable" would be dishonest.
-		return fmt.Sprintf("0 of %d %s reachable · %s%s", c.Tested, noun, failClause(unreachable, errored, indirectUnreach), notTested)
+		return fmt.Sprintf("0 of %d %s reachable · %s%s", tested, noun, failClause(unreachable, errored, indirectUnreach), notTested)
 	case c.Passed == 0 && indirectUnreach:
 		// Every unreachable route was seen only via the apiserver proxy - the real
 		// path was never confirmed, so don't bare-condemn the whole entry.
-		return fmt.Sprintf("None of %d %s confirmed reachable - checked only via API server, real path not confirmed%s", c.Tested, noun, notTested)
+		return fmt.Sprintf("None of %d %s confirmed reachable - checked only via API server, real path not confirmed%s", tested, noun, notTested)
 	case c.Passed == 0:
-		return fmt.Sprintf("None of %d %s reachable%s", c.Tested, noun, notTested)
+		return fmt.Sprintf("None of %d %s reachable%s", tested, noun, notTested)
 	default:
 		// failClause covers unreachable + erroring; a mixed trace can also carry a
 		// benign scale-to-0 route, which would otherwise be silently dropped from
@@ -2477,9 +2504,9 @@ func CoverageHeadline(t *Trace) string {
 			}
 		}
 		if clause == "" {
-			return fmt.Sprintf("%d of %d %s reachable%s", c.Passed, c.Tested, noun, notTested)
+			return fmt.Sprintf("%d of %d %s reachable%s", c.Passed, tested, noun, notTested)
 		}
-		return fmt.Sprintf("%d of %d %s reachable · %s%s", c.Passed, c.Tested, noun, clause, notTested)
+		return fmt.Sprintf("%d of %d %s reachable · %s%s", c.Passed, tested, noun, clause, notTested)
 	}
 }
 

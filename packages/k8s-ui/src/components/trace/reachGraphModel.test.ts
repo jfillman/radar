@@ -806,3 +806,67 @@ describe('the graph reads the selected origin\'s own result', () => {
     expect(rows[0].mark).not.toBe('blocked')
   })
 })
+
+describe('one route\'s evidence never spreads across sibling backends', () => {
+  // A multi-backend Route: two backends, each with its own Pods hop - the shape
+  // the producer fan-out emits and the shape that makes cross-attribution
+  // possible in the first place.
+  const multiBackend = (): Trace => ({
+    subject: { kind: 'HTTPRoute', name: 'shop-route', namespace: 'store' },
+    verdict: 'degraded',
+    brokenAt: -1,
+    upstreams: [{ resource: { kind: 'Gateway', name: 'gw', namespace: 'infra' }, edge: 'gateway->route', findings: [] }],
+    downstream: [
+      { resource: { kind: 'HTTPRoute', name: 'shop-route', namespace: 'store' }, edge: 'entry:HTTPRoute', findings: [] },
+      { resource: { kind: 'Service', name: 'web', namespace: 'store' }, edge: 'HTTPRoute->Service', findings: [], config: { clusterIP: '10.96.0.1' } },
+      {
+        resource: { kind: 'Pods', name: '', namespace: 'store' },
+        edge: 'Service->Pods', findings: [], meta: { ready: 1, selected: 1 },
+        config: { pods: [pod('w1', true, '10.0.0.1')], podTotal: 1 },
+      },
+      { resource: { kind: 'Service', name: 'api', namespace: 'store' }, edge: 'HTTPRoute->Service', findings: [], config: { clusterIP: '10.96.0.2' } },
+      {
+        resource: { kind: 'Pods', name: '', namespace: 'store' },
+        edge: 'Service->Pods', findings: [], meta: { ready: 1, selected: 1 },
+        config: { pods: [pod('a1', true, '10.0.0.2')], podTotal: 1 },
+      },
+    ],
+  })
+
+  const brokenOnWeb = (): RouteResult => ({
+    route: 'shop.example.com/web', target: 'web:80', targetNamespace: 'store',
+    outcome: 'unreachable', confidence: 'real',
+    byVantage: [{ vantage: 'in-cluster', path: 'data', outcome: 'unreachable', failedBoundary: 'service-routing' }],
+  })
+
+  // The producer establishes a boundary for ONE backend. Painting it on every
+  // Service->Pods edge condemns a sibling whose pods were never probed.
+  it('paints "breaks here" only on the branch that established it', () => {
+    const t = multiBackend()
+    const g = buildGraph({ trace: t, route: brokenOnWeb(), origin: pick(t, 'incluster') })
+    const broken = g.edges.filter((e) => e.label === 'breaks here')
+    expect(broken).toHaveLength(1)
+    expect(broken[0].id).toBe('e:n:Service/store/web::pods')
+  })
+
+  // Same leak, other edge: a bypassing origin dials the route's backend, not
+  // every backend the Route happens to declare.
+  it('lands the bypass edge only on the selected route\'s backend', () => {
+    const t = multiBackend()
+    const g = buildGraph({ trace: t, route: brokenOnWeb(), origin: pick(t, 'incluster') })
+    const dialled = g.edges.filter((e) => e.label === 'dialled directly')
+    expect(dialled).toHaveLength(1)
+    expect(dialled[0].id).toBe('e:origin-n:Service/store/web')
+  })
+
+  it('colours nothing when the owning branch cannot be identified', () => {
+    const t = multiBackend()
+    const orphan: RouteResult = {
+      route: 'shop.example.com/gone', target: 'gone:80', targetNamespace: 'store',
+      outcome: 'unreachable', confidence: 'real',
+      byVantage: [{ vantage: 'in-cluster', path: 'data', outcome: 'unreachable', failedBoundary: 'service-routing' }],
+    }
+    const g = buildGraph({ trace: t, route: orphan, origin: pick(t, 'incluster') })
+    expect(g.edges.some((e) => e.label === 'breaks here')).toBe(false)
+  })
+})

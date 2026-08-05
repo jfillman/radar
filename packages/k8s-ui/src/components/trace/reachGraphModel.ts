@@ -742,7 +742,12 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     // the parent Gateway and the backend Service. A bypassing origin therefore
     // dials the BACKEND, and terminating its edge on the route object would draw
     // a request to something nothing can dial. Land it on the backends instead.
-    const bypassTargets = !subjectIsAddressable && originSkipsEntries ? expanded.map((b) => b.id) : []
+    // Only the backends this route actually resolves to. Landing the edge on
+    // every expanded backend would spread ONE route's evidence across siblings
+    // it says nothing about - the cross-backend leak the producer now refuses to
+    // make, reintroduced a layer up.
+    const bypassBackends = focusBranches ? matchedBackends : expanded
+    const bypassTargets = !subjectIsAddressable && originSkipsEntries ? bypassBackends.map((b) => b.id) : []
     if (bypassTargets.length > 0) {
       for (const id of bypassTargets) {
         connect(`e:origin-${id}`, originNodeId, id, originBlocked ? 'blocked' : entryMark, 'dialled directly')
@@ -767,9 +772,20 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   // what sits between them is what failed. Only ever drawn from a boundary the
   // producer actually established; an unlocalized failure colours nothing.
   const boundary = ev.kind === 'own' ? routeForOrigin(route, origin.id)?.failedBoundary : undefined
-  const podEdgeMark: Mark = boundary === 'service-routing' ? 'failed' : 'config'
-  const podEdgeLabel = boundary === 'service-routing' ? 'breaks here' : 'selects'
-  for (const g of podGroups) connect(`e:${g.id}`, g.parentId, g.id, podEdgeMark, podEdgeLabel)
+  // The producer establishes a boundary for ONE backend. Painting it on every
+  // Service->Pods edge would condemn siblings whose pods were never probed -
+  // the same cross-backend leak, one layer up from where it was just fixed.
+  // Where the owning branch can't be identified, colour nothing.
+  const boundaryParents =
+    matchedBackends.length > 0
+      ? new Set(matchedBackends.map((b) => b.id))
+      : backends.length === 0
+        ? new Set([subjectNodeId]) // single chain: the subject IS the Service
+        : new Set<string>()
+  for (const g of podGroups) {
+    const broke = boundary === 'service-routing' && boundaryParents.has(g.parentId)
+    connect(`e:${g.id}`, g.parentId, g.id, broke ? 'failed' : 'config', broke ? 'breaks here' : 'selects')
+  }
 
   // ---- lane boxes: bound only their own nodes ----
   const boxFor = (list: GraphNode[], label: string, help: string, color: string, dashed?: boolean): LaneBox | undefined => {

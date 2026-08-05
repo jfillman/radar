@@ -382,3 +382,60 @@ func TestPerVantageSplitsRadarFromProbeJob(t *testing.T) {
 		t.Fatalf("two observers at the same vantage must stay apart: %+v", r.ByVantage)
 	}
 }
+
+// A trace carries ONE diagnosis but can carry many routes. Unattributed, the
+// selected-path panel rendered whichever route's cause happened to win, so an
+// operator reading path B was shown path A's culprit under "THIS PATH".
+func TestDiagnosisNamesTheRouteItExplains(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"},
+		BrokenAt: -1,
+		Routes: []RouteResult{
+			{Route: "shop.example.com/web", Target: "web:80", Outcome: OutcomeVerified},
+			{Route: "shop.example.com/api", Target: "api:80", Outcome: OutcomeUnreachable, Evidence: "connection refused"},
+		},
+	}
+	d := computeDiagnosis(tr)
+	if d == nil {
+		t.Fatal("expected a diagnosis for the failed route")
+	}
+	if d.Route != "shop.example.com/api" {
+		t.Errorf("Route = %q, want the route the diagnosis is actually about", d.Route)
+	}
+}
+
+// With several failed routes the cause pins to none of them; claiming one would
+// be the same misattribution in a new place.
+func TestDiagnosisStaysUnattributedWhenSeveralRoutesFailed(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"},
+		BrokenAt: -1,
+		Routes: []RouteResult{
+			{Route: "a/", Target: "a:80", Outcome: OutcomeUnreachable, Evidence: "refused"},
+			{Route: "b/", Target: "b:80", Outcome: OutcomeUnreachable, Evidence: "timed out"},
+		},
+	}
+	d := computeDiagnosis(tr)
+	if d == nil {
+		t.Fatal("expected a diagnosis")
+	}
+	if d.Route != "" && d.Route != "a/" && d.Route != "b/" {
+		t.Errorf("Route = %q, want empty or one of the real routes", d.Route)
+	}
+}
+
+// A benign scale-to-zero route is not a failure, so a single real failure
+// alongside it is still solely attributable.
+func TestDiagnosisIgnoresBenignRoutesWhenAttributing(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"},
+		BrokenAt: -1,
+		Routes: []RouteResult{
+			{Route: "dormant/", Target: "d:80", Outcome: OutcomeUnreachable, Benign: true},
+			{Route: "real/", Target: "r:80", Outcome: OutcomeUnreachable, Evidence: "refused"},
+		},
+	}
+	if d := computeDiagnosis(tr); d == nil || d.Route != "real/" {
+		t.Errorf("want the non-benign route attributed, got %+v", d)
+	}
+}

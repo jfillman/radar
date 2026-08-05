@@ -253,6 +253,10 @@ export interface Trace {
  *  carries the honest prose instead. */
 export interface Diagnosis {
   causeCode?: string
+  /** Which route this diagnosis explains, when attributable to exactly one.
+   *  Absent means it describes the resource as a whole. The selected-path panel
+   *  must not present another path's cause as this path's. */
+  route?: string
   summary: string
   culpritResource?: ResourceRef
   nextAction?: string

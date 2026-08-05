@@ -7,7 +7,7 @@ import { Tooltip } from '../ui/Tooltip'
 import { buildGraph, originProducedEvidence } from './reachGraphModel'
 import { buildOrigins, defaultOrigin, type Origin, type OriginId } from './reachOrigins'
 import { buildSidebar, buildVerdict, type Sidebar, type InspectorCTA, type Selection } from './reachInspector'
-import { markStyle, glyphStyle, markHelp, scenariosFor, routeTone, routeChip, SEV_COLOR, SEV_BADGE, type Scenario } from './reachMarks'
+import { markStyle, glyphStyle, markHelp, scenariosFor, routeTone, routeChip, routeIdentity, SEV_COLOR, SEV_BADGE, type Scenario } from './reachMarks'
 import { DEV_STATES, devTrace, type DevState } from './reachFixtures'
 
 export { podReach, podProbeKey } from './podReach'
@@ -141,11 +141,14 @@ function ReachabilityBoard(props: BoardProps) {
   // Scenarios group routes that agree in every respect - a Gateway route with
   // three hostnames and one backend is one situation, not three.
   const scenarios = useMemo(() => scenariosFor(trace.routes ?? [], trace.notTested ?? [], trace.upstreams ?? []), [trace])
-  // Keyed by identity, never by position: the strip is sorted worst-first, so a
-  // re-run that changes an outcome re-sorts it and a stored index would silently
-  // move the user to a different path.
-  const [scenarioKey, setScenarioKey] = useState<string | null>(null)
-  const scenario = scenarios.find((s) => s.key === scenarioKey) ?? scenarios[0]
+  // Anchored to the selected ROUTE's identity, not to the scenario's group key.
+  // The group key carries outcome, confidence and evidence, so a re-run that
+  // changed a result changed the key and dropped the user back to the first
+  // scenario - losing their place exactly when they had just asked for new
+  // evidence about the path they were reading.
+  const [selectedRoute, setSelectedRoute] = useState<string | null>(null)
+  const scenario =
+    scenarios.find((s) => s.routes.some((r) => routeIdentity(r) === selectedRoute)) ?? scenarios[0]
   const route: RouteResult | undefined = scenario?.primary
 
   const origins = useMemo(
@@ -184,7 +187,17 @@ function ReachabilityBoard(props: BoardProps) {
           distinct outcome the verdict already speaks for the whole resource, and
           a one-tab picker would just be a step before reading anything. */}
       {scenarios.length > 1 && (
-        <ScenarioStrip scenarios={scenarios} activeKey={scenario?.key} onPick={(k) => { setScenarioKey(k); setSelection(undefined) }} stale={stale} running={running} />
+        <ScenarioStrip
+          scenarios={scenarios}
+          activeKey={scenario?.key}
+          onPick={(k) => {
+            const picked = scenarios.find((s) => s.key === k)
+            setSelectedRoute(picked ? routeIdentity(picked.primary) : null)
+            setSelection(undefined)
+          }}
+          stale={stale}
+          running={running}
+        />
       )}
 
       <VerdictBand verdict={verdict} runNonce={runNonce} actions={<ReachActions {...props} inClusterTested={origins.some((o) => o.id === 'incluster' && o.mark !== 'untested')} />} />

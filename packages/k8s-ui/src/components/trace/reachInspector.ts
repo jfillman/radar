@@ -224,7 +224,11 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
   }
 
   const failed = mark === 'failed'
-  const diagnosis = trace.diagnosis
+  // Only when it is about THIS path. A trace carries one diagnosis but many
+  // routes, so an unattributed or sibling-owned cause must not be rendered as
+  // the selected path's - the route's own evidence is what remains true.
+  const rawDiagnosis = trace.diagnosis
+  const diagnosis = rawDiagnosis && (!rawDiagnosis.route || rawDiagnosis.route === route?.route) ? rawDiagnosis : undefined
   const body = fromConfig
     ? 'The configuration itself is broken, so this path cannot work from any vantage. No request was sent to establish that — it is read off what is declared.'
     : !hasEvidence
@@ -385,7 +389,18 @@ export function buildVerdict(
   const facts = [
     { k: 'origins:', v: used.length > 0 ? used.map((o) => o.name).join(' · ') : 'none used yet' },
     { k: 'proven to:', v: mark === 'proved' ? seen?.target || 'the backend' : mark === 'proxied' ? 'a serving process exists' : 'nothing' },
-    { k: 'first failure:', v: mark === 'failed' ? trace.diagnosis?.summary || route?.target || 'the backend' : 'none' },
+    {
+      k: 'first failure:',
+      v:
+        mark !== 'failed'
+          ? 'none'
+          : // Same rule as the path panel: a sibling route's cause is not this
+            // route's first failure.
+            (!trace.diagnosis?.route || trace.diagnosis.route === route?.route ? trace.diagnosis?.summary : '') ||
+            route?.evidence ||
+            route?.target ||
+            'the backend',
+    },
     {
       k: 'next:',
       v: actionable ? `test from ${actionable.name}` : denied ? 'blocked by RBAC — grant or delegate' : 'nothing stronger Radar can run',

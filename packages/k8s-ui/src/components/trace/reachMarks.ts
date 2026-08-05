@@ -408,6 +408,19 @@ export function entryForHost(host: string, upstreams: Hop[] = []): string {
  * that behaves differently, or arrives through a different front door, always
  * keeps its own tab.
  */
+/**
+ * A route's stable identity: what it IS, never what happened to it.
+ *
+ * Composed exactly like the producer's InClusterResultKey (coverage.go), so the
+ * two cannot drift. Selection anchors on this rather than on a scenario's group
+ * key, which mixes in outcome, confidence and evidence - so a re-run that
+ * changed a result changed the key and silently moved the user to a different
+ * path.
+ */
+export function routeIdentity(r: RouteResult): string {
+  return `${r.route}\u0000${r.target ?? ''}\u0000${r.targetNamespace ?? ''}`
+}
+
 /** A route's per-vantage outcomes, order-independent so two routes observed in a
  *  different sequence still compare equal. */
 export function vantageSignature(r: RouteResult): string {

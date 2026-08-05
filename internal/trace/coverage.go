@@ -861,8 +861,15 @@ func hopDenyPort(meta map[string]any) int32 {
 // honest Summary prose carries the diagnosis instead. The name says "code" so a
 // consumer never mistakes the enum for the plain-English explanation (Summary).
 type Diagnosis struct {
-	CauseCode       string       `json:"causeCode,omitempty"`
-	Summary         string       `json:"summary"`
+	CauseCode string `json:"causeCode,omitempty"`
+	// Route names WHICH route this diagnosis explains, when it is attributable
+	// to exactly one. Empty means it describes the resource as a whole.
+	//
+	// A trace carries one Diagnosis but can carry many routes. Without this the
+	// selected-path panel rendered whichever route's cause happened to win, so
+	// an operator reading path B was shown path A's culprit under "THIS PATH".
+	Route   string `json:"route,omitempty"`
+	Summary string `json:"summary"`
 	CulpritResource *ResourceRef `json:"culpritResource,omitempty"`
 	NextAction      string       `json:"nextAction,omitempty"`
 	Command         string       `json:"command,omitempty"`
@@ -903,13 +910,19 @@ func computeDiagnosis(t *Trace) *Diagnosis {
 		} else {
 			d.NextAction = "investigate " + refLabel(d.CulpritResource)
 		}
+		// Attributable only when exactly one route is broken; with several, the
+		// finding cannot be pinned to one of them and claiming otherwise would
+		// reproduce the misattribution this field exists to stop.
+		if only, ok := soleFailedRoute(t.Routes); ok {
+			d.Route = only.Route
+		}
 		return d
 	}
 	// A failed route with no classified finding - e.g. a backend that didn't
 	// resolve (branchKnownBreak synthesizes evidence from absence, no Finding).
 	// Promote the route's own real evidence; do NOT invent a cause code.
 	if r, ok := worstNonBenignFailedRoute(t.Routes); ok {
-		d := &Diagnosis{Summary: firstNonEmpty(r.Evidence, "route is unreachable")}
+		d := &Diagnosis{Route: r.Route, Summary: firstNonEmpty(r.Evidence, "route is unreachable")}
 		if t.BrokenRoute != nil {
 			d.CulpritResource = t.BrokenRoute
 		}
@@ -2630,4 +2643,20 @@ func vantageSource(v VantageResult) string {
 		return probe.SourceRadar
 	}
 	return v.Source
+}
+
+// soleFailedRoute returns the one non-benign failed route when there is exactly
+// one, so a resource-level finding can be attributed to it. With several failed
+// routes the finding belongs to no single path and must stay unattributed.
+func soleFailedRoute(routes []RouteResult) (RouteResult, bool) {
+	var found RouteResult
+	n := 0
+	for _, r := range routes {
+		if r.Benign || (r.Outcome != OutcomeUnreachable && r.Outcome != OutcomeServerError) {
+			continue
+		}
+		found = r
+		n++
+	}
+	return found, n == 1
 }

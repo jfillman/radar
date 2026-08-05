@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, groupRoutes, vantageSignature, isSlow, formatLatency, hostMatches, declaredHosts, routeHostOf, routeForOrigin, routeAsSeenFrom, originRouteEvidence, MARKS } from './reachMarks'
+import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, groupRoutes, vantageSignature, routeIdentity, isSlow, formatLatency, hostMatches, declaredHosts, routeHostOf, routeForOrigin, routeAsSeenFrom, originRouteEvidence, MARKS } from './reachMarks'
 import type { RouteResult, Hop } from './types'
 
 const r = (o: Partial<RouteResult>): RouteResult => ({ route: 'GET /', outcome: 'verified', ...o })
@@ -574,5 +574,36 @@ describe('derived breaks are never described as requests', () => {
 
   it('an observed failure is still a failure', () => {
     expect(routeMark({ route: 'c/', target: 's:80', outcome: 'unreachable', confidence: 'real' })).toBe('failed')
+  })
+})
+
+describe('routeIdentity is what a route IS, not what happened to it', () => {
+  const base = { route: 'a.example.com/', target: 'shop:80', targetNamespace: 'prod' }
+
+  // Selection anchored on the scenario group key moved the user to a different
+  // path whenever a re-run changed an outcome - losing their place exactly when
+  // they had just asked for new evidence about the path they were reading.
+  it('survives a change in outcome, evidence and per-vantage results', () => {
+    const before: RouteResult = { ...base, outcome: 'unreachable', evidence: 'refused' }
+    const after: RouteResult = {
+      ...base,
+      outcome: 'verified',
+      confidence: 'real',
+      evidence: 'HTTP 200',
+      byVantage: [{ vantage: 'local', path: 'data', outcome: 'verified' }],
+    }
+    expect(routeIdentity(after)).toBe(routeIdentity(before))
+  })
+
+  it('separates same-named backends in different namespaces', () => {
+    expect(routeIdentity({ ...base, targetNamespace: 'prod', outcome: 'verified' })).not.toBe(
+      routeIdentity({ ...base, targetNamespace: 'staging', outcome: 'verified' }),
+    )
+  })
+
+  it('separates different paths on the same backend', () => {
+    expect(routeIdentity({ ...base, route: 'a.example.com/admin', outcome: 'verified' })).not.toBe(
+      routeIdentity({ ...base, route: 'a.example.com/web', outcome: 'verified' }),
+    )
   })
 })

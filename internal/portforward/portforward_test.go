@@ -31,47 +31,25 @@ func TestOwnerScoping(t *testing.T) {
 		t.Fatal("traffic forward was torn down by prometheus Stop (cross-owner clobber)")
 	}
 
-	// GetAddress peeks across owners (read-only reuse) and is context-scoped.
-	if GetAddress(OwnerTraffic, "ctxA") == "" {
-		t.Fatal("GetAddress should surface traffic's forward for ctxA")
+	// GetAddressForService peeks across owners (read-only reuse) and is
+	// context-scoped, matching on the target service.
+	if GetAddressForService(OwnerPrometheus, "ctxA", "caretta", "caretta-vm") == "" {
+		t.Fatal("GetAddressForService should surface traffic's caretta-vm forward for ctxA")
 	}
-	if GetAddress(OwnerTraffic, "ctxB") != "" {
-		t.Fatal("GetAddress must not match a different context")
+	if GetAddressForService(OwnerPrometheus, "ctxB", "caretta", "caretta-vm") != "" {
+		t.Fatal("GetAddressForService must not match a different context")
 	}
 	if !IsConnectedForContext("ctxA") || IsConnectedForContext("ctxB") {
 		t.Fatal("IsConnectedForContext scoping wrong")
 	}
 }
 
-// TestGetAddressPrefersOwn verifies GetAddress returns the caller's own forward
-// when it has one, rather than an arbitrary peer's — so a caller reuses its own
-// live forward instead of probing an incompatible one.
-func TestGetAddressPrefersOwn(t *testing.T) {
-	saved := reg
-	t.Cleanup(func() { reg = saved })
-	reg = &registry{forwards: map[Owner]*metricsForward{}}
-	reg.forwards[OwnerPrometheus] = &metricsForward{active: true, localPort: 1111, contextName: "ctxA"}
-	reg.forwards[OwnerTraffic] = &metricsForward{active: true, localPort: 2222, contextName: "ctxA"}
-
-	if got := GetAddress(OwnerPrometheus, "ctxA"); got != "http://localhost:1111" {
-		t.Fatalf("prometheus got %q, want its own :1111", got)
-	}
-	if got := GetAddress(OwnerTraffic, "ctxA"); got != "http://localhost:2222" {
-		t.Fatalf("traffic got %q, want its own :2222", got)
-	}
-	// With no own forward, fall back to the peer's.
-	Stop(OwnerPrometheus)
-	if got := GetAddress(OwnerPrometheus, "ctxA"); got != "http://localhost:2222" {
-		t.Fatalf("prometheus fallback got %q, want peer :2222", got)
-	}
-}
-
-// TestGetAddressForServiceIsTargetAware pins that the traffic (Caretta) source
-// must NOT adopt the general Prometheus forward. With only a
-// prometheus-owned forward to monitoring/prometheus-operated live, a Caretta
-// lookup for caretta/caretta-vm must return empty (no cross-adoption), forcing a
-// dedicated forward — whereas the old cross-owner GetAddress would hand back the
-// wrong backend, which answers the generic probe but holds no caretta metrics.
+// TestGetAddressForServiceIsTargetAware pins that a caller must NOT adopt a
+// forward bound to a different backend. With only a prometheus-owned forward to
+// monitoring/prometheus-operated live, a Caretta lookup for caretta/caretta-vm
+// must return empty (no cross-adoption), forcing a dedicated forward — the
+// mismatched backend answers the generic probe but holds no caretta metrics. The
+// symmetric case (resource metrics adopting caretta-vm) is guarded the same way.
 func TestGetAddressForServiceIsTargetAware(t *testing.T) {
 	saved := reg
 	t.Cleanup(func() { reg = saved })
@@ -82,14 +60,15 @@ func TestGetAddressForServiceIsTargetAware(t *testing.T) {
 		active: true, localPort: 15329, namespace: "monitoring", serviceName: "prometheus-operated", contextName: "ctxA",
 	}
 
-	// Old behavior: cross-owner fallback would adopt the wrong backend.
-	if got := GetAddress(OwnerTraffic, "ctxA"); got != "http://localhost:15329" {
-		t.Fatalf("precondition: GetAddress should surface the peer forward, got %q", got)
-	}
-
-	// Fixed behavior: target-aware lookup rejects the mismatched service.
+	// A Caretta lookup for its own backend must reject the mismatched service
+	// rather than adopt the general Prometheus forward that happens to be live.
 	if got := GetAddressForService(OwnerTraffic, "ctxA", "caretta", "caretta-vm"); got != "" {
 		t.Fatalf("target-aware lookup adopted the wrong forward: got %q, want empty", got)
+	}
+	// Conversely, resource metrics may reuse the prometheus-operated forward by
+	// exact match — that is the legitimate cross/own-owner reuse.
+	if got := GetAddressForService(OwnerPrometheus, "ctxA", "monitoring", "prometheus-operated"); got != "http://localhost:15329" {
+		t.Fatalf("matching own forward: got %q, want :15329", got)
 	}
 
 	// Once Caretta's own dedicated forward exists, it is reused by exact match.

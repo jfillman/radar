@@ -8,8 +8,8 @@
 // starting or stopping one owner's forward never tears down the other's. (A
 // single shared forward previously let them clobber each other whenever they
 // wanted different services.) Owners may still read each other's forward
-// address (GetAddress) to reuse a compatible endpoint, but only ever stop their
-// own.
+// address (GetAddressForService) to reuse a forward that targets the same
+// service, but only ever stop their own.
 package portforward
 
 import (
@@ -282,34 +282,15 @@ func stopForwardLocked(f *metricsForward) {
 	f.cancel = nil
 }
 
-// GetAddress returns the address of an active metrics forward for the given
-// context, preferring the caller's own forward (preferOwner) before falling back
-// to another owner's compatible endpoint (read-only reuse — the caller never
-// takes ownership). Preferring the caller's own forward keeps selection
-// deterministic and avoids probing an incompatible peer (e.g. Hubble's relay)
-// while the caller's own forward is still live. Empty if none.
-func GetAddress(preferOwner Owner, currentContext string) string {
-	reg.mu.RLock()
-	defer reg.mu.RUnlock()
-	if f := reg.forwards[preferOwner]; f != nil && f.active && f.contextName == currentContext {
-		return fmt.Sprintf("http://localhost:%d", f.localPort)
-	}
-	for owner, f := range reg.forwards {
-		if owner != preferOwner && f.active && f.contextName == currentContext {
-			return fmt.Sprintf("http://localhost:%d", f.localPort)
-		}
-	}
-	return ""
-}
-
-// GetAddressForService is a target-aware variant of GetAddress: it returns the
-// address of an active forward for the given context ONLY if that forward points
-// at the requested namespace/service, preferring the caller's own forward before
-// a peer's. Unlike GetAddress, it never surfaces a forward bound to a different
-// backend — so a caller that needs a specific service (e.g. Caretta's
-// caretta-vm) can't adopt an unrelated owner's forward (e.g. the cluster's
-// general Prometheus), which answers the same generic /api/v1/query probe but
-// holds none of the caller's metrics. Empty if no matching forward exists.
+// GetAddressForService returns the address of an active forward for the given
+// context ONLY if that forward points at the requested namespace/service,
+// preferring the caller's own forward (preferOwner) before a peer's (read-only
+// reuse — the caller never takes ownership). Matching on the target service means
+// it never surfaces a forward bound to a different backend, so a caller that needs
+// a specific service (e.g. Caretta's caretta-vm) can't adopt an unrelated owner's
+// forward (e.g. the cluster's general Prometheus), which answers the same generic
+// /api/v1/query probe but holds none of the caller's metrics. Empty if no matching
+// forward exists.
 func GetAddressForService(preferOwner Owner, currentContext, namespace, serviceName string) string {
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()

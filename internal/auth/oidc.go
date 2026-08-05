@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -73,6 +74,26 @@ var supportedOIDCSigningAlgorithms = map[string]bool{
 // served under ("" at the root), which the post-login redirect must target.
 // Returns an error if the provider cannot be discovered (network error, invalid
 // issuer URL, etc.).
+// warnIfInsecureOIDCOrigin logs a prominent warning when OIDC is configured on a
+// non-secure origin. Session cookies are issued Secure, so the browser silently
+// drops them over plain HTTP and the user loops on login with no server-side
+// error. localhost is exempt — browsers treat it as a secure context.
+func warnIfInsecureOIDCOrigin(redirectURL string) {
+	u, err := url.Parse(redirectURL)
+	if err != nil || u.Scheme != "http" || isLoopbackHost(u.Hostname()) {
+		return
+	}
+	log.Printf("[oidc] WARNING: redirect URL %s is not HTTPS — the browser will drop the Secure session cookie and login will loop. Serve Radar over HTTPS, or ensure your TLS-terminating proxy sets X-Forwarded-Proto: https.", redirectURL)
+}
+
+func isLoopbackHost(host string) bool {
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return strings.HasSuffix(host, ".localhost")
+}
+
 func NewOIDCHandler(ctx context.Context, cfg Config, basePath string) (*OIDCHandler, error) {
 	// Build a custom HTTP client for OIDC provider TLS when configured
 	var httpClient *http.Client
@@ -102,6 +123,8 @@ func NewOIDCHandler(ctx context.Context, cfg Config, basePath string) (*OIDCHand
 	if httpClient != nil {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 	}
+
+	warnIfInsecureOIDCOrigin(cfg.OIDCRedirectURL)
 
 	provider, providerClaims, err := newOIDCProvider(ctx, cfg)
 	if err != nil {
@@ -445,6 +468,14 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	token, err := h.oauth.Exchange(ctx, code)
 	if err != nil {
+		// The browser navigating away mid-login (common during a first-load 401
+		// burst) cancels this request's context. That's the client's doing, not a
+		// server fault — don't log it as an error or return 500. A deadline
+		// (context.DeadlineExceeded) is a real IdP timeout and still falls through.
+		if errors.Is(err, context.Canceled) {
+			log.Printf("[oidc] Token exchange canceled (client disconnected)")
+			return
+		}
 		log.Printf("[oidc] Token exchange failed: %v", err)
 		http.Error(w, "authentication failed", http.StatusInternalServerError)
 		return

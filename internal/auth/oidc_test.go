@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -10,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -87,6 +89,66 @@ func TestOIDCCallback_MissingCode(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestOIDCCallback_ContextCanceledIsNot500(t *testing.T) {
+	h := newTestOIDCHandler()
+	// Unreachable token endpoint; the canceled context makes Exchange fail with
+	// context.Canceled before any network round-trip completes.
+	h.oauth = oauth2.Config{
+		ClientID: "radar",
+		Endpoint: oauth2.Endpoint{TokenURL: "http://127.0.0.1:1/token"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // client already gone
+
+	r := httptest.NewRequest("GET", "/auth/callback?state=abc&code=xyz", nil).WithContext(ctx)
+	r.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: "abc"})
+	w := httptest.NewRecorder()
+
+	h.HandleCallback(w, r)
+
+	if w.Code == http.StatusInternalServerError {
+		t.Errorf("a client-canceled token exchange must not return 500, got %d", w.Code)
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	cases := map[string]bool{
+		"localhost":       true,
+		"127.0.0.1":       true,
+		"::1":             true,
+		"radar.localhost": true,
+		"example.com":     false,
+		"10.0.0.5":        false,
+		"":                false,
+	}
+	for host, want := range cases {
+		if got := isLoopbackHost(host); got != want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+func TestWarnIfInsecureOIDCOrigin(t *testing.T) {
+	cases := map[string]bool{
+		"http://radar.example.com/auth/callback":    true,  // non-secure, non-local → warn
+		"https://radar.example.com/auth/callback":   false, // secure → no warn
+		"http://localhost:8080/auth/callback":       false, // loopback exempt
+		"http://radar.localhost:4962/auth/callback": false,
+	}
+	for redirectURL, wantWarn := range cases {
+		var buf bytes.Buffer
+		orig := log.Writer()
+		log.SetOutput(&buf)
+		warnIfInsecureOIDCOrigin(redirectURL)
+		log.SetOutput(orig)
+
+		warned := strings.Contains(buf.String(), "not HTTPS")
+		if warned != wantWarn {
+			t.Errorf("warnIfInsecureOIDCOrigin(%q) warned=%v, want %v (log: %q)", redirectURL, warned, wantWarn, buf.String())
+		}
 	}
 }
 

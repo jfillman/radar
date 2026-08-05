@@ -1,6 +1,6 @@
 import type { Trace, Hop, ResourceRef, RouteResult, PodStatus, ProbeResult } from './types'
 import type { Mark, SevTone } from './reachMarks'
-import { routeMark, isSlow, formatLatency, declaredHosts, hostMatches, routeHostOf, originRouteEvidence } from './reachMarks'
+import { routeMark, isSlow, formatLatency, declaredHosts, hostMatches, routeHostOf, originRouteEvidence, routeForOrigin } from './reachMarks'
 import { originOf, type Origin } from './reachOrigins'
 import { podProbeKey } from './podReach'
 
@@ -729,7 +729,14 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     connect(`e:subject-${b.id}`, subjectNodeId, b.id, onPath ? 'config' : 'excluded', onPath ? 'sends to' : 'other host')
   }
   if (collapsed.length > 0) connect('e:subject-collapsed', subjectNodeId, 'collapsed:backends', 'config', 'also serves')
-  for (const g of podGroups) connect(`e:${g.id}`, g.parentId, g.id, 'config', 'selects')
+  // When the producer localized the break to the Service's own routing, the
+  // Service->Pods edge is where it happened - packets reached the workload, so
+  // what sits between them is what failed. Only ever drawn from a boundary the
+  // producer actually established; an unlocalized failure colours nothing.
+  const boundary = ev.kind === 'own' ? routeForOrigin(route, origin.id)?.failedBoundary : undefined
+  const podEdgeMark: Mark = boundary === 'service-routing' ? 'failed' : 'config'
+  const podEdgeLabel = boundary === 'service-routing' ? 'breaks here' : 'selects'
+  for (const g of podGroups) connect(`e:${g.id}`, g.parentId, g.id, podEdgeMark, podEdgeLabel)
 
   // ---- lane boxes: bound only their own nodes ----
   const boxFor = (list: GraphNode[], label: string, help: string, color: string, dashed?: boolean): LaneBox | undefined => {

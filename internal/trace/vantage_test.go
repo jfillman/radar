@@ -124,3 +124,102 @@ func TestMergeVantagesWithNothingFreshKeepsPrior(t *testing.T) {
 		t.Errorf("a run that observed nothing must not erase what was known: %+v", got)
 	}
 }
+
+func podsHopWith(probes ...probe.Result) Hop {
+	return Hop{Resource: ResourceRef{Kind: "Pods"}, Edge: "Service->Pods", Probes: probes}
+}
+
+func podProbe(v probe.Vantage, p probe.Path, ok bool) probe.Result {
+	r := probe.Result{Layer: probe.LayerTCP, Target: "10.244.1.5:8080", Vantage: v, Path: p, OK: ok}
+	if !ok {
+		r.Tone = probe.ToneUnhealthy
+	}
+	return r
+}
+
+// The one boundary two observations can establish: the Service was unreachable
+// from a vantage, yet the SAME vantage reached the Pods behind it directly, so
+// the break is the Service's own routing.
+func TestLocalizeBoundariesNamesServiceRoutingFromTheSandwich(t *testing.T) {
+	tr := &Trace{
+		Downstream: []Hop{podsHopWith(podProbe(probe.VantageInCluster, probe.PathData, true))},
+		Routes: []RouteResult{{
+			Route:   "r",
+			Outcome: OutcomeUnreachable,
+			ByVantage: []VantageResult{
+				{Vantage: "in-cluster", Path: "data", Outcome: OutcomeUnreachable},
+			},
+		}},
+	}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != BoundaryServiceRouting {
+		t.Errorf("FailedBoundary = %q, want %q - Service unreachable + Pods reachable from the SAME vantage localizes the break", got, BoundaryServiceRouting)
+	}
+}
+
+// A different vantage reaching the Pods proves nothing about this one - that is
+// the cross-vantage attribution the whole change exists to prevent.
+func TestLocalizeBoundariesWillNotBorrowAnotherVantagesPodEvidence(t *testing.T) {
+	tr := &Trace{
+		Downstream: []Hop{podsHopWith(podProbe(probe.VantageLocal, probe.PathAPIServer, true))},
+		Routes: []RouteResult{{
+			Route:     "r",
+			Outcome:   OutcomeUnreachable,
+			ByVantage: []VantageResult{{Vantage: "in-cluster", Path: "data", Outcome: OutcomeUnreachable}},
+		}},
+	}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
+		t.Errorf("FailedBoundary = %q, want empty", got)
+	}
+}
+
+// Both sides failing is an undifferentiated failure: the break could be the
+// Service OR the workload, so it must colour nothing.
+func TestLocalizeBoundariesStaysSilentWhenPodsAlsoFailed(t *testing.T) {
+	tr := &Trace{
+		Downstream: []Hop{podsHopWith(podProbe(probe.VantageInCluster, probe.PathData, false))},
+		Routes: []RouteResult{{
+			Route:     "r",
+			Outcome:   OutcomeUnreachable,
+			ByVantage: []VantageResult{{Vantage: "in-cluster", Path: "data", Outcome: OutcomeUnreachable}},
+		}},
+	}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
+		t.Errorf("FailedBoundary = %q, want empty when neither side is known good", got)
+	}
+}
+
+func TestLocalizeBoundariesIgnoresSkippedPodProbes(t *testing.T) {
+	skipped := podProbe(probe.VantageInCluster, probe.PathData, true)
+	skipped.Skipped = true
+	tr := &Trace{
+		Downstream: []Hop{podsHopWith(skipped)},
+		Routes: []RouteResult{{
+			Route:     "r",
+			Outcome:   OutcomeUnreachable,
+			ByVantage: []VantageResult{{Vantage: "in-cluster", Path: "data", Outcome: OutcomeUnreachable}},
+		}},
+	}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
+		t.Errorf("a skipped probe carries no observation: got %q", got)
+	}
+}
+
+// A route that got through has no boundary to name.
+func TestLocalizeBoundariesLeavesReachableRoutesAlone(t *testing.T) {
+	tr := &Trace{
+		Downstream: []Hop{podsHopWith(podProbe(probe.VantageInCluster, probe.PathData, true))},
+		Routes: []RouteResult{{
+			Route:     "r",
+			Outcome:   OutcomeVerified,
+			ByVantage: []VantageResult{{Vantage: "in-cluster", Path: "data", Outcome: OutcomeVerified}},
+		}},
+	}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
+		t.Errorf("FailedBoundary = %q on a verified route", got)
+	}
+}

@@ -119,6 +119,11 @@ export interface ProbeResult {
   port?: number
   detail?: string
   error?: string
+  /** What a DNS lookup resolved to. */
+  addresses?: string[]
+  /** Scope of those addresses. Describes the ADDRESS, not the journey: a public
+   *  address does not prove a packet crossed the public internet. */
+  addressScope?: 'public' | 'private' | 'mixed'
   /** Copyable command to verify what this probe couldn't (non-HTTP port, HTTPS
    *  backend, an address only reachable in-cluster). Set at the skip site. */
   command?: string
@@ -312,6 +317,10 @@ export interface VantageResult {
   confidence?: RouteConfidence
   evidence?: string
   failedLayer?: 'tcp' | 'tls' | 'http' | 'upstream'
+  /** Which hop-to-hop boundary broke, when two observations either side of it
+   *  establish that. Empty means we could not tell - the common case, and never
+   *  to be guessed at in the UI. */
+  failedBoundary?: 'service-routing'
 }
 
 /** A concrete HTTP request the in-cluster runner can send to the Service. */

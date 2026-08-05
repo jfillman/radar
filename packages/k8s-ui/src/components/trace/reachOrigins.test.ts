@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildOrigins, defaultOrigin, strongestGap, originOf } from './reachOrigins'
+import { buildOrigins, defaultOrigin, strongestGap, originOf, localIdentity } from './reachOrigins'
 import type { Trace, ProbeResult, RouteResult } from './types'
 
 const p = (o: Partial<ProbeResult>): ProbeResult => ({ layer: 'http', target: 'svc:80', vantage: 'in-cluster', ok: true, ...o })
@@ -139,5 +139,41 @@ describe('rail marks follow the selected route', () => {
     const os = buildOrigins(traceWith([]), { route: onlyLocal })
     expect(os.find((o) => o.id === 'local')!.mark).toBe('proved')
     expect(os.find((o) => o.id === 'incluster')!.mark).toBe('untested')
+  })
+})
+
+// The laptop vantage used to answer "we can't tell where on the network you are"
+// for every trace forever, even though DNS had already resolved the address.
+describe('the laptop vantage says where it actually dialled', () => {
+  const dns = (scope?: 'public' | 'private' | 'mixed', skipped = false): ProbeResult =>
+    ({ layer: 'dns', target: 'checkout.example.com', vantage: 'local', ok: true, addressScope: scope, skipped })
+
+  it('a globally routable address is stated, with the inference it does NOT support', () => {
+    const s = localIdentity([dns('public')])
+    expect(s).toMatch(/public address/)
+    // a public address is not proof the packet crossed the internet
+    expect(s).toMatch(/VPN|split-horizon/)
+  })
+
+  it('a private address rules the public internet out', () => {
+    expect(localIdentity([dns('private')])).toMatch(/did not come from the public internet/)
+  })
+
+  it('split-horizon resolves both ways and commits to neither', () => {
+    expect(localIdentity([dns('mixed')])).toMatch(/both public and private/)
+  })
+
+  it('falls back to the honest unknown when nothing resolved', () => {
+    expect(localIdentity([])).toMatch(/can’t tell where/)
+    expect(localIdentity([dns(undefined)])).toMatch(/can’t tell where/)
+  })
+
+  it('ignores skipped lookups, which observed nothing', () => {
+    expect(localIdentity([dns('public', true)])).toMatch(/can’t tell where/)
+  })
+
+  it('does not make the external vantage supported - that is a different claim', () => {
+    const t = traceWith([{ layer: 'dns', target: 'h', vantage: 'local', ok: true, addressScope: 'public' }])
+    expect(buildOrigins(t, {}).find((o) => o.id === 'external')!.unsupported).toBe(true)
   })
 })

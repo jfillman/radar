@@ -193,18 +193,45 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
     glyph: '▣',
     name: 'Radar on your machine',
     mech: 'this machine, over your own network',
-    identity: 'we can’t tell where on the network you are',
     kind: 'real-client',
     kindTag: ORIGIN_KIND_TAG['real-client'],
     // Not the cluster dataplane: from a laptop a request never traverses
     // kube-proxy, NetworkPolicy or the mesh, so it cannot sit in that lane.
     lane: 'control',
     mark: localMark,
+    identity: localIdentity(localProbes),
     unavailable: localMark === 'blocked' ? skipReason(localProbes) : undefined,
   }
 
   const all: Record<OriginId, Origin> = { caller, external, incluster, local, apiserver }
   return ORIGIN_STRENGTH.map((id) => all[id])
+}
+
+/**
+ * What we can honestly say about where the laptop sat on the network.
+ *
+ * This used to be a constant - "we can't tell where on the network you are" -
+ * for every trace forever. DNS already resolves the address, so when the name
+ * resolves to a globally routable one we DO know the request left for a public
+ * address, and saying nothing under-claims.
+ *
+ * It stops there deliberately. A public address is not proof the packet crossed
+ * the public internet: a VPN, hairpin NAT or split-horizon DNS all break that
+ * inference. So this describes the ADDRESS and never the journey, and it does
+ * not make the external vantage supported - that is a different claim.
+ */
+export function localIdentity(probes: ProbeResult[]): string {
+  const scopes = new Set(probes.filter((p) => !p.skipped && p.addressScope).map((p) => p.addressScope))
+  if (scopes.has('mixed')) {
+    return 'this name resolves to both public and private addresses — we can’t tell which one you reached'
+  }
+  if (scopes.has('public')) {
+    return 'you dialled a public address — though a VPN or split-horizon DNS could still have kept it internal'
+  }
+  if (scopes.has('private')) {
+    return 'you dialled a private address, so this did not come from the public internet'
+  }
+  return 'we can’t tell where on the network you are'
 }
 
 /** The origin that should be selected when the view opens: the strongest one

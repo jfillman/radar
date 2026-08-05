@@ -223,6 +223,13 @@ type Result struct {
 	Latency time.Duration `json:"latencyNs,omitempty"`
 	Detail  string        `json:"detail,omitempty"`
 	Error   string        `json:"error,omitempty"`
+	// Addresses are what a DNS lookup resolved to. Structured so consumers
+	// never have to parse Detail.
+	Addresses []string `json:"addresses,omitempty"`
+	// AddressScope classifies those addresses - public | private | mixed. It
+	// describes the ADDRESS, never the journey: a public address does not prove
+	// a packet crossed the public internet.
+	AddressScope string `json:"addressScope,omitempty"`
 	// Command is a copyable command the operator can run to verify what this
 	// probe honestly couldn't (a non-HTTP port, an HTTPS backend the proxy
 	// can't relay, an address only reachable in-cluster). Set at the skip site
@@ -267,7 +274,53 @@ func DNS(ctx context.Context, host string, vantage Vantage) Result {
 	}
 	r.OK = true
 	r.Detail = "resolved to " + strings.Join(addrs, ", ")
+	r.Addresses = addrs
+	r.AddressScope = classifyAddressScope(addrs)
 	return r
+}
+
+// Address scopes for a resolved name. Reported so a consumer never has to parse
+// Detail, and so "where did this request actually go" stops being unanswerable.
+const (
+	ScopePublic  = "public"  // every resolved address is globally routable
+	ScopePrivate = "private" // none are - RFC1918/CGNAT/link-local/loopback/ULA
+	ScopeMixed   = "mixed"   // both, e.g. split-horizon DNS
+)
+
+// classifyAddressScope reports whether a name resolved to globally routable
+// addresses. It describes the ADDRESS, never the journey: a public address does
+// not prove a packet crossed the public internet (VPN, hairpin NAT and
+// split-horizon DNS all break that inference), and the UI must say so.
+func classifyAddressScope(addrs []string) string {
+	var public, private int
+	for _, a := range addrs {
+		ip := net.ParseIP(a)
+		if ip == nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || isCGNAT(ip) {
+			private++
+			continue
+		}
+		public++
+	}
+	switch {
+	case public > 0 && private > 0:
+		return ScopeMixed
+	case public > 0:
+		return ScopePublic
+	case private > 0:
+		return ScopePrivate
+	}
+	return ""
+}
+
+// isCGNAT reports 100.64.0.0/10 - carrier-grade NAT. net.IP.IsPrivate covers
+// RFC1918 and ULA but not this, and it is common enough in managed clusters
+// (and in Tailscale-style overlays) that treating it as public would be wrong.
+func isCGNAT(ip net.IP) bool {
+	v4 := ip.To4()
+	return v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127
 }
 
 // classifyDNSError turns a resolver error into the operator's mental model - the

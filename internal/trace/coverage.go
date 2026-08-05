@@ -134,6 +134,66 @@ type VantageResult struct {
 	Confidence  string `json:"confidence,omitempty"`
 	Evidence    string `json:"evidence,omitempty"`
 	FailedLayer string `json:"failedLayer,omitempty"`
+	// FailedBoundary names WHICH hop-to-hop boundary broke, when two
+	// observations either side of one boundary establish it. Empty means we
+	// could not tell - which is the common case and must never be guessed.
+	// See localizeBoundaries.
+	FailedBoundary string `json:"failedBoundary,omitempty"`
+}
+
+// BoundaryServiceRouting is the one boundary we can currently localize: the
+// Service could not be reached from a vantage, yet that SAME vantage reached
+// the Pods behind it directly. The packets are getting to the workload, so what
+// is between them - the Service's own routing (targetPort, selector, endpoints)
+// - is where it breaks.
+const BoundaryServiceRouting = "service-routing"
+
+// localizeBoundaries attributes a route failure to a specific boundary, but
+// only where two observations on OPPOSITE sides of that boundary establish it.
+//
+// Hops are probed independently and concurrently, so a hop result is a
+// target-check, not a segment of one request - which is exactly why this cannot
+// be inferred from a single failing hop. What CAN be concluded is the sandwich:
+// Service unreachable from vantage V + Pods reachable from the same vantage V
+// means the break is the Service's routing. Anything else gets no boundary at
+// all; an undifferentiated failure must colour nothing.
+func localizeBoundaries(t *Trace) {
+	if t == nil {
+		return
+	}
+	var podsHop *Hop
+	for i := range t.Downstream {
+		if t.Downstream[i].Resource.Kind == "Pods" {
+			podsHop = &t.Downstream[i]
+			break
+		}
+	}
+	if podsHop == nil {
+		return
+	}
+	// Which (vantage, path) pairs reached a Pod DIRECTLY. Only a real success
+	// counts - a skip carries no observation.
+	reachedPods := map[string]bool{}
+	for _, pr := range podsHop.Probes {
+		if pr.Skipped || !pr.OK {
+			continue
+		}
+		reachedPods[string(pr.Vantage)+"\x00"+string(pr.Path)] = true
+	}
+	if len(reachedPods) == 0 {
+		return
+	}
+	for i := range t.Routes {
+		for j := range t.Routes[i].ByVantage {
+			v := &t.Routes[i].ByVantage[j]
+			if v.Outcome != OutcomeUnreachable {
+				continue
+			}
+			if reachedPods[v.Vantage+"\x00"+v.Path] {
+				v.FailedBoundary = BoundaryServiceRouting
+			}
+		}
+	}
 }
 
 // ProbeRequest is a concrete HTTP request a user can run against a Service from
@@ -171,6 +231,7 @@ func computeCoverage(t *Trace) {
 
 	routes, unprobed := buildRoutes(t)
 	t.Routes = routes
+	localizeBoundaries(t)
 	upgradeDefinitiveBackendDown(t)
 	t.NotTested = append(buildNotTested(t), unprobed...)
 

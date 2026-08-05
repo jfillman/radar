@@ -1,6 +1,6 @@
 import type { Trace, RouteResult, ResourceRef } from './types'
 import type { Mark, SevTone } from './reachMarks'
-import { routeMark, routeChip, routeTone, routeAsSeenFrom, originRouteEvidence } from './reachMarks'
+import { routeMark, routeChip, routeTone, routeAsSeenFrom, originRouteEvidence, routeForOrigin } from './reachMarks'
 import type { Origin, OriginId } from './reachOrigins'
 import { strongestGap, actionableGap } from './reachOrigins'
 import { originProducedEvidence, type GraphNode } from './reachGraphModel'
@@ -187,6 +187,11 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     evidence.push({ mark: m, text })
   }
   if (hasEvidence && asSeen?.evidence) add(mark, asSeen.evidence)
+  // The one boundary two observations can establish. Stated as the reasoning
+  // that produced it, so it reads as evidence rather than as a verdict.
+  if (ev.kind === 'own' && routeForOrigin(route, origin.id)?.failedBoundary === 'service-routing') {
+    add('failed', 'the Pods answered directly, but the Service did not — so the Service’s own routing is what breaks')
+  }
   // Localization facts are behind-the-gate (apiserver / direct-pod) evidence.
   // They belong to the relayed origin, not to whichever origin is selected -
   // listing them under the in-cluster probe credited it with observations it

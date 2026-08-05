@@ -107,6 +107,16 @@ type RouteResult struct {
 	// faithful request, so PathGuessed marks it as a guess. nil for routes that
 	// aren't testable that way (a known static break with no backend).
 	InClusterRequest *ProbeRequest `json:"inClusterRequest,omitempty"`
+	// Basis says where this route's Outcome came from. Empty (the normal case)
+	// means it was OBSERVED - some vantage dialled it and ByVantage carries who.
+	// BasisConfig means it was DERIVED FROM DECLARED CONFIGURATION and no vantage
+	// dialled it at all, so it must never be attributed to whichever vantage the
+	// reader happens to have selected.
+	//
+	// This is stated rather than inferred from an empty ByVantage: absence is
+	// ambiguous, and a consumer guessing at it is how a config-known break came
+	// to be rendered as a laptop's failed observation.
+	Basis string `json:"basis,omitempty"`
 	// ByVantage is each vantage's OWN view of this route.
 	//
 	// Outcome/Confidence/Evidence above are a documented lossy rollup: they
@@ -148,6 +158,12 @@ type VantageResult struct {
 // - is where it breaks.
 const BoundaryServiceRouting = "service-routing"
 
+// BasisConfig marks a route whose Outcome was read off DECLARED CONFIGURATION -
+// a backend that does not exist, say - rather than observed by dialling it. Such
+// a route has no ByVantage rows because no vantage tested it, and consumers must
+// present it as a configuration fact rather than as any vantage's observation.
+const BasisConfig = "config"
+
 // localizeBoundaries attributes a route failure to a specific boundary, but
 // only where two observations on OPPOSITE sides of that boundary establish it.
 //
@@ -161,39 +177,144 @@ func localizeBoundaries(t *Trace) {
 	if t == nil {
 		return
 	}
-	var podsHop *Hop
-	for i := range t.Downstream {
-		if t.Downstream[i].Resource.Kind == "Pods" {
-			podsHop = &t.Downstream[i]
-			break
-		}
-	}
-	if podsHop == nil {
-		return
-	}
-	// Which (vantage, path) pairs reached a Pod DIRECTLY. Only a real success
-	// counts - a skip carries no observation.
-	reachedPods := map[string]bool{}
-	for _, pr := range podsHop.Probes {
-		if pr.Skipped || !pr.OK {
-			continue
-		}
-		reachedPods[string(pr.Vantage)+"\x00"+string(pr.Path)] = true
-	}
-	if len(reachedPods) == 0 {
+	pairs := backendPairs(t)
+	if len(pairs) == 0 {
 		return
 	}
 	for i := range t.Routes {
-		for j := range t.Routes[i].ByVantage {
-			v := &t.Routes[i].ByVantage[j]
+		r := &t.Routes[i]
+		name, servicePort, ok := routeBackend(*r)
+		if !ok {
+			continue
+		}
+		ns := r.TargetNamespace
+		if ns == "" {
+			ns = t.Subject.Namespace
+		}
+		pair, ok := pairs[backendKey(ns, name)]
+		if !ok {
+			continue
+		}
+		// The two sides of the sandwich are numbered in DIFFERENT port spaces: a
+		// route names the Service port, a pod probe dials a containerPort. Compare
+		// them only through the Service's own mapping; where it can't be resolved
+		// there is no sandwich, and an unresolvable mapping must localize nothing
+		// rather than compare unrelated numbers.
+		podPort, ok := podPortForService(pair.svc, pair.pods, servicePort)
+		if !ok {
+			continue
+		}
+		reached := reachedPodOrigins(pair.pods, podPort)
+		if len(reached) == 0 {
+			continue
+		}
+		for j := range r.ByVantage {
+			v := &r.ByVantage[j]
 			if v.Outcome != OutcomeUnreachable {
 				continue
 			}
-			if reachedPods[v.Vantage+"\x00"+v.Path] {
+			if reached[v.Vantage+"\x00"+v.Path] {
 				v.FailedBoundary = BoundaryServiceRouting
 			}
 		}
 	}
+}
+
+func backendKey(namespace, name string) string { return namespace + "\x00" + name }
+
+// backendPair is one backend Service hop with the Pods hop that sits behind it.
+type backendPair struct {
+	svc  *Hop
+	pods *Hop
+}
+
+// backendPairs indexes each backend Service by identity so a route's evidence is
+// only ever read from ITS OWN backend. A multi-backend Ingress/Route emits one
+// Service+Pods hop per backend (see the fan-out loops in entries.go), so reading
+// "the Pods hop" of a trace would let one backend's healthy pods localize a
+// different backend's failure - the same cross-attribution the per-vantage split
+// exists to prevent, one axis over.
+func backendPairs(t *Trace) map[string]backendPair {
+	out := map[string]backendPair{}
+	hops := t.Downstream
+	add := func(svc, pods *Hop) {
+		if svc.Resource.Name == "" {
+			return
+		}
+		out[backendKey(svc.Resource.Namespace, svc.Resource.Name)] = backendPair{svc: svc, pods: pods}
+	}
+	if branches := downstreamBranches(hops); len(branches) > 0 {
+		for _, b := range branches {
+			if b.end-b.start >= 2 && hops[b.start+1].Resource.Kind == "Pods" {
+				add(&hops[b.start], &hops[b.start+1])
+			}
+		}
+		return out
+	}
+	// Single chain (Service subject): the subject hop and its Pods.
+	if len(hops) >= 2 && hops[0].Resource.Kind == "Service" && hops[1].Resource.Kind == "Pods" {
+		add(&hops[0], &hops[1])
+	}
+	return out
+}
+
+// routeBackend reads the backend Service name and Service port out of a route's
+// Target ("name:port"). Targets that name no concrete backend port - the
+// port-agnostic ":80 -> 8080" front-door form - yield false: with no port there
+// is nothing to line up against a pod probe.
+func routeBackend(r RouteResult) (name string, port int32, ok bool) {
+	target := strings.TrimSpace(r.Target)
+	i := strings.LastIndex(target, ":")
+	if i <= 0 {
+		return "", 0, false
+	}
+	name = strings.TrimSpace(target[:i])
+	p, err := strconv.Atoi(strings.TrimSpace(target[i+1:]))
+	if name == "" || err != nil || p <= 0 {
+		return "", 0, false
+	}
+	return name, int32(p), true
+}
+
+// podPortForService maps a Service port to the pod-side port it forwards to,
+// reading named ports from the Pods hop's config snapshot. Reports false when
+// the Service declares no such port or a named port resolves to nothing - the
+// caller must then decline to localize.
+func podPortForService(svc, pods *Hop, servicePort int32) (int32, bool) {
+	if svc.Config == nil {
+		return 0, false
+	}
+	for _, pm := range svc.Config.Ports {
+		if pm.Port != servicePort {
+			continue
+		}
+		return resolvePortMap(pm, func(name string) (int32, bool) {
+			if pods.Config == nil {
+				return 0, false
+			}
+			for _, cp := range pods.Config.ContainerPorts {
+				if cp.Name == name {
+					return cp.Port, true
+				}
+			}
+			return 0, false
+		})
+	}
+	return 0, false
+}
+
+// reachedPodOrigins returns the (vantage, path) origins that reached a pod on
+// this specific port. Only a real success counts - a skip carries no observation,
+// and a success on a DIFFERENT container port says nothing about this one.
+func reachedPodOrigins(pods *Hop, port int32) map[string]bool {
+	out := map[string]bool{}
+	for _, pr := range pods.Probes {
+		if pr.Skipped || !pr.OK || pr.Port != port {
+			continue
+		}
+		out[string(pr.Vantage)+"\x00"+string(pr.Path)] = true
+	}
+	return out
 }
 
 // ProbeRequest is a concrete HTTP request a user can run against a Service from
@@ -1241,7 +1362,14 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 		// Every rule pointing at the broken backend is genuinely broken.
 		if ev, broken := branchKnownBreak(t, entry, b); broken {
 			for _, rr := range rules {
-				out = append(out, RouteResult{Route: rr.label, Target: target, Outcome: OutcomeUnreachable, Evidence: ev})
+				out = append(out, RouteResult{
+					Route:           rr.label,
+					Target:          target,
+					TargetNamespace: backend.Resource.Namespace,
+					Outcome:         OutcomeUnreachable,
+					Evidence:        ev,
+					Basis:           BasisConfig,
+				})
 			}
 			continue
 		}

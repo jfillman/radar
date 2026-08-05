@@ -373,11 +373,11 @@ func effectivePolicyTypes(np *networkingv1.NetworkPolicy) effectiveTypes {
 	return effectiveTypes{ingress: true, egress: len(np.Spec.Egress) > 0}
 }
 
-// resolveTargetPort maps a Service port's targetPort to the numeric container
-// port a NetworkPolicy actually matches on this pod. A numeric targetPort is
-// used as-is; a named targetPort resolves against the pod's container ports; an
-// empty targetPort defaults to the Service port number.
-func resolveTargetPort(pm PortMap, pod *corev1.Pod) (int32, bool) {
+// resolvePortMap applies Kubernetes' targetPort rule - numeric used as-is, empty
+// defaults to the Service port, named resolved by lookup - leaving the caller to
+// say WHERE named ports are read from (a live Pod spec, or a hop's config
+// snapshot). The rule lives here once so the two sources can't drift.
+func resolvePortMap(pm PortMap, byName func(string) (int32, bool)) (int32, bool) {
 	tp := strings.TrimSpace(pm.TargetPort)
 	if tp == "" {
 		return pm.Port, true
@@ -385,7 +385,15 @@ func resolveTargetPort(pm PortMap, pod *corev1.Pod) (int32, bool) {
 	if n, err := strconv.ParseInt(tp, 10, 32); err == nil {
 		return int32(n), true
 	}
-	return containerPortByName(pod, tp, protocolOrTCP(pm.Protocol))
+	return byName(tp)
+}
+
+// resolveTargetPort maps a Service port's targetPort to the numeric container
+// port a NetworkPolicy actually matches on this pod.
+func resolveTargetPort(pm PortMap, pod *corev1.Pod) (int32, bool) {
+	return resolvePortMap(pm, func(name string) (int32, bool) {
+		return containerPortByName(pod, name, protocolOrTCP(pm.Protocol))
+	})
 }
 
 func containerPortByName(pod *corev1.Pod, name string, proto corev1.Protocol) (int32, bool) {

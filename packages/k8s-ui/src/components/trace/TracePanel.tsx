@@ -84,6 +84,9 @@ export interface InClusterCapability {
   reason?: string
   cluster?: string
   namespace: string
+  /** Per-call ceiling on probe Pods. Routes past it never run - ordering is
+   *  deterministic, so re-running starts from the same first maxProbes. */
+  maxProbes?: number
 }
 
 type AlertTone = 'success' | 'warning' | 'error' | 'info'
@@ -348,7 +351,7 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
           (it mutates: spawns a Job), clearly subordinate to the primary, with an
           in-cluster glyph so it's distinguishable without hover. */}
       {showInCluster && (
-        <Tooltip content="Runs the probe from a short-lived Job INSIDE the cluster — real pod-to-pod traffic — to confirm the in-cluster data path. Covers EVERY path on this resource, not only the one selected above.">
+        <Tooltip content="Runs the probe from short-lived Jobs INSIDE the cluster — real pod-to-pod traffic — to confirm the in-cluster data path. Covers the testable paths on this resource, not only the one selected above; the confirmation names how many will actually run.">
           <button
             type="button"
             onClick={onRunInCluster}

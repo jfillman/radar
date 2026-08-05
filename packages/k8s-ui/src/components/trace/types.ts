@@ -297,6 +297,11 @@ export interface RouteResult {
    *  A STARTING POINT the user edits before running; pathGuessed marks a path
    *  derived from a pattern (no single faithful request exists). */
   inClusterRequest?: ProbeRequest
+  /** Where this route's `outcome` came from. Absent (the normal case) means it
+   *  was OBSERVED and `byVantage` says by whom; 'config' means it was derived
+   *  from declared configuration and NO vantage dialled it, so it must never be
+   *  rendered as the selected origin's observation. */
+  basis?: 'config'
   /** Each vantage's OWN view of this route.
    *
    *  `outcome` / `confidence` / `evidence` above are a documented lossy rollup:

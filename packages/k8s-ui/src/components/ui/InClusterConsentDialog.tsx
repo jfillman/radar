@@ -19,6 +19,8 @@ interface InClusterConsentDialogProps {
   /** Declared paths the run covers but for which no concrete request could be
    *  derived. They still count toward the scope the operator is agreeing to. */
   untestedCount?: number
+  /** Server-side ceiling on probe Pods per call. */
+  maxProbes?: number
   onClose: () => void
   onConfirm: () => void
 }
@@ -38,13 +40,20 @@ export function inClusterConsentDetails(o: {
   namespace: string
   requests?: ConsentRequest[]
   untestedCount?: number
+  /** Server-side ceiling on probe Pods per call. Routes past it do not run, and
+   *  since ordering is deterministic they are not reached by re-running either -
+   *  so the screen must say so rather than imply full coverage. */
+  maxProbes?: number
 }): string {
   const reqs = o.requests ?? []
   const untested = o.untestedCount ?? 0
   const total = reqs.length + untested
+  const cap = o.maxProbes ?? 0
+  const willRun = cap > 0 ? Math.min(reqs.length, cap) : reqs.length
   const lines = [cluster(o.cluster), `Namespace: ${o.namespace}`]
   if (total > 0) {
-    lines.push(`Covers:    ${total} declared path${total === 1 ? '' : 's'} on this resource`)
+    lines.push(`Declared:  ${total} path${total === 1 ? '' : 's'} on this resource`)
+    lines.push(`Will run:  ${willRun} request${willRun === 1 ? '' : 's'}, one Pod each`)
   }
   for (const r of reqs.slice(0, MAX_LISTED_REQUESTS)) {
     lines.push(`  → ${r.request}`)
@@ -56,6 +65,10 @@ export function inClusterConsentDetails(o: {
   if (untested > 0) {
     lines.push(`  → ${untested} path${untested === 1 ? '' : 's'} with no derivable request`)
   }
+  const beyond = reqs.length - willRun
+  if (beyond > 0) {
+    lines.push(`  → ${beyond} beyond the ${cap}-Pod limit — not tested, and re-running starts from the same first ${cap}`)
+  }
   return lines.filter(Boolean).join('\n')
 }
 
@@ -66,7 +79,7 @@ function cluster(name?: string): string {
 // Confirms the mutating in-cluster reachability test before it spawns a Job/pod,
 // naming the cluster it lands in. Permission is enforced upstream (the button only
 // renders when the capability SSAR allows), so this is a safety confirm, not authz.
-export function InClusterConsentDialog({ open, cluster, namespace, requests, untestedCount, onClose, onConfirm }: InClusterConsentDialogProps) {
+export function InClusterConsentDialog({ open, cluster, namespace, requests, untestedCount, maxProbes, onClose, onConfirm }: InClusterConsentDialogProps) {
   const [dontAskAgain, setDontAskAgain] = useState(false)
 
   function handleClose() {
@@ -86,8 +99,8 @@ export function InClusterConsentDialog({ open, cluster, namespace, requests, unt
       onClose={handleClose}
       onConfirm={handleConfirm}
       title="Run in-cluster reachability test?"
-      message="This creates a short-lived, self-deleting Job that sends real pod-to-pod traffic from inside the cluster, running as your own RBAC."
-      details={inClusterConsentDetails({ cluster, namespace, requests, untestedCount })}
+      message="This creates one short-lived, self-deleting Job per request, sending real pod-to-pod traffic from inside the cluster. Each Pod runs under the target namespace’s default ServiceAccount with no token mounted — not as you — and your cluster may inject sidecars into it."
+      details={inClusterConsentDetails({ cluster, namespace, requests, untestedCount, maxProbes })}
       confirmLabel="Run test"
       cancelLabel="Cancel"
       variant="warning"

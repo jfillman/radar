@@ -20,6 +20,11 @@ type probeCapabilityResponse struct {
 	Reason    string `json:"reason,omitempty"`
 	Cluster   string `json:"cluster,omitempty"`
 	Namespace string `json:"namespace"`
+	// MaxProbes is the per-call ceiling on probe Pods. Reported so the consent
+	// screen can state what a run actually covers: route order is deterministic,
+	// so routes past the cap are not merely deferred - re-running starts from the
+	// same first MaxProbes and never reaches them.
+	MaxProbes int `json:"maxProbes"`
 }
 
 // handleProbeInClusterCapability tells the UI whether the in-cluster test will
@@ -38,7 +43,11 @@ func (s *Server) handleProbeInClusterCapability(w http.ResponseWriter, r *http.R
 	}
 	// Resolved only past the connected gate: the fallback path issues a live
 	// kube-system GET, which is a doomed API call while disconnected.
-	resp := probeCapabilityResponse{Cluster: k8s.ClusterIdentity(r.Context()), Namespace: namespace}
+	resp := probeCapabilityResponse{
+		Cluster:   k8s.ClusterIdentity(r.Context()),
+		Namespace: namespace,
+		MaxProbes: reachability.MaxInClusterProbes,
+	}
 	client := s.getClientForRequest(r)
 	if client == nil {
 		resp.Reason = "cluster client not available"

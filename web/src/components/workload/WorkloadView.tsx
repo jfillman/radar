@@ -1768,9 +1768,19 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
     for (const r of displayTrace?.routes ?? []) {
       const req = r.inClusterRequest
       if (!req) continue
+      // The runner skips benign (deliberately scaled-to-0) routes outright, so
+      // listing them as requests overstates what the operator is agreeing to.
+      if (r.benign) continue
       const path = override || req.path || '/'
-      const host = req.host ? `${req.scheme || 'http'}://${req.host}` : r.target || ''
-      rows.push({ route: r.route, request: `GET ${host}${path}`.trim() })
+      // The probe dials the SERVICE and passes the hostname as a Host/SNI header.
+      // Showing only the hostname put a public-looking address on a consent
+      // screen for traffic that never leaves the cluster - so name the address
+      // actually dialled, and the Host header as the header it is.
+      const dialled = r.target || ''
+      const scheme = req.scheme || 'http'
+      const addr = dialled ? `${scheme}://${dialled}${path}` : `${scheme}://${req.host ?? ''}${path}`
+      const asHost = req.host && dialled ? ` (Host: ${req.host})` : ''
+      rows.push({ route: r.route, request: `GET ${addr}${asHost}`.trim() })
     }
     return rows
   }, [displayTrace, override])
@@ -1817,6 +1827,7 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
         namespace={inClusterCap?.namespace ?? namespace}
         requests={consentRequests}
         untestedCount={consentUntestedCount}
+        maxProbes={inClusterCap?.maxProbes}
         onClose={() => setPendingRunPath(null)}
         onConfirm={confirmInClusterRun}
       />

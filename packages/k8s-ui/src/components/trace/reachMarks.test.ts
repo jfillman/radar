@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, isSlow, formatLatency, hostMatches, declaredHosts, routeHostOf, routeForOrigin, routeAsSeenFrom, originRouteEvidence, MARKS } from './reachMarks'
+import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, groupRoutes, vantageSignature, isSlow, formatLatency, hostMatches, declaredHosts, routeHostOf, routeForOrigin, routeAsSeenFrom, originRouteEvidence, MARKS } from './reachMarks'
 import type { RouteResult, Hop } from './types'
 
 const r = (o: Partial<RouteResult>): RouteResult => ({ route: 'GET /', outcome: 'verified', ...o })
@@ -458,5 +458,89 @@ describe('missing-row semantics', () => {
     const ev = originRouteEvidence(laptopOnly, 'local')
     expect(ev.kind).toBe('own')
     expect(ev.kind === 'own' && ev.result.outcome).toBe('unreachable')
+  })
+})
+
+describe('groupRoutes keeps apart what the board would otherwise speak for', () => {
+  const base = (o: Partial<RouteResult>): RouteResult => ({
+    route: 'a.example.com/', target: 'shop:80', outcome: 'verified', confidence: 'real', ...o,
+  })
+
+  // The whole point of the per-vantage split: two routes whose ROLLUPS agree can
+  // still disagree per vantage. Folding them puts rs[0] in charge of the board,
+  // so the route that fails from a laptop is represented by the one that works.
+  it('splits routes whose rollups agree but whose vantages disagree', () => {
+    const works = base({
+      route: 'a.example.com/',
+      byVantage: [{ vantage: 'local', path: 'data', outcome: 'verified' }],
+    })
+    const fails = base({
+      route: 'b.example.com/',
+      byVantage: [{ vantage: 'local', path: 'data', outcome: 'unreachable' }],
+    })
+    expect(groupRoutes([works, fails])).toHaveLength(2)
+  })
+
+  it('still folds routes that agree on every axis', () => {
+    const one = base({ route: 'a.example.com/', byVantage: [{ vantage: 'local', path: 'data', outcome: 'verified' }] })
+    const two = base({ route: 'b.example.com/', byVantage: [{ vantage: 'local', path: 'data', outcome: 'verified' }] })
+    expect(groupRoutes([one, two])).toHaveLength(1)
+  })
+
+  it('keeps same-named Services in different namespaces apart', () => {
+    const prod = base({ route: 'a.example.com/', targetNamespace: 'prod' })
+    const staging = base({ route: 'b.example.com/', targetNamespace: 'staging' })
+    expect(groupRoutes([prod, staging])).toHaveLength(2)
+  })
+
+  // Same outcome and layer, different reason: showing one and hiding the other
+  // behind a tab that claims to speak for both loses the actual diagnosis.
+  it('keeps differing evidence apart at every outcome, not just not-tested', () => {
+    const refused = base({ route: 'a.example.com/', outcome: 'unreachable', failedLayer: 'tcp', evidence: 'connection refused' })
+    const timeout = base({ route: 'b.example.com/', outcome: 'unreachable', failedLayer: 'tcp', evidence: 'timed out' })
+    expect(groupRoutes([refused, timeout])).toHaveLength(2)
+  })
+
+  it('counts paths, not hostnames, when a fold shares one host', () => {
+    const admin = base({ route: 'a.example.com/admin' })
+    const web = base({ route: 'a.example.com/web' })
+    const [s] = groupRoutes([admin, web])
+    expect(s.routes).toHaveLength(2)
+    expect(s.sub).toContain('2 paths')
+  })
+
+  it('vantageSignature is order-independent', () => {
+    const a = base({ byVantage: [{ vantage: 'local', path: 'data', outcome: 'verified' }, { vantage: 'in-cluster', path: 'data', outcome: 'unreachable' }] })
+    const b = base({ byVantage: [{ vantage: 'in-cluster', path: 'data', outcome: 'unreachable' }, { vantage: 'local', path: 'data', outcome: 'verified' }] })
+    expect(vantageSignature(a)).toBe(vantageSignature(b))
+  })
+})
+
+describe('a config-derived break belongs to no vantage', () => {
+  const known: RouteResult = {
+    route: 'a.example.com/', target: 'missing:80', outcome: 'unreachable',
+    evidence: 'backend Service does not exist', basis: 'config',
+  }
+
+  // It has no byVantage by construction, and the rollup fallback would otherwise
+  // hand it to whichever origin happened to be selected - presenting a static
+  // configuration fact as that vantage's failed dial.
+  it('is reported as config, never as the selected origin\'s observation', () => {
+    for (const id of ['local', 'incluster', 'apiserver']) {
+      expect(originRouteEvidence(known, id).kind).toBe('config')
+    }
+  })
+
+  it('still carries its evidence', () => {
+    const ev = originRouteEvidence(known, 'local')
+    expect(ev.kind === 'config' && ev.result.evidence).toBe('backend Service does not exist')
+  })
+
+  it('an observed route is unaffected', () => {
+    const observed: RouteResult = {
+      route: 'a/', target: 'shop:80', outcome: 'verified',
+      byVantage: [{ vantage: 'local', path: 'data', outcome: 'verified' }],
+    }
+    expect(originRouteEvidence(observed, 'local').kind).toBe('own')
   })
 })

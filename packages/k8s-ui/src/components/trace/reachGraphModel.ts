@@ -372,10 +372,16 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
    * than saying nothing at all.
    */
   const routeTarget = (route?.target ?? '').split(':')[0].trim().toLowerCase()
+  // Namespace is part of the identity: a Gateway API backendRef can point at a
+  // same-named Service in another namespace, and matching on name alone would
+  // focus the wrong branch.
+  const routeTargetNs = (route?.targetNamespace || trace.subject.namespace || '').toLowerCase()
   const onSelectedPath = (h: Hop): boolean => {
     if (servesRoute(h)) return true
     const name = (h.resource?.name ?? '').toLowerCase()
-    return !!routeTarget && name === routeTarget
+    if (!routeTarget || name !== routeTarget) return false
+    const ns = (h.resource?.namespace || '').toLowerCase()
+    return !ns || !routeTargetNs || ns === routeTargetNs
   }
   const matchedBackends = backends.filter((b) => onSelectedPath(b.hop))
   const focusBranches = matchedBackends.length > 0 && matchedBackends.length < backends.length
@@ -424,6 +430,8 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
    * through them: both then point at the subject, which is the truth - one
    * exercised, one merely configured.
    */
+  // Route kinds carry no address; a probe reaches their backends, never them.
+  const subjectIsAddressable = trace.subject.kind !== 'HTTPRoute' && trace.subject.kind !== 'GRPCRoute'
   const bypassesFrontDoor = origin.id === 'apiserver' || origin.id === 'incluster'
   const originSkipsEntries = upstreams.length > 0 && bypassesFrontDoor
   const colOrigin = originSkipsEntries ? COL_ENTRY : COL_ORIGIN
@@ -572,7 +580,15 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         detail = slowest ? `slow · ${formatLatency(slowest.latencyNs)}` : best?.detail || 'reached'
       }
       if (!p.ready && publishNotReady) detail = `${detail} · not ready, sent traffic anyway`
-      podRows.push({ name: p.name, mark, detail, ref: { kind: 'Pod', name: p.name, namespace: trace.subject.namespace } })
+      // The Pods hop carries its own namespace, which differs from the subject's
+      // for a cross-namespace backend - navigating by the subject's would open a
+      // Pod that isn't there.
+      podRows.push({
+        name: p.name,
+        mark,
+        detail,
+        ref: { kind: 'Pod', name: p.name, namespace: hop.resource?.namespace || trace.subject.namespace },
+      })
     }
 
     placed.push({
@@ -685,10 +701,14 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   // test this route, which outranks anything it did on OTHER routes - so the
   // coarse pooled gate only applies to legacy traces with no breakdown at all.
   const hasEvidence = ev.kind === 'own' || (ev.kind === 'rollup' && originProducedEvidence(origin))
+  // Known broken from configuration: true of every vantage, dialled by none.
+  const fromConfig = ev.kind === 'config'
   const routeMarkNow: Mark = asSeen ? routeMark(asSeen, { stale, running }) : 'untested'
   // A relay can never read as proof: it bypassed the real network path however
   // clean the response was.
-  const entryMark: Mark = !hasEvidence
+  const entryMark: Mark = fromConfig
+    ? 'config'
+    : !hasEvidence
     ? origin.mark
     : originIsControl && routeMarkNow === 'proved'
       ? 'proxied'
@@ -696,7 +716,9 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const originBlocked = !!origin.unavailable && origin.mark === 'blocked'
   const noEvidenceLabel =
     origin.mark === 'denied' ? 'not permitted' : origin.mark === 'blocked' ? 'not routable' : 'not tested'
-  const entryLabel = !hasEvidence
+  const entryLabel = fromConfig
+    ? 'broken as configured'
+    : !hasEvidence
     ? noEvidenceLabel
     : asSeen?.evidence || (originIsControl ? 'relayed by Kubernetes' : 'request')
 
@@ -716,13 +738,24 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     for (const up of upstreams) {
       connect(`e:${`n:${refId(up.resource)}`}-subject`, `n:${refId(up.resource)}`, subjectNodeId, 'config', 'routes to')
     }
-    connect(
-      'e:origin-subject',
-      originNodeId,
-      subjectNodeId,
-      originBlocked ? 'blocked' : entryMark,
-      originSkipsEntries ? 'direct to backend' : entryLabel,
-    )
+    // An HTTPRoute/GRPCRoute has no address of its own - reachability lives on
+    // the parent Gateway and the backend Service. A bypassing origin therefore
+    // dials the BACKEND, and terminating its edge on the route object would draw
+    // a request to something nothing can dial. Land it on the backends instead.
+    const bypassTargets = !subjectIsAddressable && originSkipsEntries ? expanded.map((b) => b.id) : []
+    if (bypassTargets.length > 0) {
+      for (const id of bypassTargets) {
+        connect(`e:origin-${id}`, originNodeId, id, originBlocked ? 'blocked' : entryMark, 'dialled directly')
+      }
+    } else {
+      connect(
+        'e:origin-subject',
+        originNodeId,
+        subjectNodeId,
+        originBlocked ? 'blocked' : entryMark,
+        originSkipsEntries ? 'direct to backend' : entryLabel,
+      )
+    }
   }
   for (const b of expanded) {
     const onPath = !focusBranches || matchedBackends.includes(b)
@@ -749,8 +782,8 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   }
   const laneControl = boxFor(
     nodes.filter((n) => n.lane === 'control'),
-    'FROM OUTSIDE THE CLUSTER',
-    'Started outside the cluster. What it crosses on the way depends on the address it was given — a public hostname goes through your load balancer and ingress, while a relayed request skips the cluster network altogether.',
+    'NOT THROUGH THE CLUSTER NETWORK',
+    'These requests never traverse kube-proxy, NetworkPolicy or the mesh. A dial from your machine takes your own network to whatever address it was given; a relayed request is carried by the Kubernetes control plane. Neither exercises the path real traffic takes.',
     'var(--color-info)',
     true,
   )

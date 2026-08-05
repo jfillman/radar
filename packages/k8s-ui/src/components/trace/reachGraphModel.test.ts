@@ -182,6 +182,21 @@ describe('the whole configured chain is drawn', () => {
     const g = buildGraph({ trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: pick(t, id) })
     const gatewayId = 'n:Gateway/infra/primary-gateway'
     expect(g.edges.some((e) => e.id === `e:origin-${gatewayId}`)).toBe(false)
+    // An HTTPRoute has no address of its own, so the request lands on the
+    // BACKEND. Terminating the origin edge on the route object drew a dial to
+    // something nothing can dial - the very hop this test exists to deny.
+    expect(g.edges.some((e) => e.id === 'e:origin-subject')).toBe(false)
+    expect(g.edges.some((e) => e.id === 'e:origin-n:Service/store/shop')).toBe(true)
+  })
+
+  // A Service DOES have an address, so a bypassing origin still lands on it -
+  // the redirect above is about non-addressable route objects, not about every
+  // origin that skips the front door.
+  it('a bypassing origin still enters an addressable subject directly', () => {
+    const t = routeTrace()
+    t.subject = { kind: 'Service', name: 'shop', namespace: 'store' }
+    t.downstream![0] = { resource: t.subject, edge: 'entry:Service', findings: [], config: { clusterIP: '10.96.0.2' } }
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
     expect(g.edges.some((e) => e.id === 'e:origin-subject')).toBe(true)
   })
 

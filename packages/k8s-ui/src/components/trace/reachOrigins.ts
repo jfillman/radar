@@ -165,7 +165,11 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
     glyph: '⚗',
     name: 'In-cluster probe',
     mech: 'a throwaway Pod Radar starts inside the cluster',
-    identity: `in ${ns || 'the namespace'} · Radar’s own account, no sidecar`,
+    // The Job sets no serviceAccountName and disables token automount, so it runs
+    // as the target namespace's default SA with no credentials mounted - NOT as
+    // Radar. Sidecar injection is admission's call, not ours; the runner handles
+    // injected sidecars precisely because they do appear.
+    identity: `in ${ns || 'the namespace'} · the namespace’s default account, no token`,
     kind: 'synthetic',
     kindTag: ORIGIN_KIND_TAG.synthetic,
     lane: 'dataplane',

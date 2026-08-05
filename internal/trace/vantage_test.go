@@ -125,32 +125,61 @@ func TestMergeVantagesWithNothingFreshKeepsPrior(t *testing.T) {
 	}
 }
 
-func podsHopWith(probes ...probe.Result) Hop {
-	return Hop{Resource: ResourceRef{Kind: "Pods"}, Edge: "Service->Pods", Probes: probes}
+func podProbe(v probe.Vantage, p probe.Path, ok bool) probe.Result {
+	return podPortProbe(v, p, 8080, ok)
 }
 
-func podProbe(v probe.Vantage, p probe.Path, ok bool) probe.Result {
-	r := probe.Result{Layer: probe.LayerTCP, Target: "10.244.1.5:8080", Vantage: v, Path: p, OK: ok}
+func podPortProbe(v probe.Vantage, p probe.Path, port int32, ok bool) probe.Result {
+	r := probe.Result{Layer: probe.LayerTCP, Target: "10.244.1.5", Port: port, Vantage: v, Path: p, OK: ok}
 	if !ok {
 		r.Tone = probe.ToneUnhealthy
 	}
 	return r
 }
 
+// backendHops is one backend as the fan-out in entries.go actually emits it: the
+// Service hop carrying the port map, then the Pods hop behind it. Tests build on
+// this rather than a bare Pods hop - a lone Pods hop is a shape production never
+// produces, and testing it is why cross-backend leakage went unnoticed.
+func backendHops(ns, name string, servicePort int32, targetPort string, probes ...probe.Result) []Hop {
+	return []Hop{
+		{
+			Resource: ResourceRef{Kind: "Service", Namespace: ns, Name: name},
+			Edge:     "Ingress->Service",
+			Config:   &HopConfig{Ports: []PortMap{{Port: servicePort, TargetPort: targetPort}}},
+		},
+		{Resource: ResourceRef{Kind: "Pods", Namespace: ns}, Edge: "Service->Pods", Probes: probes},
+	}
+}
+
+func ingressTrace(backends ...[]Hop) *Trace {
+	hops := []Hop{{Resource: ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"}}}
+	for _, b := range backends {
+		hops = append(hops, b...)
+	}
+	return &Trace{Subject: ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"}, Downstream: hops}
+}
+
+// serviceTrace is the single-chain shape: the subject Service and its Pods.
+func serviceTrace(name string, servicePort int32, targetPort string, probes ...probe.Result) *Trace {
+	hops := backendHops("prod", name, servicePort, targetPort, probes...)
+	hops[0].Edge = ""
+	return &Trace{Subject: ResourceRef{Kind: "Service", Namespace: "prod", Name: name}, Downstream: hops}
+}
+
+func unreachableFrom(target string, v probe.Vantage, p probe.Path) RouteResult {
+	return RouteResult{
+		Route: "r", Target: target, TargetNamespace: "prod", Outcome: OutcomeUnreachable,
+		ByVantage: []VantageResult{{Vantage: string(v), Path: string(p), Outcome: OutcomeUnreachable}},
+	}
+}
+
 // The one boundary two observations can establish: the Service was unreachable
 // from a vantage, yet the SAME vantage reached the Pods behind it directly, so
 // the break is the Service's own routing.
 func TestLocalizeBoundariesNamesServiceRoutingFromTheSandwich(t *testing.T) {
-	tr := &Trace{
-		Downstream: []Hop{podsHopWith(podProbe(probe.VantageInCluster, probe.PathData, true))},
-		Routes: []RouteResult{{
-			Route:   "r",
-			Outcome: OutcomeUnreachable,
-			ByVantage: []VantageResult{
-				{Vantage: "in-cluster", Path: "data", Outcome: OutcomeUnreachable},
-			},
-		}},
-	}
+	tr := serviceTrace("checkout", 80, "8080", podProbe(probe.VantageInCluster, probe.PathData, true))
+	tr.Routes = []RouteResult{unreachableFrom("checkout:80", probe.VantageInCluster, probe.PathData)}
 	localizeBoundaries(tr)
 	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != BoundaryServiceRouting {
 		t.Errorf("FailedBoundary = %q, want %q - Service unreachable + Pods reachable from the SAME vantage localizes the break", got, BoundaryServiceRouting)
@@ -160,31 +189,87 @@ func TestLocalizeBoundariesNamesServiceRoutingFromTheSandwich(t *testing.T) {
 // A different vantage reaching the Pods proves nothing about this one - that is
 // the cross-vantage attribution the whole change exists to prevent.
 func TestLocalizeBoundariesWillNotBorrowAnotherVantagesPodEvidence(t *testing.T) {
-	tr := &Trace{
-		Downstream: []Hop{podsHopWith(podProbe(probe.VantageLocal, probe.PathAPIServer, true))},
-		Routes: []RouteResult{{
-			Route:     "r",
-			Outcome:   OutcomeUnreachable,
-			ByVantage: []VantageResult{{Vantage: "in-cluster", Path: "data", Outcome: OutcomeUnreachable}},
-		}},
-	}
+	tr := serviceTrace("checkout", 80, "8080", podProbe(probe.VantageLocal, probe.PathAPIServer, true))
+	tr.Routes = []RouteResult{unreachableFrom("checkout:80", probe.VantageInCluster, probe.PathData)}
 	localizeBoundaries(tr)
 	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
 		t.Errorf("FailedBoundary = %q, want empty", got)
 	}
 }
 
+// The same borrowing, one axis over: pods behind a DIFFERENT backend Service
+// answered. A multi-backend Ingress emits one Service+Pods hop per backend, so
+// reading "the" Pods hop of a trace would let backend A's healthy pods localize
+// backend B's failure - a confident red claim about a Service never probed.
+func TestLocalizeBoundariesWillNotBorrowAnotherBackendsPodEvidence(t *testing.T) {
+	tr := ingressTrace(
+		backendHops("prod", "web", 80, "8080", podProbe(probe.VantageLocal, probe.PathData, true)),
+		backendHops("prod", "api", 443, "8443"),
+	)
+	tr.Routes = []RouteResult{unreachableFrom("api:443", probe.VantageLocal, probe.PathData)}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
+		t.Errorf("FailedBoundary = %q: web's pods answering says nothing about api", got)
+	}
+}
+
+// Each backend still localizes from its OWN pods.
+func TestLocalizeBoundariesLocalizesEachBackendFromItsOwnPods(t *testing.T) {
+	tr := ingressTrace(
+		backendHops("prod", "web", 80, "8080", podProbe(probe.VantageLocal, probe.PathData, true)),
+		backendHops("prod", "api", 443, "8443"),
+	)
+	tr.Routes = []RouteResult{
+		unreachableFrom("web:80", probe.VantageLocal, probe.PathData),
+		unreachableFrom("api:443", probe.VantageLocal, probe.PathData),
+	}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != BoundaryServiceRouting {
+		t.Errorf("web should localize from its own pods, got %q", got)
+	}
+	if got := tr.Routes[1].ByVantage[0].FailedBoundary; got != "" {
+		t.Errorf("api has no pod evidence, got %q", got)
+	}
+}
+
+// A route and a pod probe are numbered in different port spaces - Service port
+// vs containerPort. Reaching a pod on 8080 says nothing about a route whose
+// traffic lands on 9090.
+func TestLocalizeBoundariesWillNotBorrowAnotherPortsPodEvidence(t *testing.T) {
+	tr := serviceTrace("checkout", 443, "9090", podPortProbe(probe.VantageInCluster, probe.PathData, 8080, true))
+	tr.Routes = []RouteResult{unreachableFrom("checkout:443", probe.VantageInCluster, probe.PathData)}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
+		t.Errorf("FailedBoundary = %q: a success on port 8080 is not evidence about 9090", got)
+	}
+}
+
+func TestLocalizeBoundariesResolvesNamedTargetPort(t *testing.T) {
+	tr := serviceTrace("checkout", 80, "http", podPortProbe(probe.VantageInCluster, probe.PathData, 8080, true))
+	tr.Downstream[1].Config = &HopConfig{ContainerPorts: []ContainerPortRef{{Name: "http", Port: 8080}}}
+	tr.Downstream[1].Probes = []probe.Result{podPortProbe(probe.VantageInCluster, probe.PathData, 8080, true)}
+	tr.Routes = []RouteResult{unreachableFrom("checkout:80", probe.VantageInCluster, probe.PathData)}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != BoundaryServiceRouting {
+		t.Errorf("a named targetPort must resolve through the container ports, got %q", got)
+	}
+}
+
+// An unresolvable port mapping is not a licence to guess.
+func TestLocalizeBoundariesDeclinesWhenPortMappingUnresolvable(t *testing.T) {
+	tr := serviceTrace("checkout", 80, "http", podPortProbe(probe.VantageInCluster, probe.PathData, 8080, true))
+	tr.Routes = []RouteResult{unreachableFrom("checkout:80", probe.VantageInCluster, probe.PathData)}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
+		t.Errorf("FailedBoundary = %q with an unresolvable named targetPort", got)
+	}
+}
+
 // Both sides failing is an undifferentiated failure: the break could be the
 // Service OR the workload, so it must colour nothing.
 func TestLocalizeBoundariesStaysSilentWhenPodsAlsoFailed(t *testing.T) {
-	tr := &Trace{
-		Downstream: []Hop{podsHopWith(podProbe(probe.VantageInCluster, probe.PathData, false))},
-		Routes: []RouteResult{{
-			Route:     "r",
-			Outcome:   OutcomeUnreachable,
-			ByVantage: []VantageResult{{Vantage: "in-cluster", Path: "data", Outcome: OutcomeUnreachable}},
-		}},
-	}
+	tr := serviceTrace("checkout", 80, "8080", podProbe(probe.VantageInCluster, probe.PathData, false))
+	tr.Routes = []RouteResult{unreachableFrom("checkout:80", probe.VantageInCluster, probe.PathData)}
 	localizeBoundaries(tr)
 	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
 		t.Errorf("FailedBoundary = %q, want empty when neither side is known good", got)
@@ -194,14 +279,8 @@ func TestLocalizeBoundariesStaysSilentWhenPodsAlsoFailed(t *testing.T) {
 func TestLocalizeBoundariesIgnoresSkippedPodProbes(t *testing.T) {
 	skipped := podProbe(probe.VantageInCluster, probe.PathData, true)
 	skipped.Skipped = true
-	tr := &Trace{
-		Downstream: []Hop{podsHopWith(skipped)},
-		Routes: []RouteResult{{
-			Route:     "r",
-			Outcome:   OutcomeUnreachable,
-			ByVantage: []VantageResult{{Vantage: "in-cluster", Path: "data", Outcome: OutcomeUnreachable}},
-		}},
-	}
+	tr := serviceTrace("checkout", 80, "8080", skipped)
+	tr.Routes = []RouteResult{unreachableFrom("checkout:80", probe.VantageInCluster, probe.PathData)}
 	localizeBoundaries(tr)
 	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
 		t.Errorf("a skipped probe carries no observation: got %q", got)
@@ -210,16 +289,52 @@ func TestLocalizeBoundariesIgnoresSkippedPodProbes(t *testing.T) {
 
 // A route that got through has no boundary to name.
 func TestLocalizeBoundariesLeavesReachableRoutesAlone(t *testing.T) {
-	tr := &Trace{
-		Downstream: []Hop{podsHopWith(podProbe(probe.VantageInCluster, probe.PathData, true))},
-		Routes: []RouteResult{{
-			Route:     "r",
-			Outcome:   OutcomeVerified,
-			ByVantage: []VantageResult{{Vantage: "in-cluster", Path: "data", Outcome: OutcomeVerified}},
-		}},
-	}
+	tr := serviceTrace("checkout", 80, "8080", podProbe(probe.VantageInCluster, probe.PathData, true))
+	tr.Routes = []RouteResult{{
+		Route: "r", Target: "checkout:80", TargetNamespace: "prod", Outcome: OutcomeVerified,
+		ByVantage: []VantageResult{{Vantage: "in-cluster", Path: "data", Outcome: OutcomeVerified}},
+	}}
 	localizeBoundaries(tr)
 	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
 		t.Errorf("FailedBoundary = %q on a verified route", got)
+	}
+}
+
+// A same-named Service in another namespace is a distinct backend.
+func TestLocalizeBoundariesKeepsNamespacesApart(t *testing.T) {
+	tr := ingressTrace(
+		backendHops("staging", "api", 80, "8080", podProbe(probe.VantageLocal, probe.PathData, true)),
+		backendHops("prod", "api", 80, "8080"),
+	)
+	tr.Routes = []RouteResult{{
+		Route: "r", Target: "api:80", TargetNamespace: "prod", Outcome: OutcomeUnreachable,
+		ByVantage: []VantageResult{{Vantage: "local", Path: "data", Outcome: OutcomeUnreachable}},
+	}}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
+		t.Errorf("FailedBoundary = %q: staging/api's pods are not evidence about prod/api", got)
+	}
+}
+
+// A break read off declared configuration is true of every vantage and observed
+// by none. Without an explicit marker the consumer can only infer it from an
+// empty ByVantage, and absence is ambiguous - which is how a static break came
+// to be rendered as the selected vantage's failed dial.
+func TestKnownStaticBreakIsMarkedAsConfigDerived(t *testing.T) {
+	tr := &Trace{
+		Subject:    ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"},
+		Downstream: []Hop{{Resource: ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"}}},
+		Routes: []RouteResult{{
+			Route: "a.example.com/", Target: "missing:80", Outcome: OutcomeUnreachable,
+			Evidence: "backend Service does not exist", Basis: BasisConfig,
+		}},
+	}
+	localizeBoundaries(tr)
+	r := tr.Routes[0]
+	if r.Basis != BasisConfig {
+		t.Errorf("Basis = %q, want %q", r.Basis, BasisConfig)
+	}
+	if len(r.ByVantage) != 0 {
+		t.Errorf("a config-derived break was dialled by nobody, so it carries no vantage rows: %+v", r.ByVantage)
 	}
 }

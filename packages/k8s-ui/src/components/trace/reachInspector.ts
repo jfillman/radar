@@ -64,7 +64,7 @@ export interface Sidebar {
 
 const NOT_DATAPLANE = 'Nothing about the normal network path. Kubernetes relayed this for us, so routing, network policy and the mesh were all skipped.'
 const SYNTHETIC_IDENTITY =
-  'That your app can reach it. This test ran as Radar, not as your application, and anything that checks who is calling may answer differently.'
+  'That your app can reach it. This test ran from a throwaway Pod under the namespace’s default account with no token mounted — not as your application — so anything that checks who is calling may answer differently.'
 
 function originScope(o: Origin, trace: Trace): { k: string; v: string }[] {
   const runsIn: Record<OriginId, string> = {
@@ -166,8 +166,17 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
   // "did this origin produce anything" gate only remains as the fallback.
   const ev = originRouteEvidence(route, origin.id)
   const asSeen = ev.kind === 'none' ? undefined : ev.result
+  // A config-derived break is true of every vantage and observed by none, so it
+  // reads as a configuration fact - never as this origin's failed dial.
+  const fromConfig = ev.kind === 'config'
   const hasEvidence = ev.kind === 'own' || (ev.kind === 'rollup' && originProducedEvidence(origin))
-  const mark: Mark = hasEvidence ? (asSeen ? routeMark(asSeen, { stale: ctx.stale, running: ctx.running }) : 'untested') : origin.mark
+  const mark: Mark = fromConfig
+    ? 'config'
+    : hasEvidence
+      ? asSeen
+        ? routeMark(asSeen, { stale: ctx.stale, running: ctx.running })
+        : 'untested'
+      : origin.mark
 
   const notProve: string[] = []
   if (origin.kind === 'synthetic') notProve.push(SYNTHETIC_IDENTITY)
@@ -186,7 +195,7 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     seen.add(key)
     evidence.push({ mark: m, text })
   }
-  if (hasEvidence && asSeen?.evidence) add(mark, asSeen.evidence)
+  if ((hasEvidence || fromConfig) && asSeen?.evidence) add(mark, asSeen.evidence)
   // The one boundary two observations can establish. Stated as the reasoning
   // that produced it, so it reads as evidence rather than as a verdict.
   if (ev.kind === 'own' && routeForOrigin(route, origin.id)?.failedBoundary === 'service-routing') {
@@ -215,7 +224,9 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
 
   const failed = mark === 'failed'
   const diagnosis = trace.diagnosis
-  const body = !hasEvidence
+  const body = fromConfig
+    ? 'The configuration itself is broken, so this path cannot work from any vantage. No request was sent to establish that — it is read off what is declared.'
+    : !hasEvidence
     ? origin.unavailable || 'Nothing has been tested from here, so this says nothing about whether traffic gets through.'
     : failed
     ? 'This is the first confirmed failure. Everything after it was never tried, so there is nothing to report past this point.'

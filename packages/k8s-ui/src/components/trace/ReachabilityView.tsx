@@ -407,12 +407,12 @@ function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: O
                 title={KIND_TAG_HELP[o.kind]}
               />
               <TinyTag
-                text={o.lane === 'dataplane' ? 'INSIDE THE CLUSTER' : 'OUTSIDE THE CLUSTER'}
+                text={o.lane === 'dataplane' ? 'CLUSTER NETWORK' : 'NOT THE CLUSTER NETWORK'}
                 tone={o.lane === 'dataplane' ? 'var(--accent-text)' : 'var(--color-info)'}
                 title={
                   o.lane === 'dataplane'
                     ? 'Runs from a Pod in the cluster, so the request goes through the cluster’s routing, network policy and mesh. It dials the backend directly, so it cannot show whether the front door works.'
-                    : 'Runs outside the cluster. What it crosses depends on the address it was given — a public hostname goes through your load balancer and ingress; a relayed request skips the cluster network entirely.'
+                    : 'Does not traverse kube-proxy, NetworkPolicy or the mesh. A dial from your machine uses your own network; a relayed request is carried by the Kubernetes control plane, which reaches the target from inside but not over the path real traffic takes.'
                 }
               />
               {/* An origin that already produced evidence is not "unavailable" -

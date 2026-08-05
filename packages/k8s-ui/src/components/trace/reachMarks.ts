@@ -130,10 +130,14 @@ export function routeForOrigin(route: RouteResult | undefined, originId: string)
 }
 
 /**
- * What we can honestly say about a route FROM one origin. Three cases that must
+ * What we can honestly say about a route FROM one origin. Four cases that must
  * never be collapsed:
  *
  *  - `own`     this origin's own result for this route. Use it.
+ *  - `config`  the producer says the outcome came from DECLARED CONFIGURATION
+ *              (`basis: 'config'`) - a backend that does not exist, say. It is
+ *              true of every origin and observed by none, so it is rendered as a
+ *              configuration fact and never as the selected origin's dial.
  *  - `none`    the producer DID send per-vantage results and this origin has no
  *              row, so it did not test this route. Not "unknown, guess from the
  *              rollup" - the absence is itself the evidence, and inheriting the
@@ -147,11 +151,16 @@ export function routeForOrigin(route: RouteResult | undefined, originId: string)
  */
 export type OriginEvidence =
   | { kind: 'own'; result: RouteResult }
+  | { kind: 'config'; result: RouteResult }
   | { kind: 'rollup'; result: RouteResult }
   | { kind: 'none' }
 
 export function originRouteEvidence(route: RouteResult | undefined, originId: string): OriginEvidence {
   if (!route) return { kind: 'none' }
+  // Checked before the per-vantage rows: a config-derived break has none by
+  // construction, and without this it would fall through to the rollup branch
+  // and be attributed to whichever origin happened to be selected.
+  if (route.basis === 'config') return { kind: 'config', result: route }
   const own = routeForOrigin(route, originId)
   if (own) {
     return {
@@ -383,6 +392,15 @@ export function entryForHost(host: string, upstreams: Hop[] = []): string {
  * that behaves differently, or arrives through a different front door, always
  * keeps its own tab.
  */
+/** A route's per-vantage outcomes, order-independent so two routes observed in a
+ *  different sequence still compare equal. */
+export function vantageSignature(r: RouteResult): string {
+  return (r.byVantage ?? [])
+    .map((v) => `${v.vantage}/${v.path}=${v.outcome}${v.failedBoundary ? `@${v.failedBoundary}` : ''}`)
+    .sort()
+    .join(',')
+}
+
 export function groupRoutes(routes: RouteResult[], upstreams: Hop[] = []): Scenario[] {
   const groups = new Map<string, RouteResult[]>()
   for (const r of orderRoutes(routes)) {
@@ -390,9 +408,29 @@ export function groupRoutes(routes: RouteResult[], upstreams: Hop[] = []): Scena
     // be verified through the proxy" and "port 80 timed out" are different
     // situations even though both are merely not-tested. Folding them together
     // would hide the distinction the operator needs.
-    const distinguishing = r.outcome === 'not-tested' ? r.evidence ?? '' : ''
+    // The evidence distinguishes routes at EVERY outcome, not only not-tested:
+    // "connection refused" and "timed out" are the same outcome and layer but
+    // different situations, and folding them shows the operator one and hides
+    // the other behind a tab that claims to speak for both.
+    const distinguishing = r.evidence ?? ''
     const entry = entryForHost(routeHostOf(r.route), upstreams)
-    const key = [r.target ?? '', r.outcome, r.confidence ?? '', r.failedLayer ?? '', r.benign ? 'benign' : '', distinguishing, entry].join('|')
+    const key = [
+      r.target ?? '',
+      // Same-named Services in different namespaces are different backends.
+      r.targetNamespace ?? '',
+      r.outcome,
+      r.confidence ?? '',
+      r.failedLayer ?? '',
+      r.benign ? 'benign' : '',
+      r.basis ?? '',
+      // Two routes whose rollups agree can still disagree per vantage - one
+      // working from a laptop and one not. Collapsing them puts rs[0] in charge
+      // of the whole board and destroys exactly the distinction byVantage was
+      // added to preserve.
+      vantageSignature(r),
+      distinguishing,
+      entry,
+    ].join('|')
     const arr = groups.get(key) ?? []
     arr.push(r)
     groups.set(key, arr)
@@ -408,7 +446,10 @@ export function groupRoutes(routes: RouteResult[], upstreams: Hop[] = []): Scena
       key,
       label: grouped ? primary.target || `${rs.length} routes` : primary.route,
       sub: grouped
-        ? `${hosts.length} hostname${hosts.length === 1 ? '' : 's'}${primary.target ? ` · ${primary.target}` : ''}${via}`
+        ? // Routes folded together can share a hostname and differ only by path.
+          // Counting hostnames then reported "1 hostname" for a tab standing in
+          // for several paths, undercounting what it speaks for.
+          `${hosts.length < rs.length ? `${rs.length} paths` : `${hosts.length} hostname${hosts.length === 1 ? '' : 's'}`}${primary.target ? ` · ${primary.target}` : ''}${via}`
         : `${primary.target || ''}${via}`,
       routes: rs,
       primary,

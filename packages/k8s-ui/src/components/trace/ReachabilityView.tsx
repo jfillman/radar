@@ -374,6 +374,13 @@ const KIND_TAG_HELP: Record<string, string> = {
 }
 
 function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: OriginId; onPick: (id: OriginId) => void }) {
+  // Ordered by what was actually LEARNED, not by theoretical strength. The rail
+  // is sorted worst-first elsewhere, but here an origin that produced evidence
+  // is the one the reader wants: it led with vantages that had never run, so the
+  // only row carrying a result sat at the bottom.
+  const usable = origins.filter((o) => !o.unsupported)
+  const tested = usable.filter((o) => originProducedEvidence(o))
+  const notRun = usable.filter((o) => !originProducedEvidence(o))
   return (
     <div className="bg-theme-surface py-2.5">
       <div className="px-3 pb-1 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">TESTED FROM</div>
@@ -383,68 +390,71 @@ function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: O
       >
         <span className="text-[10.5px] leading-snug text-theme-text-tertiary">Pick one to see what it found.</span>
       </Tooltip>
-      {/* Vantages Radar can never run are NOT offered as choices. What they
-          would have proven still is - as a statement below - so the coverage
-          gap stays visible without spending two of five rows on controls that
-          can only ever be clicked to be told "no". */}
-      {origins
-        .filter((o) => !o.unsupported)
-        .map((o) => {
-        const sel = o.id === active
-        return (
-          <button
-            key={o.id}
-            type="button"
-            onClick={() => onPick(o.id)}
-            className="mx-2 mb-1.5 block w-[calc(100%-16px)] cursor-pointer rounded-[20px] px-2.5 py-2 text-left"
-            style={{
-              border: `1px ${sel ? 'solid var(--accent)' : 'dashed var(--border-default)'}`,
-              background: sel ? 'var(--selection-bg)' : 'var(--bg-base)',
-              opacity: o.unsupported ? 0.72 : 1,
-            }}
-          >
-            <div className="flex items-center gap-1.5">
-              <span className="flex-none text-xs" style={{ color: sel ? 'var(--accent-text)' : 'var(--text-tertiary)' }}>
-                {o.glyph}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-theme-text-primary">{o.name}</span>
-              <MarkGlyph mark={o.mark} />
-            </div>
-            {/* Deliberately terse. The mechanism, identity and the reason an
-                origin is unusable all render in the inspector the moment it is
-                selected - repeating them here made the rail taller than the
-                graph and pushed the path off the pane. */}
-            <div className="mt-1.5 flex flex-wrap items-center gap-1">
-              <TinyTag
-                text={o.kindTag}
-                tone={o.kind === 'synthetic' ? 'var(--color-warning-dark)' : o.kind === 'relayed' ? 'var(--color-info)' : 'var(--color-success-dark)'}
-                title={KIND_TAG_HELP[o.kind]}
-              />
-              <TinyTag
-                text={o.lane === 'dataplane' ? 'CLUSTER NETWORK' : 'NOT THE CLUSTER NETWORK'}
-                tone={o.lane === 'dataplane' ? 'var(--accent-text)' : 'var(--color-info)'}
-                title={
-                  o.lane === 'dataplane'
-                    ? 'Runs from a Pod in the cluster, so the request goes through the cluster’s routing, network policy and mesh. It dials the backend directly, so it cannot show whether the front door works.'
-                    : 'Does not traverse kube-proxy, NetworkPolicy or the mesh. A dial from your machine uses your own network; a relayed request is carried by the Kubernetes control plane, which reaches the target from inside but not over the path real traffic takes.'
-                }
-              />
-              {/* An origin that already produced evidence is not "unavailable" -
-                  it just can't be run again. Showing both at once had the rail
-                  denying a result the graph beside it was displaying. */}
-              {o.unavailable && (
-                <Tooltip content={o.unavailable} wrapperClassName="cursor-help">
-                  <span className="text-[9px] text-theme-text-tertiary">
-                    {originProducedEvidence(o) ? '⊘ can’t run again' : '⊘ unavailable'}
-                  </span>
-                </Tooltip>
-              )}
-            </div>
-          </button>
-        )
-      })}
+      {tested.map((o) => (
+        <OriginTile key={o.id} origin={o} selected={o.id === active} onPick={onPick} />
+      ))}
+      {notRun.length > 0 && tested.length > 0 && (
+        <div className="mx-2 mb-1.5 mt-2 border-t border-theme-border pt-2 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">
+          NOT RUN YET
+        </div>
+      )}
+      {notRun.map((o) => (
+        <OriginTile key={o.id} origin={o} selected={o.id === active} onPick={onPick} />
+      ))}
       <UntestableNote origins={origins} />
     </div>
+  )
+}
+
+function OriginTile({ origin: o, selected: sel, onPick }: { origin: Origin; selected: boolean; onPick: (id: OriginId) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onPick(o.id)}
+      className="mx-2 mb-1.5 block w-[calc(100%-16px)] cursor-pointer rounded-[20px] px-2.5 py-2 text-left"
+      style={{
+        border: `1px ${sel ? 'solid var(--accent)' : 'dashed var(--border-default)'}`,
+        background: sel ? 'var(--selection-bg)' : 'var(--bg-base)',
+      }}
+    >
+      <div className="flex items-center gap-1.5">
+        <span className="flex-none text-xs" style={{ color: sel ? 'var(--accent-text)' : 'var(--text-tertiary)' }}>
+          {o.glyph}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-theme-text-primary">{o.name}</span>
+        <MarkGlyph mark={o.mark} />
+      </div>
+      {/* Deliberately terse. The mechanism, identity and the reason an origin is
+          unusable all render in the inspector the moment it is selected -
+          repeating them here made the rail taller than the graph and pushed the
+          path off the pane. */}
+      <div className="mt-1.5 flex flex-wrap items-center gap-1">
+        <TinyTag
+          text={o.kindTag}
+          tone={o.kind === 'synthetic' ? 'var(--color-warning-dark)' : o.kind === 'relayed' ? 'var(--color-info)' : 'var(--color-success-dark)'}
+          title={KIND_TAG_HELP[o.kind]}
+        />
+        <TinyTag
+          text={o.lane === 'dataplane' ? 'CLUSTER NETWORK' : 'NOT THE CLUSTER NETWORK'}
+          tone={o.lane === 'dataplane' ? 'var(--accent-text)' : 'var(--color-info)'}
+          title={
+            o.lane === 'dataplane'
+              ? 'Runs from a Pod in the cluster, so the request goes through the cluster’s routing, network policy and mesh. It dials the backend directly, so it cannot show whether the front door works.'
+              : 'Does not traverse kube-proxy, NetworkPolicy or the mesh. A dial from your machine uses your own network; a relayed request is carried by the Kubernetes control plane, which reaches the target from inside but not over the path real traffic takes.'
+          }
+        />
+        {/* An origin that already produced evidence is not "unavailable" - it
+            just can't be run again. Showing both at once had the rail denying a
+            result the graph beside it was displaying. */}
+        {o.unavailable && (
+          <Tooltip content={o.unavailable} wrapperClassName="cursor-help">
+            <span className="text-[9px] text-theme-text-tertiary">
+              {originProducedEvidence(o) ? '⊘ can’t run again' : '⊘ unavailable'}
+            </span>
+          </Tooltip>
+        )}
+      </div>
+    </button>
   )
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildGraph, POD_ROW_MAX, PILL_MAX_PX } from './reachGraphModel'
+import { buildGraph, shortEvidence, POD_ROW_MAX, PILL_MAX_PX } from './reachGraphModel'
 import { buildOrigins } from './reachOrigins'
 import type { Trace, RouteResult, PodStatus, ProbeResult } from './types'
 
@@ -868,5 +868,46 @@ describe('one route\'s evidence never spreads across sibling backends', () => {
     }
     const g = buildGraph({ trace: t, route: orphan, origin: pick(t, 'incluster') })
     expect(g.edges.some((e) => e.label === 'breaks here')).toBe(false)
+  })
+})
+
+describe('evidence written for a hover is shortened for a pill', () => {
+  // The producer writes full explanations. Rendered whole, the edge pill
+  // truncated mid-word to "Connectior refused...." and the pod row ran outside
+  // its node box.
+  it('keeps only the first sentence', () => {
+    expect(shortEvidence('Connection refused. Nothing is listening on the port.')).toBe('Connection refused')
+  })
+
+  it('drops a trailing full stop', () => {
+    expect(shortEvidence('Connection refused.')).toBe('Connection refused')
+  })
+
+  // "·" separates parts of ONE fact, not sentences - cutting there would throw
+  // away the latency that makes the row worth reading.
+  it('leaves a dot-separated detail intact', () => {
+    expect(shortEvidence('HTTP 200 · 41 ms')).toBe('HTTP 200 · 41 ms')
+  })
+
+  it('leaves a decimal point alone', () => {
+    expect(shortEvidence('slow · 1.4 s')).toBe('slow · 1.4 s')
+  })
+
+  it('is safe on empty input', () => {
+    expect(shortEvidence(undefined)).toBe('')
+  })
+
+  it('shortens the edge pill but keeps the full text on the hover', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({ vantage: 'in-cluster', path: 'data', ok: false, tone: 'unhealthy' })])
+    const long = 'Connection refused. Nothing is listening on the port.'
+    const g = buildGraph({
+      trace: t,
+      route: route({ outcome: 'unreachable', confidence: 'real', evidence: long }),
+      origin: pick(t, 'incluster'),
+    })
+    const edge = g.edges.find((e) => e.id === 'e:origin-subject')!
+    expect(edge.label).toBe('Connection refused')
+    // The explanation is moved to the hover, not thrown away.
+    expect(edge.title).toBe(long)
   })
 })

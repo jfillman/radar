@@ -135,6 +135,23 @@ function truncate(s: string, n = PILL_MAX_CHARS): string {
   return s.length <= n ? s : `${s.slice(0, n - 1)}…`
 }
 
+/**
+ * The headline clause of a probe's evidence.
+ *
+ * The producer writes full explanations - "Connection refused. Nothing is
+ * listening on the port." - which are right for a hover and far too long for an
+ * edge pill or a node row: the pill truncated mid-word to "Connectior
+ * refused...." and the row ran outside its box. Only the FIRST sentence is
+ * taken, and only at a real sentence break, so a "·"-separated detail like
+ * "HTTP 200 · 41 ms" survives intact. The untruncated text always stays on the
+ * hover.
+ */
+export function shortEvidence(s: string | undefined): string {
+  const t = (s ?? '').trim()
+  const cut = t.search(/\.\s/)
+  return (cut > 0 ? t.slice(0, cut) : t).replace(/\.$/, '').trim()
+}
+
 /** Estimated rendered height of a node box. The renderer uses fixed type sizes,
  *  so this stays accurate without a measure pass. */
 function estHeight(n: {
@@ -577,7 +594,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         const slowest = mine.filter(isSlow).sort((a, b) => (b.latencyNs ?? 0) - (a.latencyNs ?? 0))[0]
         mark = slowest ? 'slow' : 'proved'
         const best = mine.find((x) => x.layer === 'http') ?? mine[0]
-        detail = slowest ? `slow · ${formatLatency(slowest.latencyNs)}` : best?.detail || 'reached'
+        detail = slowest ? `slow · ${formatLatency(slowest.latencyNs)}` : shortEvidence(best?.detail) || 'reached'
       }
       if (!p.ready && publishNotReady) detail = `${detail} · not ready, sent traffic anyway`
       // The Pods hop carries its own namespace, which differs from the subject's
@@ -675,7 +692,10 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const brackets: { d: string }[] = []
   const crossesLanes = new Set<string>()
 
-  const connect = (id: string, fromId: string, toId: string, mark: Mark, label: string) => {
+  // `full` is the untruncated text for the hover. Without it a shortened pill
+  // label became the tooltip too, so the explanation was discarded rather than
+  // moved somewhere it fits.
+  const connect = (id: string, fromId: string, toId: string, mark: Mark, label: string, full?: string) => {
     const a = pos.get(fromId)
     const b = pos.get(toId)
     if (!a || !b) return
@@ -690,7 +710,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       d: `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`,
       mark,
       label: truncate(label),
-      title: label,
+      title: full || label,
       px: (x1 + x2) / 2,
       py: (y1 + y2) / 2,
     })
@@ -720,7 +740,9 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     ? 'broken as configured'
     : !hasEvidence
     ? noEvidenceLabel
-    : asSeen?.evidence || (originIsControl ? 'relayed by Kubernetes' : 'request')
+    : shortEvidence(asSeen?.evidence) || (originIsControl ? 'relayed by Kubernetes' : 'request')
+  // The whole sentence, for the hover.
+  const entryTitle = !hasEvidence && !fromConfig ? undefined : asSeen?.evidence || undefined
 
   // The request enters at the entry points that serve this host; everything
   // after is configuration, drawn dotted. There is no segment-local evidence to
@@ -729,7 +751,14 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     for (const up of upstreams) {
       const id = `n:${refId(up.resource)}`
       const active = activeUpstreams.includes(up)
-      connect(`e:origin-${id}`, originNodeId, id, originBlocked ? 'blocked' : active ? entryMark : 'untested', active ? entryLabel : 'other host')
+      connect(
+        `e:origin-${id}`,
+        originNodeId,
+        id,
+        originBlocked ? 'blocked' : active ? entryMark : 'untested',
+        active ? entryLabel : 'other host',
+        active ? entryTitle : undefined,
+      )
       connect(`e:${id}-subject`, id, subjectNodeId, 'config', 'routes to')
     }
   } else {
@@ -759,6 +788,7 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         subjectNodeId,
         originBlocked ? 'blocked' : entryMark,
         originSkipsEntries ? 'direct to backend' : entryLabel,
+        originSkipsEntries ? undefined : entryTitle,
       )
     }
   }

@@ -293,7 +293,7 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
           {node.anomalies.map((a, i) => (
             <div key={i} className="flex items-baseline gap-1.5">
               <MarkGlyph mark={a.mark} />
-              <span className="text-[9.5px] leading-[1.35] text-theme-text-secondary">{a.text}</span>
+              <span className="min-w-0 flex-1 truncate text-[9.5px] leading-[1.35] text-theme-text-secondary">{a.text}</span>
             </div>
           ))}
         </div>
@@ -315,8 +315,11 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
             >
               <div className="flex w-full items-baseline gap-1.5">
                 <span style={glyphStyle(r.mark)}>{markStyle(r.mark).glyph}</span>
-                <span className="min-w-0 flex-1 truncate font-mono text-[9.5px] text-theme-text-secondary">{r.name}</span>
-                <span className="shrink-0 text-[9px] text-theme-text-tertiary">{r.detail}</span>
+                <span className="min-w-0 flex-[2] truncate font-mono text-[9.5px] text-theme-text-secondary">{r.name}</span>
+                {/* Was shrink-0, so a long detail could not give way and ran
+                    straight out of the node. Both sides truncate now; the full
+                    text is on the hover either way. */}
+                <span className="min-w-0 flex-1 truncate text-right text-[9px] text-theme-text-tertiary">{r.detail}</span>
               </div>
             </Tooltip>
           ))}

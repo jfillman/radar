@@ -758,9 +758,15 @@ type networkDiagnoseResponse struct {
 }
 
 type coverageSummary struct {
-	Tested   int    `json:"tested"`
-	Passed   int    `json:"passed"`
-	Failed   int    `json:"failed"`
+	Tested int `json:"tested"`
+	Passed int `json:"passed"`
+	Failed int `json:"failed"`
+	// Derived counts routes known broken WITHOUT being dialled - a backendRef
+	// naming nothing, or a backend with no ready endpoints. They are real breaks
+	// but not test results, so they are reported apart from passed/failed. An
+	// agent that reads only passed/failed would otherwise see a trace with a
+	// missing backend as entirely clean.
+	Derived  int    `json:"derived,omitempty"`
 	Skipped  int    `json:"skipped"`
 	Headline string `json:"headline"`
 }
@@ -815,6 +821,7 @@ func buildNetworkDiagnoseResponse(tr *trace.Trace) networkDiagnoseResponse {
 		resp.Summary.Tested = tr.Coverage.Tested
 		resp.Summary.Passed = tr.Coverage.Passed
 		resp.Summary.Failed = tr.Coverage.Failed
+		resp.Summary.Derived = tr.Coverage.Derived
 		resp.Summary.Skipped = tr.Coverage.Skipped
 	}
 	return resp

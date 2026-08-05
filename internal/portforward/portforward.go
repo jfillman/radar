@@ -302,6 +302,32 @@ func GetAddress(preferOwner Owner, currentContext string) string {
 	return ""
 }
 
+// GetAddressForService is a target-aware variant of GetAddress: it returns the
+// address of an active forward for the given context ONLY if that forward points
+// at the requested namespace/service, preferring the caller's own forward before
+// a peer's. Unlike GetAddress, it never surfaces a forward bound to a different
+// backend — so a caller that needs a specific service (e.g. Caretta's
+// caretta-vm) can't adopt an unrelated owner's forward (e.g. the cluster's
+// general Prometheus), which answers the same generic /api/v1/query probe but
+// holds none of the caller's metrics. Empty if no matching forward exists.
+func GetAddressForService(preferOwner Owner, currentContext, namespace, serviceName string) string {
+	reg.mu.RLock()
+	defer reg.mu.RUnlock()
+	matches := func(f *metricsForward) bool {
+		return f != nil && f.active && f.contextName == currentContext &&
+			f.namespace == namespace && f.serviceName == serviceName
+	}
+	if matches(reg.forwards[preferOwner]) {
+		return fmt.Sprintf("http://localhost:%d", reg.forwards[preferOwner].localPort)
+	}
+	for owner, f := range reg.forwards {
+		if owner != preferOwner && matches(f) {
+			return fmt.Sprintf("http://localhost:%d", f.localPort)
+		}
+	}
+	return ""
+}
+
 // GetConnectionInfo returns the given owner's connection info.
 func GetConnectionInfo(owner Owner) *ConnectionInfo {
 	reg.mu.RLock()

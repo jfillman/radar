@@ -66,6 +66,53 @@ func TestGetAddressPrefersOwn(t *testing.T) {
 	}
 }
 
+// TestGetAddressForServiceIsTargetAware pins that the traffic (Caretta) source
+// must NOT adopt the general Prometheus forward. With only a
+// prometheus-owned forward to monitoring/prometheus-operated live, a Caretta
+// lookup for caretta/caretta-vm must return empty (no cross-adoption), forcing a
+// dedicated forward — whereas the old cross-owner GetAddress would hand back the
+// wrong backend, which answers the generic probe but holds no caretta metrics.
+func TestGetAddressForServiceIsTargetAware(t *testing.T) {
+	saved := reg
+	t.Cleanup(func() { reg = saved })
+	reg = &registry{forwards: map[Owner]*metricsForward{}}
+
+	// Only the general-metrics forward is up (owner=prometheus → prometheus-operated).
+	reg.forwards[OwnerPrometheus] = &metricsForward{
+		active: true, localPort: 15329, namespace: "monitoring", serviceName: "prometheus-operated", contextName: "ctxA",
+	}
+
+	// Old behavior: cross-owner fallback would adopt the wrong backend.
+	if got := GetAddress(OwnerTraffic, "ctxA"); got != "http://localhost:15329" {
+		t.Fatalf("precondition: GetAddress should surface the peer forward, got %q", got)
+	}
+
+	// Fixed behavior: target-aware lookup rejects the mismatched service.
+	if got := GetAddressForService(OwnerTraffic, "ctxA", "caretta", "caretta-vm"); got != "" {
+		t.Fatalf("target-aware lookup adopted the wrong forward: got %q, want empty", got)
+	}
+
+	// Once Caretta's own dedicated forward exists, it is reused by exact match.
+	reg.forwards[OwnerTraffic] = &metricsForward{
+		active: true, localPort: 22222, namespace: "caretta", serviceName: "caretta-vm", contextName: "ctxA",
+	}
+	if got := GetAddressForService(OwnerTraffic, "ctxA", "caretta", "caretta-vm"); got != "http://localhost:22222" {
+		t.Fatalf("own matching forward: got %q, want :22222", got)
+	}
+	// A peer forward that DOES target the requested service is still reusable.
+	delete(reg.forwards, OwnerTraffic)
+	reg.forwards[OwnerPrometheus] = &metricsForward{
+		active: true, localPort: 33333, namespace: "caretta", serviceName: "caretta-vm", contextName: "ctxA",
+	}
+	if got := GetAddressForService(OwnerTraffic, "ctxA", "caretta", "caretta-vm"); got != "http://localhost:33333" {
+		t.Fatalf("matching peer forward: got %q, want :33333", got)
+	}
+	// Context scoping still holds.
+	if got := GetAddressForService(OwnerTraffic, "ctxB", "caretta", "caretta-vm"); got != "" {
+		t.Fatalf("must not match a different context, got %q", got)
+	}
+}
+
 // TestStopBumpsEpochWhileEstablishing pins the invariant that a Stop lands even
 // while a forward is still coming up (not yet active): stopForwardLocked must
 // bump epoch for an inactive forward too, so the in-flight Start sees the change

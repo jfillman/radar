@@ -955,10 +955,20 @@ func computeDiagnosis(t *Trace) *Diagnosis {
 		}
 		// A skip we can act on DIRECTLY (HTTPS / non-HTTP that the proxy can't verify):
 		// name the reason and hand over the exact command, not a vague in-cluster nudge.
-		if len(t.NotTested) > 0 && t.NotTested[0].Command != "" {
+		// The per-path reasons are the whole answer to "why couldn't you test
+		// this" and they were being discarded unless a skip happened to carry a
+		// command - leaving a generic sentence that restated the headline and
+		// told the reader nothing they could act on.
+		reasons := distinctSkipReasons(t.NotTested)
+		switch {
+		case len(reasons) == 1:
+			d := &Diagnosis{Summary: "couldn't test from here - " + reasons[0]}
+			d.NextAction = firstNonEmpty(firstSkipCommand(t.NotTested), "run the in-cluster reachability test to confirm the real path")
+			return d
+		case len(reasons) > 1:
 			return &Diagnosis{
-				Summary:    "couldn't verify from here - " + t.NotTested[0].Reason,
-				NextAction: t.NotTested[0].Command,
+				Summary:    fmt.Sprintf("couldn't test any of the %d declared paths from here, for %d different reasons - select a path to see its own", len(t.NotTested), len(reasons)),
+				NextAction: "run the in-cluster reachability test to confirm the real path",
 			}
 		}
 		return &Diagnosis{
@@ -2659,4 +2669,30 @@ func soleFailedRoute(routes []RouteResult) (RouteResult, bool) {
 		n++
 	}
 	return found, n == 1
+}
+
+// distinctSkipReasons collapses the not-tested reasons to the unique set, in
+// first-appearance order. One shared reason is the resource's answer; several
+// mean the paths differ and each carries its own.
+func distinctSkipReasons(skips []RouteSkip) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range skips {
+		r := strings.TrimSpace(s.Reason)
+		if r == "" || seen[r] {
+			continue
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+func firstSkipCommand(skips []RouteSkip) string {
+	for _, s := range skips {
+		if s.Command != "" {
+			return s.Command
+		}
+	}
+	return ""
 }

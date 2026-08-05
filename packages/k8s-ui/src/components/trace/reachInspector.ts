@@ -181,6 +181,15 @@ function inClusterRunnable(trace: Trace): boolean {
   return (trace.routes ?? []).some((r) => !!r.inClusterRequest && !r.benign)
 }
 
+/** Whether the diagnosis says nothing the headline has not already said. Both
+ *  are generated, so they collide whenever the producer falls back to the same
+ *  generic sentence - and a banner repeating the line above it reads as a second
+ *  problem rather than the same one. */
+function restatesTitle(summary: string | undefined, title: string): boolean {
+  const norm = (x: string) => x.trim().toLowerCase().replace(/[.!]$/, '')
+  return !!summary && !!title && norm(summary) === norm(title)
+}
+
 /** The persistent diagnosis: did traffic get through, from where, and what next. */
 function pathSection(ctx: Ctx): Sidebar['path'] {
   const { trace, route, origin, origins } = ctx
@@ -458,7 +467,15 @@ export function buildVerdict(
     // answers "why not", where the headline only says how much was tested. It
     // is called out rather than rendered as body prose, which made the more
     // important fact read as an explanation of the less important one.
-    problem: trace.diagnosis?.summary,
+    // A diagnosis that only restates the headline is not a second fact. The
+    // banner rendered "couldn't actively test any route from here" directly
+    // under a title saying exactly that.
+    problem: restatesTitle(
+      trace.diagnosis?.summary,
+      opts.stale ? '' : trace.headline || route?.route || `Reachability · ${trace.subject.name}`,
+    )
+      ? undefined
+      : trace.diagnosis?.summary,
     body: trace.diagnosis ? '' : trace.reason || '',
     facts,
   }

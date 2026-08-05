@@ -318,6 +318,9 @@ export interface Scenario {
   primary: RouteResult
   /** The distinct entry hostnames, when this scenario groups several. */
   hosts: string[]
+  /** Every route label folded into this tab, for the hover. Not all of them are
+   *  hostnames - a Service port and a Pod both appear here as themselves. */
+  members: string[]
   /** Name of the front door serving this scenario, when one is declared. */
   entry?: string
 }
@@ -466,7 +469,11 @@ export function groupRoutes(routes: RouteResult[], upstreams: Hop[] = []): Scena
   }
   return [...groups.entries()].map(([key, rs]) => {
     const primary = rs[0]
-    const hosts = [...new Set(rs.map((r) => hostOf(r.route)).filter(Boolean))]
+    // Only genuine hostnames. hostOf returns the whole label when there is no
+    // path separator, so port- and pod-shaped route labels ("port 80",
+    // "web-abc123 port 8080") were being counted and announced as "hostnames".
+    const hosts = [...new Set(rs.map((r) => routeHostOf(r.route)).filter(Boolean))]
+    const members = [...new Set(rs.map((r) => r.route).filter(Boolean))]
     const grouped = rs.length > 1
     const entryId = entryForHost(routeHostOf(rs[0].route), upstreams)
     const entry = entryId ? entryId.split('/').pop() : undefined
@@ -475,14 +482,15 @@ export function groupRoutes(routes: RouteResult[], upstreams: Hop[] = []): Scena
       key,
       label: grouped ? primary.target || `${rs.length} routes` : primary.route,
       sub: grouped
-        ? // Routes folded together can share a hostname and differ only by path.
-          // Counting hostnames then reported "1 hostname" for a tab standing in
-          // for several paths, undercounting what it speaks for.
-          `${hosts.length < rs.length ? `${rs.length} paths` : `${hosts.length} hostname${hosts.length === 1 ? '' : 's'}`}${primary.target ? ` · ${primary.target}` : ''}${via}`
+        ? // Named for what the members ACTUALLY are. Routes folded together can
+          // share a hostname and differ only by path, and many carry no hostname
+          // at all - so "N hostnames" both undercounted and mis-described them.
+          `${hosts.length === rs.length ? `${hosts.length} hostname${hosts.length === 1 ? '' : 's'}` : `${rs.length} paths`}${primary.target ? ` · ${primary.target}` : ''}${via}`
         : `${primary.target || ''}${via}`,
       routes: rs,
       primary,
       hosts,
+      members,
       entry,
     }
   })

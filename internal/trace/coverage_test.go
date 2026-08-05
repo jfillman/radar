@@ -1559,3 +1559,66 @@ func TestRecountCoverage_SkipAbsorptionTruthTable(t *testing.T) {
 		})
 	}
 }
+
+// The per-path skip reasons ARE the answer to "why couldn't you test this".
+// They were discarded unless a skip happened to carry a command, leaving a
+// generic sentence that restated the headline and told the reader nothing.
+func TestZeroTestedDiagnosisCarriesTheActualReason(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Service", Namespace: "argocd", Name: "argocd-server"},
+		BrokenAt: -1,
+		Coverage: &Coverage{Tested: 0, Skipped: 1},
+		Downstream: []Hop{
+			{Resource: ResourceRef{Kind: "Service", Name: "argocd-server"},
+				Probes: []probe.Result{{Layer: probe.LayerHTTP, Skipped: true}}},
+		},
+		NotTested: []RouteSkip{
+			{Route: "port 443", Reason: "HTTPS backend - the API-server proxy speaks plain HTTP and can't verify TLS on this port."},
+		},
+	}
+	d := computeDiagnosis(tr)
+	if d == nil || !strings.Contains(d.Summary, "HTTPS backend") {
+		t.Errorf("summary = %+v, want the real skip reason", d)
+	}
+}
+
+// Several different reasons cannot be collapsed into one sentence honestly, so
+// the resource-level line says so and sends the reader to the per-path tabs.
+func TestZeroTestedDiagnosisSaysWhenReasonsDiffer(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Service", Namespace: "argocd", Name: "argocd-server"},
+		BrokenAt: -1,
+		Coverage: &Coverage{Tested: 0, Skipped: 2},
+		Downstream: []Hop{
+			{Resource: ResourceRef{Kind: "Service", Name: "argocd-server"},
+				Probes: []probe.Result{{Layer: probe.LayerHTTP, Skipped: true}}},
+		},
+		NotTested: []RouteSkip{
+			{Route: "port 80", Reason: "the backend didn't respond within the probe budget"},
+			{Route: "port 443", Reason: "HTTPS backend - the proxy can't verify TLS on this port."},
+		},
+	}
+	d := computeDiagnosis(tr)
+	if d == nil || !strings.Contains(d.Summary, "2 different reasons") {
+		t.Errorf("summary = %+v, want the count of differing reasons", d)
+	}
+}
+
+// Identical reasons across paths ARE the resource's answer, so say it once.
+func TestZeroTestedDiagnosisCollapsesIdenticalReasons(t *testing.T) {
+	same := "the backend didn't respond within the probe budget"
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Service", Namespace: "argocd", Name: "argocd-server"},
+		BrokenAt: -1,
+		Coverage: &Coverage{Tested: 0, Skipped: 2},
+		Downstream: []Hop{
+			{Resource: ResourceRef{Kind: "Service", Name: "argocd-server"},
+				Probes: []probe.Result{{Layer: probe.LayerHTTP, Skipped: true}}},
+		},
+		NotTested: []RouteSkip{{Route: "port 80", Reason: same}, {Route: "port 8080", Reason: same}},
+	}
+	d := computeDiagnosis(tr)
+	if d == nil || !strings.Contains(d.Summary, same) || strings.Contains(d.Summary, "different reasons") {
+		t.Errorf("summary = %+v, want the one shared reason stated once", d)
+	}
+}

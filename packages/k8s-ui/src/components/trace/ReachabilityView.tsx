@@ -240,14 +240,21 @@ function ReachabilityBoard(props: BoardProps) {
 
 /** The hostnames folded into one tab. Only a hover when there is more than one -
  *  a single host is already the tab's own label. */
-function TabTooltip({ hosts, children }: { hosts: string[]; children: React.ReactNode }) {
-  if (hosts.length < 2) return <>{children}</>
+function TabTooltip({ hosts, members, children }: { hosts: string[]; members: string[]; children: React.ReactNode }) {
+  // Hostnames when they really are hostnames, otherwise the route labels
+  // themselves - a Service port folded with a Pod is neither "2 hostnames" nor
+  // meaningfully summarised by dropping one of them.
+  const items = hosts.length === members.length && hosts.length > 0 ? hosts : members
+  const noun = items === hosts ? 'hostnames' : 'paths'
+  if (items.length < 2) return <>{children}</>
   return (
     <Tooltip
       content={
         <span className="flex flex-col gap-0.5">
-          <span className="font-semibold">Same result on {hosts.length} hostnames</span>
-          {hosts.map((h) => (
+          <span className="font-semibold">
+            Same result on {items.length} {noun}
+          </span>
+          {items.map((h) => (
             <span key={h} className="font-mono">
               {h}
             </span>
@@ -282,7 +289,7 @@ function ScenarioStrip({
           const tone = routeTone(s.primary, { stale, running })
           const active = s.key === activeKey
           return (
-            <TabTooltip hosts={s.hosts} key={s.key}>
+            <TabTooltip hosts={s.hosts} members={s.members} key={s.key}>
             <button
               type="button"
               onClick={() => onPick(s.key)}

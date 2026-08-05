@@ -607,3 +607,30 @@ describe('routeIdentity is what a route IS, not what happened to it', () => {
     )
   })
 })
+
+describe('a folded tab is named for what it actually folds', () => {
+  const notTested = (route: string, evidence: string): RouteResult => ({ route, outcome: 'not-tested', evidence })
+
+  // hostOf returns the whole label when there is no path separator, so a
+  // Service port and a Pod were counted and announced as "2 hostnames".
+  it('does not call port- and pod-shaped labels hostnames', () => {
+    const same = 'the backend did not respond within the probe budget'
+    const [s] = groupRoutes([notTested('port 80', same), notTested('web-6c6d9468c-bftj4 port 8080', same)])
+    expect(s.hosts).toEqual([])
+    expect(s.sub).toContain('2 paths')
+    expect(s.sub).not.toContain('hostname')
+  })
+
+  it('still says hostnames when every member really is one', () => {
+    const r = (host: string): RouteResult => ({ route: `${host}/`, target: 'web:80', outcome: 'verified', confidence: 'real' })
+    const [s] = groupRoutes([r('a.example.com'), r('b.example.com')])
+    expect(s.hosts).toHaveLength(2)
+    expect(s.sub).toContain('2 hostnames')
+  })
+
+  it('carries every folded label for the hover, hostname or not', () => {
+    const same = 'skipped'
+    const [s] = groupRoutes([notTested('port 80', same), notTested('web-abc port 8080', same)])
+    expect(s.members).toEqual(['port 80', 'web-abc port 8080'])
+  })
+})

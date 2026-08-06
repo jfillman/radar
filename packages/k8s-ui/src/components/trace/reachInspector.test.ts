@@ -589,3 +589,23 @@ describe('a skipped route says why, from the exact vantage that skipped it', () 
     expect(s.path.body).toContain('cluster state, not a test result')
   })
 })
+
+describe('an attempted in-cluster run that never started keeps its attempt', () => {
+  it('WHAT WE SAW carries the execution error, not "no test has been run"', () => {
+    const t = mk([pod('shop-1', true, '10.0.0.1')], [])
+    const r = route({ outcome: 'not-tested', confidence: undefined, byVantage: undefined })
+    t.routes = [r]
+    const origins = buildOrigins(t, { inClusterRunError: 'the probe image could not be pulled' })
+    const origin = origins.find((o) => o.id === 'incluster')!
+    const g = buildGraph({ trace: t, route: r, origin })
+    const s = buildSidebar(undefined, {
+      trace: t, route: r, origin, origins,
+      nodes: g.nodes, breakNodeId: g.breakNodeId, breakAtExitOf: g.breakAtExitOf,
+      nonNetworkNodeIds: g.nonNetworkNodeIds, contextNodeIds: g.contextNodeIds, interleave: g.interleave,
+      entryParallelCount: g.entryParallelCount, journeyEntryNodeIds: g.journeyEntryNodeIds, pathNodeIds: g.pathNodeIds,
+    })
+    const texts = s.path.evidence.map((e) => e.text).join('\n')
+    expect(texts).toContain('image could not be pulled')
+    expect(texts).not.toContain('no test has been run from here')
+  })
+})

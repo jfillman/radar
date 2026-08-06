@@ -368,9 +368,14 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     // under the vantage whose dial was skipped - never charging the in-cluster
     // probe with the proxy's limits, or the laptop with the proxy's timeouts.
     const skipReason = ev.kind === 'rollup' && asSeen?.outcome === 'not-tested' ? originSkipReason(trace, origin.id, route) : undefined
+    // An in-cluster run that was ATTEMPTED and never started is not "no test
+    // has been run" - the capsule preserves the attempt and this row must not
+    // erase it. The error itself is the observation.
+    const attemptError = origin.id === 'incluster' && origin.mark === 'blocked' ? origin.unavailable : undefined
     add(
       mark,
       skipReason ||
+        attemptError ||
         (origin.unsupported
           ? 'Radar cannot test from here, so nothing has been learned this way'
           : origin.mark === 'denied'

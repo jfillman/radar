@@ -789,8 +789,22 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
         sub: SHORT_MECH[o.id] ?? o.mech,
         // title carries the untruncated evidence - the row truncates visually
         // and a cut "HTTP 308 · reached, redirect…" with no hover hid the
-        // destination it redirected to.
-        anomalies: [{ mark: verdict.mark, text: verdict.label, title: verdict.title || verdict.label }],
+        // destination it redirected to. The vantage's own dial count rides
+        // along: zero pixels, and the hover says how much work stands behind
+        // the one-line verdict.
+        anomalies: [
+          {
+            mark: verdict.mark,
+            text: verdict.label,
+            title: (() => {
+              const base = verdict.title || verdict.label
+              const n = [...(trace.upstreams ?? []), ...(trace.downstream ?? [])]
+                .flatMap((h) => h.probes ?? [])
+                .filter((pr) => !pr.skipped && originOf(pr, trace.runVantage) === o.id).length
+              return n > 0 ? `${base} — ${n} check${n === 1 ? '' : 's'} from this vantage` : base
+            })(),
+          },
+        ],
         // Offered where the gap is: this vantage says "not tested", and the
         // control that would change that sits on it. Only when it has produced
         // nothing yet - an origin with results has nothing to run.

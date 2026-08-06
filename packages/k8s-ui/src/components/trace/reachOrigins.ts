@@ -57,6 +57,18 @@ export const LAPTOP_TAG = 'AS A CLIENT'
 /** Evidence strength, strongest first. Drives the "next strongest test" prompt. */
 export const ORIGIN_STRENGTH: OriginId[] = ['caller', 'external', 'incluster', 'radar-incluster', 'local', 'apiserver']
 
+/** The live work this page actually did: how many real dials were sent, at
+ *  which layers, from how many vantages. The route counts alone undersold it -
+ *  "1 got through" can be twenty-odd DNS/TLS/HTTP checks across hostnames,
+ *  ports, pods and vantages, and that volume IS the trust signal. */
+export function probeCheckStats(trace?: Trace): { checks: number; byLayer: Record<string, number>; vantages: number } {
+  const live = allProbes(trace).filter((p) => !p.skipped)
+  const byLayer: Record<string, number> = {}
+  for (const p of live) byLayer[p.layer] = (byLayer[p.layer] ?? 0) + 1
+  const vantages = new Set(live.map((p) => originOf(p, trace?.runVantage))).size
+  return { checks: live.length, byLayer, vantages }
+}
+
 export function allProbes(trace?: Trace): ProbeResult[] {
   if (!trace) return []
   return [...(trace.upstreams ?? []), ...(trace.downstream ?? [])].flatMap((h) => h.probes ?? [])

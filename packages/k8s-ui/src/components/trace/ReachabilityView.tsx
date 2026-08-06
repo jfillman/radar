@@ -4,10 +4,10 @@ import { ReachActions, JustTestedNote, CopyableCommand, type TracePanelProps } f
 import { AlertBanner } from '../ui/drawer-components'
 import { PaneLoader } from '../ui/PaneLoader'
 import { ReachabilityGraph, MarkGlyph } from './ReachabilityGraph'
-import { ChevronRight } from 'lucide-react'
+import { Activity, ChevronRight } from 'lucide-react'
 import { Tooltip } from '../ui/Tooltip'
 import { buildGraph } from './reachGraphModel'
-import { buildOrigins, defaultOrigin, type Origin, type OriginId } from './reachOrigins'
+import { buildOrigins, defaultOrigin, probeCheckStats, type Origin, type OriginId } from './reachOrigins'
 import { buildSidebar, buildVerdict, type Sidebar, type HopReport, type InspectorCTA, type Selection } from './reachInspector'
 import { markStyle, glyphStyle, markHelp, scenariosFor, routeTone, routeChip, routeIdentity, traceInClusterRunnable, SEV_COLOR, SEV_BADGE, type Scenario } from './reachMarks'
 import { evidenceBannerTitle } from './inClusterSummary'
@@ -606,7 +606,12 @@ function InspectorPanel({
 
       {path.evidence.length > 0 && (
         <div>
-          <div className="mb-1 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">WHAT WE SAW</div>
+          {/* Same count idiom as TEST DETAILS: the number of distinct
+              observations is itself a trust signal, stated in chrome-weight. */}
+          <div className="mb-1 flex items-center text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">
+            <span>WHAT WE SAW</span>
+            <span className="flex-1 text-right font-normal tracking-normal">{path.evidence.length}</span>
+          </div>
           {path.evidence.map((e, i) => (
             <div key={i} className="mb-1 flex items-baseline gap-1.5">
               <MarkGlyph mark={e.mark} />
@@ -827,9 +832,33 @@ function CoverageFooter({
   const derived = c?.derived ? `${c.derived} broken without testing` : ''
   const gaps = realGaps.length ? `${realGaps.length} path${realGaps.length === 1 ? '' : 's'} with no evidence` : ''
   const coverageText = c ? [attempts, derived, gaps].filter(Boolean).join('  ·  ') || 'nothing tested yet' : 'nothing tested yet'
+  // The route counts alone undersell the page: "1 got through" can be
+  // twenty-odd real dials across hostnames, ports, pods and vantages. The
+  // volume of actual work IS the trust signal - state it, with the layer
+  // breakdown on hover.
+  const stats = probeCheckStats(trace)
+  const LAYER_ORDER = ['dns', 'tcp', 'tls', 'http']
+  const layerBreakdown = LAYER_ORDER.filter((l) => stats.byLayer[l]).map((l) => `${l.toUpperCase()} ${stats.byLayer[l]}`).join(' · ')
   return (
     <div className="flex flex-wrap items-center gap-2.5 border-t border-theme-border bg-theme-surface px-5 py-2 text-[11px] text-theme-text-tertiary">
       <span className="text-[9.5px] font-bold tracking-[0.07em]">WHAT WAS TESTED</span>
+      {stats.checks > 0 && (
+        <Tooltip
+          content={`${layerBreakdown}${stats.vantages > 1 ? ` — from ${stats.vantages} vantages` : ''}. Every check is a real dial; skipped ones are listed with their reasons, never counted.`}
+          wrapperClassName="cursor-help"
+        >
+          <span className="inline-flex items-center gap-1.5 font-mono text-theme-text-secondary">
+            {/* Accent, not green: checks include failures - this states WORK
+                done, never success. Emphasis is weight, not a new color. */}
+            <Activity className="h-3 w-3 flex-none" style={{ color: 'var(--accent-text)' }} />
+            <span>
+              <span className="font-semibold text-theme-text-primary">{stats.checks}</span> live check{stats.checks === 1 ? '' : 's'}
+              {stats.vantages > 1 ? ` from ${stats.vantages} vantages` : ''}
+            </span>
+          </span>
+        </Tooltip>
+      )}
+      {stats.checks > 0 && <span className="text-theme-border">·</span>}
       <span className="font-mono text-theme-text-secondary">{coverageText}</span>
       {/* The vantages Radar can never run are a COVERAGE fact, so they belong on
           the coverage line - as their own band they were a third row of chrome

@@ -1,8 +1,10 @@
-# Diagnose - network path diagnostics
+# Reachability - network path diagnosis
 
-The **Diagnose** tab in the resource detail view (and the matching MCP `diagnose` tool) answers one question for a network entry kind:
+The **Reachability** tab in the resource detail view (and the matching MCP `diagnose` tool - the tool keeps its original name) answers one question for a network entry kind:
 
 > *If traffic is sent toward this resource, does it reach a healthy process - and if not, which hop is the first to break?*
+
+Available in Radar **v1.9.1+** (the in-cluster probe test also requires the probe image from v1.9.1+).
 
 The trace has two layers:
 
@@ -66,7 +68,7 @@ kubectl get httproute api-route -n prod -o jsonpath='{.status.parents}'
 
 ## Reachability test (active probes)
 
-The **Run test** button under the verdict fires one round of applicable probes. HTTP(S) routes use their declared path; non-HTTP Service ports have no HTTP path and stop at TCP:
+The proxy-vantage test runs automatically when the tab opens and is re-runnable via **Re-run reachability test**; the **Test in-cluster** button (consent-gated - the dialog names the exact requests the probe pods will send, e.g. "TCP connection to redis-master:6379") runs the probe Job. Each run fires one round of applicable probes. HTTP(S) routes use their declared path; non-HTTP Service ports have no HTTP path and stop at TCP:
 
 | Hop | What runs |
 |-----|-----------|
@@ -77,7 +79,9 @@ The **Run test** button under the verdict fires one round of applicable probes. 
 
 Each row reports outcome (`ok` / `fail` / `skipped`), latency, the path it traversed (`pod-to-pod path` or `via Kubernetes API`), and an HTTP status detail when available. The total budget is 3 seconds; per-hop runs in parallel within that envelope. Probes are an action, not a polling state; the button fires once, results land, the next static refetch replaces them.
 
-**Vantage** is detected automatically (`KUBERNETES_SERVICE_HOST` set ⇒ in-cluster). The UI does not surface vantage as a primary concept - the same button works from both, and the per-row footnote names the primitive used so power users can interpret asymmetric results.
+**Vantage is a first-class concept in the UI.** A reachability result is meaningless without knowing where the request came from, so the tab is built around two explicit selections: WHICH path (the **PATH** picker on the graph - one row per declared route, with per-port protocol labels like `port 53/UDP (dns)` when a Service declares dual-protocol or non-HTTP ports) and FROM WHICH vantage (selectable capsules on the graph: *Radar on your machine* dialling as a client, the *API-server proxy* relay, and the *in-cluster probe*). Selecting a vantage genuinely re-routes the graph and re-scopes the verdict, the edges, and the inspector - a laptop's success is never painted onto the in-cluster lane. Vantages Radar cannot use (a real caller workload, a genuine external client) stay visible as stated gaps rather than being hidden, so synthetic evidence never looks complete.
+
+Every claim on the page carries its evidence: the verdict band states the live-check volume ("8 live checks from 2 vantages", with the DNS/TCP/TLS/HTTP breakdown on hover), a skipped route states WHY it was skipped from the exact vantage that skipped it, and node dots show each resource's own health - cluster state, never a test result (edges carry the test truth).
 
 **RBAC for active probes (from a laptop):** the user identity reading the trace must hold `get services/proxy` and `get pods/proxy` in the target namespace. In-cluster Radar uses the data path directly and doesn't need these. To disable the active layer entirely, deny those permissions to the role Radar uses.
 
@@ -134,7 +138,7 @@ The UI shows the verdict at the top of the panel with a one-sentence reason. Tre
 
 ## MCP
 
-The `diagnose` MCP tool returns a `trace` field for these kinds instead of the pod-log fan-out it does for workloads. An agent that calls `diagnose(kind=service, ...)` gets the path-shaped answer in one call, along with `relatedIssues` for raw-issue follow-up. Pass `probe: true` to add the active reachability test from Radar's vantage. Pass `inCluster: true` to run the probe from inside the cluster - Radar creates one short-lived, self-destructing probe pod under the caller's RBAC to test the real dataplane the API-server-proxy vantage can't reach (e.g. to confirm a route that came back `indirect`). This is the only mutating `diagnose` option; it needs `create jobs` + `list`/`get` pods RBAC, and falls back to a copyable command when pod-create is denied.
+The `diagnose` MCP tool returns a `trace` field for these kinds instead of the pod-log fan-out it does for workloads. An agent that calls `diagnose(kind=service, ...)` gets the path-shaped answer in one call, along with `relatedIssues` for raw-issue follow-up. Pass `probe: true` to add the active reachability test from Radar's vantage. Pass `inCluster: true` to run the probe from inside the cluster - Radar creates up to 5 short-lived, self-destructing probe pods (one per intended route) under the caller's RBAC to test the real dataplane the API-server-proxy vantage can't reach (e.g. to confirm a route that came back `indirect`). This is the only mutating `diagnose` option; it needs `create jobs` + `list`/`get` pods RBAC, and falls back to a copyable command when pod-create is denied.
 
 ## In-cluster probe image
 
@@ -166,7 +170,7 @@ radar --reachability-image radar-probe:dev ...
 - No per-call API requests; pure functions over the in-memory informer cache
 - Linear in path length + selector match counts, which are bounded by the cache contents
 - Target <100ms typical, <300ms on a 200-pod namespace
-- Five-second polling from the UI while the Diagnose tab is open; data is cached client-side so retabbing within the drawer is instant
+- Five-second polling from the UI while the Reachability tab is open; data is cached client-side so retabbing within the drawer is instant
 
 **Active reachability test:**
 

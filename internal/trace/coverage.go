@@ -289,7 +289,9 @@ func routeBackend(r RouteResult) (name string, port int32, ok bool) {
 	}
 	name = strings.TrimSpace(target[:i])
 	p, err := strconv.Atoi(strings.TrimSpace(target[i+1:]))
-	if name == "" || err != nil || p <= 0 {
+	// Bounded to the valid TCP port range before the int32 narrowing - an
+	// out-of-range number is a malformed target, not a port to wrap around.
+	if name == "" || err != nil || p <= 0 || p > 65535 {
 		return "", 0, false
 	}
 	return name, int32(p), true

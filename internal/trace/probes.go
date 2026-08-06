@@ -688,6 +688,10 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 					nonHTTPSkipReason(p.Name, p.AppProtocol, p.Port, vantage, dataReachable),
 					cmd)
 				skip.Path = probe.PathAPIServer
+				// The skip is ABOUT this declared port; without the stamp it fell
+				// into the port-agnostic pool and the port lost its identity - and
+				// with it, any chance of a preserved test candidate.
+				skip.Port = p.Port
 				out = append(out, skip)
 				continue
 			}
@@ -700,6 +704,9 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 					"HTTPS backend - the API-server proxy speaks plain HTTP and can't verify TLS on this port. Test it directly.",
 					portForwardCmd("svc", h.Resource.Namespace, h.Resource.Name, p.Port)+fmt.Sprintf("   # then: curl -k https://localhost:%d/", p.Port))
 				skip.Path = probe.PathAPIServer
+				// Port-stamped so the declared HTTPS candidate survives as a
+				// not-tested route the in-cluster test can actually dial.
+				skip.Port = p.Port
 				out = append(out, skip)
 				continue
 			}

@@ -56,21 +56,33 @@ export const MARKS: Record<Mark, MarkStyle> = {
 
 /** One vocabulary, shared with the lane labels and the sidebar. The legend used
  *  to say "observed through the dataplane" while the lane said "REAL TRAFFIC"
- *  for the same thing. */
-export const MARK_LEGEND: { mark: Mark; text: string }[] = [
-  { mark: 'proved', text: 'a request got through' },
-  { mark: 'proxied', text: 'answered via the API server — not live traffic' },
-  { mark: 'answered', text: 'answered, but not with what we asked for' },
-  { mark: 'config', text: 'configured this way — not tested' },
-  { mark: 'failed', text: 'a request was refused' },
-  { mark: 'blocked', text: 'never tried — something failed earlier' },
-  { mark: 'excluded', text: 'not sent any traffic' },
-  { mark: 'untested', text: 'not tested from here' },
-  { mark: 'stale', text: 'out of date' },
-  { mark: 'slow', text: 'answered, but very slowly' },
-  { mark: 'running', text: 'testing now' },
-  { mark: 'denied', text: 'not allowed to test this' },
+ *  for the same thing.
+ *
+ *  ONE flat registry; `category` is metadata for grouping at render time. The
+ *  flat list teaches the enum as one axis, which it is not - what happened,
+ *  how it was tested, and why nothing ran are different questions. */
+export type MarkCategory = 'happened' | 'tested' | 'why-not' | 'state'
+export const MARK_LEGEND: { mark: Mark; text: string; category: MarkCategory }[] = [
+  { mark: 'proved', text: 'a request got through', category: 'happened' },
+  { mark: 'answered', text: 'answered, but not with what we asked for', category: 'happened' },
+  { mark: 'failed', text: 'a request was refused', category: 'happened' },
+  { mark: 'proxied', text: 'answered via the API server — not live traffic', category: 'tested' },
+  { mark: 'config', text: 'configured this way — not tested', category: 'tested' },
+  { mark: 'untested', text: 'not tested from here', category: 'why-not' },
+  { mark: 'blocked', text: 'never tried — something failed earlier', category: 'why-not' },
+  { mark: 'denied', text: 'not allowed to test this', category: 'why-not' },
+  { mark: 'excluded', text: 'not sent any traffic', category: 'why-not' },
+  { mark: 'running', text: 'testing now', category: 'state' },
+  { mark: 'stale', text: 'out of date', category: 'state' },
+  { mark: 'slow', text: 'answered, but very slowly', category: 'state' },
 ]
+
+export const MARK_CATEGORY_LABEL: Record<MarkCategory, string> = {
+  happened: 'what happened',
+  tested: 'how it was tested',
+  'why-not': 'why nothing ran',
+  state: 'state',
+}
 
 export function markStyle(m: Mark): MarkStyle {
   return MARKS[m] ?? MARKS.untested

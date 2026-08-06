@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { PILL_MAX_PX, type GraphModel, type GraphNode, type GraphEdge, type LaneBox } from './reachGraphModel'
-import { markStyle, glyphStyle, markHelp, SEV_COLOR, MARK_LEGEND, type Mark } from './reachMarks'
+import { markStyle, glyphStyle, markHelp, SEV_COLOR, MARK_LEGEND, MARK_CATEGORY_LABEL, type Mark, type MarkCategory } from './reachMarks'
 import { Tooltip } from '../ui/Tooltip'
 
 /** Finding severity -> the shared health tones. Findings describe the OBJECT;
@@ -441,15 +441,26 @@ function Legend({ model }: { model: GraphModel }) {
   ])
   const shown = MARK_LEGEND.filter((l) => present.has(l.mark))
   if (shown.length === 0) return null
+  // Grouped, not flat: a flat list teaches the vocabulary as one axis, and it
+  // is not - what happened, how it was tested, and why nothing ran are
+  // different questions.
+  const categories = [...new Set(shown.map((l) => l.category))] as MarkCategory[]
   return (
     <div className="mt-0.5 flex items-center justify-end border-t border-theme-border-subtle px-3.5 py-1.5 text-[10.5px] text-theme-text-tertiary">
       <Tooltip
         content={
-          <span className="flex flex-col gap-0.5">
-            {shown.map((l) => (
-              <span key={l.mark} className="inline-flex items-baseline gap-1.5">
-                <span style={glyphStyle(l.mark as Mark)}>{markStyle(l.mark as Mark).glyph}</span>
-                {l.text}
+          <span className="flex flex-col gap-1">
+            {categories.map((c) => (
+              <span key={c} className="flex flex-col gap-0.5">
+                <span className="text-[9px] font-bold uppercase tracking-[0.06em] opacity-70">{MARK_CATEGORY_LABEL[c]}</span>
+                {shown
+                  .filter((l) => l.category === c)
+                  .map((l) => (
+                    <span key={l.mark} className="inline-flex items-baseline gap-1.5">
+                      <span style={glyphStyle(l.mark as Mark)}>{markStyle(l.mark as Mark).glyph}</span>
+                      {l.text}
+                    </span>
+                  ))}
               </span>
             ))}
           </span>

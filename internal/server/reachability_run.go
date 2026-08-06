@@ -206,10 +206,20 @@ func stampInClusterProbes(tr *trace.Trace, tests []reachability.InClusterTestRes
 			// Two downstream hops can share a Service name across namespaces
 			// (Gateway API cross-namespace backendRef). Match the hop by name AND
 			// namespace so a probe lands on its own hop; a second same-named hop
-			// in another namespace gets its own probes (no early break). When the
-			// result carries no TargetNamespace (same-namespace backend), match by
-			// name alone.
-			if tst.TargetNamespace != "" && tr.Downstream[hi].Resource.Namespace != tst.TargetNamespace {
+			// in another namespace gets its own probes (no early break). An empty
+			// TargetNamespace means the SUBJECT's namespace (the producer omits it
+			// for same-namespace backends) - it must never match by name alone, or
+			// a same-ns probe stamps its live evidence onto a cross-ns hop that
+			// was never dialled. An empty hop namespace reads as the subject's too.
+			wantNS := tst.TargetNamespace
+			if wantNS == "" {
+				wantNS = tr.Subject.Namespace
+			}
+			hopNS := tr.Downstream[hi].Resource.Namespace
+			if hopNS == "" {
+				hopNS = tr.Subject.Namespace
+			}
+			if hopNS != wantNS {
 				continue
 			}
 			for _, pr := range tst.Results {

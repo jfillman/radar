@@ -236,23 +236,6 @@ function ReachabilityBoard(props: BoardProps) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-theme-border bg-theme-surface">
-      {/* Only worth choosing between when the paths actually disagree. With one
-          distinct outcome the verdict already speaks for the whole resource, and
-          a one-tab picker would just be a step before reading anything. */}
-      {scenarios.length > 1 && (
-        <ScenarioStrip
-          scenarios={scenarios}
-          activeKey={scenario?.key}
-          onPick={(k) => {
-            const picked = scenarios.find((s) => s.key === k)
-            setSelectedRoute(picked ? routeIdentity(picked.primary) : null)
-            setSelection(undefined)
-          }}
-          stale={stale}
-          running={running}
-        />
-      )}
-
       <VerdictBand verdict={verdict} runNonce={runNonce} actions={<ReachActions {...props} inClusterRunnable={traceInClusterRunnable(trace)} inClusterTested={origins.some((o) => o.id === 'incluster' && o.mark !== 'untested')} />} />
 
       {/* Three columns once there is room for them. The graph is the navigation
@@ -274,7 +257,26 @@ function ReachabilityBoard(props: BoardProps) {
       <div className="grid min-h-0 flex-1 items-stretch grid-cols-[minmax(0,1fr)_minmax(320px,384px)] xl:grid-cols-[minmax(0,1fr)_minmax(380px,29%)]">
         {/* The vantages are IN the graph now, one node each, so the rail that
             listed them again is gone and its width belongs to the path. */}
-        <div className="flex min-h-0 min-w-0 flex-col">
+        <div className="relative flex min-h-0 min-w-0 flex-col">
+          {/* The path picker lives ON the board, like the vantage capsules -
+              both selection axes (which path x from where) belong to the same
+              surface. As a full-width bar above the header it read as page
+              chrome outside the card, cost a row of height, and the eye skimmed
+              past the most important control on the page. Top-right is the
+              fitted graph's quiet corner. */}
+          {scenarios.length > 1 && (
+            <ScenarioPicker
+              scenarios={scenarios}
+              activeKey={scenario?.key}
+              onPick={(k) => {
+                const picked = scenarios.find((s) => s.key === k)
+                setSelectedRoute(picked ? routeIdentity(picked.primary) : null)
+                setSelection(undefined)
+              }}
+              stale={stale}
+              running={running}
+            />
+          )}
           <ReachabilityGraph
             model={model}
             onAction={(a) => {
@@ -358,7 +360,7 @@ function TabTooltip({ hosts, members, children }: { hosts: string[]; members: st
   )
 }
 
-function ScenarioStrip({
+function ScenarioPicker({
   scenarios,
   activeKey,
   onPick,
@@ -372,30 +374,31 @@ function ScenarioStrip({
   running: boolean
 }) {
   return (
-    <div className="flex items-stretch border-b border-theme-border bg-theme-elevated">
-      <div className="flex flex-none items-center py-2 pl-4.5 pr-3 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">PATH</div>
-      <div className="flex min-w-0 flex-1 overflow-x-auto">
+    <div
+      className="absolute right-3 top-2 z-10 max-w-[46%] rounded-lg border border-theme-border bg-theme-elevated shadow-theme-md"
+    >
+      <div className="px-2.5 pb-0.5 pt-1.5 text-[9px] font-bold tracking-[0.07em] text-theme-text-tertiary">PATH</div>
+      {/* Rows, not tabs: a corner column scales to N paths (scrolls past ~5)
+          where a horizontal bar overflowed. Tone dot + mono label + verdict
+          chip - the same vocabulary as everywhere else, nothing invented. */}
+      <div className="flex max-h-[38vh] flex-col overflow-y-auto pb-1">
         {scenarios.map((s) => {
           const tone = routeTone(s.primary, { stale, running })
           const active = s.key === activeKey
           return (
             <TabTooltip hosts={s.hosts} members={s.members} key={s.key}>
-            <button
-              type="button"
-              onClick={() => onPick(s.key)}
-              className="flex-none cursor-pointer border-r border-theme-border-subtle px-3.5 py-1.5 text-left"
-              style={{
-                background: active ? 'var(--bg-surface)' : 'transparent',
-                boxShadow: active ? 'inset 0 -2px 0 var(--accent)' : 'none',
-              }}
-            >
-              <div className="flex items-center gap-1.5">
-                <span className="inline-block shrink-0 rounded-full" style={{ width: 8, height: 8, background: SEV_COLOR[tone] }} />
-                <span className="max-w-[280px] truncate font-mono text-xs font-semibold text-theme-text-primary">{s.label}</span>
+              <button
+                type="button"
+                onClick={() => onPick(s.key)}
+                aria-pressed={active}
+                className={`mx-1 flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors duration-150 ${
+                  active ? 'selection selection-ring' : 'hover:bg-theme-hover'
+                }`}
+              >
+                <span className="inline-block shrink-0 rounded-full" style={{ width: 7, height: 7, background: SEV_COLOR[tone] }} />
+                <span className="min-w-0 max-w-[200px] truncate font-mono text-[11.5px] font-semibold text-theme-text-primary">{s.label}</span>
                 <span className={`badge-sm shrink-0 whitespace-nowrap ${SEV_BADGE[tone]}`}>{routeChip(s.primary, { stale, running })}</span>
-              </div>
-              {s.sub && <div className="mt-0.5 truncate text-[10.5px] text-theme-text-tertiary">{s.sub}</div>}
-            </button>
+              </button>
             </TabTooltip>
           )
         })}

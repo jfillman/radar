@@ -376,8 +376,11 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     const attemptError = origin.id === 'incluster' && origin.mark === 'blocked' ? origin.unavailable : undefined
     add(
       mark,
-      skipReason ||
-        attemptError ||
+      // The attempt error outranks skip rows: a prior Job's leftover skips
+      // would otherwise paint a fresh failed run (image pull, quota) with last
+      // run's reason, one pane from a capsule saying "test couldn't run".
+      attemptError ||
+        skipReason ||
         (origin.unsupported
           ? 'Radar cannot test from here, so nothing has been learned this way'
           : origin.mark === 'denied'

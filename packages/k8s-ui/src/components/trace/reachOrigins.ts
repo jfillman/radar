@@ -165,13 +165,32 @@ function skipReason(probes: ProbeResult[]): string | undefined {
  * speaks for every port. Another port's reason is never borrowed.
  */
 export function originSkipReason(trace: Trace | undefined, originId: OriginId, route?: RouteResult): string | undefined {
-  const m = /:(\d+)$/.exec(route?.target || route?.route || '')
+  const target = route?.target || route?.route || ''
+  const m = /:(\d+)$/.exec(target)
   const port = m ? Number(m[1]) : undefined
-  const skips = allProbes(trace).filter((p) => p.skipped && p.reason && originOf(p, trace?.runVantage) === originId)
-  if (port !== undefined) {
-    return (skips.find((p) => p.port === port) ?? skips.find((p) => !p.port))?.reason
+  const backend = m ? target.slice(0, target.lastIndexOf(':')).trim() : ''
+  const pick = (probes: ProbeResult[]): string | undefined => {
+    const skips = probes.filter((p) => p.skipped && p.reason && originOf(p, trace?.runVantage) === originId)
+    if (port !== undefined) {
+      return (skips.find((p) => p.port === port) ?? skips.find((p) => !p.port))?.reason
+    }
+    return skips[0]?.reason
   }
-  return skips[0]?.reason
+  // Two backends can share a port, so a route with a named backend takes its
+  // reason ONLY from that backend's own hops - borrowing a sibling's would be
+  // the exact misattribution this lookup exists to prevent. The flat pool
+  // remains only for routes that never name a backend.
+  if (backend) {
+    const own = [...(trace?.upstreams ?? []), ...(trace?.downstream ?? [])].filter((h) => h.resource.name === backend)
+    if (own.length > 0) {
+      for (const h of own) {
+        const r = pick(h.probes ?? [])
+        if (r) return r
+      }
+      return undefined
+    }
+  }
+  return pick(allProbes(trace))
 }
 
 /**
@@ -269,6 +288,15 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
   // Only claimed after a run: with no probes anywhere, "not tested yet" is the
   // honest state for everyone.
   const localCannotDial = probes.length > 0 && localProbes.length === 0 && localMark === 'untested' && (trace?.upstreams ?? []).length === 0
+  // "No Ingress, Gateway or LoadBalancer" is only true of a ClusterIP subject.
+  // A LoadBalancer/NodePort Service with no Ingress reaches this branch too -
+  // Radar just doesn't dial its external address yet, which is a claim about
+  // Radar, not about the Service.
+  const subjectType = (trace?.downstream ?? [])
+    .find((h) => h.resource.kind === 'Service' && h.resource.name === trace?.subject.name)
+    ?.config?.serviceType?.trim()
+    .toUpperCase()
+  const externallyAddressable = subjectType === 'LOADBALANCER' || subjectType === 'NODEPORT' || subjectType === 'EXTERNALNAME'
   const local: Origin = {
     id: 'local',
     glyph: '▣',
@@ -285,7 +313,9 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
       localMark === 'blocked'
         ? skipReason(localProbes)
         : localCannotDial
-          ? 'This Service has no entry point Radar can dial from your machine — no Ingress, Gateway address or LoadBalancer. From here Radar can only relay through the API-server proxy.'
+          ? externallyAddressable
+            ? 'Radar doesn’t dial this Service’s external address from your machine yet. From here it can only relay through the API-server proxy.'
+            : 'This Service has no entry point Radar can dial from your machine — no Ingress, Gateway address or LoadBalancer. From here Radar can only relay through the API-server proxy.'
           : undefined,
   }
 

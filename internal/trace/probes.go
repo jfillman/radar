@@ -663,6 +663,7 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 				fmt.Sprintf("port %d is %s - a TCP dial can't test it; reachability not verified. Test with a %s client.", p.Port, proto, proto),
 				cmd)
 			skip.Port = p.Port
+			skip.Protocol = proto
 			out = append(out, skip)
 			continue
 		}

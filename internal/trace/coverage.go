@@ -2135,23 +2135,12 @@ func layerRank(l probe.Layer) int {
 	return 4
 }
 
-// unambiguousTCPPort reports whether every declared entry for the number is
-// TCP (or defaulted). Kubernetes forbids duplicate (port, protocol) pairs, so
-// more than one match always means a non-TCP sibling exists. No declaration to
-// check means nothing contradicts the TCP assumption.
-func unambiguousTCPPort(cfg *HopConfig, port int32) bool {
-	if cfg == nil {
-		return true
-	}
-	for _, pm := range cfg.Ports {
-		if pm.Port != port {
-			continue
-		}
-		switch strings.ToUpper(strings.TrimSpace(pm.Protocol)) {
-		case "", "TCP":
-		default:
-			return false
-		}
+// isNonTCPProto reports a declared L4 protocol that is not TCP; empty is the
+// Kubernetes default (TCP).
+func isNonTCPProto(proto string) bool {
+	switch strings.ToUpper(strings.TrimSpace(proto)) {
+	case "", "TCP":
+		return false
 	}
 	return true
 }
@@ -2196,11 +2185,13 @@ func buildNotTested(t *Trace) []RouteSkip {
 				continue
 			}
 			// Absorption is keyed by port NUMBER, and a preserved route is a TCP
-			// candidate - so it may only absorb a skip whose number is
-			// unambiguously TCP. kube-dns declares UDP :53 beside TCP :53; the
-			// TCP route swallowing the UDP row erased a declared path that the
-			// route's test cannot speak for.
-			if p.Port != 0 && unambiguousTCPPort(h.Config, p.Port) && preserved[fmt.Sprintf("%s\x00%s\x00%d", hopNS, h.Resource.Name, p.Port)] {
+			// candidate - so it may only absorb a skip that is itself TCP-side.
+			// The ROW's declared protocol decides: kube-dns declares UDP :53
+			// beside TCP :53, and a number-level guard either let the TCP route
+			// swallow the UDP row (erasing a declared path) or kept the TCP
+			// sibling's own skip beside a route that already covers it
+			// (a contradiction).
+			if p.Port != 0 && !isNonTCPProto(p.Protocol) && preserved[fmt.Sprintf("%s\x00%s\x00%d", hopNS, h.Resource.Name, p.Port)] {
 				continue
 			}
 			key := string(p.Layer) + "|" + p.Target + "|" + p.Reason

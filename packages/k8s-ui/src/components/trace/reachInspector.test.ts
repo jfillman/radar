@@ -644,3 +644,26 @@ describe('the terminal "nothing to do" state is quiet', () => {
     expect(s.path.next.blocked).toBeUndefined()
   })
 })
+
+describe('a fresh failed attempt outranks leftover skip rows', () => {
+  it("WHAT WE SAW shows this run's execution error, not last run's skip", () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [])
+    const r = route({ target: 'shop:443', outcome: 'not-tested', confidence: undefined, byVantage: undefined })
+    t.routes = [r]
+    t.downstream![1].probes = [
+      p({ target: '10.0.0.1:8080', port: 8080, vantage: 'in-cluster', path: 'data', source: 'probe-job', skipped: true, reason: 'stale skip from the previous run', ok: false }),
+    ]
+    const origins = buildOrigins(t, { inClusterRunError: 'the probe image could not be pulled', route: r })
+    const origin = origins.find((o) => o.id === 'incluster')!
+    const g = buildGraph({ trace: t, route: r, origin })
+    const s = buildSidebar(undefined, {
+      trace: t, route: r, origin, origins,
+      nodes: g.nodes, breakNodeId: g.breakNodeId, breakAtExitOf: g.breakAtExitOf,
+      nonNetworkNodeIds: g.nonNetworkNodeIds, contextNodeIds: g.contextNodeIds, interleave: g.interleave,
+      entryParallelCount: g.entryParallelCount, journeyEntryNodeIds: g.journeyEntryNodeIds, pathNodeIds: g.pathNodeIds,
+    })
+    const texts = s.path.evidence.map((e) => e.text).join('\n')
+    expect(texts).toContain('image could not be pulled')
+    expect(texts).not.toContain('stale skip')
+  })
+})

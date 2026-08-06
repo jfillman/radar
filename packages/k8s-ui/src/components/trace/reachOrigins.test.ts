@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildOrigins, headlineEvidenceOrigin, defaultOrigin, strongestGap, originOf, localIdentity } from './reachOrigins'
+import { buildOrigins, headlineEvidenceOrigin, defaultOrigin, strongestGap, originOf, localIdentity, originSkipReason } from './reachOrigins'
 import type { Trace, ProbeResult, RouteResult } from './types'
 
 const p = (o: Partial<ProbeResult>): ProbeResult => ({ layer: 'http', target: 'svc:80', vantage: 'in-cluster', ok: true, ...o })
@@ -340,5 +340,53 @@ describe('a laptop with nothing to dial says so', () => {
     t.upstreams = [{ resource: { kind: 'Ingress', name: 'in', namespace: 'store' }, edge: 'ingress->service', findings: [] }]
     const local = buildOrigins(t as never).find((o) => o.id === 'local')!
     expect(local.unavailable).toBeUndefined()
+  })
+})
+
+describe('an externally addressable Service is not told it has no entry point', () => {
+  const mkTyped = (serviceType?: string) => ({
+    subject: { kind: 'Service', name: 'shop', namespace: 'store' },
+    verdict: 'unknown', brokenAt: -1, upstreams: [],
+    downstream: [{ resource: { kind: 'Service', name: 'shop', namespace: 'store' }, edge: 'service', findings: [],
+      config: { serviceType },
+      probes: [{ layer: 'http', target: 'shop:80', vantage: 'local', path: 'apiserver', ok: false, skipped: true, reason: 'x', port: 80 }] }],
+  }) as never
+  it('LoadBalancer: the claim is about Radar, not the Service', () => {
+    const local = buildOrigins(mkTyped('LoadBalancer')).find((o) => o.id === 'local')!
+    expect(local.unavailable).toMatch(/doesn.t dial/i)
+    expect(local.unavailable).not.toMatch(/no Ingress/i)
+  })
+  it('ClusterIP keeps the structural no-entry-point wording', () => {
+    const local = buildOrigins(mkTyped('ClusterIP')).find((o) => o.id === 'local')!
+    expect(local.unavailable).toMatch(/no Ingress/i)
+  })
+})
+
+describe('a skip reason never crosses backends', () => {
+  it('a named backend takes reasons only from its own hop', () => {
+    const t = {
+      subject: { kind: 'Ingress', name: 'entry', namespace: 'store' },
+      verdict: 'unknown', brokenAt: -1, upstreams: [], runVantage: 'local',
+      downstream: [
+        { resource: { kind: 'Service', name: 'shop-a', namespace: 'store' }, edge: 'service', findings: [],
+          probes: [{ layer: 'http', target: 'port 80', vantage: 'local', path: 'apiserver', ok: false, skipped: true, reason: 'A-side reason', port: 80 }] },
+        { resource: { kind: 'Service', name: 'shop-b', namespace: 'store' }, edge: 'service', findings: [],
+          probes: [{ layer: 'http', target: 'port 80', vantage: 'local', path: 'apiserver', ok: false, skipped: true, reason: 'B-side reason', port: 80 }] },
+      ],
+    } as never
+    expect(originSkipReason(t, 'apiserver', { route: 'r', target: 'shop-b:80', outcome: 'not-tested' } as never)).toBe('B-side reason')
+    expect(originSkipReason(t, 'apiserver', { route: 'r', target: 'shop-a:80', outcome: 'not-tested' } as never)).toBe('A-side reason')
+  })
+  it("a named backend with no skips of its own borrows nothing", () => {
+    const t = {
+      subject: { kind: 'Ingress', name: 'entry', namespace: 'store' },
+      verdict: 'unknown', brokenAt: -1, upstreams: [], runVantage: 'local',
+      downstream: [
+        { resource: { kind: 'Service', name: 'shop-a', namespace: 'store' }, edge: 'service', findings: [],
+          probes: [{ layer: 'http', target: 'port 80', vantage: 'local', path: 'apiserver', ok: false, skipped: true, reason: 'A-side reason', port: 80 }] },
+        { resource: { kind: 'Service', name: 'shop-b', namespace: 'store' }, edge: 'service', findings: [], probes: [] },
+      ],
+    } as never
+    expect(originSkipReason(t, 'apiserver', { route: 'r', target: 'shop-b:80', outcome: 'not-tested' } as never)).toBeUndefined()
   })
 })

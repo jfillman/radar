@@ -233,6 +233,12 @@ type Result struct {
 	// coverage projection groups routes by (backend, Port) so a multi-port
 	// backend reports each port honestly instead of collapsing to one outcome.
 	Port int32 `json:"port,omitempty"`
+	// Protocol is the declared L4 protocol of the port this row is about, when
+	// it is not TCP. Kubernetes permits TCP and UDP ports with the same number,
+	// so the number alone cannot say which declared path a skip row speaks for
+	// - and a TCP route absorbing a UDP sibling's row erased a declared path.
+	// Empty means TCP (the Kubernetes default).
+	Protocol string `json:"protocol,omitempty"`
 	// Source is WHO issued this probe, which (Vantage, Path) cannot express:
 	// Radar's own process and a throwaway probe Job are both in-cluster/data.
 	// Without it the two collide - a Job result silently replaces Radar's own

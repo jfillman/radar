@@ -1815,27 +1815,41 @@ func TestDuplicatePortNumber_IsNotAnIdentity(t *testing.T) {
 		}
 	}
 
-	// A preserved TCP route must not absorb the UDP sibling's skip row.
+	// A preserved TCP route must not absorb the UDP sibling's skip row - but it
+	// MUST still absorb the TCP side's own skip, or the picker shows a
+	// contradictory "not tested" beside a route that already covers the port.
 	tr := &Trace{
 		Subject: ResourceRef{Kind: "Service", Name: "kube-dns", Namespace: "kube-system"},
 		Routes:  []RouteResult{{Route: "kube-dns:53", Target: "kube-dns:53", Outcome: OutcomeReached}},
 		Downstream: []Hop{{
 			Resource: ResourceRef{Kind: "Service", Name: "kube-dns", Namespace: "kube-system"},
 			Config:   &HopConfig{Ports: dup},
-			Probes: []probe.Result{{
-				Layer: probe.LayerTCP, Target: "port 53/UDP (dns)", Port: 53,
-				Skipped: true, Reason: "port 53 is UDP - a TCP dial can't test it",
-			}},
+			Probes: []probe.Result{
+				{
+					Layer: probe.LayerTCP, Target: "port 53/UDP (dns)", Port: 53, Protocol: "UDP",
+					Skipped: true, Reason: "port 53 is UDP - a TCP dial can't test it",
+				},
+				{
+					Layer: probe.LayerHTTP, Target: "port 53 (dns-tcp)", Port: 53,
+					Skipped: true, Reason: "Port 53 (\"dns-tcp\") is a well-known non-HTTP port.",
+				},
+			},
 		}},
 	}
 	skips := buildNotTested(tr)
-	found := false
+	udpKept, tcpKept := false, false
 	for _, s := range skips {
 		if strings.Contains(s.Route, "UDP") {
-			found = true
+			udpKept = true
+		}
+		if strings.Contains(s.Route, "dns-tcp") {
+			tcpKept = true
 		}
 	}
-	if !found {
+	if !udpKept {
 		t.Fatalf("the UDP :53 row must survive beside the TCP route, got %+v", skips)
+	}
+	if tcpKept {
+		t.Fatalf("the TCP side's own skip must be absorbed by the preserved TCP route, got %+v", skips)
 	}
 }

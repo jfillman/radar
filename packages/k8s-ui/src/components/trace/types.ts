@@ -121,6 +121,8 @@ export interface ProbeResult {
   /** The Service/target port this result is for, when port-scoped (lets the UI group
    *  per-port results into one row per path across directions). */
   port?: number
+  /** Declared L4 protocol when not TCP - two ServicePorts may share a number. */
+  protocol?: string
   detail?: string
   error?: string
   /** What a DNS lookup resolved to. */

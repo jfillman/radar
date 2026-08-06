@@ -1,6 +1,6 @@
 import type { Trace, RouteResult, ResourceRef } from './types'
 import type { Mark, SevTone } from './reachMarks'
-import { routeMark, routeChip, routeTone, routeAsSeenFrom, originRouteEvidence, routeForOrigin } from './reachMarks'
+import { routeMark, routeChip, routeTone, routeAsSeenFrom, originRouteEvidence, routeForOrigin, traceInClusterRunnable } from './reachMarks'
 import type { Origin, OriginId } from './reachOrigins'
 import { strongestGap, actionableGap } from './reachOrigins'
 import { hopEvidenceFor, originProducedEvidence, type GraphNode } from './reachGraphModel'
@@ -267,9 +267,7 @@ interface Ctx {
  * paths and still have nothing runnable. Knowing this from the trace is what
  * lets the panel say so BEFORE the operator spends a Job on it.
  */
-function inClusterRunnable(trace: Trace): boolean {
-  return (trace.routes ?? []).some((r) => !!r.inClusterRequest && !r.benign)
-}
+
 
 /** Whether the diagnosis says nothing the headline has not already said. Both
  *  are generated, so they collide whenever the producer falls back to the same
@@ -423,7 +421,7 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
               ...(diagnosis.command ? [{ text: 'Copy the command', action: 'copy-command' as InspectorAction, command: diagnosis.command }] : []),
             ],
           }
-        : gapNext(origins, origin, trace.subject.namespace, ctx.multiPath, inClusterRunnable(trace)),
+        : gapNext(origins, origin, trace.subject.namespace, ctx.multiPath, traceInClusterRunnable(trace)),
   }
 }
 

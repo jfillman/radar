@@ -1743,3 +1743,33 @@ func TestSkippedMultiPortServiceIsOneGapPerPort(t *testing.T) {
 		t.Errorf("Coverage.Skipped = %+v, want 2 (one gap per declared port)", tr.Coverage)
 	}
 }
+
+// The protocol boundary fails closed. An unnamed UDP port that happens to sit
+// on 80 must never acquire an HTTP Job the prober itself declined to send; a
+// route built from a direct TCP reach of a non-HTTP port must not carry an
+// HTTP-shaped request either.
+func TestProtocolBoundaryFailsClosed(t *testing.T) {
+	if httpProbablePortMap(PortMap{Port: 80, Protocol: "UDP"}) {
+		t.Error("an unnamed UDP :80 classified as HTTP-probable")
+	}
+	if httpProbablePortMap(PortMap{Port: 80, Protocol: "SCTP"}) {
+		t.Error("an SCTP port classified as HTTP-probable")
+	}
+	if !httpProbablePortMap(PortMap{Port: 80, Protocol: ""}) {
+		t.Error("empty protocol is the Kubernetes TCP default and must stay HTTP-probable")
+	}
+
+	// A redis route that exists on real TCP evidence gets NO HTTP request.
+	routes := []RouteResult{{Route: "redis:6379", Target: "redis:6379", Outcome: OutcomeReached, Confidence: ConfidenceReal}}
+	attachInClusterRequest(routes, "", "", &HopConfig{Ports: []PortMap{{Port: 6379, Name: "redis", TargetPort: "6379"}}})
+	if routes[0].InClusterRequest != nil {
+		t.Errorf("a non-HTTP route acquired an HTTP-shaped request: %+v", routes[0].InClusterRequest)
+	}
+
+	// ...while its HTTP sibling still does.
+	routes = []RouteResult{{Route: "web:80", Target: "web:80", Outcome: OutcomeReached, Confidence: ConfidenceReal}}
+	attachInClusterRequest(routes, "", "", &HopConfig{Ports: []PortMap{{Port: 80, Name: "http", TargetPort: "8080"}}})
+	if routes[0].InClusterRequest == nil {
+		t.Error("the HTTP route lost its request")
+	}
+}

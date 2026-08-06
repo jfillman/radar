@@ -1,4 +1,4 @@
-import type { RouteResult, RouteOutcome, ProbeResult, Hop, VantageResult } from './types'
+import type { Trace, RouteResult, RouteOutcome, ProbeResult, Hop, VantageResult } from './types'
 
 /**
  * A Mark is the evidence class of ONE path segment for one scenario and one
@@ -425,6 +425,13 @@ export function entryForHost(host: string, upstreams: Hop[] = []): string {
  * changed a result changed the key and silently moved the user to a different
  * path.
  */
+/** Whether the in-cluster test has ANYTHING to run: the server only tests a
+ *  route carrying a concrete InClusterRequest. Offering the control without
+ *  one spends a click (and a consent dialog) on a guaranteed no-op. */
+export function traceInClusterRunnable(trace: Trace): boolean {
+  return (trace.routes ?? []).some((r) => !!r.inClusterRequest && !r.benign)
+}
+
 export function routeIdentity(r: RouteResult): string {
   return `${r.route}\u0000${r.target ?? ''}\u0000${r.targetNamespace ?? ''}`
 }

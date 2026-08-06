@@ -1,6 +1,6 @@
 import type { Trace, Hop, ResourceRef, RouteResult, PodStatus, ProbeResult } from './types'
 import type { Mark, SevTone } from './reachMarks'
-import { routeMark, isSlow, formatLatency, declaredHosts, hostMatches, routeHostOf, originRouteEvidence, routeForOrigin } from './reachMarks'
+import { routeMark, isSlow, formatLatency, declaredHosts, hostMatches, routeHostOf, originRouteEvidence, routeForOrigin, traceInClusterRunnable } from './reachMarks'
 import { originOf, type Origin } from './reachOrigins'
 import { podProbeKey } from './podReach'
 
@@ -799,7 +799,14 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
             ? {
                 text: 'Run this test',
                 kind: 'run-in-cluster' as const,
-                disabledReason: o.unavailable,
+                // Fail closed: permission alone isn't enough - with no runnable
+                // request the click is a guaranteed no-op (redis: every port is
+                // non-HTTP until native-protocol probing lands).
+                disabledReason:
+                  o.unavailable ??
+                  (traceInClusterRunnable(trace)
+                    ? undefined
+                    : 'No path on this resource has a request Radar can send from inside the cluster.'),
               }
             : undefined,
         tone: 'info',

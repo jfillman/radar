@@ -9,7 +9,7 @@ import { Tooltip } from '../ui/Tooltip'
 import { buildGraph } from './reachGraphModel'
 import { buildOrigins, defaultOrigin, type Origin, type OriginId } from './reachOrigins'
 import { buildSidebar, buildVerdict, type Sidebar, type HopReport, type InspectorCTA, type Selection } from './reachInspector'
-import { markStyle, glyphStyle, markHelp, scenariosFor, routeTone, routeChip, routeIdentity, SEV_COLOR, SEV_BADGE, type Scenario } from './reachMarks'
+import { markStyle, glyphStyle, markHelp, scenariosFor, routeTone, routeChip, routeIdentity, traceInClusterRunnable, SEV_COLOR, SEV_BADGE, type Scenario } from './reachMarks'
 import { evidenceBannerTitle } from './inClusterSummary'
 import { DEV_STATES, devTrace, type DevState } from './reachFixtures'
 
@@ -253,7 +253,7 @@ function ReachabilityBoard(props: BoardProps) {
         />
       )}
 
-      <VerdictBand verdict={verdict} runNonce={runNonce} actions={<ReachActions {...props} inClusterTested={origins.some((o) => o.id === 'incluster' && o.mark !== 'untested')} />} />
+      <VerdictBand verdict={verdict} runNonce={runNonce} actions={<ReachActions {...props} inClusterRunnable={traceInClusterRunnable(trace)} inClusterTested={origins.some((o) => o.id === 'incluster' && o.mark !== 'untested')} />} />
 
       {/* Three columns once there is room for them. The graph is the navigation
           surface and the inspector the reading surface, so keeping them side by

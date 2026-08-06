@@ -1602,10 +1602,24 @@ func hopsHaveScaleZero(hops []Hop) bool {
 func httpProbablePort(ports []PortMap, port int32) bool {
 	for _, pm := range ports {
 		if pm.Port == port {
-			return isHTTPProbablePort(pm.Name, pm.AppProtocol, port)
+			return httpProbablePortMap(pm)
 		}
 	}
 	return false
+}
+
+// httpProbablePortMap is the one protocol boundary for anything that would
+// SEND an HTTP request at a declared port. An explicit UDP/SCTP protocol
+// refuses outright - an unnamed UDP :80 must never acquire an HTTP Job the
+// prober itself declined to send. Empty protocol is the Kubernetes default
+// (TCP).
+func httpProbablePortMap(pm PortMap) bool {
+	switch strings.ToUpper(strings.TrimSpace(pm.Protocol)) {
+	case "", "TCP":
+	default:
+		return false
+	}
+	return isHTTPProbablePort(pm.Name, pm.AppProtocol, pm.Port)
 }
 
 func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Result, scope []int32, extraLoc []ProbeFact, ports []PortMap, backendScoped bool) []RouteResult {
@@ -2324,7 +2338,15 @@ func mergePorts(existing, add []int32) []int32 {
 // the route Target so multi-port routes each get their own scheme).
 func attachInClusterRequest(routes []RouteResult, host, path string, cfg *HopConfig) {
 	for i := range routes {
-		req := guessInClusterRequest(host, path, portFromTarget(routes[i].Target, cfg))
+		pm := portFromTarget(routes[i].Target, cfg)
+		// A route can exist on non-HTTP evidence (a direct TCP reach of a
+		// redis port). Handing it an HTTP-shaped request offered a Job the
+		// runner would send as tcp,http against a protocol the prober itself
+		// declined to speak - fail closed until native-protocol probing lands.
+		if pm.Port != 0 && !httpProbablePortMap(pm) {
+			continue
+		}
+		req := guessInClusterRequest(host, path, pm)
 		routes[i].InClusterRequest = &req
 	}
 }

@@ -334,7 +334,7 @@ function ProbeOptionsMenu({ probePath, onApplyProbePath }: { probePath?: string;
 // test" (proxy/laptop vantage) plus, once allowed, the secondary "Test inside the
 // cluster" (real pod-to-pod) - one grouped control instead of two split corners.
 // Uses the design-system button classes (.btn-brand / .btn-brand-muted).
-export function ReachActions({ onRunProbes, probeRequested, probed, onRunInCluster, inClusterRunning, inClusterAllowed, inClusterTested, probePath, onApplyProbePath }: {
+export function ReachActions({ onRunProbes, probeRequested, probed, onRunInCluster, inClusterRunning, inClusterAllowed, inClusterRunnable, inClusterTested, probePath, onApplyProbePath }: {
   onRunProbes?: () => void
   probeRequested?: boolean
   // probed/inClusterTested: each test has already produced a result, so its
@@ -346,6 +346,10 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
   inClusterRunning?: boolean
   inClusterAllowed?: boolean
   inClusterTested?: boolean
+  /** False when the trace carries no runnable in-cluster request - the button
+   *  then renders DISABLED with the reason, never as a live control whose
+   *  click is a guaranteed no-op. */
+  inClusterRunnable?: boolean
   probePath?: string
   onApplyProbePath?: (p: string) => void
 }) {
@@ -353,6 +357,7 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
   // gated on the verdict. Hiding it after it succeeds (when the verdict turns
   // healthy) is exactly when an operator wants to re-run it after a change.
   const showInCluster = !!(inClusterAllowed && onRunInCluster)
+  const notRunnable = inClusterRunnable === false
   if (!onRunProbes && !showInCluster) return null
   return (
     <div className="flex shrink-0 items-center gap-2">
@@ -360,12 +365,18 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
           (it mutates: spawns a Job), clearly subordinate to the primary, with an
           in-cluster glyph so it's distinguishable without hover. */}
       {showInCluster && (
-        <Tooltip content="Runs the probe from short-lived Jobs INSIDE the cluster — real pod-to-pod traffic — to confirm the in-cluster data path. Covers the testable paths on this resource, not only the one selected above; the confirmation names how many will actually run.">
+        <Tooltip
+          content={
+            notRunnable
+              ? 'No path on this resource has a request Radar can send from inside the cluster, so this test has nothing to run.'
+              : 'Runs the probe from short-lived Jobs INSIDE the cluster — real pod-to-pod traffic — to confirm the in-cluster data path. Covers the testable paths on this resource, not only the one selected above; the confirmation names how many will actually run.'
+          }
+        >
           <button
             type="button"
             onClick={onRunInCluster}
-            disabled={inClusterRunning}
-            className="btn-brand-muted px-2.5 py-1 text-xs inline-flex items-center gap-1.5"
+            disabled={inClusterRunning || notRunnable}
+            className="btn-brand-muted px-2.5 py-1 text-xs inline-flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {inClusterRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Network className="w-3 h-3" />}
             {inClusterRunning ? 'Running in-cluster test…' : inClusterTested ? 'Re-run in-cluster' : 'Test in-cluster'}

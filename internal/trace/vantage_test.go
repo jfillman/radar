@@ -473,3 +473,44 @@ func TestInClusterResultsLandInTheProbeJobVantage(t *testing.T) {
 		t.Errorf("probe-job outcome = %q, want %q", found.Outcome, OutcomeVerified)
 	}
 }
+
+// The same borrowing, on the ISSUER axis: Radar's own in-cluster process and a
+// throwaway probe Job are both in-cluster/data, but a source-scoped
+// NetworkPolicy or mesh policy can admit one and refuse the other - so Radar
+// reaching the Pods directly must never localize a boundary for the JOB's
+// Service failure.
+func TestLocalizeBoundariesWillNotBorrowAnotherSourcesPodEvidence(t *testing.T) {
+	// Radar's own process reached the pods (Source empty = radar).
+	tr := serviceTrace("checkout", 80, "8080", podPortProbe(probe.VantageInCluster, probe.PathData, 8080, true))
+	// The probe JOB failed at the Service.
+	tr.Routes = []RouteResult{{
+		Route: "r", Target: "checkout:80", TargetNamespace: "prod", Outcome: OutcomeUnreachable,
+		ByVantage: []VantageResult{{
+			Vantage: string(probe.VantageInCluster), Path: string(probe.PathData),
+			Source: probe.SourceProbeJob, Outcome: OutcomeUnreachable,
+		}},
+	}}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != "" {
+		t.Errorf("FailedBoundary = %q, want empty - radar's own pod reach must not vouch for the probe Job's journey", got)
+	}
+}
+
+// And the aligned case still localizes: the Job failed at the Service and the
+// JOB ITSELF reached the pods directly.
+func TestLocalizeBoundariesSameSourceStillLocalizes(t *testing.T) {
+	pr := podPortProbe(probe.VantageInCluster, probe.PathData, 8080, true)
+	pr.Source = probe.SourceProbeJob
+	tr := serviceTrace("checkout", 80, "8080", pr)
+	tr.Routes = []RouteResult{{
+		Route: "r", Target: "checkout:80", TargetNamespace: "prod", Outcome: OutcomeUnreachable,
+		ByVantage: []VantageResult{{
+			Vantage: string(probe.VantageInCluster), Path: string(probe.PathData),
+			Source: probe.SourceProbeJob, Outcome: OutcomeUnreachable,
+		}},
+	}}
+	localizeBoundaries(tr)
+	if got := tr.Routes[0].ByVantage[0].FailedBoundary; got != BoundaryServiceRouting {
+		t.Errorf("FailedBoundary = %q, want %q", got, BoundaryServiceRouting)
+	}
+}

@@ -232,7 +232,7 @@ func localizeBoundaries(t *Trace) {
 			if v.Outcome != OutcomeUnreachable {
 				continue
 			}
-			if reached[v.Vantage+"\x00"+v.Path] {
+			if reached[originIdentity(v.Vantage, v.Path, v.Source)] {
 				v.FailedBoundary = BoundaryServiceRouting
 			}
 		}
@@ -333,9 +333,22 @@ func reachedPodOrigins(pods *Hop, port int32) map[string]bool {
 		if pr.Skipped || !pr.OK || pr.Port != port {
 			continue
 		}
-		out[string(pr.Vantage)+"\x00"+string(pr.Path)] = true
+		out[originIdentity(string(pr.Vantage), string(pr.Path), pr.Source)] = true
 	}
 	return out
+}
+
+// originIdentity is the full identity of WHO observed something: vantage, path,
+// and issuer. Source matters exactly as much here as in mergeVantages - Radar's
+// own in-cluster process and a throwaway probe Job are both in-cluster/data, but
+// a source-scoped NetworkPolicy or mesh policy can admit one and refuse the
+// other, so one identity's direct-pod reach must never localize a boundary for
+// the other's Service failure. An empty source is Radar's own process.
+func originIdentity(vantage, path, source string) string {
+	if source == "" {
+		source = probe.SourceRadar
+	}
+	return vantage + "\x00" + path + "\x00" + source
 }
 
 // ProbeRequest is a concrete HTTP request a user can run against a Service from

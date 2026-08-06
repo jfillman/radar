@@ -197,8 +197,6 @@ func registerTools(server *mcp.Server, includeWrites bool) {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "diagnose",
-		// main rewrote the workload half of this description; this branch added the
-		// network-entry half. Both are kept: they describe disjoint kinds.
 		Description: "Use for CrashLoopBackOff, OOMKilled, image-pull, readiness, scheduling, " +
 			"or GitOps sync/health symptoms after narrowing to one broken workload or reconciler, " +
 			"or for 'traffic is not reaching this service / route / ingress'. " +
@@ -220,24 +218,15 @@ func registerTools(server *mcp.Server, includeWrites bool) {
 			"and narrow ranking hint, not a causal or universal relevance verdict. " +
 			"For Application, Kustomization, or Flux HelmRelease, returns reconciler status " +
 			"and parsed issues without pod-log fan-out. " +
-			"For network entry kinds (Service/Ingress/HTTPRoute/GRPCRoute/Gateway), " +
-			"returns a coverage-honest reachability diagnosis instead of pod-log fan-out: a " +
-			"`summary` (headline + tested/passed/failed/skipped counts over the INTENDED routes), " +
-			"`routes` (each declared route's outcome + confidence - `indirect` means reached only " +
-			"via the API-server proxy, NOT the live-traffic path), `notTested` (what we couldn't " +
-			"probe + why), a NAMED `brokenRoute`, and `path` (hops with their static findings). A " +
-			"coarse `verdict` enum (healthy/degraded/broken/unknown) rolls these up: `healthy` means " +
-			"NO failing route was found - it can include routes that were only REACHED (a 3xx/4xx " +
-			"response, or a transport-only TCP/TLS connection) rather than verified with a real 2xx, " +
-			"and can reflect a static-config-only assessment (probe=false) or partial coverage. If you " +
-			"need certainty, read `routes[].outcome` (verified vs reached vs not-tested), each route's " +
-			"`confidence` (real vs indirect), and the `headline`/`diagnosis` text rather than keying " +
-			"solely on `verdict`. Use it for backend port mismatches, route not Accepted by parent " +
-			"gateway, no-ready-endpoints, and readiness probes targeting the wrong port. " +
+			"For network entry kinds (Service/Ingress/HTTPRoute/GRPCRoute/Gateway), returns a " +
+			"per-route reachability diagnosis whose fields carry their own explanations - trust " +
+			"`routes[].outcome` + `confidence` and the `headline`/`diagnosis` text over the coarse " +
+			"`verdict` rollup, and treat `indirect` confidence as reached only via the API-server " +
+			"proxy, never the live-traffic path. " +
 			"Prefer a targeted resource/log/event " +
 			"tool when you need only one facet; use get_resource for other kinds. " +
 			"Read-only EXCEPT the optional inCluster=true arg (network kinds), which creates up to 5 " +
-			"transient, self-destructing probe pods (one per intended route) to test the real dataplane.",
+			"transient, self-destructing probe pods to test the real dataplane.",
 		// NOT readOnly: inCluster=true creates pods. A client gating on
 		// readOnlyHint must be told that.
 		Annotations: diagnoseAnno,

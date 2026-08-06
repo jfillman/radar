@@ -1672,7 +1672,7 @@ func TestIsInternalGuardError(t *testing.T) {
 // test" - that was true only of the in-cluster Job test. Pins the corrected
 // copy so the false claim can't be reintroduced.
 func TestDiagnoseDoc_ProxyProbeAutoRunWording(t *testing.T) {
-	b, err := os.ReadFile("../../docs/diagnose.md")
+	b, err := os.ReadFile("../../docs/reachability.md")
 	if err != nil {
 		t.Fatalf("read diagnose.md: %v", err)
 	}

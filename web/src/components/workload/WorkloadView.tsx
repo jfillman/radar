@@ -927,13 +927,19 @@ export function WorkloadView({
           </div>
         )}
         reachableVia={servingServices}
-        renderDiagnoseTab={({ kind, namespace: ns, name: n }) => (
+        renderDiagnoseTab={({ namespace: ns, name: n }) => (
           // Key by resource identity so the tab REMOUNTS on A→B navigation - without
           // this, the first render with B's identity but A's still-set probeTrace
           // paints A's verdict under B for one commit before the reset effect runs.
+          //
+          // The kind comes from the loaded resource, else the URL's own singular
+          // PascalCase kind - NEVER the base view's re-derived one: before the
+          // resource (or CRD discovery) loads, de-pluralizing "httproutes" guessed
+          // "Httproute", which fired the auto-probes once under the guessed kind
+          // and again under the real one - two live probe runs per tab open.
           <WorkloadReachabilityTab
-            key={`${kind}/${ns}/${n}`}
-            kind={kind}
+            key={`${resource?.kind ?? kindProp}/${ns}/${n}`}
+            kind={resource?.kind ?? kindProp}
             namespace={ns}
             name={n}
             group={effectiveGroup}

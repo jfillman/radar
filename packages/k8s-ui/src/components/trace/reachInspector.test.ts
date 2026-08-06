@@ -538,3 +538,39 @@ describe('a break at one parallel entry orders nothing', () => {
     }
   })
 })
+
+describe('a skipped route says why, from the vantage that skipped it', () => {
+  const skipped = (evidence: string): RouteResult =>
+    route({ outcome: 'not-tested', confidence: undefined, evidence, byVantage: undefined })
+  const mkSkipped = (evidence: string): Trace => {
+    const t = mk([pod('shop-1', true, '10.0.0.1')], [])
+    t.verdict = 'unknown'
+    t.runVantage = 'local'
+    t.coverage = { tested: 0, passed: 0, failed: 0, skipped: 1 }
+    t.routes = [skipped(evidence)]
+    return t
+  }
+  const reason = "HTTPS backend - the API-server proxy speaks plain HTTP and can't verify TLS on this port. Test it directly."
+
+  it('surfaces the rollup evidence under the origins the run dialled from', () => {
+    const t = mkSkipped(reason)
+    for (const id of ['local', 'apiserver']) {
+      const s = buildSidebar(undefined, ctx(t, id, skipped(reason)))
+      expect(s.path.evidence.map((e) => e.text).join('\n')).toContain('API-server proxy speaks plain HTTP')
+    }
+  })
+
+  it('never charges a vantage that simply has not run with the skip reason', () => {
+    const t = mkSkipped(reason)
+    const s = buildSidebar(undefined, ctx(t, 'incluster', skipped(reason)))
+    const texts = s.path.evidence.map((e) => e.text).join('\n')
+    expect(texts).not.toContain('API-server proxy')
+    expect(texts).toMatch(/no test has been run from here|not permitted/)
+  })
+
+  it('says out loud that dots are health, not results, when nothing anywhere was tested', () => {
+    const t = mkSkipped(reason)
+    const s = buildSidebar(undefined, ctx(t, 'apiserver', skipped(reason)))
+    expect(s.path.body).toContain('cluster state, not a test result')
+  })
+})

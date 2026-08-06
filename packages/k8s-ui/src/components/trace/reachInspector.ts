@@ -363,13 +363,20 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     add(f.ok ? 'proxied' : 'failed', `${body} — checked directly, past the entry point`)
   }
   if (evidence.length === 0) {
+    // A route the run SKIPPED still carries why in its rollup evidence ("HTTPS
+    // backend - the proxy speaks plain HTTP..."). That reason belongs to the
+    // origins the run dialled from - shown under a vantage that simply hasn't
+    // run, it would charge the in-cluster probe with the proxy's limits.
+    const ranFromHere = trace.runVantage === 'in-cluster' ? origin.id === 'radar-incluster' : origin.id === 'local' || origin.id === 'apiserver'
+    const skipReason = ev.kind === 'rollup' && asSeen?.outcome === 'not-tested' && ranFromHere ? asSeen.evidence : undefined
     add(
       mark,
-      origin.unsupported
-        ? 'Radar cannot test from here, so nothing has been learned this way'
-        : origin.mark === 'denied'
-          ? 'not permitted to run this test'
-          : 'no test has been run from here',
+      skipReason ||
+        (origin.unsupported
+          ? 'Radar cannot test from here, so nothing has been learned this way'
+          : origin.mark === 'denied'
+            ? 'not permitted to run this test'
+            : 'no test has been run from here'),
     )
   }
 
@@ -387,7 +394,11 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     : reachedSomething
     ? 'This vantage did reach part of the path — see what it saw below. It has no result for this route as a whole, so the end-to-end journey from here is still unproven.'
     : !hasEvidence
-    ? origin.unavailable || 'Nothing has been tested from here, so this says nothing about whether traffic gets through.'
+    ? (origin.unavailable || 'Nothing has been tested from here, so this says nothing about whether traffic gets through.') +
+      // When NOTHING was tested anywhere, the health dots are the only colour
+      // on the board and read as a passed test - the one state where the
+      // dot/line split needs saying out loud, not just in the caption.
+      ((trace.coverage?.tested ?? 0) === 0 ? ' The dots on the graph show each resource’s own reported health — cluster state, not a test result.' : '')
     : failed
     ? 'This is the first confirmed failure. Everything after it was never tried, so there is nothing to report past this point.'
     : mark === 'proved'

@@ -342,6 +342,13 @@ function TabTooltip({ hosts, members, children }: { hosts: string[]; members: st
               {h}
             </span>
           ))}
+          {/* The fold is presentational, and users rightly ask whether the
+              checks are separate - say the contract out loud. */}
+          <span className="mt-1 max-w-[42ch] text-theme-text-tertiary">
+            {items === hosts
+              ? 'Each hostname is tested separately — its own DNS lookup, TLS handshake and request. They share one tab only while their results are identical; a hostname that behaves differently gets its own.'
+              : 'Each path is tested separately; they share one tab only while their results are identical.'}
+          </span>
         </span>
       }
       wrapperClassName="flex-none cursor-help"

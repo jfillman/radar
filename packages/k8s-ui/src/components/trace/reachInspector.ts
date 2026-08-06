@@ -132,7 +132,10 @@ function originScope(o: Origin, trace: Trace): { k: string; v: string }[] {
   return [
     { k: 'TESTED FROM', v: o.name },
     { k: 'RUNS IN', v: runsIn[o.id] },
-    { k: 'IDENTITY', v: o.identity },
+    // The laptop row's content is where the dial came FROM ("you dialled a
+    // public address…"), not who dialled - identity and network position are
+    // different facts and must not share a label.
+    { k: o.id === 'local' ? 'NETWORK POSITION' : 'IDENTITY', v: o.identity },
     { k: 'MECHANISM', v: o.mech },
   ]
 }

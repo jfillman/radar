@@ -326,6 +326,12 @@ func waitAndReadProbeJob(ctx context.Context, client kubernetes.Interface, names
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	var lastPod *corev1.Pod
+	// The most informative snapshot seen, not just the last: a pull-failing pod
+	// oscillates ErrImagePull → ImagePullBackOff → ContainerCreating, and a
+	// timeout that samples only the final state reports the uninformative
+	// "ContainerCreating" while the actionable "image not found" was visible
+	// two ticks earlier.
+	var pullFailedPod *corev1.Pod
 	var lastListErr error
 	for {
 		select {
@@ -336,7 +342,11 @@ func waitAndReadProbeJob(ctx context.Context, client kubernetes.Interface, names
 			if ctx.Err() != context.DeadlineExceeded {
 				budget = 0
 			}
-			return nil, probeTimeoutError(lastPod, lastListErr, budget)
+			attributed := lastPod
+			if pullFailedPod != nil {
+				attributed = pullFailedPod
+			}
+			return nil, probeTimeoutError(attributed, lastListErr, budget)
 		case <-ticker.C:
 			pods, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 			if err != nil {
@@ -356,6 +366,9 @@ func waitAndReadProbeJob(ctx context.Context, client kubernetes.Interface, names
 			}
 			pod := pods.Items[0]
 			lastPod = &pod
+			if probeImagePullReason(&pod) != "" {
+				pullFailedPod = &pod
+			}
 			// Gate on the probe CONTAINER's own termination, not the overall pod
 			// phase: with a classic injected sidecar that runs forever, a
 			// RestartPolicy:Never pod never reaches Succeeded after the probe
@@ -464,6 +477,11 @@ func probeImagePullReason(pod *corev1.Pod) string {
 			continue
 		}
 		if k8s.IsImagePullReason(cs.State.Waiting.Reason) {
+			// The kubelet's message names the actual failure ("… not found",
+			// "unauthorized") - the reason alone sends the operator guessing.
+			if msg := strings.TrimSpace(cs.State.Waiting.Message); msg != "" {
+				return cs.State.Waiting.Reason + ": " + truncate(msg, 200)
+			}
 			return cs.State.Waiting.Reason
 		}
 	}

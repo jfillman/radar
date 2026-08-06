@@ -1700,3 +1700,46 @@ func TestSkippedOnlyNonHTTPPortStaysRouteless(t *testing.T) {
 		}
 	}
 }
+
+// A skipped multi-port Service is one gap per DECLARED port - the preserved
+// routes and their raw per-port skip rows must never render as separate
+// scenarios ("argocd-server:80" AND "port 80" = four tabs for two gaps).
+// Identity is structural (backend ns/name + port), never display strings.
+func TestSkippedMultiPortServiceIsOneGapPerPort(t *testing.T) {
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Service", Namespace: "argocd", Name: "argocd-server"},
+		Downstream: []Hop{
+			{
+				Resource: ResourceRef{Kind: "Service", Namespace: "argocd", Name: "argocd-server"},
+				Config: &HopConfig{ClusterIP: "10.0.0.9", Ports: []PortMap{
+					{Port: 80, Name: "http", TargetPort: "8080"},
+					{Port: 443, Name: "https", TargetPort: "8080"},
+				}},
+				Probes: []probe.Result{
+					{Layer: probe.LayerHTTP, Target: "port 80", Port: 80, Vantage: probe.VantageLocal, Path: probe.PathAPIServer, Skipped: true, Reason: "the backend didn't respond within the probe budget"},
+					{Layer: probe.LayerHTTP, Target: "port 443", Port: 443, Vantage: probe.VantageLocal, Path: probe.PathAPIServer, Skipped: true, Reason: "HTTPS backend - the API-server proxy speaks plain HTTP"},
+				},
+			},
+			{Resource: ResourceRef{Kind: "Pods", Namespace: "argocd"}, Edge: "Service->Pods"},
+		},
+	}
+	computeCoverage(tr)
+
+	if len(tr.Routes) != 2 {
+		t.Fatalf("routes = %d, want 2 preserved candidates: %+v", len(tr.Routes), tr.Routes)
+	}
+	for _, r := range tr.Routes {
+		if r.InClusterRequest == nil {
+			t.Errorf("route %q has no runnable request", r.Route)
+		}
+		if r.Evidence == "" {
+			t.Errorf("route %q lost its skip reason - the tab can no longer say WHY", r.Route)
+		}
+	}
+	for _, s := range tr.NotTested {
+		t.Errorf("raw per-port skip row survived beside its preserved route: %+v", s)
+	}
+	if tr.Coverage == nil || tr.Coverage.Skipped != 2 {
+		t.Errorf("Coverage.Skipped = %+v, want 2 (one gap per declared port)", tr.Coverage)
+	}
+}

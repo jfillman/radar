@@ -1691,7 +1691,17 @@ func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Re
 		// skipped Redis/gRPC/UDP port must not become a guessed HTTP Job that
 		// fabricates identity/mTLS evidence.
 		if len(ps) > 0 && httpProbablePort(ports, port) {
-			out = append(out, RouteResult{Route: rid, Target: target, Outcome: OutcomeNotTested})
+			// Carry the skip's reason as the route's evidence - the scenario tab
+			// must still say WHY this is untested once the raw skip rows are
+			// absorbed into the route (buildNotTested drops them structurally).
+			evidence := ""
+			for _, sp := range ps {
+				if sp.Reason != "" {
+					evidence = sp.Reason
+					break
+				}
+			}
+			out = append(out, RouteResult{Route: rid, Target: target, Outcome: OutcomeNotTested, Evidence: evidence})
 		}
 	}
 	return out
@@ -2109,6 +2119,22 @@ func layerRank(l probe.Layer) int {
 func buildNotTested(t *Trace) []RouteSkip {
 	var out []RouteSkip
 	seen := map[string]bool{}
+	// A preserved route and the raw per-port skip rows behind it are the SAME
+	// gap - keeping both rendered "argocd-server:80" and "port 80" as separate
+	// scenarios. Structured identity (backend namespace/name + port), never
+	// display strings: "port 80" can't string-match "argocd-server:80".
+	preserved := map[string]bool{}
+	for _, r := range t.Routes {
+		name, port, ok := routeBackend(r)
+		if !ok {
+			continue
+		}
+		ns := r.TargetNamespace
+		if ns == "" {
+			ns = t.Subject.Namespace
+		}
+		preserved[fmt.Sprintf("%s\x00%s\x00%d", ns, name, port)] = true
+	}
 	for _, h := range t.Downstream {
 		// Pod dials are LOCALIZATION evidence behind the Service, never intended
 		// routes - sweeping their skips in here grew per-Pod "routes" beside the
@@ -2118,8 +2144,15 @@ func buildNotTested(t *Trace) []RouteSkip {
 		if h.Resource.Kind == "Pods" {
 			continue
 		}
+		hopNS := h.Resource.Namespace
+		if hopNS == "" {
+			hopNS = t.Subject.Namespace
+		}
 		for _, p := range h.Probes {
 			if !p.Skipped || p.Reason == "" {
+				continue
+			}
+			if p.Port != 0 && preserved[fmt.Sprintf("%s\x00%s\x00%d", hopNS, h.Resource.Name, p.Port)] {
 				continue
 			}
 			key := string(p.Layer) + "|" + p.Target + "|" + p.Reason

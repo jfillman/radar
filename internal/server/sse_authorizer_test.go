@@ -19,7 +19,7 @@ func TestMemoizedAuthorizer(t *testing.T) {
 	}
 	clock := time.Now()
 	ctxName := "cluster-a"
-	authz := memoizedAuthorizer(base, 2*time.Minute, func() string { return ctxName }, func() time.Time { return clock })
+	authz := memoizedAuthorizer(base, 2*time.Minute, 10*time.Second, 0, func() string { return ctxName }, func() time.Time { return clock })
 
 	if !authz("", "secrets", "team-a", "list") {
 		t.Fatal("secrets/list should be allowed")
@@ -61,7 +61,7 @@ func TestMemoizedAuthorizer_ContextSwitchIsolatesDecisions(t *testing.T) {
 		return ctxName == "cluster-a", true
 	}
 	clock := time.Now()
-	authz := memoizedAuthorizer(base, 2*time.Minute, func() string { return ctxName }, func() time.Time { return clock })
+	authz := memoizedAuthorizer(base, 2*time.Minute, 10*time.Second, 0, func() string { return ctxName }, func() time.Time { return clock })
 
 	ctxName = "cluster-a"
 	if !authz("", "secrets", "team-a", "list") {
@@ -78,10 +78,11 @@ func TestMemoizedAuthorizer_ContextSwitchIsolatesDecisions(t *testing.T) {
 }
 
 // If a context switch lands while the SAR is in flight, the fresh result was
-// decided against a different apiserver than the key names — it must NOT be
+// decided against a different apiserver than the key names. The frame must fail
+// closed (the verdict may reflect the wrong cluster), and the result must NOT be
 // cached, or a switch-back within the TTL would serve the wrong cluster's
 // decision.
-func TestMemoizedAuthorizer_NoCacheWhenContextChangesDuringSAR(t *testing.T) {
+func TestMemoizedAuthorizer_FailsClosedAndNoCacheWhenContextChangesDuringSAR(t *testing.T) {
 	calls := 0
 	ctxName := "cluster-a"
 	base := func(group, resource, namespace, verb string) (bool, bool) {
@@ -93,11 +94,13 @@ func TestMemoizedAuthorizer_NoCacheWhenContextChangesDuringSAR(t *testing.T) {
 		return true, true
 	}
 	clock := time.Now()
-	authz := memoizedAuthorizer(base, 2*time.Minute, func() string { return ctxName }, func() time.Time { return clock })
+	authz := memoizedAuthorizer(base, 2*time.Minute, 10*time.Second, 0, func() string { return ctxName }, func() time.Time { return clock })
 
-	// Key computed under cluster-a, but context flips to cluster-b during base →
-	// result must not be cached under the cluster-a key.
-	authz("", "secrets", "team-a", "list")
+	// Key computed under cluster-a, but context flips to cluster-b during base.
+	// The (possibly wrong-cluster) allow must not release the frame — fail closed.
+	if authz("", "secrets", "team-a", "list") {
+		t.Fatal("switch-straddling SAR must fail closed, not release the frame on the wrong cluster's verdict")
+	}
 	// Back on cluster-a within the TTL: a cached (poisoned) entry would be served
 	// with no new base call. A fresh call proves it wasn't cached.
 	ctxName = "cluster-a"
@@ -107,40 +110,73 @@ func TestMemoizedAuthorizer_NoCacheWhenContextChangesDuringSAR(t *testing.T) {
 	}
 }
 
-// A transient SAR failure (authoritative=false) fails closed for that frame but
-// must NOT be cached — otherwise a momentary apiserver blip would deny the tuple
-// for the whole TTL. The next frame must retry, and a subsequent success must be
-// served correctly.
-func TestMemoizedAuthorizer_TransientFailureNotCached(t *testing.T) {
+// A transient SAR failure (authoritative=false) fails closed for that frame and
+// is cached only for the short negativeTTL — long enough that a degraded
+// apiserver isn't re-SAR'd on every frame for the same tuple (which would stall
+// the single broadcast goroutine), short enough that a momentary blip can't deny
+// a readable tuple for the full TTL. Once negativeTTL elapses the tuple re-checks
+// and a recovered apiserver's authoritative allow is cached for the full TTL.
+func TestMemoizedAuthorizer_TransientFailureCachedBriefly(t *testing.T) {
 	calls := 0
 	// First call is a transient failure (deny, non-authoritative); afterwards the
 	// apiserver recovers and authoritatively allows.
 	base := func(group, resource, namespace, verb string) (bool, bool) {
 		calls++
 		if calls == 1 {
-			return false, false // transient failure: fail-closed, don't cache
+			return false, false // transient failure: fail-closed, cache only briefly
 		}
 		return true, true // recovered: authoritative allow
 	}
 	clock := time.Now()
 	ctxName := "cluster-a"
-	authz := memoizedAuthorizer(base, 2*time.Minute, func() string { return ctxName }, func() time.Time { return clock })
+	negativeTTL := 10 * time.Second
+	authz := memoizedAuthorizer(base, 2*time.Minute, negativeTTL, 0, func() string { return ctxName }, func() time.Time { return clock })
 
 	if authz("", "secrets", "team-a", "list") {
 		t.Fatal("transient failure must fail closed (deny) for this frame")
 	}
-	// Same tuple, still within TTL: the failure must not have been cached, so the
-	// retry runs base again and now succeeds.
+	// Same tuple within the negativeTTL: served from the brief negative cache, so
+	// the degraded apiserver is NOT re-SAR'd — no new base call.
+	if authz("", "secrets", "team-a", "list") {
+		t.Fatal("negative cache must keep failing closed within negativeTTL")
+	}
+	if calls != 1 {
+		t.Fatalf("transient failure should be cached for negativeTTL; want 1 base call, got %d", calls)
+	}
+
+	// Past the negativeTTL the tuple re-checks; the apiserver has recovered.
+	clock = clock.Add(negativeTTL + time.Second)
 	if !authz("", "secrets", "team-a", "list") {
-		t.Fatal("transient failure was cached — retry should have re-run base and allowed")
+		t.Fatal("after negativeTTL the recovered apiserver should allow")
 	}
 	if calls != 2 {
-		t.Fatalf("want 2 base calls (failure not cached, retried), got %d", calls)
+		t.Fatalf("want a re-check after negativeTTL, got %d base calls", calls)
 	}
-	// The authoritative allow IS cached now — a third call is served from memo.
+	// The authoritative allow IS cached for the full TTL — a further call within it
+	// is served from memo.
+	clock = clock.Add(negativeTTL + time.Second) // still well within the 2m TTL
 	authz("", "secrets", "team-a", "list")
 	if calls != 2 {
-		t.Fatalf("authoritative allow should be cached; want still 2 base calls, got %d", calls)
+		t.Fatalf("authoritative allow should be cached for the full TTL; want still 2 base calls, got %d", calls)
+	}
+}
+
+// sweepExpiredAuthMemo reclaims only the entries whose TTL has elapsed, leaving
+// live ones intact — the memory bound for a long-lived all-namespace stream that
+// would otherwise accumulate expired entries for every observed tuple.
+func TestSweepExpiredAuthMemo(t *testing.T) {
+	base := time.Now()
+	memo := map[string]authMemoEntry{
+		"expired-a": {allowed: true, expires: base.Add(-time.Second)},
+		"expired-b": {allowed: false, expires: base},                // expires == now → expired
+		"live":      {allowed: true, expires: base.Add(time.Minute)},
+	}
+	removed := sweepExpiredAuthMemo(memo, base)
+	if removed != 2 {
+		t.Fatalf("want 2 expired entries removed, got %d", removed)
+	}
+	if _, ok := memo["live"]; !ok || len(memo) != 1 {
+		t.Fatalf("sweep must keep only the live entry, got %v", memo)
 	}
 }
 

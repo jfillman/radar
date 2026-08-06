@@ -4496,6 +4496,17 @@ const (
 	// sseChangeAuthSARTimeout caps a single authorization SAR issued from the
 	// broadcast goroutine, so one hung apiserver call can't stall broadcasts.
 	sseChangeAuthSARTimeout = 5 * time.Second
+	// sseChangeAuthNegativeTTL caps how long a transient SAR failure (apiserver
+	// unreachable, error, or timeout) is remembered as a fail-closed deny. Short
+	// so a momentary blip clears within seconds, but non-zero so a degraded
+	// apiserver doesn't re-pay the SAR timeout on every frame for the same tuple
+	// in the single broadcast goroutine.
+	sseChangeAuthNegativeTTL = 10 * time.Second
+	// sseChangeAuthMemoCap bounds one connection's authorization memo. Past it,
+	// expired entries are swept before the next insert so a long-lived
+	// all-namespace stream can't accumulate them without bound. Soft: a
+	// legitimately large live working set may exceed it.
+	sseChangeAuthMemoCap = 8192
 )
 
 // newSSEChangeAuthorizer returns the per-kind authorizer for one SSE client's
@@ -4525,23 +4536,51 @@ func (s *Server) newSSEChangeAuthorizer(ctx context.Context, user *auth.User) fu
 		defer cancel()
 		return s.canReadUserSAR(sarCtx, user, group, resource, namespace, verb)
 	}
-	return memoizedAuthorizer(base, sseChangeAuthTTL, k8s.GetContextName, time.Now)
+	return memoizedAuthorizer(base, sseChangeAuthTTL, sseChangeAuthNegativeTTL, sseChangeAuthMemoCap, k8s.GetContextName, time.Now)
+}
+
+// authMemoEntry is one cached authorization decision in an SSE connection's memo.
+type authMemoEntry struct {
+	allowed bool
+	expires time.Time
+}
+
+// sweepExpiredAuthMemo deletes every entry whose TTL has elapsed as of now,
+// reclaiming space in a long-lived connection's authorization memo, and returns
+// the number removed. The caller holds the memo's lock.
+func sweepExpiredAuthMemo(memo map[string]authMemoEntry, now time.Time) int {
+	removed := 0
+	for k, e := range memo {
+		if !now.Before(e.expires) {
+			delete(memo, k)
+			removed++
+		}
+	}
+	return removed
 }
 
 // memoizedAuthorizer wraps an authorization predicate with a per-(context, verb,
 // group, resource, namespace) TTL memo so repeated lookups don't re-issue the
 // SAR. Keying on contextName scopes decisions to the cluster they were made
-// against. base returns (allowed, authoritative); a non-authoritative result
-// (transient SAR failure) is returned to the caller fail-closed but not cached,
-// so a momentary apiserver blip can't deny a tuple for the whole TTL.
-// contextName and now are injectable for tests.
-func memoizedAuthorizer(base func(group, resource, namespace, verb string) (bool, bool), ttl time.Duration, contextName func() string, now func() time.Time) func(group, resource, namespace, verb string) bool {
-	type entry struct {
-		allowed bool
-		expires time.Time
-	}
+// against. base returns (allowed, authoritative):
+//
+//   - An authoritative allow/deny is cached for the full ttl.
+//   - A non-authoritative result (transient SAR failure: no client, error, or
+//     timeout) is a fail-closed deny cached only for the short negativeTTL — long
+//     enough that a degraded apiserver doesn't re-pay the SAR timeout on every
+//     frame for the same tuple in the single broadcast goroutine, short enough
+//     that a momentary blip can't deny a readable tuple for the whole ttl.
+//   - If the cluster context changes while base() is in flight, the verdict was
+//     decided against a different apiserver than key names: the frame fails
+//     closed and nothing is cached, so the next frame re-evaluates cleanly.
+//
+// maxEntries soft-bounds the memo: past it, expired entries are swept (time-gated
+// so a large live working set doesn't trigger an O(n) sweep every frame) before
+// the next insert. contextName and now are injectable for tests.
+func memoizedAuthorizer(base func(group, resource, namespace, verb string) (bool, bool), ttl, negativeTTL time.Duration, maxEntries int, contextName func() string, now func() time.Time) func(group, resource, namespace, verb string) bool {
 	var mu sync.Mutex
-	memo := make(map[string]entry)
+	memo := make(map[string]authMemoEntry)
+	var lastSweep time.Time
 	return func(group, resource, namespace, verb string) bool {
 		ctxName := ""
 		if contextName != nil {
@@ -4549,24 +4588,35 @@ func memoizedAuthorizer(base func(group, resource, namespace, verb string) (bool
 		}
 		key := ctxName + "\x00" + verb + "\x00" + group + "\x00" + resource + "\x00" + namespace
 		t := now()
+
 		mu.Lock()
 		if e, ok := memo[key]; ok && t.Before(e.expires) {
 			mu.Unlock()
 			return e.allowed
 		}
 		mu.Unlock()
+
 		allowed, authoritative := base(group, resource, namespace, verb)
-		// Cache only an authoritative verdict, and only if the cluster context
-		// didn't change while base() was in flight — otherwise the result may
-		// reflect a different apiserver than `key` names, and a later switch-back
-		// within the TTL would serve the wrong cluster's decision. In either
-		// skip case the fail-closed result is still returned; the next frame
-		// re-evaluates cleanly.
-		if authoritative && (contextName == nil || contextName() == ctxName) {
-			mu.Lock()
-			memo[key] = entry{allowed: allowed, expires: t.Add(ttl)}
-			mu.Unlock()
+
+		// A context switch that landed while base() ran decided this verdict
+		// against a different apiserver than key names. Fail closed for the frame
+		// and don't cache; the next frame re-evaluates against the new cluster.
+		if contextName != nil && contextName() != ctxName {
+			return false
 		}
+
+		expiry := ttl
+		if !authoritative {
+			expiry = negativeTTL
+		}
+
+		mu.Lock()
+		if maxEntries > 0 && len(memo) >= maxEntries && (lastSweep.IsZero() || t.Sub(lastSweep) >= negativeTTL) {
+			sweepExpiredAuthMemo(memo, t)
+			lastSweep = t
+		}
+		memo[key] = authMemoEntry{allowed: allowed, expires: t.Add(expiry)}
+		mu.Unlock()
 		return allowed
 	}
 }

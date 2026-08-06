@@ -451,13 +451,23 @@ export function WorkloadView({
   } = useResourceWithRelationships<any>(apiKind, namespace, name, rest.group)
   const resource = resourceResponse?.resource
   const relationships = resourceResponse?.relationships
+  const resourceGroup = useMemo(
+    () => (resource?.apiVersion ? apiVersionToGroup(resource.apiVersion) : undefined),
+    [resource?.apiVersion],
+  )
+  // The URL group arrives as '' when ?apiGroup is absent, which fails
+  // isDiagnoseKind's group check for Gateway-API kinds (HTTPRoute/GRPCRoute/
+  // Gateway) - an HTTPRoute page would then trace its serving Service instead
+  // of itself. Fall back to the group derived from the fetched resource, then
+  // to undefined (which the gate treats as "group unknown → allow").
+  const effectiveGroup = rest.group || resourceGroup || undefined
   // Reachability for a workload IS the reachability of the Services in front of
   // it - a Deployment has no address of its own. Empty for a workload nothing
   // selects, which correctly leaves the tab hidden: there is no path to trace.
   // Entry kinds trace themselves and ignore this.
   const servingServices = useMemo(
-    () => (isDiagnoseKind(apiKind, rest.group) ? [] : (relationships?.services ?? [])),
-    [apiKind, rest.group, relationships],
+    () => (isDiagnoseKind(apiKind, effectiveGroup) ? [] : (relationships?.services ?? [])),
+    [apiKind, effectiveGroup, relationships],
   )
   const refetchResourceAndRuns = useCallback(async () => {
     await Promise.all([
@@ -668,10 +678,6 @@ export function WorkloadView({
   const baseActionsBarProps = useActionsBarProps(apiKind, namespace, name)
   const desktopDownload = useDesktopDownload()
 
-  const resourceGroup = useMemo(
-    () => (resource?.apiVersion ? apiVersionToGroup(resource.apiVersion) : undefined),
-    [resource?.apiVersion],
-  )
   // Live Operational Issues for this resource. Fetched here (not inside the lead
   // render-prop) so the count also gates `hasOperationalIssues` — which tells the
   // renderers to suppress their own status-derived problems and avoid duplicates.
@@ -694,7 +700,7 @@ export function WorkloadView({
     // Prefer the URL-supplied group so Compare works even before the resource
     // fetch completes; fall back to the derived group for callers that don't
     // pass one.
-    group: rest.group || resourceGroup || undefined,
+    group: effectiveGroup,
   })
   const actionsBarProps = useMemo(
     () => ({ ...baseActionsBarProps, onCompareTo, onCompareAcrossClusters }),
@@ -829,11 +835,7 @@ export function WorkloadView({
         name={name}
         expanded={expanded}
         {...rest}
-        // The URL group arrives as '' when ?apiGroup is absent, which fails
-        // isDiagnoseKind's group check for Gateway-API kinds (HTTPRoute/GRPCRoute/
-        // Gateway). Fall back to the group derived from the fetched resource, then
-        // to undefined (which the gate treats as "group unknown → allow").
-        group={rest.group || resourceGroup || undefined}
+        group={effectiveGroup}
         // Data
         resource={resource}
         relationships={relationships}
@@ -934,7 +936,7 @@ export function WorkloadView({
             kind={kind}
             namespace={ns}
             name={n}
-            group={rest.group}
+            group={effectiveGroup}
             servingServices={servingServices}
             onNavigate={rest.onNavigateToResource}
           />
@@ -1714,7 +1716,6 @@ function WorkloadReachabilityTab({
           kind="Service"
           namespace={svc.namespace ?? namespace}
           name={svc.name}
-          servedWorkload={{ kind, name }}
           onNavigate={onNavigate}
         />
       </div>
@@ -1726,13 +1727,11 @@ function DiagnoseTabContent({
   kind,
   namespace,
   name,
-  servedWorkload,
   onNavigate,
 }: {
   kind: string
   namespace: string
   name: string
-  servedWorkload?: { kind: string; name: string }
   onNavigate?: NavigateToResource
 }) {
   const { data: staticTrace, isLoading, error, refetch } = useTrace(kind, namespace, name)
@@ -1906,7 +1905,6 @@ function DiagnoseTabContent({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ReachabilityView
-        servedWorkload={servedWorkload}
         trace={displayTrace}
         isLoading={isLoading || running}
         error={error as Error | null}

@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -56,7 +58,7 @@ func (s *Server) handleProbeInClusterCapability(w http.ResponseWriter, r *http.R
 	}
 	// Mirror the POST's namespace boundary so the capability answer matches what the
 	// POST will actually allow - never report "allowed" for an out-of-scope namespace.
-	namespaces := s.parseNamespacesForUser(r)
+	namespaces := s.traceNamespaceCeiling(r)
 	if noNamespaceAccess(namespaces) || (namespace != "" && !namespaceAllowed(namespaces, namespace)) {
 		resp.Reason = fmt.Sprintf("no access to namespace %q", namespace)
 		s.writeJSON(w, resp)
@@ -117,7 +119,7 @@ func (s *Server) handleTraceInCluster(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCloudRole(w, r, auth.RoleMember, "run an in-cluster reachability test") {
 		return
 	}
-	namespaces := s.parseNamespacesForUser(r)
+	namespaces := s.traceNamespaceCeiling(r)
 	// Mirror handleTrace: never leak that a resource exists outside the caller's
 	// namespace scope - return an unknown-verdict trace instead.
 	if noNamespaceAccess(namespaces) || (namespace != "" && !namespaceAllowed(namespaces, namespace)) {
@@ -132,7 +134,13 @@ func (s *Server) handleTraceInCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req traceInClusterRequest
-	_ = json.NewDecoder(r.Body).Decode(&req) // path is optional; a decode miss defaults to "/"
+	// An empty body is fine (path is optional), but malformed JSON is a broken
+	// client - silently defaulting it to "/" would create probe Jobs against a
+	// path the caller never asked for.
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
 
 	deps := trace.Deps{
 		Cache:             k8s.GetResourceCache(),

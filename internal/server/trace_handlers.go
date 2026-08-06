@@ -10,6 +10,26 @@ import (
 	"github.com/skyhook-io/radar/internal/trace"
 )
 
+// traceNamespaceCeiling returns the caller's RBAC-allowed namespaces (nil =
+// unrestricted). A trace subject is directly addressed, so gating it on the
+// in-app namespace VIEW pick (parseNamespacesForUser's fallback) was wrong
+// twice over: page navigation races the pick save, so a freshly-opened detail
+// page read the previous page's pick and claimed "RBAC denies access" on a
+// fully readable resource; and the pick redacted cross-namespace fan-out (a
+// parent Gateway living in its own namespace) the caller is allowed to see.
+// Mirror preflightResourceGet: RBAC only. ForceNamespaceScope still wins -
+// in that mode nothing outside the target namespace may be served.
+func (s *Server) traceNamespaceCeiling(r *http.Request) []string {
+	if k8s.ForceNamespaceScope {
+		target := k8s.GetNamespaceScopeTarget()
+		if target == "" {
+			return []string{}
+		}
+		return s.getUserNamespaces(r, []string{target})
+	}
+	return s.getUserNamespaces(r, nil)
+}
+
 // handleTrace returns a path-shaped diagnosis for one resource.
 // GET /api/trace/{kind}/{namespace}/{name}
 func (s *Server) handleTrace(w http.ResponseWriter, r *http.Request) {
@@ -26,7 +46,7 @@ func (s *Server) handleTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	namespaces := s.parseNamespacesForUser(r)
+	namespaces := s.traceNamespaceCeiling(r)
 	// Mirror handleAuditResource: when the user has no namespace access
 	// (RBAC trims the set to empty), return an unknown-verdict trace
 	// instead of leaking that the resource even exists.

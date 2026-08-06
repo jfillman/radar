@@ -236,7 +236,7 @@ function ReachabilityBoard(props: BoardProps) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-theme-border bg-theme-surface">
-      <VerdictBand verdict={verdict} runNonce={runNonce} actions={<ReachActions {...props} inClusterRunnable={traceInClusterRunnable(trace)} inClusterTested={origins.some((o) => o.id === 'incluster' && o.mark !== 'untested')} />} />
+      <VerdictBand verdict={verdict} trace={trace} runNonce={runNonce} actions={<ReachActions {...props} inClusterRunnable={traceInClusterRunnable(trace)} inClusterTested={origins.some((o) => o.id === 'incluster' && o.mark !== 'untested')} />} />
 
       {/* Three columns once there is room for them. The graph is the navigation
           surface and the inspector the reading surface, so keeping them side by
@@ -409,15 +409,27 @@ function ScenarioPicker({
 
 // ------------------------------------------------------------------ verdict
 
+const LAYER_ORDER = ['dns', 'tcp', 'tls', 'http']
+
 function VerdictBand({
   verdict,
+  trace,
   actions,
   runNonce,
 }: {
   verdict: ReturnType<typeof buildVerdict>
+  trace: Trace
   actions: React.ReactNode
   runNonce?: number
 }) {
+  // The check volume lives HERE, not only in the footer ledger: the band is
+  // the one line everyone reads, and a verdict with no visible work behind it
+  // asks to be taken on faith. Stated as work done, never as success - the
+  // count includes failed dials.
+  const stats = probeCheckStats(trace)
+  const layerBreakdown = LAYER_ORDER.filter((l) => stats.byLayer[l])
+    .map((l) => `${l.toUpperCase()} ${stats.byLayer[l]}`)
+    .join(' · ')
   return (
     <div className="flex items-start gap-3 border-b border-theme-border px-5 py-3">
       <div className="min-w-0 flex-1">
@@ -439,6 +451,22 @@ function VerdictBand({
             <span className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">{verdict.chipScope.toUpperCase()}</span>
             <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[verdict.tone]}`}>{verdict.chipText}</span>
           </div>
+        )}
+        {stats.checks > 0 && (
+          <Tooltip
+            content={`${layerBreakdown}${stats.vantages > 1 ? ` — from ${stats.vantages} vantages` : ''}. Every check is a real dial; skipped ones are listed with their reasons, never counted.`}
+            wrapperClassName="mt-1 inline-flex cursor-help"
+          >
+            <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-theme-text-secondary">
+              {/* Accent, not green: checks include failures - this states WORK
+                  done, never success. Emphasis is weight, not a new color. */}
+              <Activity className="h-3 w-3 flex-none" style={{ color: 'var(--accent-text)' }} />
+              <span>
+                <span className="font-semibold text-theme-text-primary">{stats.checks}</span> live check{stats.checks === 1 ? '' : 's'}
+                {stats.vantages > 1 ? ` from ${stats.vantages} vantages` : ''}
+              </span>
+            </span>
+          </Tooltip>
         )}
         {verdict.problem && (
           <div
@@ -835,33 +863,11 @@ function CoverageFooter({
   const derived = c?.derived ? `${c.derived} broken without testing` : ''
   const gaps = realGaps.length ? `${realGaps.length} path${realGaps.length === 1 ? '' : 's'} with no evidence` : ''
   const coverageText = c ? [attempts, derived, gaps].filter(Boolean).join('  ·  ') || 'nothing tested yet' : 'nothing tested yet'
-  // The route counts alone undersell the page: "1 got through" can be
-  // twenty-odd real dials across hostnames, ports, pods and vantages. The
-  // volume of actual work IS the trust signal - state it, with the layer
-  // breakdown on hover.
-  const stats = probeCheckStats(trace)
-  const LAYER_ORDER = ['dns', 'tcp', 'tls', 'http']
-  const layerBreakdown = LAYER_ORDER.filter((l) => stats.byLayer[l]).map((l) => `${l.toUpperCase()} ${stats.byLayer[l]}`).join(' · ')
+  // The live-check volume moved up into the verdict band - the footer stays
+  // the coverage ledger (routes, gaps, when), not the trust headline.
   return (
     <div className="flex flex-wrap items-center gap-2.5 border-t border-theme-border bg-theme-surface px-5 py-2 text-[11px] text-theme-text-tertiary">
       <span className="text-[9.5px] font-bold tracking-[0.07em]">WHAT WAS TESTED</span>
-      {stats.checks > 0 && (
-        <Tooltip
-          content={`${layerBreakdown}${stats.vantages > 1 ? ` — from ${stats.vantages} vantages` : ''}. Every check is a real dial; skipped ones are listed with their reasons, never counted.`}
-          wrapperClassName="cursor-help"
-        >
-          <span className="inline-flex items-center gap-1.5 font-mono text-theme-text-secondary">
-            {/* Accent, not green: checks include failures - this states WORK
-                done, never success. Emphasis is weight, not a new color. */}
-            <Activity className="h-3 w-3 flex-none" style={{ color: 'var(--accent-text)' }} />
-            <span>
-              <span className="font-semibold text-theme-text-primary">{stats.checks}</span> live check{stats.checks === 1 ? '' : 's'}
-              {stats.vantages > 1 ? ` from ${stats.vantages} vantages` : ''}
-            </span>
-          </span>
-        </Tooltip>
-      )}
-      {stats.checks > 0 && <span className="text-theme-border">·</span>}
       <span className="font-mono text-theme-text-secondary">{coverageText}</span>
       {/* The vantages Radar can never run are a COVERAGE fact, so they belong on
           the coverage line - as their own band they were a third row of chrome

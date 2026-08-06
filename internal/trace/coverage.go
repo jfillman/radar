@@ -591,18 +591,30 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 	// contradictory (the user already ran in-cluster and it passed), and recountCoverage
 	// would count the route as Passed AND its same-host skip row as Skipped. Drop the
 	// vantage rows the live pass resolved before recounting.
+	// Host-level, because the vantage skip rows themselves are host-level (one
+	// row per probe target). But a host is only "resolved" when EVERY non-benign
+	// route on it now carries a real reach/verify: with a partial fold (probe
+	// cap, throwaway-denied sibling), /web passing must not delete the advice
+	// row that is still the truth for /admin on the same host.
 	resolvedHosts := map[string]bool{}
+	unresolvedHosts := map[string]bool{}
 	for i := range t.Routes {
 		r := t.Routes[i]
-		if r.Confidence != ConfidenceReal {
+		if r.Benign {
 			continue
 		}
-		if r.Outcome != OutcomeVerified && r.Outcome != OutcomeReached {
+		h := routeResultHostKey(r)
+		if h == "" {
 			continue
 		}
-		if h := routeResultHostKey(r); h != "" {
+		if r.Confidence == ConfidenceReal && (r.Outcome == OutcomeVerified || r.Outcome == OutcomeReached) {
 			resolvedHosts[h] = true
+		} else {
+			unresolvedHosts[h] = true
 		}
+	}
+	for h := range unresolvedHosts {
+		delete(resolvedHosts, h)
 	}
 	if len(resolvedHosts) > 0 {
 		kept := t.NotTested[:0]

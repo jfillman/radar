@@ -352,6 +352,45 @@ func TestApplyInClusterResults_KeepsUnresolvedVantageSkip(t *testing.T) {
 	}
 }
 
+// The vantage skip rows are HOST-level (one row per probe target), so a partial
+// fold on a multi-path host must not prune the shared row: /web passing while
+// /admin stays untested leaves the "run radar in-cluster" advice as the truth
+// for /admin, and deleting it made the partial run read as complete.
+func TestApplyInClusterResults_PartialFoldKeepsSameHostVantageSkip(t *testing.T) {
+	tr := &Trace{
+		Verdict: VerdictUnknown,
+		Routes: []RouteResult{
+			{
+				Route:            "/web",
+				Target:           "api:80",
+				TargetNamespace:  "prod",
+				Outcome:          OutcomeNotTested,
+				InClusterRequest: &ProbeRequest{Host: "shop.example.com", Path: "/web"},
+			},
+			{
+				Route:            "/admin",
+				Target:           "api:80",
+				TargetNamespace:  "prod",
+				Outcome:          OutcomeNotTested,
+				InClusterRequest: &ProbeRequest{Host: "shop.example.com", Path: "/admin"},
+			},
+		},
+		NotTested: []RouteSkip{{
+			Route:       "shop.example.com:443",
+			Reason:      "couldn't reach an internal address from your machine - run radar in-cluster",
+			ReasonClass: SkipClassVantage,
+		}},
+	}
+	// Only /web gets a live pass; /admin (same host) stays untested.
+	ApplyInClusterResults(tr, map[string][]probe.Result{
+		InClusterResultKey("/web", "api:80", "prod"): cleanInClusterPass(),
+	})
+
+	if len(tr.NotTested) != 1 {
+		t.Errorf("NotTested = %+v, want the same-host vantage skip preserved while /admin is still untested", tr.NotTested)
+	}
+}
+
 // Defect 1: ApplyInClusterResults reconciles the static would-deny WARNING off
 // the live in-cluster pass but used to leave the svc:targetport-no-listener
 // WARNING standing. The static reconcileTargetPortAdvisory reads h.Probes, which

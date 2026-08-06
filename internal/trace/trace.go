@@ -192,6 +192,13 @@ type HopConfig struct {
 	// PodTotal is the count of ALL selected pods (Pods is capped for JSON size).
 	// The grid renders "N of PodTotal" so a sampled fleet never reads as complete.
 	PodTotal int `json:"podTotal,omitempty"`
+	// Workload is what RUNS these Pods, resolved through their owner chain
+	// (Pod -> ReplicaSet -> Deployment, or a direct StatefulSet/DaemonSet owner).
+	// Not a network object, which is why it took this long to appear here - but
+	// it is what an operator calls the thing behind a Service, and leaving it out
+	// made them hold that connection in their head. Nil when the selected Pods
+	// have no single owner (a bare Pod, or two workloads behind one Service).
+	Workload *ResourceRef `json:"workload,omitempty"`
 
 	// Ingress / HTTPRoute / GRPCRoute hops
 	Hostnames []string    `json:"hostnames,omitempty"`

@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -442,6 +443,9 @@ func buildPodsHop(deps Deps, svc *corev1.Service, pods []*corev1.Pod, unreadable
 		Edge:     "Service->Pods",
 		Meta:     meta,
 		Config:   podsConfig(pods, svc),
+	}
+	if hop.Config != nil {
+		hop.Config.Workload = podsWorkload(deps, pods)
 	}
 	if unreadable {
 		hop.Findings = append(hop.Findings, Finding{
@@ -2323,4 +2327,64 @@ func sortRefs(refs []ResourceRef) {
 		}
 		return refs[i].Name < refs[j].Name
 	})
+}
+
+// podsWorkload resolves what RUNS the selected Pods, walking the owner chain
+// (Pod -> ReplicaSet -> Deployment; a StatefulSet/DaemonSet/Job owns its Pods
+// directly). Returns nil unless EVERY sampled Pod agrees on one owner: a Service
+// fronting two workloads has no single answer, and naming one of them would be a
+// guess in a view whose whole point is not guessing.
+func podsWorkload(deps Deps, pods []*corev1.Pod) *ResourceRef {
+	var found *ResourceRef
+	for _, p := range pods {
+		ref := ownerWorkload(deps, p)
+		if ref == nil {
+			return nil
+		}
+		if found == nil {
+			found = ref
+			continue
+		}
+		if *found != *ref {
+			return nil
+		}
+	}
+	return found
+}
+
+// ownerWorkload walks one Pod's owner chain to the workload a human would name.
+// A ReplicaSet is an implementation detail of a Deployment, so it resolves one
+// level further; every other controller IS the workload.
+func ownerWorkload(deps Deps, pod *corev1.Pod) *ResourceRef {
+	owner := controllerRef(pod.OwnerReferences)
+	if owner == nil {
+		return nil
+	}
+	if owner.Kind != "ReplicaSet" {
+		return &ResourceRef{Kind: owner.Kind, Namespace: pod.Namespace, Name: owner.Name}
+	}
+	// The ReplicaSet itself is a real answer whenever its parent can't be read -
+	// no cache and an unreadable ReplicaSet are the same situation, and returning
+	// nil for one of them would claim the Pod has no owner when we know it does.
+	rsRef := &ResourceRef{Kind: "ReplicaSet", Namespace: pod.Namespace, Name: owner.Name}
+	if deps.Cache == nil {
+		return rsRef
+	}
+	rs, err := deps.Cache.ReplicaSets().ReplicaSets(pod.Namespace).Get(owner.Name)
+	if err != nil || rs == nil {
+		return rsRef
+	}
+	if dep := controllerRef(rs.OwnerReferences); dep != nil {
+		return &ResourceRef{Kind: dep.Kind, Namespace: pod.Namespace, Name: dep.Name}
+	}
+	return rsRef
+}
+
+func controllerRef(refs []metav1.OwnerReference) *metav1.OwnerReference {
+	for i := range refs {
+		if refs[i].Controller != nil && *refs[i].Controller {
+			return &refs[i]
+		}
+	}
+	return nil
 }

@@ -203,3 +203,61 @@ func TestBuildPodsHop_PNRCountsOnlyPublishedEndpoints(t *testing.T) {
 		t.Errorf("meta[selected] = %v, want 5", got)
 	}
 }
+
+// The Deployment is not a network object, which is why it was missing from a
+// path view for so long - but it is what an operator calls the thing behind a
+// Service, and every consumer had to hold that link in its head.
+func TestPodsWorkloadResolvesThroughTheReplicaSet(t *testing.T) {
+	ctrl := true
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "web-abc-1", Namespace: "prod",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-abc", Controller: &ctrl}},
+		},
+	}
+	// No cache: the ReplicaSet can't be read, so the honest answer is the
+	// ReplicaSet itself rather than "no owner".
+	got := ownerWorkload(Deps{}, pod)
+	if got == nil || got.Kind != "ReplicaSet" || got.Name != "web-abc" {
+		t.Errorf("ownerWorkload = %+v, want the ReplicaSet when its parent is unreadable", got)
+	}
+}
+
+// A StatefulSet/DaemonSet owns its Pods directly - there is no intermediate to
+// resolve through.
+func TestPodsWorkloadTakesADirectOwnerAsIs(t *testing.T) {
+	ctrl := true
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "db-0", Namespace: "prod",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "StatefulSet", Name: "db", Controller: &ctrl}},
+		},
+	}
+	got := ownerWorkload(Deps{}, pod)
+	if got == nil || got.Kind != "StatefulSet" || got.Name != "db" {
+		t.Errorf("ownerWorkload = %+v, want the StatefulSet itself", got)
+	}
+}
+
+// Two workloads behind one Service have no single answer, and naming one of
+// them would be a guess in a view whose whole point is not guessing.
+func TestPodsWorkloadDeclinesWhenOwnersDisagree(t *testing.T) {
+	ctrl := true
+	mk := func(name, owner string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: "prod",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "StatefulSet", Name: owner, Controller: &ctrl}},
+		}}
+	}
+	if got := podsWorkload(Deps{}, []*corev1.Pod{mk("a", "one"), mk("b", "two")}); got != nil {
+		t.Errorf("podsWorkload = %+v, want nil when the Pods disagree on their owner", got)
+	}
+}
+
+// A bare Pod has no controller, so there is nothing to name.
+func TestPodsWorkloadIsNilForAnUnownedPod(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "solo", Namespace: "prod"}}
+	if got := podsWorkload(Deps{}, []*corev1.Pod{pod}); got != nil {
+		t.Errorf("podsWorkload = %+v, want nil for a Pod with no controller", got)
+	}
+}

@@ -297,12 +297,31 @@ export function localIdentity(probes: ProbeResult[]): string {
 
 /** The origin that should be selected when the view opens: the strongest one
  *  that actually produced evidence, else the strongest usable one. */
-export function defaultOrigin(origins: Origin[]): OriginId {
+export function defaultOrigin(origins: Origin[], route?: RouteResult): OriginId {
+  // First paint must AGREE with the headline: the headline speaks from the
+  // rollup's deciding evidence, and default-selecting a different vantage put
+  // "not tested" directly under a sentence about a mechanism that vantage
+  // never used. Prefer the origin whose row decided the rollup.
+  const fromHeadline = headlineEvidenceOrigin(route)
+  if (fromHeadline && origins.some((o) => o.id === fromHeadline && !o.unsupported)) return fromHeadline
   const evidence: Mark[] = ['proved', 'failed', 'answered', 'proxied', 'stale', 'running']
   const withEvidence = origins.find((o) => evidence.includes(o.mark))
   if (withEvidence) return withEvidence.id
   const usable = origins.find((o) => !o.unsupported && !o.unavailable)
   return usable?.id ?? 'apiserver'
+}
+
+/** The origin whose evidence DECIDED the route rollup - what the headline
+ *  speaks from. Undefined when nothing decided it (untested / no rows). */
+export function headlineEvidenceOrigin(route?: RouteResult): OriginId | undefined {
+  if (!route || route.outcome === 'not-tested') return undefined
+  if (route.confidence === 'indirect') return 'apiserver'
+  const rows = route.byVantage ?? []
+  const row = rows.find((v) => v.confidence === 'real' && v.outcome === route.outcome) ?? rows.find((v) => v.outcome === route.outcome)
+  if (!row) return undefined
+  if (row.path === 'apiserver') return 'apiserver'
+  if (row.vantage !== 'in-cluster') return 'local'
+  return row.source === 'radar' ? 'radar-incluster' : 'incluster'
 }
 
 const isGap = (o: Origin): boolean => o.mark === 'untested' || o.mark === 'denied' || (!!o.unsupported && o.mark === 'blocked')

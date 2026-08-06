@@ -13,6 +13,11 @@ import { podProbeKey } from './podReach'
 // Chains can reach five columns (origin -> Gateway -> Route -> Service -> Pods),
 // so the gutter is tighter than a 3-column layout would allow.
 const GUTTER = 98
+/** The workload is worth having on the path and worth LESS width than a real
+ *  network hop - its column and both its gutters are tightened. Still wide
+ *  enough for the short edge pills that sit in them ("selects", "runs"). */
+const WORKLOAD_GUTTER = 72
+const WORKLOAD_W = 160
 const ROW_GAP = 14
 const LANE_PAD = { x: 14, top: 22, bottom: 14 }
 const LANE_GAP = 20
@@ -47,7 +52,7 @@ export interface GraphNode {
    *  the backend had already produced - so the one sentence that answers
    *  "what is wrong with this hop" was a click away behind a coloured pixel. */
   notes?: HopNote[]
-  anomalies?: { mark: Mark; text: string }[]
+  anomalies?: { mark: Mark; text: string; title?: string }[]
   /** Per-endpoint delivery results, rendered as rows inside the node.
    *  A column of pod boxes cost more width than the whole rest of the path and
    *  fit fewer of them; rows carry the same per-pod truth in less space. */
@@ -331,8 +336,17 @@ function separatePills(edges: GraphEdge[], geom: Map<string, Cubic>): void {
         if (Math.abs(a.px - b.px) >= W || Math.abs(a.py - b.py) >= H) continue
         const c = geom.get(b.id)
         if (!c) continue
-        const next = Math.max(0.16, (t.get(b.id) ?? 0.5) - 0.09)
-        if (next === t.get(b.id)) continue
+        // Direction-aware: edges leaving the SAME capsule are closest near
+        // their source, so always pulling backward walked the pill INTO the
+        // collision. Try both directions and keep whichever separates more.
+        const cur = t.get(b.id) ?? 0.5
+        const back = Math.max(0.16, cur - 0.09)
+        const fwd = Math.min(0.84, cur + 0.09)
+        const sep = (pt: { x: number; y: number }) => Math.max(Math.abs(pt.x - a.px) / W, Math.abs(pt.y - a.py) / H)
+        const pB = bezierAt(c, back)
+        const pF = bezierAt(c, fwd)
+        const next = sep(pF) > sep(pB) ? fwd : back
+        if (next === cur) continue
         t.set(b.id, next)
         const p = bezierAt(c, next)
         b.px = p.x
@@ -340,7 +354,18 @@ function separatePills(edges: GraphEdge[], geom: Map<string, Cubic>): void {
         moved = true
       }
     }
-    if (!moved) return
+    if (!moved) break
+  }
+  // Edges leaving the SAME capsule can run nearly coincident for their whole
+  // span - no point on either curve separates them. Residual colliders stack
+  // vertically as a last resort: slightly off the line beats unreadable.
+  for (let i = 0; i < withText.length; i++) {
+    for (let j = i + 1; j < withText.length; j++) {
+      const a = withText[i]
+      const b = withText[j]
+      if (Math.abs(a.px - b.px) >= W || Math.abs(a.py - b.py) >= H) continue
+      b.py = a.py + H + 2
+    }
   }
 }
 
@@ -761,7 +786,10 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
         kind: 'TESTED FROM',
         name: o.name,
         sub: SHORT_MECH[o.id] ?? o.mech,
-        anomalies: [{ mark: verdict.mark, text: verdict.label }],
+        // title carries the untruncated evidence - the row truncates visually
+        // and a cut "HTTP 308 · reached, redirect…" with no hover hid the
+        // destination it redirected to.
+        anomalies: [{ mark: verdict.mark, text: verdict.label, title: verdict.title || verdict.label }],
         // Offered where the gap is: this vantage says "not tested", and the
         // control that would change that sits on it. Only when it has produced
         // nothing yet - an origin with results has nothing to run.
@@ -870,7 +898,7 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
     placed.push({
       col: colWorkload,
       row: 0,
-      w: COL_W.hop,
+      w: WORKLOAD_W,
       node: {
         id: workloadNodeId,
         kind: theWorkload.kind.toUpperCase(),
@@ -975,12 +1003,18 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
   const usedCols = [...new Set(placed.map((p) => p.col))].sort((a, b) => a - b)
   const colX = new Map<number, number>()
   const colW = new Map<number, number>()
+  const wlCol = placed.find((p) => p.node.id === workloadNodeId)?.col
   let x = 0
-  for (const c of usedCols) {
+  for (let i = 0; i < usedCols.length; i++) {
+    const c = usedCols[i]
     const w = Math.max(...placed.filter((p) => p.col === c).map((p) => p.w))
     colW.set(c, w)
     colX.set(c, x)
-    x += w + GUTTER
+    // Both gutters AROUND the workload column tighten - it is a less
+    // interesting object for a network view and was stretching the
+    // Service→Deployment→Pods stretch into dead space.
+    const gutter = c === wlCol || usedCols[i + 1] === wlCol ? WORKLOAD_GUTTER : GUTTER
+    x += w + gutter
   }
 
   const heightOf = (p: Placed) => estHeight(p.node)
@@ -1371,11 +1405,24 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
 
   // A cross-lane edge's midpoint lands on the dataplane lane's top edge, which
   // is exactly where the lane label sits. Park those pills in the gap between
-  // the lanes - otherwise empty - so neither covers the other.
+  // the lanes - otherwise empty - so neither covers the other. This runs AFTER
+  // separatePills and can restack pills it had separated (every crossing edge
+  // gets the same y), so colliders are re-spread here: the first keeps the
+  // gap centre, later ones step outward alternating above/below - slightly
+  // into a lane beats two pills on top of each other.
   if (laneControl && laneData) {
     const gapCentre = (laneControl.y + laneControl.h + laneData.y) / 2
+    const parked: GraphEdge[] = []
     for (const e of edges) {
-      if (crossesLanes.has(e.id)) e.py = gapCentre
+      if (!crossesLanes.has(e.id)) continue
+      e.py = gapCentre
+      for (const other of parked) {
+        if (Math.abs(other.px - e.px) < PILL_MAX_PX + 14 && Math.abs(other.py - e.py) < 26) {
+          const step = Math.ceil(parked.length / 2) * 28
+          e.py = gapCentre + (parked.length % 2 === 1 ? step : -step)
+        }
+      }
+      parked.push(e)
     }
   }
 

@@ -588,7 +588,12 @@ export function buildVerdict(
   // "got through" - on exactly the disagreeing traces per-vantage evidence
   // exists to represent.
   const seen = opts.originId ? routeAsSeenFrom(route, opts.originId) : route
-  const tone: SevTone = opts.running ? 'info' : seen ? routeTone(seen, opts) : VERDICT_TONE[trace.verdict] ?? 'unknown'
+  // A route exists but this origin has no row: the badge says "not tested",
+  // and it must wear the NEUTRAL tone - painting it with the resource-wide
+  // verdict colour (amber on a degraded trace) dressed a vantage-scoped
+  // "not tested" as a warning about that vantage. The verdict fallback stays
+  // for traces with no routes at all (a config fault found without probing).
+  const tone: SevTone = opts.running ? 'info' : seen ? routeTone(seen, opts) : route ? 'unknown' : VERDICT_TONE[trace.verdict] ?? 'unknown'
   return {
     tone,
     chipText: opts.running ? 'testing' : seen ? routeChip(seen, opts) : 'not tested',

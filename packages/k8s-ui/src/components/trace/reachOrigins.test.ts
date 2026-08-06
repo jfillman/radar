@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildOrigins, defaultOrigin, strongestGap, originOf, localIdentity } from './reachOrigins'
+import { buildOrigins, headlineEvidenceOrigin, defaultOrigin, strongestGap, originOf, localIdentity } from './reachOrigins'
 import type { Trace, ProbeResult, RouteResult } from './types'
 
 const p = (o: Partial<ProbeResult>): ProbeResult => ({ layer: 'http', target: 'svc:80', vantage: 'in-cluster', ok: true, ...o })
@@ -292,5 +292,26 @@ describe('a demoted Job run is inconclusive, never "never tried"', () => {
     }
     const o = buildOrigins(t).find((x) => x.id === 'local')!
     expect(o.mark).toBe('blocked')
+  })
+})
+
+describe('first paint agrees with the headline', () => {
+  it('an indirect rollup default-selects the API-server vantage', () => {
+    expect(headlineEvidenceOrigin({ route: 'GET /', outcome: 'reached', confidence: 'indirect' } as any)).toBe('apiserver')
+  })
+
+  it('a real in-cluster verify default-selects the probe vantage', () => {
+    expect(
+      headlineEvidenceOrigin({
+        route: 'GET /',
+        outcome: 'verified',
+        confidence: 'real',
+        byVantage: [{ vantage: 'in-cluster', path: 'data', source: 'probe-job', outcome: 'verified', confidence: 'real' }],
+      } as any),
+    ).toBe('incluster')
+  })
+
+  it('an untested route decides nothing', () => {
+    expect(headlineEvidenceOrigin({ route: 'GET /', outcome: 'not-tested' } as any)).toBeUndefined()
   })
 })

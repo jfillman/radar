@@ -181,7 +181,7 @@ function ReachabilityBoard(props: BoardProps) {
     [trace, inClusterAllowed, inClusterDeniedReason, running, inClusterError, stale, route],
   )
   const [originId, setOriginId] = useState<OriginId | null>(null)
-  const origin = origins.find((o) => o.id === (originId ?? defaultOrigin(origins))) ?? origins[0]
+  const origin = origins.find((o) => o.id === (originId ?? defaultOrigin(origins, route))) ?? origins[0]
 
   const [selection, setSelection] = useState<Selection>(undefined)
 

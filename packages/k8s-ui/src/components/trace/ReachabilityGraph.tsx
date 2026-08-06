@@ -305,7 +305,9 @@ function Node({
           />
         )}
       </div>
-      <div className="mt-0.5 truncate font-mono text-[11.5px] font-semibold text-theme-text-primary">{node.name}</div>
+      <Tooltip content={node.name} wrapperClassName="block min-w-0">
+        <div className="mt-0.5 truncate font-mono text-[11.5px] font-semibold text-theme-text-primary">{node.name}</div>
+      </Tooltip>
       <div className="mt-px text-[10px] leading-[1.35] text-theme-text-tertiary">{node.sub}</div>
       {/* What is actually WRONG with this hop, on the hop. The backend already
           produces a parsed cause per finding; the graph previously spent it on a
@@ -336,7 +338,11 @@ function Node({
           {node.anomalies.map((a, i) => (
             <div key={i} className="flex items-baseline gap-1.5">
               <MarkGlyph mark={a.mark} />
-              <span className="min-w-0 flex-1 truncate text-[9.5px] leading-[1.35] text-theme-text-secondary">{a.text}</span>
+              {/* Rows truncate visually; the full sentence must always be a
+                  hover away - a cut "reached, redirect…" hid its destination. */}
+              <Tooltip content={a.title || a.text} wrapperClassName="min-w-0 flex-1">
+                <span className="block truncate text-[9.5px] leading-[1.35] text-theme-text-secondary">{a.text}</span>
+              </Tooltip>
             </div>
           ))}
         </div>

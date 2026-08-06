@@ -48,7 +48,11 @@ export const MARKS: Record<Mark, MarkStyle> = {
   failed: { glyph: '✕', color: 'var(--color-error-dark)', dash: 'none', strokeWidth: 2.6, strokeOpacity: 1 },
   blocked: { glyph: '⊘', color: 'var(--text-disabled)', dash: '3 6', strokeWidth: 1.8, strokeOpacity: 0.75 },
   excluded: { glyph: '⊗', color: 'var(--text-disabled)', dash: '3 6', strokeWidth: 1.8, strokeOpacity: 0.75 },
-  inconclusive: { glyph: '◍', color: 'var(--color-warning-dark)', dash: '3 6', strokeWidth: 1.8, strokeOpacity: 0.9 },
+  // Info-blue, not amber: amber is "answered with a caveat / needs attention"
+  // (answered, slow, stale, denied); blue is "not the real path / disposition"
+  // (proxied, running, inconclusive); grey is "nothing ran". Three families
+  // instead of one overloaded amber.
+  inconclusive: { glyph: '◍', color: 'var(--color-info)', dash: '3 6', strokeWidth: 1.8, strokeOpacity: 0.9 },
   untested: { glyph: '○', color: 'var(--text-disabled)', dash: '3 6', strokeWidth: 1.8, strokeOpacity: 0.75 },
   stale: { glyph: '◷', color: 'var(--color-warning-dark)', dash: '6 4', strokeWidth: 1.8, strokeOpacity: 1 },
   running: { glyph: '◌', color: 'var(--color-info)', dash: '4 4', strokeWidth: 1.8, strokeOpacity: 1 },

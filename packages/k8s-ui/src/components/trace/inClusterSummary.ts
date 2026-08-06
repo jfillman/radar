@@ -63,9 +63,19 @@ export function summarizeInClusterTests(tests: InClusterTestRow[] | undefined): 
   // clean one, with the kept-informational route's status silently vanished.
   const evidence = entries.find(isEvidence)
   if (evidence) {
-    return { partial: false, evidenceOnly: true, evidence: evidence.status, fallback: evidence.fallbackCommand }
+    // partial: some routes DID fold - the banner must not say "unchanged".
+    return { partial: anyFolded, evidenceOnly: true, evidence: evidence.status, fallback: evidence.fallbackCommand }
   }
   // Clean full run - everything folded; the merged trace already reflects the
   // outcomes, so there is nothing left to explain.
   return { partial: false, evidenceOnly: false }
+}
+
+/** The evidence banner's title. Kept beside the reducer so the words cannot
+ *  drift from the state: "unchanged" was still shown for mixed runs where some
+ *  routes HAD updated. */
+export function evidenceBannerTitle(s: InClusterSummary): string {
+  return s.partial
+    ? 'In-cluster test: some routes updated — others kept informational'
+    : 'In-cluster test ran as evidence only - route outcomes unchanged'
 }

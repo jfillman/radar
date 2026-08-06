@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { summarizeInClusterTests, type InClusterTestRow } from './inClusterSummary'
+import { summarizeInClusterTests, evidenceBannerTitle, type InClusterTestRow } from './inClusterSummary'
 
 // The three server row shapes (internal/reachability/incluster.go):
 //   folded       - results, NO status        (default branch: outcome moved)
@@ -78,5 +78,21 @@ describe('summarizeInClusterTests', () => {
   it('empty / undefined input → no banner', () => {
     expect(summarizeInClusterTests(undefined)).toEqual({ partial: false, evidenceOnly: false })
     expect(summarizeInClusterTests([])).toEqual({ partial: false, evidenceOnly: false })
+  })
+})
+
+describe('a mixed run never says "unchanged"', () => {
+  const folded = { route: 'a', results: [{}] }
+  const evidence = { route: 'b', results: [{}], status: 'kept informational - throwaway identity' }
+
+  it('the reducer marks the mixed case partial', () => {
+    const s = summarizeInClusterTests([folded, evidence] as any)
+    expect(s.evidenceOnly).toBe(true)
+    expect(s.partial).toBe(true)
+  })
+
+  it('the banner title follows the state', () => {
+    expect(evidenceBannerTitle({ partial: true, evidenceOnly: true })).toMatch(/some routes updated/)
+    expect(evidenceBannerTitle({ partial: false, evidenceOnly: true })).toMatch(/unchanged/)
   })
 })

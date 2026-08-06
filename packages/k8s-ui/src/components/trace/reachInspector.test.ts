@@ -479,3 +479,23 @@ describe('bypassed and parallel entries are context, not journey', () => {
     for (const e of entries) expect(e.parallelCount).toBe(2)
   })
 })
+
+describe("'testing' is scoped to the vantage that is testing", () => {
+  // The Job runs from the in-cluster vantage. Starting it while the LAPTOP is
+  // selected must not flip the laptop-scoped band or sidebar to "testing" -
+  // that is one vantage's state under another's name, in motion.
+  it('the verdict band for a non-running origin never says testing', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    // The view computes running && origin.id === 'incluster'; for the laptop
+    // that is false even mid-run.
+    const v = buildVerdict(t, route(), { running: false, originId: 'local', originName: 'Radar on your machine' })
+    expect(v.chipText).not.toBe('testing')
+  })
+
+  it('the sidebar for a non-running origin never says testing now', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({ vantage: 'local', path: 'data' })])
+    const c = ctx(t, 'local')
+    const s = buildSidebar(undefined, { ...c, running: false })
+    expect(JSON.stringify(s.path)).not.toMatch(/testing now/)
+  })
+})

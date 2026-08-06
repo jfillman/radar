@@ -1391,8 +1391,8 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
   }
   const laneControl = boxFor(
     nodes.filter((n) => n.lane === 'control'),
-    'NOT THROUGH THE CLUSTER NETWORK',
-    'These requests never traverse kube-proxy, NetworkPolicy or the mesh. A dial from your machine takes your own network to whatever address it was given; a relayed request is carried by the Kubernetes control plane. Neither exercises the path real traffic takes.',
+    'NOT FROM INSIDE THE CLUSTER',
+    'Neither request originates inside the cluster’s dataplane, but they differ: a dial from your machine sends real traffic from outside - through a real entry it exercises the path from the entry inward (routing, NetworkPolicy, mesh included). A relayed request is carried by the Kubernetes control plane and bypasses the traffic path entirely.',
     'var(--color-info)',
     true,
   )

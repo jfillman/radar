@@ -10,6 +10,7 @@ import { buildGraph } from './reachGraphModel'
 import { buildOrigins, defaultOrigin, type Origin, type OriginId } from './reachOrigins'
 import { buildSidebar, buildVerdict, type Sidebar, type HopReport, type InspectorCTA, type Selection } from './reachInspector'
 import { markStyle, glyphStyle, markHelp, scenariosFor, routeTone, routeChip, routeIdentity, SEV_COLOR, SEV_BADGE, type Scenario } from './reachMarks'
+import { evidenceBannerTitle } from './inClusterSummary'
 import { DEV_STATES, devTrace, type DevState } from './reachFixtures'
 
 export { podReach, podProbeKey } from './podReach'
@@ -134,7 +135,7 @@ export function ReachabilityView(props: TracePanelProps) {
       {!inClusterError && inClusterEvidenceOnly && (
         <AlertBanner
           variant="info"
-          title="In-cluster test ran as evidence only - route outcomes unchanged"
+          title={evidenceBannerTitle({ partial: !!inClusterPartial, evidenceOnly: true })}
           message={inClusterEvidenceNote || 'The in-cluster probe produced evidence but nothing that changes a declared route outcome.'}
         >
           {inClusterFallback && (
@@ -182,6 +183,11 @@ function ReachabilityBoard(props: BoardProps) {
   )
   const [originId, setOriginId] = useState<OriginId | null>(null)
   const origin = origins.find((o) => o.id === (originId ?? defaultOrigin(origins, route))) ?? origins[0]
+  // The Job runs from the in-cluster vantage; a band scoped to the LAPTOP must
+  // not read "testing" because a different vantage's test started. The graph
+  // already scopes per-origin (isRunning) - the verdict + sidebar were reading
+  // the global flag.
+  const selectedOriginRunning = running && origin?.id === 'incluster'
 
   const [selection, setSelection] = useState<Selection>(undefined)
 
@@ -207,14 +213,14 @@ function ReachabilityBoard(props: BoardProps) {
         journeyEntryNodeIds: model.journeyEntryNodeIds,
         pathNodeIds: model.pathNodeIds,
         stale,
-        running,
+        running: selectedOriginRunning,
         multiPath,
         httpPath: props.probePath,
       }),
-    [selection, trace, route, origin, origins, model, stale, running, multiPath, props.probePath],
+    [selection, trace, route, origin, origins, model, stale, selectedOriginRunning, multiPath, props.probePath],
   )
   const verdict = useMemo(
-    () => buildVerdict(trace, route, { stale, running, originId: origin?.id, originName: origin?.name, pathLabel: multiPath ? scenario?.primary.target || scenario?.label : undefined }),
+    () => buildVerdict(trace, route, { stale, running: selectedOriginRunning, originId: origin?.id, originName: origin?.name, pathLabel: multiPath ? scenario?.primary.target || scenario?.label : undefined }),
     [trace, route, origins, stale, running, multiPath, scenario, origin],
   )
 

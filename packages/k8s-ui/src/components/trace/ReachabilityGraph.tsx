@@ -255,6 +255,9 @@ function Node({
   onAction?: (a: NonNullable<GraphNode['action']>) => void
 }) {
   const isOrigin = node.isOrigin
+  // An origin capsule carries exactly one status row; its action shares that
+  // line instead of adding a full-width row beneath it.
+  const inlineAction = !!(isOrigin && node.action && node.anomalies?.length === 1)
   const style: CSSProperties = {
     left: node.x,
     top: node.y,
@@ -336,13 +339,30 @@ function Node({
       {node.anomalies && node.anomalies.length > 0 && (
         <div className="mt-1.5 flex flex-col gap-0.5 border-t border-theme-border-subtle pt-1.5">
           {node.anomalies.map((a, i) => (
-            <div key={i} className="flex items-baseline gap-1.5">
+            <div key={i} className={`flex gap-1.5 ${inlineAction && i === 0 ? 'items-center' : 'items-baseline'}`}>
               <MarkGlyph mark={a.mark} />
               {/* Rows truncate visually; the full sentence must always be a
                   hover away - a cut "reached, redirect…" hid its destination. */}
               <Tooltip content={a.title || a.text} wrapperClassName="min-w-0 flex-1">
                 <span className="block truncate text-[9.5px] leading-[1.35] text-theme-text-secondary">{a.text}</span>
               </Tooltip>
+              {/* The capsule's single status row and its action share the line -
+                  a stacked full-width button grew the capsule past the height
+                  the layout reserved, out the bottom of its lane box. */}
+              {inlineAction && i === 0 && (
+                <button
+                  type="button"
+                  disabled={!!node.action!.disabledReason}
+                  title={node.action!.disabledReason || node.action!.text}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (!node.action?.disabledReason) onAction?.(node.action!)
+                  }}
+                  className="shrink-0 whitespace-nowrap rounded border border-theme-border bg-theme-surface px-1.5 py-0.5 text-[9px] font-semibold text-theme-text-primary transition-colors hover:bg-theme-hover disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  ⚗ Run now
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -377,8 +397,9 @@ function Node({
       )}
       {/* Offered where the gap is. Deliberately its own button rather than a
           click on the capsule: selecting a vantage is free, and this creates
-          Pods in the user's cluster. */}
-      {node.action && (
+          Pods in the user's cluster. Full-width form only when the status row
+          could not host it inline. */}
+      {node.action && !inlineAction && (
         <button
           type="button"
           disabled={!!node.action.disabledReason}

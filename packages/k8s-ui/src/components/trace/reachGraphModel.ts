@@ -211,9 +211,14 @@ function estHeight(n: {
   moreRows?: number
   isOrigin?: boolean
   sub?: string
+  action?: unknown
 }): number {
   const base = n.isOrigin ? 66 : 60
   const anomalies = n.anomalies?.length ?? 0
+  // The action either shares the single status row (an origin capsule - the
+  // row grows a little) or stacks as its own full-width button. Uncounted, the
+  // rendered capsule grew straight out the bottom of its lane box.
+  const actionH = n.action ? (n.isOrigin && anomalies === 1 ? 7 : 28) : 0
   const rows = n.podRows?.length ?? 0
   // Long sub-lines wrap; approximate at ~34 characters per line.
   const subLines = Math.max(1, Math.ceil((n.sub?.length ?? 0) / 34))
@@ -222,6 +227,7 @@ function estHeight(n: {
   const noteLines = (n.notes ?? []).reduce((sum, x) => sum + Math.max(1, Math.ceil(x.text.length / 26)), 0)
   return (
     base +
+    actionH +
     (subLines - 1) * 13 +
     (noteLines > 0 ? 8 + noteLines * 13 : 0) +
     (anomalies > 0 ? 8 + anomalies * 17 : 0) +

@@ -296,7 +296,7 @@ func TestEffectivePolicyTypes(t *testing.T) {
 	}
 }
 
-// Defect 1: a kube-system-resident workload whose egress rule allows port 53 to a
+// A kube-system-resident workload whose egress rule allows port 53 to a
 // same-namespace podSelector matching CoreDNS DOES reach DNS - the gap must not
 // false-fire. A non-kube-system source keeps the prior "gap fires" behavior.
 func TestRuleDestCoversDNS_KubeSystemSource(t *testing.T) {

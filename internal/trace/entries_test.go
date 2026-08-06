@@ -133,7 +133,7 @@ func TestBuildPodsHop_PublishNotReadyAddresses(t *testing.T) {
 	}
 }
 
-// Defect 1: selectedPods must distinguish "genuinely nothing to read" (no svc /
+// SelectedPods must distinguish "genuinely nothing to read" (no svc /
 // no selector → readable-empty) from "can't read pod state" (Pods lister
 // unavailable, e.g. Pods kind RBAC-disabled at startup → unreadable). Lumping the
 // uncertain case in with the empty case stamps a confident "0 ready pods" under

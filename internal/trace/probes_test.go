@@ -751,8 +751,8 @@ func TestVerdict_DegradeUnknownOnUnreadablePods(t *testing.T) {
 
 // TestReviseVerdictWithProbes_HealthyEscalatesOnAllFailed pins that a hop
 // whose every non-skipped probe failed promotes the verdict from healthy to
-// broken - the panel was previously rendering "looks healthy" above red
-// probe-failed rows because verdict was computed before probes attached.
+// broken - the verdict must be computed after probes attach, or the panel
+// shows "looks healthy" above red probe-failed rows.
 func TestReviseVerdictWithProbes_HealthyEscalatesOnAllFailed(t *testing.T) {
 	tr := &Trace{
 		Verdict:  VerdictHealthy,
@@ -1315,7 +1315,7 @@ func TestClassifyHopProbes_HonestTones(t *testing.T) {
 // TestReviseVerdictWithProbes_DegradedFrontDoorIsDegradedNotBroken: a hop whose
 // only live evidence is a degraded-tone probe (a front-door 502/504, the proxy
 // could not reach its upstream) is degraded, never "broken, traffic can't pass".
-// An app's own 5xx no longer lands here at all: it reads as "reached" (the scope
+// An app's own 5xx does not land here at all: it reads as "reached" (the scope
 // is the network path, not app health), pinned in pkg/probe TestClassifyHTTPStatus.
 func TestReviseVerdictWithProbes_DegradedFrontDoorIsDegradedNotBroken(t *testing.T) {
 	tr := &Trace{
@@ -1570,7 +1570,7 @@ func TestProbePodsByName_SkipsUDPAndSCTP(t *testing.T) {
 	}
 }
 
-// Defect 1: nonHTTPSkipReason must only append "Reachability still checked at the
+// NonHTTPSkipReason must only append "Reachability still checked at the
 // TCP level." when a data-path TCP probe ACTUALLY ran for this hop. In-cluster only
 // dials a routable address, so a headless Service (no ClusterIP) or a pods hop with
 // names but no IPs runs no TCP probe even in-cluster - claiming TCP was checked there

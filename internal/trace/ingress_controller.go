@@ -16,7 +16,7 @@ import (
 // This file surfaces that tier on the Ingress hop - the entry address plus a
 // plain-language "who serves this" finding - WITHOUT inventing a separate node.
 //
-// Honesty invariants (these are the whole point - see the design review):
+// Honesty invariants (these are the whole point):
 //   - REPORT THE TIER OF EVIDENCE, never intent as service. The tiers:
 //     configured (a class/annotation exists) < controller observed (pods found
 //     and ready) < programmed (status.loadBalancer address assigned). "Served

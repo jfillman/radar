@@ -368,9 +368,8 @@ describe('buildGraph edges', () => {
   })
 })
 
-// Prior-blocker A from the PR #1037 review: node colour comes from the
-// resource's OWN health, and an apiserver-proxy failure is indirect evidence
-// that must never condemn it.
+// Node colour comes from the resource's OWN health, and an apiserver-proxy
+// failure is indirect evidence that must never condemn it.
 describe('node dots are resource health, never probe outcomes', () => {
   const toneOf = (t: Trace, originId: string) =>
     buildGraph({ trace: t, route: route(), origin: pick(t, originId) }).nodes.find((n) => n.kind === 'PODS')!.tone
@@ -648,7 +647,7 @@ describe('hop findings are carried onto the node', () => {
 
 // On a Gateway with several attached routes, every branch rendered identically:
 // changing the selected scenario changed nothing on screen, so there was no way
-// to tell which branch you were diagnosing. Weakest journey in review at 2/10.
+// to tell which branch you were diagnosing.
 describe('fan-out branch focus', () => {
   const routeHop = (name: string, host: string) => ({
     resource: { kind: 'HTTPRoute', name, namespace: 'edge' },

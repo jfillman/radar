@@ -287,7 +287,7 @@ func TestComputeCoverage_NotTestedClassification(t *testing.T) {
 			}},
 			// Pod dials are localization evidence, never intended routes - their
 			// skips must NOT become NotTested rows (a Service:80 and its Pod:8080
-			// used to read as "2 routes"). Their honesty lives on the hop probes.
+			// must never both surface as routes). Their honesty lives on the hop probes.
 			{Resource: ResourceRef{Kind: "Pods"}, Edge: "Service->Pods", Probes: []probe.Result{
 				{Layer: probe.LayerTCP, Skipped: true, Reason: "sampled 2 of 5 ready pods"},
 				{Layer: probe.LayerTCP, Target: "10.0.0.5:8080", Skipped: true, Reason: `"shop.internal" resolves to an internal address your machine can't reach`},
@@ -1161,7 +1161,7 @@ func TestApplyInClusterResults_LeavesBenignUntouched(t *testing.T) {
 	}
 }
 
-// Defect 3: routeBackendDrained marks an explicit weight-0 backend with a live
+// RouteBackendDrained marks an explicit weight-0 backend with a live
 // sibling as drained; a traffic-carrying or weight-omitted backend is not.
 func TestRouteBackendDrained(t *testing.T) {
 	route := &unstructured.Unstructured{Object: map[string]any{
@@ -1207,7 +1207,7 @@ func TestRouteBackendDrained(t *testing.T) {
 	}
 }
 
-// Defect 3: a drained backend hop folds into coverage as a benign skip (no
+// A drained backend hop folds into coverage as a benign skip (no
 // coverage lost), never a failed route or a coverage gap.
 func TestBuildRoutes_DrainedBackendBenignSkip(t *testing.T) {
 	tr := &Trace{
@@ -1234,7 +1234,7 @@ func TestBuildRoutes_DrainedBackendBenignSkip(t *testing.T) {
 	}
 }
 
-// Defect 1: a multi-route headline whose every passing route was reached ONLY via
+// A multi-route headline whose every passing route was reached ONLY via
 // the apiserver proxy must say proxy-only - not a bare "All N routes reachable"
 // that contradicts CoverageVerdict (which returns unknown on !anyRealPass).
 func TestCoverageHeadline_MultiRouteProxyOnly(t *testing.T) {
@@ -1274,7 +1274,7 @@ func TestCoverageHeadline_MultiRouteRealStaysReachable(t *testing.T) {
 	}
 }
 
-// Defect 12: a shared (Port==0) front-door HTTP 2xx must NOT, on its own, VERIFY a
+// A shared (Port==0) front-door HTTP 2xx must NOT, on its own, VERIFY a
 // backend port route whose own probes didn't independently succeed - it caps at
 // "reached", never a false green "verified · real".
 func TestRoutesByPort_SharedFrontDoorDoesNotVerifyPort(t *testing.T) {
@@ -1312,7 +1312,7 @@ func TestRoutesByPort_OwnHealthyStillVerifies(t *testing.T) {
 	}
 }
 
-// Defect 4: a single-host Ingress route's label is path-only ("/api"), so
+// A single-host Ingress route's label is path-only ("/api"), so
 // routeHostKey returns "" and a NotTested route both counts its own skipped
 // transport probe (under the host key) AND itself - inflating Coverage.Skipped.
 // recountCoverage must recover the host from a host-bearing field (the declared

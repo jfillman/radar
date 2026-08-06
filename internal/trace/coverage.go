@@ -1600,7 +1600,7 @@ func hopsHaveScaleZero(hops []Hop) bool {
 // the SAME predicate the prober used to decide what to dial. Fail-closed: an
 // unknown port must not become a guessed HTTP probe Job. EVERY declared entry
 // for the number must pass - Kubernetes permits TCP and UDP ports with the
-// same number, and first-match let a UDP :80 acquire an HTTP Job whenever its
+// same number, and first-match would let a UDP :80 acquire an HTTP Job whenever its
 // TCP sibling happened to be declared first.
 func httpProbablePort(ports []PortMap, port int32) bool {
 	matched := false

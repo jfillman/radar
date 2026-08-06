@@ -17,7 +17,7 @@ func cleanInClusterPass() []probe.Result {
 	}}
 }
 
-// Defects 2 & 12: ApplyInClusterResults re-derives the verdict over the updated
+// ApplyInClusterResults re-derives the verdict over the updated
 // findings - a stale 'degraded' left after a would-deny downgrade must not sit
 // beside a now-healthy projection. The re-derive only happens when the run
 // actually folded evidence in.
@@ -40,7 +40,7 @@ func TestApplyInClusterResults_RederivesVerdict(t *testing.T) {
 	}
 }
 
-// Defect 2: when an in-cluster confirmation flips a broken verdict toward healthy,
+// When an in-cluster confirmation flips a broken verdict toward healthy,
 // the stale Reason + BrokenRoute must be cleared so they don't contradict the
 // now-healthy projection. The break here is a Pods-hop symptom with no probe or
 // finding evidence left, so the live pass honestly clears it.
@@ -259,7 +259,7 @@ func TestApplyInClusterResults_SiblingRouteNotVouched(t *testing.T) {
 	}
 }
 
-// Defect 2: ApplyInClusterResults must prune the SkipClassVantage "run radar
+// ApplyInClusterResults must prune the SkipClassVantage "run radar
 // in-cluster" NotTested rows for routes the live in-cluster pass just upgraded to a
 // real reach/verify. Otherwise the response reports the route verified while
 // advising "run radar in-cluster" for the SAME route, and coverage counts it as
@@ -391,9 +391,9 @@ func TestApplyInClusterResults_PartialFoldKeepsSameHostVantageSkip(t *testing.T)
 	}
 }
 
-// Defect 1: ApplyInClusterResults reconciles the static would-deny WARNING off
-// the live in-cluster pass but used to leave the svc:targetport-no-listener
-// WARNING standing. The static reconcileTargetPortAdvisory reads h.Probes, which
+// ApplyInClusterResults reconciles the static would-deny WARNING off
+// the live in-cluster pass and must also clear the svc:targetport-no-listener
+// WARNING. The static reconcileTargetPortAdvisory reads h.Probes, which
 // the in-cluster flow stamps only AFTER the verdict/diagnosis recompute - so a
 // route the in-cluster pod just verified over REAL traffic would read
 // verified/ConfidenceReal while the hop kept the targetPort warning, leaving a

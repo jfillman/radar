@@ -710,8 +710,8 @@ func TestReviseVerdict_PartialBackendProbeBreakIsDegraded(t *testing.T) {
 
 // TestComputeVerdict_EntryMissingRefIsPartialDegrade: a missing-backend ref is
 // reported as a critical on the ENTRY hop, but it only breaks that one route.
-// With another healthy route, the verdict is degraded - not the old confident
-// "Ingress is broken" lie.
+// With another healthy route, the verdict is degraded - never a confident
+// "Ingress is broken" claim that one dead ref does not earn.
 func TestComputeVerdict_EntryMissingRefIsPartialDegrade(t *testing.T) {
 	tr := &Trace{Downstream: []Hop{
 		{Resource: ResourceRef{Kind: "Ingress", Name: "app"}, Edge: "entry:Ingress", Findings: []Finding{{Code: "missing_ref:Missing backend Service", Severity: SeverityCritical, Message: "/api references ghost which does not exist"}}},
@@ -1342,7 +1342,7 @@ func attachedL4Route(kind, name, namespace, gwName, gwNamespace string) *unstruc
 	}}
 }
 
-// Defect 3: a DOWN drained (weight-0) backend must not drag the verdict to
+// A DOWN drained (weight-0) backend must not drag the verdict to
 // broken/degraded - it carries zero traffic by design.
 func TestComputeVerdict_DrainedBackendExcluded(t *testing.T) {
 	tr := &Trace{
@@ -1364,7 +1364,7 @@ func TestComputeVerdict_DrainedBackendExcluded(t *testing.T) {
 	}
 }
 
-// Defect 13: an upstream missing_ref critical (about a sibling backend route)
+// An upstream missing_ref critical (about a sibling backend route)
 // must NOT block the broken→degraded benign softening for a scale-to-0 here.
 func TestHasNonBenignCriticalFinding_ScopesUpstreamMissingRef(t *testing.T) {
 	tr := &Trace{

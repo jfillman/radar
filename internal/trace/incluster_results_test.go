@@ -481,3 +481,97 @@ func TestApplyInClusterResults_KeepsTargetPortOnDifferentPortPass(t *testing.T) 
 		t.Errorf("severity = %q, want warning kept - the live pass hit :443, not the suspect :80", f.Severity)
 	}
 }
+
+// A front-doored route verified by the in-cluster fold has proven the BACKEND -
+// every dial bypassed the entry. The rows say so structurally and the headline
+// must never read as a bare "verified" that paints a dead Ingress green.
+func TestApplyInClusterResults_BackendScopeSurvivesTheFold(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Service", Namespace: "prod", Name: "web"},
+		Verdict:  VerdictUnknown,
+		BrokenAt: -1,
+		Upstreams: []Hop{{
+			Resource: ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"},
+		}},
+		Routes: []RouteResult{{
+			Route: "GET /", Target: "web:80", TargetNamespace: "prod",
+			Outcome:          OutcomeNotTested,
+			InClusterRequest: &ProbeRequest{Host: "web", Path: "/"},
+		}},
+	}
+	ApplyInClusterResults(tr, map[string][]probe.Result{
+		InClusterResultKey("GET /", "web:80", "prod"): cleanInClusterPass(),
+	})
+
+	r := tr.Routes[0]
+	if r.Confidence != ConfidenceReal {
+		t.Fatalf("Confidence = %q, want real", r.Confidence)
+	}
+	if !RouteBackendScoped(r) {
+		t.Fatalf("route not backend-scoped after a fold that bypassed the front door: %+v", r.ByVantage)
+	}
+	h := CoverageHeadline(tr)
+	if !strings.Contains(h, "entry path was not exercised") {
+		t.Errorf("headline %q must say the entry path was not exercised", h)
+	}
+	if strings.HasPrefix(h, "Reachable - verified") {
+		t.Errorf("headline %q reads as a bare verified for a backend-only pass", h)
+	}
+}
+
+// The same trace WITHOUT a front door keeps the plain verified headline - the
+// Service IS the whole declared path, and a qualifier about a nonexistent
+// entry would be nonsense.
+func TestApplyInClusterResults_NoFrontDoorStaysPlainVerified(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Service", Namespace: "prod", Name: "web"},
+		Verdict:  VerdictUnknown,
+		BrokenAt: -1,
+		Routes: []RouteResult{{
+			Route: "GET /", Target: "web:80", TargetNamespace: "prod",
+			Outcome:          OutcomeNotTested,
+			InClusterRequest: &ProbeRequest{Host: "web", Path: "/"},
+		}},
+	}
+	ApplyInClusterResults(tr, map[string][]probe.Result{
+		InClusterResultKey("GET /", "web:80", "prod"): cleanInClusterPass(),
+	})
+	if RouteBackendScoped(tr.Routes[0]) {
+		t.Fatalf("no front door - the Service is the whole path; rows must not claim a backend segment")
+	}
+	if h := CoverageHeadline(tr); strings.Contains(h, "entry path") {
+		t.Errorf("headline %q qualifies a nonexistent entry", h)
+	}
+}
+
+// An entry whose own probes unanimously failed stays broken THROUGH the fold: a
+// backend verified in-cluster must never lift a dead front door to healthy.
+func TestApplyInClusterResults_DeadEntrySurvivesBackendVerify(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"},
+		Verdict:  VerdictHealthy,
+		BrokenAt: -1,
+		Downstream: []Hop{
+			{
+				Resource: ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"},
+				Edge:     "entry:Ingress",
+				Probes: []probe.Result{
+					{Layer: probe.LayerTCP, Target: "34.0.0.1:443", Vantage: probe.VantageLocal, Path: probe.PathData, OK: false, Tone: probe.ToneUnhealthy},
+				},
+			},
+			{Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "web"}, Edge: "Ingress->Service"},
+			{Resource: ResourceRef{Kind: "Pods", Namespace: "prod"}, Edge: "Service->Pods"},
+		},
+		Routes: []RouteResult{{
+			Route: "GET /", Target: "web:80", TargetNamespace: "prod",
+			Outcome:          OutcomeNotTested,
+			InClusterRequest: &ProbeRequest{Host: "web", Path: "/"},
+		}},
+	}
+	ApplyInClusterResults(tr, map[string][]probe.Result{
+		InClusterResultKey("GET /", "web:80", "prod"): cleanInClusterPass(),
+	})
+	if tr.Verdict == VerdictHealthy {
+		t.Fatalf("verdict = healthy after a backend-only verify while the entry's own probes all failed")
+	}
+}

@@ -1276,7 +1276,7 @@ func TestRoutesByPort_SharedFrontDoorDoesNotVerifyPort(t *testing.T) {
 	skipped := probe.Skipped(probe.LayerHTTP, "port 9090", probe.VantageLocal, "non-HTTP port - can't verify from here")
 	skipped.Port = 9090
 	probes := append(append([]probe.Result{}, shared...), skipped)
-	routes := routesByPort("api/", "api", "api:9090", probes, []int32{9090}, nil)
+	routes := routesByPort("api/", "api", "api:9090", probes, []int32{9090}, nil, false)
 	if len(routes) != 1 {
 		t.Fatalf("want 1 route, got %d", len(routes))
 	}
@@ -1296,7 +1296,7 @@ func TestRoutesByPort_OwnHealthyStillVerifies(t *testing.T) {
 	}
 	own := probe.Result{Layer: probe.LayerHTTP, Target: "port 80", Port: 80, OK: true, Tone: probe.ToneHealthy, Vantage: probe.VantageInCluster}
 	probes := append(append([]probe.Result{}, shared...), own)
-	routes := routesByPort("api/", "api", "api:80", probes, []int32{80}, nil)
+	routes := routesByPort("api/", "api", "api:80", probes, []int32{80}, nil, false)
 	if len(routes) != 1 || routes[0].Outcome != OutcomeVerified {
 		t.Fatalf("want a verified route from the port's own healthy probe, got %+v", routes)
 	}

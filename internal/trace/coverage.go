@@ -158,6 +158,49 @@ type VantageResult struct {
 	// could not tell - which is the common case and must never be guessed.
 	// See localizeBoundaries.
 	FailedBoundary string `json:"failedBoundary,omitempty"`
+	// Segment names which part of the DECLARED path this row's dial exercised.
+	// "backend" means the dial went to the backend Service/Pods while the route
+	// has a front door (Ingress/Gateway/Route) the dial bypassed - so this row
+	// can never vouch for the entry path. Empty means the route has no separate
+	// entry segment (or the row's dial is of the entry itself). Topology
+	// decides, never protocol - a TCP LoadBalancer route gets identical
+	// semantics.
+	Segment string `json:"segment,omitempty"`
+}
+
+// SegmentBackend marks a vantage row whose dial bypassed the route's front door.
+const SegmentBackend = "backend"
+
+// RouteBackendScoped reports whether a route's evidence is entirely
+// backend-segment dials - rows exist and every one bypassed the front door, so
+// nothing in this route has exercised the entry path.
+func RouteBackendScoped(r RouteResult) bool {
+	if len(r.ByVantage) == 0 {
+		return false
+	}
+	for _, v := range r.ByVantage {
+		if v.Segment != SegmentBackend {
+			return false
+		}
+	}
+	return true
+}
+
+// traceHasFrontDoor reports whether the declared path includes an entry
+// segment (Ingress/Gateway/Route) that a backend dial bypasses. Topological,
+// deliberately protocol-blind.
+func traceHasFrontDoor(t *Trace) bool {
+	if t == nil {
+		return false
+	}
+	if len(t.Upstreams) > 0 {
+		return true
+	}
+	switch t.Subject.Kind {
+	case "Ingress", "Gateway", "HTTPRoute", "GRPCRoute":
+		return true
+	}
+	return false
 }
 
 // BoundaryServiceRouting is the one boundary we can currently localize: the
@@ -579,7 +622,7 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 		if len(res) == 0 {
 			continue
 		}
-		rr, ok := routeFromProbes(t.Routes[i].Route, t.Routes[i].Target, res)
+		rr, ok := routeFromProbes(t.Routes[i].Route, t.Routes[i].Target, res, traceHasFrontDoor(t))
 		if !ok {
 			continue
 		}
@@ -1373,7 +1416,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 		// Service hop itself has no ClusterIP/ports to dial, so its OWN probes are
 		// empty; the route's outcome IS the external host's reachability.
 		if ext := externalNameHop(t.Downstream); ext != nil && len(ext.Probes) > 0 {
-			if r, ok := routeFromProbes(subjectRouteLabel(t.Subject, entry), ext.Resource.Name, ext.Probes); ok {
+			if r, ok := routeFromProbes(subjectRouteLabel(t.Subject, entry), ext.Resource.Name, ext.Probes, false); ok {
 				// A laptop dials the external host from Radar's OWN network - that is
 				// NOT proof of real in-cluster reachability (split-horizon DNS, egress
 				// rules, and routing can all differ inside the cluster). Only an
@@ -1389,7 +1432,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 		// intended-route test, one route per Service port; the Pods-hop probes sit
 		// behind the Service, so they're localization, never a separate route.
 		podLoc := factsFromProbes(downstreamProbes(t.Downstream[1:]))
-		routes := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, podLoc)
+		routes := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, podLoc, traceHasFrontDoor(t))
 		setTargetNamespace(routes, entry.Resource.Namespace)
 		markBenignScaleZero(routes, entry)
 		attachInClusterRequest(routes, "", "", entry.Config)
@@ -1474,7 +1517,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 			}
 			shared := entryProbesForHost(entry, scopeHost)
 			outcomeProbes := append(append([]probe.Result{}, shared...), backend.Probes...)
-			routes := routesByPort(rr.label, backend.Resource.Name, target, outcomeProbes, rr.ports, podLoc)
+			routes := routesByPort(rr.label, backend.Resource.Name, target, outcomeProbes, rr.ports, podLoc, true)
 			if len(routes) > 0 {
 				setTargetNamespace(routes, backend.Resource.Namespace)
 				markBenignScaleZero(routes, backend)
@@ -1492,7 +1535,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 	// entry path). Surface the Gateway's OWN front-door reachability as the route
 	// so its probe evidence isn't dropped and coverage doesn't read empty.
 	if entry.Resource.Kind == "Gateway" && len(out) == 0 {
-		gw := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, nil)
+		gw := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, nil, false)
 		setTargetNamespace(gw, entry.Resource.Namespace)
 		out = append(out, gw...)
 	}
@@ -1545,7 +1588,7 @@ func hopsHaveScaleZero(hops []Hop) bool {
 // empty scope means every probed port is an intended route (a Service subject's
 // own ports). fallbackTarget labels the host-level route when no per-port probe
 // ran. extraLoc (the behind-the-gate pod facts) is appended to every route.
-func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Result, scope []int32, extraLoc []ProbeFact) []RouteResult {
+func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Result, scope []int32, extraLoc []ProbeFact, backendScoped bool) []RouteResult {
 	inScope := func(port int32) bool {
 		if len(scope) == 0 {
 			return true
@@ -1576,7 +1619,7 @@ func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Re
 	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
 
 	emit := func(rid, target string, ps []probe.Result) (RouteResult, bool) {
-		r, ok := routeFromProbes(rid, target, ps)
+		r, ok := routeFromProbes(rid, target, ps, backendScoped)
 		if !ok {
 			return r, false
 		}
@@ -1880,7 +1923,7 @@ func perVantage(probes []probe.Result) []VantageResult {
 	return out
 }
 
-func routeFromProbes(routeID, target string, probes []probe.Result) (RouteResult, bool) {
+func routeFromProbes(routeID, target string, probes []probe.Result, backendScoped bool) (RouteResult, bool) {
 	var real, indirect []probe.Result
 	var localization []ProbeFact
 	for _, p := range probes {
@@ -1911,6 +1954,11 @@ func routeFromProbes(routeID, target string, probes []probe.Result) (RouteResult
 		r.Confidence = ConfidenceIndirect
 	}
 	r.ByVantage = perVantage(probes)
+	if backendScoped {
+		for i := range r.ByVantage {
+			r.ByVantage[i].Segment = SegmentBackend
+		}
+	}
 	return r, true
 }
 
@@ -2511,6 +2559,27 @@ func CoverageHeadline(t *Trace) string {
 		}
 		notTested = fmt.Sprintf(" · %d %s not tested", c.Skipped, n)
 	}
+	// When every passing route's evidence bypassed the front door, the counts
+	// prove the backends - not the entry path. Say so once, headline-level.
+	backendOnly := ""
+	if c.Passed > 0 {
+		all := true
+		for _, r := range t.Routes {
+			if r.Benign {
+				continue
+			}
+			if r.Outcome == OutcomeVerified || r.Outcome == OutcomeReached {
+				if !RouteBackendScoped(r) {
+					all = false
+					break
+				}
+			}
+		}
+		if all {
+			backendOnly = " · backend only - the entry path was not exercised"
+		}
+	}
+	notTested += backendOnly
 	// A server-error route WAS reached (it answered with a 5xx); lumping it into
 	// "unreachable" would wrongly imply a dead network path. Separate the two so
 	// the headline never says "none reachable" about routes that did respond.
@@ -2651,6 +2720,15 @@ func singleRouteHeadline(r RouteResult, skipped int, noun string) string {
 		// failure regardless of which path observed it - see below.)
 		if r.Confidence == ConfidenceIndirect {
 			return "Reached " + VantageAPIServer + " - not live traffic" + ev + suffix
+		}
+		// A real pass whose every dial bypassed the front door has proven the
+		// BACKEND, not the route's entry path - saying bare "verified" let an
+		// in-cluster pass paint a dead Ingress green.
+		if RouteBackendScoped(r) {
+			if r.Outcome == OutcomeVerified {
+				return "Backend verified - the entry path was not exercised by this test" + ev + suffix
+			}
+			return "Backend reached - the entry path was not exercised by this test" + ev + suffix
 		}
 		if r.Outcome == OutcomeVerified {
 			return "Reachable - verified" + ev + suffix

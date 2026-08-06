@@ -26,7 +26,7 @@ func TestPerVantageKeepsDisagreementTheRollupDestroys(t *testing.T) {
 		httpProbe(probe.VantageInCluster, probe.PathData, true, "HTTP 200"),
 		httpProbe(probe.VantageLocal, probe.PathData, false, "connection refused"),
 	}
-	r, ok := routeFromProbes("checkout.example.com/", "checkout:80", probes)
+	r, ok := routeFromProbes("checkout.example.com/", "checkout:80", probes, false)
 	if !ok {
 		t.Fatal("expected a route result")
 	}
@@ -56,7 +56,7 @@ func TestPerVantageMarksApiserverIndirect(t *testing.T) {
 		httpProbe(probe.VantageLocal, probe.PathAPIServer, true, "HTTP 200"),
 		httpProbe(probe.VantageInCluster, probe.PathData, true, "HTTP 200"),
 	}
-	r, _ := routeFromProbes("r", "checkout:80", probes)
+	r, _ := routeFromProbes("r", "checkout:80", probes, false)
 	for _, v := range r.ByVantage {
 		want := ConfidenceReal
 		if v.Path == string(probe.PathAPIServer) {
@@ -75,7 +75,7 @@ func TestPerVantageSplitsOneVantageAcrossMechanisms(t *testing.T) {
 		httpProbe(probe.VantageLocal, probe.PathData, false, "connection refused"),
 		httpProbe(probe.VantageLocal, probe.PathAPIServer, true, "HTTP 200"),
 	}
-	r, _ := routeFromProbes("r", "checkout:80", probes)
+	r, _ := routeFromProbes("r", "checkout:80", probes, false)
 	if len(r.ByVantage) != 2 {
 		t.Fatalf("want the two mechanisms kept apart, got %+v", r.ByVantage)
 	}
@@ -85,7 +85,7 @@ func TestPerVantageDropsSkippedProbes(t *testing.T) {
 	skipped := httpProbe(probe.VantageInCluster, probe.PathData, false, "")
 	skipped.Skipped = true
 	probes := []probe.Result{httpProbe(probe.VantageLocal, probe.PathData, true, "HTTP 200"), skipped}
-	r, _ := routeFromProbes("r", "checkout:80", probes)
+	r, _ := routeFromProbes("r", "checkout:80", probes, false)
 	if len(r.ByVantage) != 1 || r.ByVantage[0].Vantage != string(probe.VantageLocal) {
 		t.Errorf("a skipped probe carries no observation and must not become a vantage row: %+v", r.ByVantage)
 	}
@@ -377,7 +377,7 @@ func TestPerVantageSplitsRadarFromProbeJob(t *testing.T) {
 	radar := httpProbe(probe.VantageInCluster, probe.PathData, true, "HTTP 200")
 	job := httpProbe(probe.VantageInCluster, probe.PathData, false, "connection refused")
 	job.Source = probe.SourceProbeJob
-	r, _ := routeFromProbes("r", "checkout:80", []probe.Result{radar, job})
+	r, _ := routeFromProbes("r", "checkout:80", []probe.Result{radar, job}, false)
 	if len(r.ByVantage) != 2 {
 		t.Fatalf("two observers at the same vantage must stay apart: %+v", r.ByVantage)
 	}

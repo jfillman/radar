@@ -363,6 +363,10 @@ export interface VantageResult {
    *  establish that. Empty means we could not tell - the common case, and never
    *  to be guessed at in the UI. */
   failedBoundary?: 'service-routing'
+  /** Which part of the DECLARED path this row's dial exercised. 'backend' means
+   *  the dial bypassed the route's front door, so this row can never vouch for
+   *  the entry path. Empty when there is no separate entry segment. */
+  segment?: 'backend'
 }
 
 /** A concrete HTTP request the in-cluster runner can send to the Service. */

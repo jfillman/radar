@@ -252,6 +252,13 @@ export function routeTone(r: RouteResult, opts: { stale?: boolean; running?: boo
 }
 
 /** Short qualifier chip for a scenario tab - what kind of evidence backs it. */
+/** Every row's dial bypassed the front door - rows exist and none exercised
+ *  the entry path. The chip and headline must then never read as a bare pass. */
+export function routeBackendScoped(r: RouteResult): boolean {
+  const rows = r.byVantage ?? []
+  return rows.length > 0 && rows.every((v) => v.segment === 'backend')
+}
+
 export function routeChip(r: RouteResult, opts: { stale?: boolean; running?: boolean } = {}): string {
   if (opts.running) return 'probing…'
   if (opts.stale) return 'stale'
@@ -262,9 +269,14 @@ export function routeChip(r: RouteResult, opts: { stale?: boolean; running?: boo
   const indirect = r.confidence === 'indirect'
   switch (r.outcome) {
     case 'verified':
-      return indirect ? 'got through via the API server' : 'got through'
+      if (indirect) return 'got through via the API server'
+      // The segment qualifier APPENDS to the outcome word, never replaces it:
+      // proof strength stays outcome-derived, so a future transport-only reach
+      // reads "answered · backend", not "verified".
+      return routeBackendScoped(r) ? 'got through · backend' : 'got through'
     case 'reached':
-      return indirect ? 'answered via the API server' : 'answered, not confirmed'
+      if (indirect) return 'answered via the API server'
+      return routeBackendScoped(r) ? 'answered · backend' : 'answered, not confirmed'
     case 'server-error':
       return 'the app returned an error'
     case 'unreachable':
@@ -417,7 +429,10 @@ export function routeIdentity(r: RouteResult): string {
  *  different sequence still compare equal. */
 export function vantageSignature(r: RouteResult): string {
   return (r.byVantage ?? [])
-    .map((v) => `${v.vantage}/${v.path}/${v.source || 'radar'}=${v.outcome}${v.failedBoundary ? `@${v.failedBoundary}` : ''}`)
+    .map(
+      (v) =>
+        `${v.vantage}/${v.path}/${v.source || 'radar'}=${v.outcome}${v.failedBoundary ? `@${v.failedBoundary}` : ''}${v.segment ? `#${v.segment}` : ''}`,
+    )
     .sort()
     .join(',')
 }

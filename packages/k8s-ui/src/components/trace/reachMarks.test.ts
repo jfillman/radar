@@ -623,3 +623,27 @@ describe('a folded tab is named for what it actually folds', () => {
     expect(s.members).toEqual(['port 80', 'web-abc port 8080'])
   })
 })
+
+describe('a backend-scoped pass never reads as a bare pass', () => {
+  const scoped = (outcome: 'verified' | 'reached'): RouteResult =>
+    r({
+      outcome,
+      confidence: 'real',
+      byVantage: [{ vantage: 'in-cluster', path: 'data', source: 'probe-job', outcome, segment: 'backend' }],
+    })
+
+  it('appends the segment to the outcome word', () => {
+    expect(routeChip(scoped('verified'))).toBe('got through · backend')
+    expect(routeChip(scoped('reached'))).toBe('answered · backend')
+  })
+
+  it('a route with no front door keeps the plain words', () => {
+    expect(routeChip(r({ outcome: 'verified', confidence: 'real' }))).toBe('got through')
+  })
+
+  it('routes differing only in segment stay separate scenarios', () => {
+    const a = scoped('verified')
+    const b = r({ outcome: 'verified', confidence: 'real', byVantage: [{ vantage: 'in-cluster', path: 'data', source: 'probe-job', outcome: 'verified' }] })
+    expect(vantageSignature(a)).not.toBe(vantageSignature(b))
+  })
+})

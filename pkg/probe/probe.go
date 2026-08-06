@@ -676,8 +676,12 @@ func proxyResult(ctx context.Context, req *rest.Request, r Result) Result {
 	// net.Error, so it must be caught BEFORE isClusterUnreachable - otherwise a slow
 	// app gets blamed on the kubeconfig. Skip with a backend-timeout reason.
 	if code == 0 && isBackendTimeout(err) {
+		// A deadline through the relay is genuinely ambiguous - slow backend,
+		// cold start, a TLS-only port hanging on plain HTTP, or the relay
+		// itself. Naming one cause turned an inconclusive timeout into a
+		// diagnosis, so the reason lists the possibilities and concludes nothing.
 		r.Skipped = true
-		r.Reason = "the backend didn't respond within the probe budget - it may be slow or still starting (not a cluster-connection problem)"
+		r.Reason = "no response before the check gave up - could be a slow or starting backend, a port expecting TLS, or the relay itself; nothing was concluded"
 		return r
 	}
 	if code == 0 && isClusterUnreachable(err) {
@@ -963,7 +967,7 @@ func translateAPIError(err error) string {
 	case strings.Contains(low, "connection refused"):
 		return "Connection refused. Nothing is listening on the port."
 	case strings.Contains(low, "i/o timeout"), strings.Contains(low, "context deadline exceeded"):
-		return "Timed out. Port accepted no connection within the probe budget."
+		return "Timed out. The port accepted no connection before the check gave up."
 	case strings.Contains(low, "eof"):
 		return "Connection closed before response. Backend likely doesn't speak HTTP/1.1 on this port."
 	case strings.Contains(low, "x509:"):

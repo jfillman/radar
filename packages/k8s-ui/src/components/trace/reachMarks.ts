@@ -76,7 +76,10 @@ export const MARK_LEGEND: { mark: Mark; text: string; category: MarkCategory }[]
   { mark: 'inconclusive', text: 'tested, but kept informational — a throwaway identity can\u2019t condemn the path', category: 'tested' },
   { mark: 'config', text: 'configured this way — not tested', category: 'tested' },
   { mark: 'untested', text: 'not tested from here', category: 'why-not' },
-  { mark: 'blocked', text: 'never tried — something failed earlier', category: 'why-not' },
+  // 'blocked' covers two honest cases - a segment downstream of a failure, and
+  // a vantage whose every dial was skipped or abandoned. The legend must not
+  // pick one: "never tried" was false for a proxy dial that ran and timed out.
+  { mark: 'blocked', text: 'never completed — an earlier failure or a skip stopped it', category: 'why-not' },
   { mark: 'denied', text: 'not allowed to test this', category: 'why-not' },
   { mark: 'excluded', text: 'not sent any traffic', category: 'why-not' },
   { mark: 'running', text: 'testing now', category: 'state' },
@@ -282,9 +285,15 @@ export function routeChip(r: RouteResult, opts: { stale?: boolean; running?: boo
       if (indirect) return 'answered via the API server'
       return routeBackendScoped(r) ? 'answered · backend' : 'answered, not confirmed'
     case 'server-error':
-      return 'the app returned an error'
+      // server-error is NEVER an ordinary app 5xx (those classify as reached):
+      // it is a TLS verification failure or a gateway's 502/504 - blaming "the
+      // app" here named the one party that is not at fault.
+      if (r.failedLayer === 'tls') return 'TLS certificate failed'
+      if (r.failedLayer === 'upstream') return 'the front door couldn’t reach the backend'
+      return 'answered with a server-side fault'
     case 'unreachable':
-      if (indirect) return 'only the shortcut failed'
+      // "only the shortcut failed" left "shortcut" undefined on the page.
+      if (indirect) return 'couldn’t get through via the API server'
       return r.benign ? 'nothing running (on purpose)' : 'could not get through'
     case 'not-tested':
     default:

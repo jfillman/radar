@@ -2,7 +2,7 @@ import type { Trace, RouteResult, ResourceRef } from './types'
 import type { Mark, SevTone } from './reachMarks'
 import { routeMark, routeChip, routeTone, routeAsSeenFrom, originRouteEvidence, routeForOrigin, traceInClusterRunnable } from './reachMarks'
 import type { Origin, OriginId } from './reachOrigins'
-import { strongestGap, actionableGap } from './reachOrigins'
+import { strongestGap, actionableGap, originSkipReason } from './reachOrigins'
 import { hopEvidenceFor, originProducedEvidence, type GraphNode } from './reachGraphModel'
 
 // 'run-probes' re-runs the reachability probes. It is deliberately NOT
@@ -363,12 +363,11 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     add(f.ok ? 'proxied' : 'failed', `${body} — checked directly, past the entry point`)
   }
   if (evidence.length === 0) {
-    // A route the run SKIPPED still carries why in its rollup evidence ("HTTPS
-    // backend - the proxy speaks plain HTTP..."). That reason belongs to the
-    // origins the run dialled from - shown under a vantage that simply hasn't
-    // run, it would charge the in-cluster probe with the proxy's limits.
-    const ranFromHere = trace.runVantage === 'in-cluster' ? origin.id === 'radar-incluster' : origin.id === 'local' || origin.id === 'apiserver'
-    const skipReason = ev.kind === 'rollup' && asSeen?.outcome === 'not-tested' && ranFromHere ? asSeen.evidence : undefined
+    // A route the run SKIPPED still carries why. The reason is looked up from
+    // the skip rows by the exact identity that produced it, so it appears only
+    // under the vantage whose dial was skipped - never charging the in-cluster
+    // probe with the proxy's limits, or the laptop with the proxy's timeouts.
+    const skipReason = ev.kind === 'rollup' && asSeen?.outcome === 'not-tested' ? originSkipReason(trace, origin.id, route) : undefined
     add(
       mark,
       skipReason ||

@@ -122,7 +122,7 @@ func runProbes(ctx context.Context, t *Trace, opts Options, client kubernetes.In
 			}
 			if time.Now().After(deadline) {
 				hops[i].Probes = append(hops[i].Probes, probe.Skipped(
-					probe.LayerTCP, "", vantage, "probe budget exhausted before this hop",
+					probe.LayerTCP, "", vantage, "the test ran out of time before reaching this hop",
 				))
 				continue
 			}
@@ -289,7 +289,7 @@ func budgetSkipIfExhausted(ctx context.Context, r probe.Result, vantage probe.Va
 	if r.OK || ctx.Err() == nil {
 		return r
 	}
-	skip := probe.SkippedCmd(r.Layer, r.Target, vantage, "probe budget exhausted before this check finished", "")
+	skip := probe.SkippedCmd(r.Layer, r.Target, vantage, "the test ran out of time before this check finished", "")
 	skip.Path = r.Path
 	skip.Port = r.Port
 	return skip
@@ -661,7 +661,7 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 			// now would map a context-deadline error into a false "Timed out …
 			// unreachable" row - emit an honest budget skip instead.
 			skip := probe.SkippedCmd(probe.LayerHTTP, fmt.Sprintf("port %d", p.Port), vantage,
-				"probe budget exhausted before the apiserver path could be tested", "")
+				"the test ran out of time before the API-server path could be tested", "")
 			skip.Path = probe.PathAPIServer
 			skip.Port = p.Port
 			out = append(out, skip)

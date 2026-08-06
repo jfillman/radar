@@ -156,6 +156,25 @@ function skipReason(probes: ProbeResult[]): string | undefined {
 }
 
 /**
+ * Why THIS origin's dials for a route were skipped, from the skip rows
+ * themselves. Each skip carries (vantage, path, source), so the reason is
+ * attributed by the exact identity that produced it - inferring from the run
+ * mode repeated the proxy's reason under the laptop, and lost it entirely when
+ * the run came from inside the cluster (which relays through the proxy too).
+ * A port-scoped skip only speaks for its own port; a shared (portless) skip
+ * speaks for every port. Another port's reason is never borrowed.
+ */
+export function originSkipReason(trace: Trace | undefined, originId: OriginId, route?: RouteResult): string | undefined {
+  const m = /:(\d+)$/.exec(route?.target || route?.route || '')
+  const port = m ? Number(m[1]) : undefined
+  const skips = allProbes(trace).filter((p) => p.skipped && p.reason && originOf(p, trace?.runVantage) === originId)
+  if (port !== undefined) {
+    return (skips.find((p) => p.port === port) ?? skips.find((p) => !p.port))?.reason
+  }
+  return skips[0]?.reason
+}
+
+/**
  * Builds the origin rail for a trace.
  *
  * Order is by evidence strength, not by availability, so the gap between what

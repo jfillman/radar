@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildGraph, shortEvidence, noteHeadline, hopEvidenceFor, POD_ROW_MAX, PILL_MAX_PX } from './reachGraphModel'
+import { buildGraph, shortEvidence, noteHeadline, hopEvidenceFor, originEntryEvidence, originNoEvidenceLabel, POD_ROW_MAX, PILL_MAX_PX } from './reachGraphModel'
 import { buildOrigins } from './reachOrigins'
 import type { Trace, RouteResult, PodStatus, ProbeResult } from './types'
 
@@ -1373,5 +1373,36 @@ describe('an entry hop reports its own result, not the route rollup', () => {
     const t = withIngress()
     const ev = hopEvidenceFor(t.upstreams[0], buildOrigins(t).find((o) => o.id === 'local')!)!
     expect(ev.title).toMatch(/HTTP 404/)
+  })
+})
+
+describe('an all-skipped origin never claims a network verdict', () => {
+  it('capsule and edge share one label, and it is not "not routable"', () => {
+    const o = { id: 'apiserver', mark: 'blocked' } as never
+    expect(originNoEvidenceLabel(o)).toBe('couldn’t test')
+    const trace = {
+      subject: { kind: 'Service', name: 'shop', namespace: 'store' },
+      verdict: 'unknown',
+      brokenAt: -1,
+      upstreams: [],
+      routes: [],
+      downstream: [
+        {
+          resource: { kind: 'Service', name: 'shop', namespace: 'store' },
+          edge: 'service',
+          findings: [],
+          probes: [{ layer: 'http', target: 'shop:443', vantage: 'local', path: 'apiserver', ok: false, skipped: true, reason: 'x' }],
+        },
+      ],
+    } as never
+    const ev = originEntryEvidence(trace, { route: 'r', target: 'shop:443', outcome: 'not-tested' } as never, {
+      id: 'apiserver',
+      mark: 'blocked',
+      lane: 'control',
+    } as never)
+    expect(ev.label).toBe('couldn’t test')
+  })
+  it('an attempted in-cluster run that could not start keeps its own words', () => {
+    expect(originNoEvidenceLabel({ id: 'incluster', mark: 'blocked', unavailable: 'image pull failed' } as never)).toBe('test couldn’t run')
   })
 })

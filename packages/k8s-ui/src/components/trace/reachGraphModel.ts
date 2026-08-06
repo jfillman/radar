@@ -559,6 +559,25 @@ interface BuildOpts {
   running?: boolean
 }
 
+/**
+ * The words for an origin that produced no usable evidence for the scenario.
+ * ONE helper for the capsule and every edge pill - two call sites drifted into
+ * telling simultaneous different stories ("not routable" on the capsule beside
+ * "couldn't test" on the edge). "not routable" itself is retired: it read as a
+ * NETWORK verdict about the target, the one claim a vantage whose dials all
+ * skipped has no standing to make. 'blocked' means tried-and-couldn't - say
+ * that, and let the skip reason on hover carry the why. The in-cluster ATTEMPT
+ * whose probe never started keeps its own words: execution failure is its own
+ * state, and "not tested" would erase the attempt.
+ */
+export function originNoEvidenceLabel(o: Pick<Origin, 'id' | 'mark' | 'unavailable'>): string {
+  if (o.mark === 'inconclusive') return 'ran — kept informational'
+  if (o.mark === 'denied') return 'not permitted'
+  if (o.id === 'incluster' && o.mark === 'blocked' && o.unavailable) return 'test couldn’t run'
+  if (o.mark === 'blocked') return 'couldn’t test'
+  return 'not tested'
+}
+
 /** One origin's own verdict on the selected route - the mark for its entry edge
  *  and the words for its pill. Computed per origin so a vantage that never ran
  *  is drawn as never-run beside one that succeeded, instead of the whole graph
@@ -588,7 +607,7 @@ export function originEntryEvidence(
   // words agree with its glyph instead of showing a proved dot beside the
   // phrase "not tested".
   const alongPath = !hasEvidence && !fromConfig ? bestHopEvidence(trace, o, opts) : undefined
-  const noEvidenceLabel = o.mark === 'denied' ? 'not permitted' : o.mark === 'blocked' ? 'not routable' : 'not tested'
+  const noEvidenceLabel = originNoEvidenceLabel(o)
   const mark: Mark = fromConfig
     ? 'config'
     : !hasEvidence
@@ -1230,18 +1249,7 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
       ? 'proxied'
       : routeMarkNow
   const originBlocked = !!origin.unavailable && origin.mark === 'blocked'
-  const noEvidenceLabel =
-    origin.mark === 'inconclusive'
-      ? 'ran — kept informational'
-      : origin.mark === 'denied'
-      ? 'not permitted'
-      : // An in-cluster ATTEMPT whose probe never started: execution failure is
-        // its own state - "not routable"/"not tested" would erase the attempt.
-        origin.id === 'incluster' && originBlocked
-        ? 'test couldn’t run'
-        : origin.mark === 'blocked'
-          ? 'not routable'
-          : 'not tested'
+  const noEvidenceLabel = originNoEvidenceLabel(origin)
   const entryLabel = isRunning(origin.id)
     ? 'testing now'
     : fromConfig

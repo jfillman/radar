@@ -1649,7 +1649,7 @@ func TestReconcileHTTPSOnlyHost(t *testing.T) {
 		{"both fail -> both failures stand (real outage)", []probe.Result{tcp("80", false), tcp("443", false)}, false},
 		{"80 reached -> nothing to demote", []probe.Result{tcp("80", true), tcp("443", true)}, false},
 		{"already-skipped 80 row is left alone", []probe.Result{
-			{Layer: probe.LayerTCP, Target: "sec.example.com:80", Skipped: true, Reason: "probe budget exhausted before this check finished"},
+			{Layer: probe.LayerTCP, Target: "sec.example.com:80", Skipped: true, Reason: "the test ran out of time before this check finished"},
 			tcp("443", true),
 		}, false},
 		{"HTTP rows don't count as the 443 signal", []probe.Result{

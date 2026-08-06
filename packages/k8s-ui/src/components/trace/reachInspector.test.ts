@@ -539,38 +539,53 @@ describe('a break at one parallel entry orders nothing', () => {
   })
 })
 
-describe('a skipped route says why, from the vantage that skipped it', () => {
-  const skipped = (evidence: string): RouteResult =>
-    route({ outcome: 'not-tested', confidence: undefined, evidence, byVantage: undefined })
-  const mkSkipped = (evidence: string): Trace => {
+describe('a skipped route says why, from the exact vantage that skipped it', () => {
+  const reason = "HTTPS backend - the API-server proxy speaks plain HTTP and can't verify TLS on this port. Test it directly."
+  const skipped = (target = 'shop:443'): RouteResult =>
+    route({ target, outcome: 'not-tested', confidence: undefined, evidence: reason, byVantage: undefined })
+  const mkSkipped = (skipProbe: Partial<ProbeResult>, runVantage: 'local' | 'in-cluster' = 'local'): Trace => {
     const t = mk([pod('shop-1', true, '10.0.0.1')], [])
     t.verdict = 'unknown'
-    t.runVantage = 'local'
+    t.runVantage = runVantage
     t.coverage = { tested: 0, passed: 0, failed: 0, skipped: 1 }
-    t.routes = [skipped(evidence)]
+    t.routes = [skipped()]
+    t.downstream![0].probes = [p({ target: 'shop:443', port: 443, skipped: true, reason, ok: false, ...skipProbe })]
     return t
   }
-  const reason = "HTTPS backend - the API-server proxy speaks plain HTTP and can't verify TLS on this port. Test it directly."
+  const proxySkip = { vantage: 'local' as const, path: 'apiserver' as const }
 
-  it('surfaces the rollup evidence under the origins the run dialled from', () => {
-    const t = mkSkipped(reason)
-    for (const id of ['local', 'apiserver']) {
-      const s = buildSidebar(undefined, ctx(t, id, skipped(reason)))
-      expect(s.path.evidence.map((e) => e.text).join('\n')).toContain('API-server proxy speaks plain HTTP')
+  it('surfaces the skip reason under the origin whose dial was skipped', () => {
+    const s = buildSidebar(undefined, ctx(mkSkipped(proxySkip), 'apiserver', skipped()))
+    expect(s.path.evidence.map((e) => e.text).join('\n')).toContain('API-server proxy speaks plain HTTP')
+  })
+
+  it('keeps the proxy reason under the proxy even when the run came from inside the cluster', () => {
+    const s = buildSidebar(undefined, ctx(mkSkipped(proxySkip, 'in-cluster'), 'apiserver', skipped()))
+    expect(s.path.evidence.map((e) => e.text).join('\n')).toContain('API-server proxy speaks plain HTTP')
+  })
+
+  it('never charges a vantage whose own dial was not the one skipped', () => {
+    const t = mkSkipped(proxySkip)
+    for (const id of ['local', 'incluster']) {
+      const texts = buildSidebar(undefined, ctx(t, id, skipped())).path.evidence.map((e) => e.text).join('\n')
+      expect(texts).not.toContain('API-server proxy')
     }
   })
 
-  it('never charges a vantage that simply has not run with the skip reason', () => {
-    const t = mkSkipped(reason)
-    const s = buildSidebar(undefined, ctx(t, 'incluster', skipped(reason)))
-    const texts = s.path.evidence.map((e) => e.text).join('\n')
+  it("never borrows another port's reason", () => {
+    const t = mkSkipped({ ...proxySkip, port: 80, target: 'shop:80' })
+    const texts = buildSidebar(undefined, ctx(t, 'apiserver', skipped('shop:443'))).path.evidence.map((e) => e.text).join('\n')
     expect(texts).not.toContain('API-server proxy')
-    expect(texts).toMatch(/no test has been run from here|not permitted/)
+  })
+
+  it('a portless skip speaks for every port', () => {
+    const t = mkSkipped({ ...proxySkip, port: undefined })
+    const texts = buildSidebar(undefined, ctx(t, 'apiserver', skipped())).path.evidence.map((e) => e.text).join('\n')
+    expect(texts).toContain('API-server proxy speaks plain HTTP')
   })
 
   it('says out loud that dots are health, not results, when nothing anywhere was tested', () => {
-    const t = mkSkipped(reason)
-    const s = buildSidebar(undefined, ctx(t, 'apiserver', skipped(reason)))
+    const s = buildSidebar(undefined, ctx(mkSkipped(proxySkip), 'apiserver', skipped()))
     expect(s.path.body).toContain('cluster state, not a test result')
   })
 })

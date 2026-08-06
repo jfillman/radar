@@ -78,6 +78,10 @@ interface OriginContext {
   route?: RouteResult
   inClusterRunning?: boolean
   inClusterDeniedReason?: string
+  /** A run was ATTEMPTED and its probe never started (image pull, quota,
+   *  webhook). "Not tested" would erase the attempt; execution failure is its
+   *  own state, distinct from reachability. */
+  inClusterRunError?: string
   stale?: boolean
 }
 
@@ -118,7 +122,9 @@ function markFor(probes: ProbeResult[], id: OriginId, ctx: OriginContext): Mark 
   if (live.length === 0) return 'blocked'
   if (ctx.stale) return 'stale'
   if (live.some((p) => !p.ok || p.tone === 'unhealthy')) return 'failed'
-  if (live.some((p) => p.tone === 'degraded')) return 'answered'
+  // 'reached' = answered with a 3xx/4xx/app-5xx: evidence the port serves, not a
+  // clean pass - same rule as the route rollup, where reached maps to answered.
+  if (live.some((p) => p.tone === 'degraded' || p.tone === 'reached')) return 'answered'
   return id === 'apiserver' ? 'proxied' : 'proved'
 }
 
@@ -172,6 +178,11 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
   }
 
   const inClusterProbes = byOrigin.get('incluster') ?? []
+  // A failed ATTEMPT is not "not tested": the operator clicked Run and the
+  // probe never started. Only when no live probe made it through - a partial
+  // run that produced results keeps its evidence-based mark.
+  const inClusterFailedToRun =
+    !!ctx.inClusterRunError && !ctx.inClusterRunning && inClusterProbes.filter((p) => !p.skipped).length === 0
   const incluster: Origin = {
     id: 'incluster',
     glyph: '⚗',
@@ -185,8 +196,13 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
     kind: 'synthetic',
     kindTag: ORIGIN_KIND_TAG.synthetic,
     lane: 'dataplane',
-    mark: markFor(inClusterProbes, 'incluster', ctx),
-    unavailable: ctx.inClusterAllowed === false ? ctx.inClusterDeniedReason || 'Not permitted in this cluster.' : undefined,
+    mark: inClusterFailedToRun && ctx.inClusterAllowed !== false ? 'blocked' : markFor(inClusterProbes, 'incluster', ctx),
+    unavailable:
+      ctx.inClusterAllowed === false
+        ? ctx.inClusterDeniedReason || 'Not permitted in this cluster.'
+        : inClusterFailedToRun
+          ? ctx.inClusterRunError
+          : undefined,
   }
 
   const apiProbes = byOrigin.get('apiserver') ?? []

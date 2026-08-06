@@ -2484,11 +2484,17 @@ func CoverageHeadline(t *Trace) string {
 	}
 	// Single intended route/port: speak in the singular, no fraction.
 	if tested == 1 && len(t.Routes) == 1 {
-		return singleRouteHeadline(t.Routes[0], c.Skipped)
+		return singleRouteHeadline(t.Routes[0], c.Skipped, noun)
 	}
 	notTested := ""
 	if c.Skipped > 0 {
-		notTested = fmt.Sprintf(" · %d not tested", c.Skipped)
+		// Name WHAT is counted: a bare "· 1 not tested" beside the headline read
+		// as a rendering artifact (1 what - probes? hops? resources?).
+		n := noun
+		if c.Skipped == 1 {
+			n = strings.TrimSuffix(noun, "s")
+		}
+		notTested = fmt.Sprintf(" · %d %s not tested", c.Skipped, n)
 	}
 	// A server-error route WAS reached (it answered with a 5xx); lumping it into
 	// "unreachable" would wrongly imply a dead network path. Separate the two so
@@ -2606,10 +2612,14 @@ func allUnreachableIndirect(routes []RouteResult) bool {
 	return any
 }
 
-func singleRouteHeadline(r RouteResult, skipped int) string {
+func singleRouteHeadline(r RouteResult, skipped int, noun string) string {
 	suffix := ""
 	if skipped > 0 {
-		suffix = fmt.Sprintf(" · %d not tested", skipped)
+		n := noun
+		if skipped == 1 {
+			n = strings.TrimSuffix(noun, "s")
+		}
+		suffix = fmt.Sprintf(" · %d %s not tested", skipped, n)
 	}
 	ev := ""
 	if r.Evidence != "" {

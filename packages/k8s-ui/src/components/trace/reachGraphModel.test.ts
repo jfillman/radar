@@ -982,7 +982,9 @@ describe('the workload behind the Service appears in the graph', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [p({})])
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
     expect(g.nodes.some((n) => n.kind === 'DEPLOYMENT')).toBe(false)
-    expect(g.nodes.find((n) => n.kind === 'PODS')!.sub).toMatch(/eligible/)
+    // The count lives on the name line; the sub stays silent when it would
+    // only repeat it.
+    expect(g.nodes.find((n) => n.kind === 'PODS')!.name).toMatch(/eligible/)
   })
 })
 
@@ -1021,14 +1023,18 @@ describe('a finding on a node is a headline, not the whole message', () => {
   const gatewayMsg =
     "Accepted: NoMatchingListenerHostname - Gateway primary-gateway-system/primary-gateway listeners http, https: There were no hostname intersections between the HTTPRoute and this parent ref's Listener(s)."
 
-  it('keeps the code and drops the explanation', () => {
-    expect(noteHeadline(gatewayMsg)).toBe('Accepted: NoMatchingListenerHostname')
+  it('translates a known condition reason into plain language', () => {
+    // "Accepted: NoMatchingListenerHostname" is precise and user-hostile - it
+    // reads as if the route WAS accepted. Known Gateway API reasons get plain
+    // words; the raw message stays on the hover.
+    expect(noteHeadline(gatewayMsg)).toBe('Not attached: no listener matches its hosts')
   })
 
   // A colon usually introduces the very thing worth naming, so it is not a cut
-  // point - cutting there would leave a bare "Accepted".
-  it('does not cut at a colon', () => {
-    expect(noteHeadline('Accepted: NoMatchingListenerHostname')).toBe('Accepted: NoMatchingListenerHostname')
+  // point - cutting there would leave a bare "Accepted". An UNKNOWN reason
+  // passes through untranslated rather than being guessed at.
+  it('does not cut at a colon, and passes unknown reasons through', () => {
+    expect(noteHeadline('Accepted: SomeVendorSpecificReason')).toBe('Accepted: SomeVendorSpecificReason')
   })
 
   it('cuts at a sentence break too', () => {
@@ -1050,7 +1056,7 @@ describe('a finding on a node is a headline, not the whole message', () => {
     t.downstream[0].findings = [{ code: 'gw:x', severity: 'warning', message: gatewayMsg }]
     const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
     const note = g.nodes.find((n) => n.kind === 'SERVICE')!.notes![0]
-    expect(note.text).toBe('Accepted: NoMatchingListenerHostname')
+    expect(note.text).toBe('Not attached: no listener matches its hosts')
     expect(note.detail).toBe(gatewayMsg)
   })
 })
@@ -1296,7 +1302,10 @@ describe('an entry hop reports its own result, not the route rollup', () => {
     const t = withIngress()
     const g = buildGraph({ trace: t, route: routeViaRelay(), origin: pick(t, 'local'), origins: buildOrigins(t) })
     const e = g.edges.find((x) => x.id === 'e:origin-n:Ingress/prod/web')!
-    expect(e.mark).toBe('proved')
+    // The dial ANSWERED with a 404 (tone 'reached') - real evidence the entry
+    // serves, not a clean pass. It must not draw the same solid green as a 2xx:
+    // that painted 'HTTP 404 · reached' as healthy at a glance.
+    expect(e.mark).toBe('answered')
     expect(e.label).not.toMatch(/not tested/i)
   })
 

@@ -18,7 +18,7 @@ func TestVantageAPIServerName(t *testing.T) {
 	if VantageAPIServer != "via API server" {
 		t.Fatalf("VantageAPIServer = %q, want \"via API server\" (must stay identical to TS VIA_API_SERVER)", VantageAPIServer)
 	}
-	h := singleRouteHeadline(RouteResult{Outcome: OutcomeReached, Confidence: ConfidenceIndirect}, 0)
+	h := singleRouteHeadline(RouteResult{Outcome: OutcomeReached, Confidence: ConfidenceIndirect}, 0, "routes")
 	if !strings.Contains(h, VantageAPIServer) {
 		t.Errorf("indirect-route headline %q must name the vantage %q", h, VantageAPIServer)
 	}
@@ -329,7 +329,9 @@ func TestCoverageHeadline(t *testing.T) {
 		{"single indirect is NOT verified", &Trace{Coverage: &Coverage{Tested: 1, Passed: 1}, Routes: []RouteResult{{Outcome: OutcomeVerified, Confidence: ConfidenceIndirect, Evidence: "HTTP 200"}}}, "API server", "verified"},
 		{"single unreachable", &Trace{Coverage: &Coverage{Tested: 1, Failed: 1}, Routes: []RouteResult{{Outcome: OutcomeUnreachable, Confidence: ConfidenceReal, Evidence: "connection refused"}}}, "Unreachable", ""},
 		{"multi all pass", &Trace{Coverage: &Coverage{Tested: 3, Passed: 3}, Routes: make([]RouteResult, 3)}, "All 3 routes reachable", ""},
-		{"multi footnote green", &Trace{Coverage: &Coverage{Tested: 3, Passed: 3, Skipped: 2}, Routes: make([]RouteResult, 3)}, "All 3 tested routes reachable · 2 not tested", ""},
+		// The footnote names WHAT is counted - a bare "· 2 not tested" read as a
+		// rendering artifact (2 what?).
+		{"multi footnote green", &Trace{Coverage: &Coverage{Tested: 3, Passed: 3, Skipped: 2}, Routes: make([]RouteResult, 3)}, "All 3 tested routes reachable · 2 routes not tested", ""},
 		{"multi partial", &Trace{Coverage: &Coverage{Tested: 4, Passed: 3, Failed: 1}, Routes: make([]RouteResult, 4)}, "3 of 4 routes reachable · 1 unreachable", ""},
 		{"multi none pass", &Trace{Coverage: &Coverage{Tested: 2, Failed: 2}, Routes: make([]RouteResult, 2)}, "None of 2 routes reachable", ""},
 		// A multi-route trace where every route ANSWERED with a 5xx: they were
@@ -782,7 +784,7 @@ func TestCoverageVerdict_UntestedRoutesTruthTable(t *testing.T) {
 func TestSingleRouteHeadline_IndirectFailureIsNotReached(t *testing.T) {
 	// An UNREACHABLE route observed via the apiserver proxy must NOT read
 	// "Reached via API server" - that contradicts the failure.
-	h := singleRouteHeadline(RouteResult{Outcome: OutcomeUnreachable, Confidence: ConfidenceIndirect, Evidence: "Connection refused"}, 0)
+	h := singleRouteHeadline(RouteResult{Outcome: OutcomeUnreachable, Confidence: ConfidenceIndirect, Evidence: "Connection refused"}, 0, "routes")
 	if strings.Contains(h, "Reached") {
 		t.Errorf("indirect unreachable headline = %q, must not say 'Reached'", h)
 	}

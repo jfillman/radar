@@ -247,7 +247,18 @@ export function hopEvidenceFor(
     // answer says more than the TCP dial underneath it.
     [...live].sort((a, b) => LAYER_RANK.indexOf(b.layer) - LAYER_RANK.indexOf(a.layer))[0]
   const relayed = worst.path === 'apiserver'
-  const mark: Mark = !worst.ok || worst.tone === 'unhealthy' ? 'failed' : worst.tone === 'degraded' ? 'answered' : relayed ? 'proxied' : 'proved'
+  // Tone 'reached' is the producer saying "answered, but with a 3xx/4xx/app-5xx"
+  // - real evidence the port serves, NOT a clean pass. Painting it the same
+  // solid green as a 2xx made 'HTTP 404 · reached' read as healthy at a glance;
+  // it is exactly the vocabulary's 'answered, but not with what we asked for'.
+  const mark: Mark =
+    !worst.ok || worst.tone === 'unhealthy'
+      ? 'failed'
+      : worst.tone === 'degraded' || worst.tone === 'reached'
+        ? 'answered'
+        : relayed
+          ? 'proxied'
+          : 'proved'
   const detail = shortEvidence(worst.detail) || shortEvidence(worst.reason)
   return { mark, label: detail || (relayed ? 'relayed by Kubernetes' : 'request'), title: worst.detail || worst.reason }
 }
@@ -318,12 +329,26 @@ const NOTE_MAX_CHARS = 46
  * path it is drawn on. Cut at the first real clause break so the CODE survives
  * ("Accepted: NoMatchingListenerHostname"), and let the hover carry the rest.
  */
+/** Plain language for the Gateway API condition reasons an operator actually
+ *  hits. "Accepted: NoMatchingListenerHostname" is precise condition data and
+ *  user-hostile prose - it reads as if the route WAS accepted. The full raw
+ *  message stays on the hover/detail for experts. */
+const KNOWN_ROUTE_REASONS: Record<string, string> = {
+  NoMatchingListenerHostname: 'Not attached: no listener matches its hosts',
+  NoMatchingParent: 'Not attached: the Gateway has no matching listener',
+  NotAllowedByListeners: 'Not attached: Gateway disallows this namespace',
+  RefNotPermitted: 'Backend ref not permitted — missing ReferenceGrant',
+  BackendNotFound: 'Backend not found',
+}
+
 export function noteHeadline(msg: string): string {
   const t = (msg ?? '').trim()
   // " - " and ". " separate a headline from its explanation; ":" does not - it
   // usually introduces the very thing worth naming.
   const cut = t.search(/\s[-–—]\s|\.\s/)
-  const head = (cut > 0 ? t.slice(0, cut) : t).replace(/[.:]$/, '').trim()
+  let head = (cut > 0 ? t.slice(0, cut) : t).replace(/[.:]$/, '').trim()
+  const known = head.match(/^(?:Accepted|ResolvedRefs|Programmed):\s*(\w+)$/)
+  if (known && KNOWN_ROUTE_REASONS[known[1]]) head = KNOWN_ROUTE_REASONS[known[1]]
   return head.length <= NOTE_MAX_CHARS ? head : `${head.slice(0, NOTE_MAX_CHARS - 1)}…`
 }
 
@@ -902,10 +927,13 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
         // ELIGIBILITY. The inspector already says "eligible" for this same
         // number - the graph must not contradict it.
         name: `${ready} of ${selected} eligible`,
+        // The name line already counts eligibility - "every selected Pod is
+        // eligible" under "1 of 1 eligible" said the same fact twice. The sub
+        // only speaks when it adds something the count can't say.
         sub: publishNotReady
           ? 'not-ready Pods are sent traffic too'
           : ready === selected
-            ? 'every selected Pod is eligible'
+            ? ''
             : `${selected - ready} not eligible`,
         tone: hopTone(hop, origin, trace.runVantage),
         hop,
@@ -1121,7 +1149,15 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
       : routeMarkNow
   const originBlocked = !!origin.unavailable && origin.mark === 'blocked'
   const noEvidenceLabel =
-    origin.mark === 'denied' ? 'not permitted' : origin.mark === 'blocked' ? 'not routable' : 'not tested'
+    origin.mark === 'denied'
+      ? 'not permitted'
+      : // An in-cluster ATTEMPT whose probe never started: execution failure is
+        // its own state - "not routable"/"not tested" would erase the attempt.
+        origin.id === 'incluster' && originBlocked
+        ? 'test couldn’t run'
+        : origin.mark === 'blocked'
+          ? 'not routable'
+          : 'not tested'
   const entryLabel = isRunning(origin.id)
     ? 'testing now'
     : fromConfig

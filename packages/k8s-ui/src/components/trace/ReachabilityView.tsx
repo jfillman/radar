@@ -148,7 +148,7 @@ interface BoardProps extends TracePanelProps {
 }
 
 function ReachabilityBoard(props: BoardProps) {
-  const { trace, running, stale, onNavigateToResource, onRunInCluster, onRunProbes, inClusterAllowed, testedAt, runNonce } = props
+  const { trace, running, stale, onNavigateToResource, onRunInCluster, onRunProbes, inClusterAllowed, inClusterError, testedAt, runNonce } = props
 
   // Scenarios group routes that agree in every respect - a Gateway route with
   // three hostnames and one backend is one situation, not three.
@@ -164,8 +164,8 @@ function ReachabilityBoard(props: BoardProps) {
   const route: RouteResult | undefined = scenario?.primary
 
   const origins = useMemo(
-    () => buildOrigins(trace, { inClusterAllowed, inClusterRunning: running, stale, route }),
-    [trace, inClusterAllowed, running, stale, route],
+    () => buildOrigins(trace, { inClusterAllowed, inClusterRunning: running, inClusterRunError: inClusterError, stale, route }),
+    [trace, inClusterAllowed, running, inClusterError, stale, route],
   )
   const [originId, setOriginId] = useState<OriginId | null>(null)
   const origin = origins.find((o) => o.id === (originId ?? defaultOrigin(origins))) ?? origins[0]
@@ -243,7 +243,10 @@ function ReachabilityBoard(props: BoardProps) {
           reading column, and both compress better than the path does. */}
       {/* Wider than it was: the vantage rail used to own a column of its own, and
           that width now belongs to the two panes that carry content. */}
-      <div className="grid min-h-0 flex-1 items-stretch grid-cols-[minmax(0,1fr)_minmax(300px,336px)] xl:grid-cols-[minmax(0,1fr)_minmax(340px,25%)]">
+      {/* The inspector is the report; the graph rarely uses its full width.
+          Starved at ~336px, sentences wrapped into fragments and the next
+          action fell below the fold. */}
+      <div className="grid min-h-0 flex-1 items-stretch grid-cols-[minmax(0,1fr)_minmax(320px,384px)] xl:grid-cols-[minmax(0,1fr)_minmax(380px,29%)]">
         {/* The vantages are IN the graph now, one node each, so the rail that
             listed them again is gone and its width belongs to the path. */}
         <div className="flex min-h-0 min-w-0 flex-col">
@@ -384,18 +387,24 @@ function VerdictBand({
     <div className="flex items-start gap-3 border-b border-theme-border px-5 py-3">
       <div className="min-w-0 flex-1">
         {/* The headline covers the whole resource while the badge follows the
-            selected path. Unlabelled, the two read as one claim. */}
+            selected path + vantage. On one line the two read as a single
+            contradictory sentence ("Reached via API server … not tested … from
+            In-cluster probe"). Each scope gets its own labelled line; which of
+            the two should LEAD is a product call, but they must never blur. */}
         {verdict.scopeLabel && (
           <div className="mb-0.5 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">{verdict.scopeLabel}</div>
         )}
         <div className="flex flex-wrap items-baseline gap-2">
           <span className="text-[14.5px] font-semibold text-theme-text-primary">{verdict.title}</span>
-          <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[verdict.tone]}`}>{verdict.chipText}</span>
-          {verdict.chipScope && (
-            <span className="truncate font-mono text-[10.5px] text-theme-text-tertiary">{verdict.chipScope}</span>
-          )}
+          {!verdict.chipScope && <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[verdict.tone]}`}>{verdict.chipText}</span>}
           <JustTestedNote nonce={runNonce} />
         </div>
+        {verdict.chipScope && (
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <span className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">{verdict.chipScope.toUpperCase()}</span>
+            <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[verdict.tone]}`}>{verdict.chipText}</span>
+          </div>
+        )}
         {verdict.problem && (
           <div
             className="mt-1.5 flex max-w-[92ch] items-start gap-1.5 rounded-md px-2 py-1.5 text-xs leading-relaxed text-pretty"

@@ -232,7 +232,7 @@ function bezierAt(c: Cubic, t: number): { x: number; y: number } {
  */
 export function hopEvidenceFor(
   hop: Hop | undefined,
-  origin: Origin,
+  origin: Pick<Origin, 'id'>,
   runVantage?: string,
   opts: { stale?: boolean; running?: boolean } = {},
 ): { mark: Mark; label: string; title?: string } | undefined {
@@ -401,7 +401,7 @@ export function originProducedEvidence(origin: Origin): boolean {
  * vantage that never ran inherits another's result and a laptop's success is
  * painted as a solid proved line inside the dataplane lane.
  */
-function probesFromOrigin(probes: ProbeResult[], origin: Origin, runVantage?: string): ProbeResult[] {
+function probesFromOrigin(probes: ProbeResult[], origin: Pick<Origin, 'id'>, runVantage?: string): ProbeResult[] {
   return probes.filter((p) => originOf(p, runVantage) === origin.id)
 }
 
@@ -479,11 +479,6 @@ interface BuildOpts {
    *  the comparison between them is visible rather than reconstructed across
    *  clicks. Defaults to just the selected one. */
   origins?: Origin[]
-  /** The workload the reader actually opened, when this trace is really about
-   *  it. A Deployment has no address, so the traced subject is the Service in
-   *  front of it - but the Pods at the end of the path ARE the workload, and
-   *  naming them so puts it in the picture instead of in a banner above it. */
-  servedWorkload?: { kind: string; name: string }
   stale?: boolean
   running?: boolean
 }
@@ -542,7 +537,7 @@ export function originEntryEvidence(
  * mesh entirely. Drawing both the same way would be the central lie this view
  * exists to prevent.
  */
-export function buildGraph({ trace, route, origin, origins, servedWorkload, stale, running }: BuildOpts): GraphModel {
+export function buildGraph({ trace, route, origin, origins, stale, running }: BuildOpts): GraphModel {
   const placed: Placed[] = []
   const originIsControl = origin.lane === 'control'
 
@@ -662,10 +657,11 @@ export function buildGraph({ trace, route, origin, origins, servedWorkload, stal
   const workloadNodeId = 'n:workload'
   // The producer resolves this from the Pods' owner chain, so it is present for
   // ANY subject - a Service traced on its own gets its Deployment too, not just
-  // the workload-scoped tab. servedWorkload stays as a fallback for traces from
-  // a producer that doesn't send it.
-  const tracedWorkload = downstream.find(isPodsHop)?.config?.workload
-  const theWorkload = tracedWorkload ?? (servedWorkload ? { kind: servedWorkload.kind, name: servedWorkload.name } : undefined)
+  // the workload-scoped tab. Its absence is a statement, not a gap: the producer
+  // returns nil when the selected Pods have no single owner, and substituting
+  // the workload the reader happened to open would claim another workload's
+  // Pods for it.
+  const theWorkload = downstream.find(isPodsHop)?.config?.workload
   const showWorkload = !!theWorkload && backends.length === 0
   const colWorkload = showWorkload ? colSubject + 1 : -1
   const colPods = backends.length > 0 ? colBackend + 1 : showWorkload ? colSubject + 2 : colSubject + 1
@@ -829,7 +825,7 @@ export function buildGraph({ trace, route, origin, origins, servedWorkload, stal
         id: workloadNodeId,
         kind: theWorkload.kind.toUpperCase(),
         name: theWorkload.name,
-        ref: tracedWorkload,
+        ref: theWorkload,
         // Deliberately thin. This is a network view; the workload's own health,
         // replicas and rollout state live on its other tabs.
         sub: 'runs these Pods',

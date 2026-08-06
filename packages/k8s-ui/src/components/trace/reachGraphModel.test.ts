@@ -922,18 +922,21 @@ describe('evidence written for a hover is shortened for a pill', () => {
   })
 })
 
-describe('the workload the reader opened appears in the graph', () => {
-  // A Deployment has no address, so the traced subject is the Service in front
-  // of it. The Pods at the end of the path ARE the workload, so naming them so
-  // puts it in the picture - it used to live in a full-width banner above the
-  // graph that spent a row of height on one sentence.
-  const withWorkload = () =>
-    buildGraph({
-      trace: trace([pod('a', true, '10.0.0.1')], [p({})]),
-      route: route(),
-      origin: pick(trace([pod('a', true, '10.0.0.1')], [p({})]), 'incluster'),
-      servedWorkload: { kind: 'Deployment', name: 'external-secrets-webhook' },
-    })
+describe('the workload behind the Service appears in the graph', () => {
+  // The PRODUCER resolves the workload from the Pods' owner chain and sends it
+  // as the pods hop's config.workload. The UI never substitutes the workload
+  // the reader happened to open: a nil from the producer means the Pods have no
+  // single owner, and drawing the opened workload there would claim another
+  // workload's Pods for it.
+  const traceWithWorkload = (name = 'external-secrets-webhook') => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({})])
+    t.downstream![1].config!.workload = { kind: 'Deployment', name, namespace: 'store' }
+    return t
+  }
+  const withWorkload = () => {
+    const t = traceWithWorkload()
+    return buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+  }
 
   it('draws it between the Service and its Pods', () => {
     const g = withWorkload()
@@ -958,7 +961,7 @@ describe('the workload the reader opened appears in the graph', () => {
   // node after the Service must not slide that blame onto the workload, which
   // routes nothing.
   it('keeps a localized break on the edge leaving the Service', () => {
-    const t = trace([pod('a', true, '10.0.0.1')], [p({})])
+    const t = traceWithWorkload('web')
     const broken = route({
       outcome: 'unreachable',
       confidence: 'real',
@@ -968,7 +971,6 @@ describe('the workload the reader opened appears in the graph', () => {
       trace: t,
       route: broken,
       origin: pick(t, 'incluster'),
-      servedWorkload: { kind: 'Deployment', name: 'web' },
     })
     const breaks = g.edges.filter((e) => e.label === 'breaks here')
     expect(breaks).toHaveLength(1)
@@ -1085,11 +1087,11 @@ describe('the selected vantage is a real scope boundary', () => {
   // as a serial chain, and swept in branches the route never touches.
   it('reports the route\'s own chain in traversal order', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [p({})])
+    t.downstream![1].config!.workload = { kind: 'Deployment', name: 'web', namespace: 'store' }
     const g = buildGraph({
       trace: t,
       route: route(),
       origin: pick(t, 'incluster'),
-      servedWorkload: { kind: 'Deployment', name: 'web' },
     })
     const kinds = g.pathNodeIds.map((id) => g.nodes.find((n) => n.id === id)!.kind)
     expect(kinds).toEqual(['SERVICE', 'DEPLOYMENT', 'PODS'])

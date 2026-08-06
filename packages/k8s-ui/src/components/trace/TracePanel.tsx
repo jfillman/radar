@@ -6,10 +6,6 @@ import { Badge } from '../ui/Badge'
 import { StatusDot, type StatusTone } from '../ui/status-tone'
 
 export interface TracePanelProps {
-  /** The workload the reader opened, when this trace is of the Service in front
-   *  of it. Names the Pods at the end of the path so the workload appears in the
-   *  picture rather than in a banner above it. */
-  servedWorkload?: { kind: string; name: string }
   trace: Trace | undefined
   isLoading?: boolean
   error?: Error | null
@@ -268,7 +264,10 @@ export function RequestIndicator({ path, onApplyProbePath, testedAt }: { path?: 
 // ProbeOptionsMenu is the "⋯ more options" overflow next to the run buttons -
 // keeps the verdict bar clean and gives a home for power options. Today its one
 // item is "Customize what we test…", which opens a small form to change the HTTP
-// path the probes request (default "/"). Applies to BOTH tests.
+// path the probes request. A custom path applies to BOTH tests; the "/" default
+// is a sentinel for the in-cluster test, which then probes each route's own
+// declared path (reachability_run.go strips it), while the laptop/proxy probes
+// request "/" literally - so root on an /admin route can't be forced in-cluster.
 function ProbeOptionsMenu({ probePath, onApplyProbePath }: { probePath?: string; onApplyProbePath?: (p: string) => void }) {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -312,7 +311,9 @@ function ProbeOptionsMenu({ probePath, onApplyProbePath }: { probePath?: string;
                 placeholder="/"
                 className="px-2 py-1 rounded border border-theme-border bg-theme-base font-mono text-theme-text-primary"
               />
-              <div className="text-[11px] text-theme-text-tertiary">Method GET. Applies to the reachability + in-cluster test.</div>
+              <div className="text-[11px] text-theme-text-tertiary">
+                Method GET. A custom path applies to the reachability + in-cluster test; leave &ldquo;/&rdquo; and the in-cluster test uses each route&rsquo;s own declared path.
+              </div>
               <div className="flex items-center justify-between pt-0.5">
                 <button type="button" onClick={() => setDraft('/')} className="text-theme-text-tertiary hover:text-theme-text-primary">Reset to /</button>
                 <button type="button" onClick={apply} className="btn-brand px-2.5 py-1 inline-flex items-center gap-1.5"><RefreshCw className="w-3 h-3" /> Apply &amp; run</button>

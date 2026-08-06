@@ -173,8 +173,8 @@ function ReachabilityBoard(props: BoardProps) {
   const [selection, setSelection] = useState<Selection>(undefined)
 
   const model = useMemo(
-    () => buildGraph({ trace, route, origin, origins, servedWorkload: props.servedWorkload, stale, running }),
-    [trace, route, origin, origins, props.servedWorkload, stale, running],
+    () => buildGraph({ trace, route, origin, origins, stale, running }),
+    [trace, route, origin, origins, stale, running],
   )
   const multiPath = scenarios.length > 1
   const sidebar = useMemo(
@@ -654,6 +654,13 @@ function HopSection({
     setOpenOverride(null)
     ref.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [selected])
+  // Becoming the BREAK also clears a manual collapse: the break is the answer
+  // this panel exists to show, and a collapse made while reading a different
+  // scenario must not keep the answer shut when the reader switches to one
+  // where this hop is where the request stopped.
+  useEffect(() => {
+    if (hop.state === 'break') setOpenOverride(null)
+  }, [hop.state])
   return (
     <div
       ref={ref}

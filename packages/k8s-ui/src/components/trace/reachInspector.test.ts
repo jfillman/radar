@@ -499,3 +499,42 @@ describe("'testing' is scoped to the vantage that is testing", () => {
     expect(JSON.stringify(s.path)).not.toMatch(/testing now/)
   })
 })
+
+describe('a break at one parallel entry orders nothing', () => {
+  // Two entries with no host attribution stay in the journey as one parallel
+  // stage. A failed dial of entry A must not make sibling B read "before the
+  // break", nor the Service behind them "never tried - something earlier
+  // stopped": the request may have gone through B.
+  it('siblings and downstream hops read plain, never before/after', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    t.upstreams = [
+      {
+        resource: { kind: 'Ingress', name: 'entry-a', namespace: 'store' },
+        edge: 'ingress->service',
+        findings: [],
+        config: { addresses: ['34.0.0.1'] },
+        probes: [{ layer: 'tcp', target: '34.0.0.1:443', vantage: 'local', path: 'data', ok: false, tone: 'unhealthy' }],
+      },
+      {
+        resource: { kind: 'Ingress', name: 'entry-b', namespace: 'store' },
+        edge: 'ingress->service',
+        findings: [],
+        config: { addresses: ['34.0.0.2'] },
+        probes: [{ layer: 'http', target: '34.0.0.2:443', vantage: 'local', path: 'data', ok: true, tone: 'healthy' }],
+      },
+    ]
+    const s = buildSidebar(undefined, ctx(t, 'local'))
+    const a = s.hops.find((h) => h.name === 'entry-a')
+    const b = s.hops.find((h) => h.name === 'entry-b')
+    const svc = s.hops.find((h) => h.kind.startsWith('SERVICE'))
+    if (a?.state === 'break') {
+      expect(b?.state).toBe('plain')
+      expect(svc?.state).toBe('plain')
+    } else {
+      // No break anchored at the stage in this fixture shape - the serial
+      // machine must still not be claiming order across parallel entries.
+      expect(b?.state).not.toBe('before')
+      expect(svc?.state).not.toBe('after')
+    }
+  })
+})

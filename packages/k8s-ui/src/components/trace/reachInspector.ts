@@ -523,11 +523,18 @@ export function buildSidebar(sel: Selection, ctx: Ctx): Sidebar {
   // breakNodeId anchors to a landing node. Either way one index carries 'break'.
   const anchorId = ctx.breakNodeId ?? ctx.breakAtExitOf
   const breakIdx = anchorId ? chain.findIndex((n) => n.id === anchorId) : -1
+  // A break at ONE of N parallel entries orders nothing: a sibling entry is
+  // not "before" it, and the hops behind the stage were not necessarily
+  // stopped - the request may have gone through a sibling. Serial
+  // before/after semantics apply only when the break is outside the stage.
+  const breakInParallelStage =
+    breakIdx >= 0 && (ctx.entryParallelCount ?? 0) > 1 && entryIds.has(chain[breakIdx]?.id ?? '')
   const stateOf = (i: number, id: string): HopState => {
     // The workload is not a network hop: it is never "reached", never a place
     // a request stops - whatever happens around it.
     if (nonNetwork.has(id)) return 'plain'
     if (breakIdx < 0) return 'plain'
+    if (breakInParallelStage) return i === breakIdx ? 'break' : 'plain'
     if (i < breakIdx) return 'before'
     return i === breakIdx ? 'break' : 'after'
   }

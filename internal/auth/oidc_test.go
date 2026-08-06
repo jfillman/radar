@@ -2,6 +2,9 @@ package auth
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -330,7 +333,7 @@ func TestNewOIDCHandler_FailsWithSelfSignedCert(t *testing.T) {
 		OIDCClientID:     "test",
 		OIDCClientSecret: "secret",
 		OIDCRedirectURL:  "http://localhost/callback",
-	})
+	}, "")
 	if err == nil {
 		t.Fatal("expected TLS error, got nil")
 	}
@@ -350,7 +353,7 @@ func TestNewOIDCHandler_InsecureSkipVerify(t *testing.T) {
 		OIDCClientSecret:       "secret",
 		OIDCRedirectURL:        "http://localhost/callback",
 		OIDCInsecureSkipVerify: true,
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("expected success with InsecureSkipVerify, got: %v", err)
 	}
@@ -385,7 +388,7 @@ func TestNewOIDCHandler_CACert(t *testing.T) {
 		OIDCClientSecret: "secret",
 		OIDCRedirectURL:  "http://localhost/callback",
 		OIDCCACert:       f.Name(),
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("expected success with CA cert, got: %v", err)
 	}
@@ -422,7 +425,7 @@ func TestNewOIDCHandler_CACertTakesPrecedence(t *testing.T) {
 		OIDCRedirectURL:        "http://localhost/callback",
 		OIDCCACert:             f.Name(),
 		OIDCInsecureSkipVerify: true,
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
 	}
@@ -464,7 +467,7 @@ func TestNewOIDCHandler_InternalIssuerUsesInternalEndpoints(t *testing.T) {
 		OIDCClientID:       "radar",
 		OIDCClientSecret:   "secret",
 		OIDCRedirectURL:    "http://localhost/callback",
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("expected success with internal issuer, got: %v", err)
 	}
@@ -532,7 +535,7 @@ func TestNewOIDCHandler_InternalIssuerWithOverridesKeepsDiscoveryMetadata(t *tes
 		OIDCClientID:         "radar",
 		OIDCClientSecret:     "secret",
 		OIDCRedirectURL:      "http://localhost/callback",
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("expected success with internal issuer and overrides, got: %v", err)
 	}
@@ -562,7 +565,7 @@ func TestNewOIDCHandler_ExplicitEndpointsDoNotRequireDiscovery(t *testing.T) {
 		OIDCClientID:         "radar",
 		OIDCClientSecret:     "secret",
 		OIDCRedirectURL:      "http://localhost/callback",
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("expected explicit endpoints to initialize without discovery: %v", err)
 	}
@@ -602,6 +605,325 @@ func TestResolveOIDCProviderMetadata_ExplicitEndpointsSeedSigningAlgorithms(t *t
 	}
 }
 
+func TestNewOIDCHandler_ExplicitEndpointsVerifyES256Token(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issuer := "https://auth.example.com"
+	provider := &oidctest.Server{
+		PublicKeys: []oidctest.PublicKey{{
+			PublicKey: priv.Public(),
+			KeyID:     "es-key",
+			Algorithm: oidc.ES256,
+		}},
+	}
+	provider.SetIssuer(issuer)
+	srv := httptest.NewServer(provider)
+	defer srv.Close()
+
+	// Explicit-endpoint mode (no internalIssuer) skips discovery, so without the
+	// seeded algorithm set go-oidc would narrow the verifier to RS256 and reject
+	// this valid ES256 token.
+	h, err := NewOIDCHandler(context.Background(), Config{
+		Mode:                 "oidc",
+		OIDCIssuer:           issuer,
+		OIDCAuthorizationURL: issuer + "/auth",
+		OIDCTokenURL:         srv.URL + "/token",
+		OIDCJWKSURL:          srv.URL + "/keys",
+		OIDCClientID:         "radar",
+		OIDCClientSecret:     "secret",
+		OIDCRedirectURL:      "http://localhost/callback",
+	}, "")
+	if err != nil {
+		t.Fatalf("expected explicit-endpoint init to succeed: %v", err)
+	}
+
+	claims := fmt.Sprintf(`{
+		"iss": %q,
+		"aud": "radar",
+		"sub": "alice",
+		"exp": %d
+	}`, issuer, time.Now().Add(time.Hour).Unix())
+	rawIDToken := oidctest.SignIDToken(priv, "es-key", oidc.ES256, claims)
+	if _, err := h.verifier.Verify(context.Background(), rawIDToken); err != nil {
+		t.Fatalf("expected ES256 token verification to succeed in explicit-endpoint mode: %v", err)
+	}
+}
+
+// fakeIDP is a controllable OIDC provider for exercising the full callback flow
+// (discovery + JWKS via oidctest.Server, plus a token endpoint we drive).
+type fakeIDP struct {
+	server      *httptest.Server
+	signer      crypto.Signer
+	keyID       string
+	alg         string
+	issuer      string
+	tokenStatus int    // if >= 400, /token returns an error instead of a token
+	omitIDToken bool   // if true, /token omits the id_token from the response
+	claims      string // id_token claims JSON; empty means defaultClaims()
+}
+
+func newFakeIDP(t *testing.T, alg string) *fakeIDP {
+	t.Helper()
+	var signer crypto.Signer
+	var err error
+	if alg == oidc.ES256 {
+		signer, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	} else {
+		signer, err = rsa.GenerateKey(rand.Reader, 2048)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	idp := &fakeIDP{signer: signer, keyID: "test-key", alg: alg}
+	inner := &oidctest.Server{
+		Algorithms: []string{alg},
+		PublicKeys: []oidctest.PublicKey{{PublicKey: signer.Public(), KeyID: idp.keyID, Algorithm: alg}},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if idp.tokenStatus >= 400 {
+			w.WriteHeader(idp.tokenStatus)
+			w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
+		resp := map[string]any{"access_token": "at", "token_type": "Bearer", "expires_in": 3600}
+		if !idp.omitIDToken {
+			claims := idp.claims
+			if claims == "" {
+				claims = idp.defaultClaims()
+			}
+			resp["id_token"] = oidctest.SignIDToken(signer, idp.keyID, alg, claims)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+	mux.Handle("/", inner)
+
+	idp.server = httptest.NewServer(mux)
+	inner.SetIssuer(idp.server.URL)
+	idp.issuer = idp.server.URL
+	t.Cleanup(idp.server.Close)
+	return idp
+}
+
+func (f *fakeIDP) defaultClaims() string {
+	return fmt.Sprintf(`{"iss":%q,"aud":"radar","email":"alice@example.com","sub":"alice","exp":%d,"groups":["dev","ops"]}`,
+		f.issuer, time.Now().Add(time.Hour).Unix())
+}
+
+func (f *fakeIDP) newHandler(t *testing.T, cfg Config) *OIDCHandler {
+	t.Helper()
+	return f.newHandlerUnderBasePath(t, cfg, "")
+}
+
+func (f *fakeIDP) newHandlerUnderBasePath(t *testing.T, cfg Config, basePath string) *OIDCHandler {
+	t.Helper()
+	cfg.Mode = "oidc"
+	cfg.OIDCIssuer = f.issuer
+	if cfg.OIDCClientID == "" {
+		cfg.OIDCClientID = "radar"
+	}
+	cfg.OIDCClientSecret = "secret"
+	cfg.OIDCRedirectURL = "https://radar.example.com/auth/callback"
+	if cfg.OIDCGroupsClaim == "" {
+		cfg.OIDCGroupsClaim = "groups"
+	}
+	if cfg.CookieTTL == 0 {
+		// Without a TTL the session cookie expires at the current second, so a
+		// clock tick between issue and parse would flake the callback asserts.
+		cfg.CookieTTL = time.Hour
+	}
+	h, err := NewOIDCHandler(context.Background(), cfg, basePath)
+	if err != nil {
+		t.Fatalf("NewOIDCHandler: %v", err)
+	}
+	return h
+}
+
+func runCallback(h *OIDCHandler) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("GET", "/auth/callback?state=s&code=c", nil)
+	r.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: "s"})
+	w := httptest.NewRecorder()
+	h.HandleCallback(w, r)
+	return w
+}
+
+func sessionFrom(t *testing.T, h *OIDCHandler, w *httptest.ResponseRecorder) *Session {
+	t.Helper()
+	r := httptest.NewRequest("GET", "/", nil)
+	for _, c := range w.Result().Cookies() {
+		r.AddCookie(c)
+	}
+	s := ParseSessionCookie(r, h.cfg.Secret)
+	if s == nil {
+		t.Fatal("no session parsed from response cookies")
+	}
+	return s
+}
+
+func TestHandleCallback_Matrix(t *testing.T) {
+	future := time.Now().Add(time.Hour).Unix()
+	past := time.Now().Add(-time.Hour).Unix()
+
+	tests := []struct {
+		name       string
+		alg        string
+		cfg        Config
+		setup      func(f *fakeIDP)
+		wantStatus int
+		wantUser   string
+		wantGroups []string
+	}{
+		{name: "success RS256", alg: oidc.RS256, wantStatus: http.StatusFound, wantUser: "alice@example.com", wantGroups: []string{"dev", "ops"}},
+		{name: "success ES256", alg: oidc.ES256, wantStatus: http.StatusFound, wantUser: "alice@example.com"},
+		{name: "token endpoint error", alg: oidc.RS256, setup: func(f *fakeIDP) { f.tokenStatus = 500 }, wantStatus: http.StatusInternalServerError},
+		{name: "no id_token in response", alg: oidc.RS256, setup: func(f *fakeIDP) { f.omitIDToken = true }, wantStatus: http.StatusInternalServerError},
+		{name: "wrong issuer", alg: oidc.RS256, setup: func(f *fakeIDP) {
+			f.claims = fmt.Sprintf(`{"iss":"https://evil.example.com","aud":"radar","email":"a@b.com","exp":%d}`, future)
+		}, wantStatus: http.StatusUnauthorized},
+		{name: "wrong audience", alg: oidc.RS256, setup: func(f *fakeIDP) {
+			f.claims = fmt.Sprintf(`{"iss":%q,"aud":"someone-else","email":"a@b.com","exp":%d}`, f.issuer, future)
+		}, wantStatus: http.StatusUnauthorized},
+		{name: "expired token", alg: oidc.RS256, setup: func(f *fakeIDP) {
+			f.claims = fmt.Sprintf(`{"iss":%q,"aud":"radar","email":"a@b.com","exp":%d}`, f.issuer, past)
+		}, wantStatus: http.StatusUnauthorized},
+		{name: "no username claim", alg: oidc.RS256, setup: func(f *fakeIDP) {
+			f.claims = fmt.Sprintf(`{"iss":%q,"aud":"radar","exp":%d}`, f.issuer, future)
+		}, wantStatus: http.StatusBadRequest},
+		{name: "sub fallback when no email", alg: oidc.RS256, setup: func(f *fakeIDP) {
+			f.claims = fmt.Sprintf(`{"iss":%q,"aud":"radar","sub":"bob","exp":%d}`, f.issuer, future)
+		}, wantStatus: http.StatusFound, wantUser: "bob"},
+		{name: "groups as single string", alg: oidc.RS256, setup: func(f *fakeIDP) {
+			f.claims = fmt.Sprintf(`{"iss":%q,"aud":"radar","email":"a@b.com","exp":%d,"groups":"solo"}`, f.issuer, future)
+		}, wantStatus: http.StatusFound, wantUser: "a@b.com", wantGroups: []string{"solo"}},
+		{name: "aud as array containing client id (Keycloak/Azure style)", alg: oidc.RS256, setup: func(f *fakeIDP) {
+			f.claims = fmt.Sprintf(`{"iss":%q,"aud":["radar","account"],"azp":"radar","email":"a@b.com","exp":%d}`, f.issuer, future)
+		}, wantStatus: http.StatusFound, wantUser: "a@b.com"},
+		{name: "aud array without client id", alg: oidc.RS256, setup: func(f *fakeIDP) {
+			f.claims = fmt.Sprintf(`{"iss":%q,"aud":["account","other"],"email":"a@b.com","exp":%d}`, f.issuer, future)
+		}, wantStatus: http.StatusUnauthorized},
+		{name: "username and groups prefixes applied", alg: oidc.RS256, cfg: Config{OIDCUsernamePrefix: "oidc:", OIDCGroupsPrefix: "oidc:"},
+			wantStatus: http.StatusFound, wantUser: "oidc:alice@example.com", wantGroups: []string{"oidc:dev", "oidc:ops"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			idp := newFakeIDP(t, tc.alg)
+			if tc.setup != nil {
+				tc.setup(idp)
+			}
+			h := idp.newHandler(t, tc.cfg)
+			w := runCallback(h)
+
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body: %s)", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if tc.wantStatus == http.StatusFound && w.Header().Get("Location") != "/" {
+				t.Errorf("Location = %q, want /", w.Header().Get("Location"))
+			}
+			if tc.wantUser != "" {
+				s := sessionFrom(t, h, w)
+				if s.User.Username != tc.wantUser {
+					t.Errorf("username = %q, want %q", s.User.Username, tc.wantUser)
+				}
+				if tc.wantGroups != nil && !equalStringSlices(s.User.Groups, tc.wantGroups) {
+					t.Errorf("groups = %v, want %v", s.User.Groups, tc.wantGroups)
+				}
+			}
+		})
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestUnreachableInternalEndpoints(t *testing.T) {
+	cfg := Config{
+		OIDCIssuer:         "https://sso.example.com",
+		OIDCInternalIssuer: "http://sso.internal.svc:5556",
+	}
+	// token endpoint is on a different host (rewrite could not derive it) -> flagged;
+	// jwks/userinfo are on the internal host -> reachable.
+	md := oidc.ProviderConfig{
+		TokenURL:    "https://token.example.com/token",
+		JWKSURL:     "http://sso.internal.svc:5556/keys",
+		UserInfoURL: "http://sso.internal.svc:5556/userinfo",
+	}
+	if got := unreachableInternalEndpoints(cfg, md); !equalStringSlices(got, []string{"token"}) {
+		t.Errorf("got %v, want [token]", got)
+	}
+
+	// An explicit override is trusted as configured -> not flagged.
+	withOverride := cfg
+	withOverride.OIDCTokenURL = "https://token.example.com/token"
+	if got := unreachableInternalEndpoints(withOverride, md); len(got) != 0 {
+		t.Errorf("explicit override should be trusted, got %v", got)
+	}
+
+	// No internal issuer -> nothing to check.
+	if got := unreachableInternalEndpoints(Config{OIDCIssuer: "https://sso.example.com"}, md); got != nil {
+		t.Errorf("no internal issuer should return nil, got %v", got)
+	}
+}
+
+func TestResolveOIDCProviderMetadata_IssuerMismatchRejected(t *testing.T) {
+	idp := newFakeIDP(t, oidc.RS256) // discovery reports issuer == idp.issuer
+
+	// Discovery is fetched from the internal issuer but reports idp.issuer, which
+	// must equal the configured (public) issuer. Here it does not.
+	_, err := resolveOIDCProviderMetadata(context.Background(), Config{
+		OIDCIssuer:         "https://configured-but-wrong.example.com",
+		OIDCInternalIssuer: idp.issuer,
+		OIDCClientID:       "radar",
+	})
+	if err == nil {
+		t.Fatal("expected issuer-mismatch to be rejected")
+	}
+	if !strings.Contains(err.Error(), "did not match") {
+		t.Errorf("error = %v, want issuer-mismatch", err)
+	}
+}
+
+func TestValidateOIDCProviderMetadata(t *testing.T) {
+	valid := oidc.ProviderConfig{
+		AuthURL:  "https://idp.example.com/auth",
+		TokenURL: "https://idp.example.com/token",
+		JWKSURL:  "https://idp.example.com/keys",
+	}
+	if err := validateOIDCProviderMetadata(valid); err != nil {
+		t.Fatalf("valid metadata should pass: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		mut  func(*oidc.ProviderConfig)
+	}{
+		{"missing authorization endpoint", func(m *oidc.ProviderConfig) { m.AuthURL = "" }},
+		{"missing token endpoint", func(m *oidc.ProviderConfig) { m.TokenURL = "" }},
+		{"missing jwks endpoint", func(m *oidc.ProviderConfig) { m.JWKSURL = "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := valid
+			tc.mut(&m)
+			if err := validateOIDCProviderMetadata(m); err == nil {
+				t.Errorf("expected error for %s", tc.name)
+			}
+		})
+	}
+}
+
 func TestNewOIDCHandler_InvalidCACertPath(t *testing.T) {
 	_, err := NewOIDCHandler(context.Background(), Config{
 		Mode:             "oidc",
@@ -610,7 +932,7 @@ func TestNewOIDCHandler_InvalidCACertPath(t *testing.T) {
 		OIDCClientSecret: "secret",
 		OIDCRedirectURL:  "http://localhost/callback",
 		OIDCCACert:       "/nonexistent/ca.pem",
-	})
+	}, "")
 	if err == nil {
 		t.Fatal("expected error for invalid CA cert path")
 	}
@@ -635,7 +957,7 @@ func TestNewOIDCHandler_InvalidCACertContent(t *testing.T) {
 		OIDCClientSecret: "secret",
 		OIDCRedirectURL:  "http://localhost/callback",
 		OIDCCACert:       f.Name(),
-	})
+	}, "")
 	if err == nil {
 		t.Fatal("expected error for invalid CA cert content")
 	}
@@ -713,3 +1035,23 @@ func TestBackchannelLogout_CacheControlAlwaysSet(t *testing.T) {
 
 // Note: testing invalid/valid JWT verification requires a real OIDC provider
 // with JWKS. The pre-verification tests above cover all paths before Verify().
+
+// A completed login must land inside the app. Under a no-strip subpath ingress
+// only {basePath}/* is routed to Radar, so redirecting to a bare "/" would drop
+// the user onto whatever else owns the origin root right after authenticating.
+func TestHandleCallback_RedirectsUnderBasePath(t *testing.T) {
+	for _, basePath := range []string{"", "/radar", "/tools/radar"} {
+		t.Run("basePath="+basePath, func(t *testing.T) {
+			idp := newFakeIDP(t, oidc.RS256)
+			h := idp.newHandlerUnderBasePath(t, Config{}, basePath)
+			w := runCallback(h)
+
+			if w.Code != http.StatusFound {
+				t.Fatalf("status = %d, want 302 (body: %s)", w.Code, w.Body.String())
+			}
+			if got, want := w.Header().Get("Location"), basePath+"/"; got != want {
+				t.Errorf("Location = %q, want %q", got, want)
+			}
+		})
+	}
+}

@@ -1618,6 +1618,190 @@ export function useCapabilities() {
   });
 }
 
+// ============================================================================
+// In-product Cloud Connect (driver lane)
+// ============================================================================
+
+export interface CloudInstallRecoveryGuidance {
+  summary: string
+  lines?: string[]
+  inspect?: string[]
+  clusterUrl?: string
+}
+
+export interface CloudInstallPlanSummary {
+  mode: 'fresh' | 'adopt'
+  contextName: string
+  namespace: string
+  release: string
+  defaultClusterName: string
+  targetChartVersion: string
+  targetAppVersion: string
+  currentChartVersion?: string
+  currentRevision?: number
+  currentImageTag?: string
+  preservedImageRepository?: string
+  uncertainty?: string
+  advisories?: string[]
+  sharedListener?: boolean
+}
+
+export interface CloudInstallConnected {
+  clusterId: string
+  clusterUrl: string
+  trackCommand: string
+  rollback?: CloudInstallRecoveryGuidance
+}
+
+export interface CloudInstallFailure {
+  kind: string
+  message: string
+  guidance?: CloudInstallRecoveryGuidance
+  retrySafe: boolean
+}
+
+export interface CloudInstallBlocked {
+  reason: 'gitops' | 'preflight' | 'unsupported'
+  message: string
+  blocking?: string[]
+}
+
+export type CloudInstallState =
+  | 'idle'
+  | 'preparing'
+  | 'ready'
+  | 'starting'
+  | 'awaiting_approval'
+  | 'provisioning'
+  | 'waiting_tunnel'
+  | 'connected'
+  | 'failed'
+  | 'blocked'
+
+export interface CloudInstallStatus {
+  flowId?: string
+  state: CloudInstallState
+  plan?: CloudInstallPlanSummary
+  clusterName?: string
+  connectUrl?: string
+  connected?: CloudInstallConnected
+  failure?: CloudInstallFailure
+  blocked?: CloudInstallBlocked
+}
+
+export const cloudInstallActive = (state: CloudInstallState | undefined): boolean =>
+  state === 'preparing' ||
+  state === 'ready' ||
+  state === 'starting' ||
+  state === 'awaiting_approval' ||
+  state === 'provisioning' ||
+  state === 'waiting_tunnel';
+
+// Poll while a flow is live so progress renders in near-real-time; the flow
+// itself is server-owned, so this hook merely observes (and re-attaches after
+// a page reload). gcTime 0: never cache connect-flow payloads.
+// What the Hub says about connecting to it. Fetched from the Hub itself, not
+// from Radar's API, so the dialog states current terms instead of whatever was
+// compiled into this binary months ago — a stale free-tier claim is a promise
+// Radar can't keep. Every field is optional and falls back per-field, so a Hub
+// that doesn't serve this (self-hosted, older, offline) renders exactly what
+// Radar renders today.
+export interface CloudConnectInfo {
+  assurances?: string[]
+  notice?: string
+}
+
+// Deliberately a bare cross-origin GET: no credentials, no identifiers, no
+// params. The Hub learns only what any HTTP request reveals.
+export function useCloudConnectInfo(apiUrl: string | undefined, enabled: boolean) {
+  return useQuery<CloudConnectInfo>({
+    queryKey: ["cloud-connect-info", apiUrl],
+    queryFn: async () => {
+      const res = await fetch(`${apiUrl}/api/connect/info`, {
+        credentials: "omit",
+        signal: AbortSignal.timeout(4000),
+      });
+      if (!res.ok) throw new Error(`connect info: ${res.status}`);
+      return res.json();
+    },
+    // No apiUrl means the server decided this deployment must not fetch.
+    enabled: enabled && !!apiUrl,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+}
+
+export function useCloudInstallStatus(enabled: boolean) {
+  const queryClient = useQueryClient()
+  const query = useQuery<CloudInstallStatus>({
+    queryKey: ['cloud-install-status'],
+    queryFn: () => fetchJSON('/cloud/install/status'),
+    enabled,
+    gcTime: 0,
+    staleTime: 0,
+    refetchInterval: (q) => (cloudInstallActive(q.state.data?.state) ? 1500 : false),
+  })
+  return {
+    ...query,
+    invalidate: () => queryClient.invalidateQueries({ queryKey: ['cloud-install-status'] }),
+  }
+}
+
+// In-cluster Radar describing its own installation, so the modal can route to
+// the right handoff instead of a generic signup link.
+export interface CloudConnectSelf {
+  ownership: 'helm' | 'gitops' | 'ambiguous' | 'unknown'
+  namespace?: string
+  release?: string
+  deploymentName?: string
+  chart?: string
+  controller?: string
+  wizardUrl?: string
+}
+
+export function useCloudConnectSelf(enabled: boolean) {
+  return useQuery<CloudConnectSelf>({
+    queryKey: ['cloud-connect-self'],
+    queryFn: () => fetchJSON('/cloud/connect/self'),
+    enabled,
+    staleTime: 60000,
+  })
+}
+
+export function prepareCloudInstall(): Promise<CloudInstallStatus> {
+  return fetchJSON('/cloud/install/prepare', { method: 'POST' })
+}
+
+export function startCloudInstall(body: {
+  flowId: string
+  clusterName: string
+  acceptAdoption?: boolean
+  acknowledgeIncompleteDiscovery?: boolean
+  acknowledgeSharedListener?: boolean
+}): Promise<CloudInstallStatus> {
+  return fetchJSON('/cloud/install/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function cancelCloudInstall(flowId: string): Promise<CloudInstallStatus> {
+  return fetchJSON('/cloud/install/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flowId }),
+  })
+}
+
+export function dismissCloudInstall(flowId: string): Promise<CloudInstallStatus> {
+  return fetchJSON('/cloud/install/dismiss', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flowId }),
+  })
+}
+
 // Namespace-scoped capabilities. Users with namespace-scoped RoleBindings may
 // have these permissions in specific namespaces.
 export function useNamespaceCapabilities(

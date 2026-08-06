@@ -27,6 +27,9 @@ import (
 	"github.com/skyhook-io/radar/internal/reachability"
 	"github.com/skyhook-io/radar/internal/server"
 	"golang.org/x/net/http/httpguts"
+	authv1 "k8s.io/api/authorization/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // Register all auth provider plugins (OIDC, GCP, Azure, etc.)
 	"k8s.io/klog/v2"
 )
@@ -85,6 +88,7 @@ func main() {
 	namespaces := flag.String("namespaces", fileCfg.NamespacesFlag(), "Initial namespace filters as a comma-separated list (e.g. ns1,ns2,ns3). Use this when you can list resources in specific namespaces but cannot list namespaces cluster-wide.")
 	port := flag.Int("port", fileCfg.PortOr(9280), "Server port")
 	listenAddress := flag.String("listen-address", server.DefaultListenAddress, "HTTP listen address: 127.0.0.1 or localhost for local-only access; 0.0.0.0 for remote/shared access")
+	basePath := flag.String("base-path", "", "URL path prefix to serve Radar under, e.g. /radar (empty = root). Use when an ingress forwards a subpath without stripping it.")
 	noBrowser := flag.Bool("no-browser", fileCfg.NoBrowser, "Don't auto-open browser")
 	browser := flag.String("browser", fileCfg.Browser, "Browser to use when opening the UI (default: OS default browser; macOS app names supported)")
 	devMode := flag.Bool("dev", false, "Development mode (serve frontend from filesystem)")
@@ -229,6 +233,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid --listen-address %q: %v", *listenAddress, err)
 	}
+	normalizedBasePath, err := server.NormalizeBasePath(*basePath)
+	if err != nil {
+		log.Fatalf("Invalid --base-path %q: %v", *basePath, err)
+	}
+	// Radar Hub forwards root-relative paths over the tunnel and the ordinary
+	// listener is health-only at the literal /api/health, so a prefixed router
+	// would 404 both. Fail loudly instead of coming up broken. Both Cloud
+	// signals are checked because the chart sets them together but they are
+	// independent inputs, and either one alone is enough to break the prefix.
+	if normalizedBasePath != "" && (*cloudURL != "" || cloud.Mode()) {
+		log.Fatalf("--base-path is not supported in Radar Cloud mode (--cloud-url / RADAR_CLOUD_MODE): Radar Cloud owns the URL path")
+	}
 	timelineMaxSizeBytes, err := config.ParseByteSize(*timelineMaxSize)
 	if err != nil {
 		log.Fatalf("Invalid --timeline-max-size %q: %v", *timelineMaxSize, err)
@@ -275,6 +291,15 @@ func main() {
 		mcpEnabled = true
 	}
 
+	// Hub origin overrides for self-hosted control planes. When only the API
+	// origin is set, the frontend origin defaults to the same host — the
+	// self-hosted stack serves web + API from one origin; the hosted pair
+	// (api./app.radarhq.io) stays the default otherwise.
+	hubAPIURL, hubAppURL, err := cloud.ResolveHubOriginsFromEnv()
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
 	cfg := app.AppConfig{
 		Kubeconfig:               *kubeconfig,
 		KubeconfigDirs:           app.ParseKubeconfigDirs(*kubeconfigDir),
@@ -283,6 +308,7 @@ func main() {
 		Port:                     *port,
 		ListenAddress:            normalizedListenAddress,
 		ShowRemoteAccessHint:     true,
+		BasePath:                 normalizedBasePath,
 		NoBrowser:                *noBrowser,
 		Browser:                  *browser,
 		DevMode:                  *devMode,
@@ -308,6 +334,9 @@ func main() {
 		AIHistory:                *aiHistory,
 		AIHistoryDBPath:          fileCfg.AIHistoryDBPath,
 		Version:                  version,
+		HubAPIURL:                hubAPIURL,
+		HubAppURL:                hubAppURL,
+		CloudTunnelConfigured:    *cloudURL != "",
 		AuthConfig: auth.Config{
 			Mode:                      *authMode,
 			Secret:                    *authSecret,
@@ -405,7 +434,10 @@ func main() {
 
 	// Open browser — server is confirmed ready to accept connections
 	if !cfg.NoBrowser {
-		targetURL := fmt.Sprintf("http://localhost:%d", cfg.Port)
+		targetURL := fmt.Sprintf("http://localhost:%d%s", cfg.Port, cfg.BasePath)
+		if cfg.BasePath != "" {
+			targetURL += "/"
+		}
 		if len(cfg.Namespaces) > 0 {
 			targetURL += "?namespaces=" + neturl.QueryEscape(strings.Join(cfg.Namespaces, ","))
 		} else if cfg.Namespace != "" {
@@ -443,16 +475,20 @@ func main() {
 			namespace := os.Getenv("MY_POD_NAMESPACE")
 			deploymentName := os.Getenv("MY_DEPLOYMENT_NAME")
 			runErr := cloud.Run(rootCtx, cloud.Config{
-				URL:          *cloudURL,
-				Token:        *cloudToken,
-				ClusterID:    *cloudClusterName,
-				ClusterName:  *cloudClusterName,
+				URL:                *cloudURL,
+				Token:              *cloudToken,
+				ClusterID:          *cloudClusterName,
+				ClusterName:        *cloudClusterName,
 				Namespace:          namespace,
 				APIServerURL:       apiServerURL,
 				InsecureSkipVerify: *cloudInsecureSkipVerify,
-				// The chart sets both env vars only when rbac.selfUpgrade is
-				// enabled. Match handleSelfUpgrade's configuration gate exactly.
-				SelfUpgradeAvailable: namespace != "" && deploymentName != "",
+				// Ask the apiserver whether this ServiceAccount may actually
+				// patch its own Deployment. Env presence is NOT the signal:
+				// identity ships on every install for read-only
+				// self-description, and a chart-set marker would go stale on
+				// exactly the path that matters — Hub's self-upgrade patches
+				// only the image, leaving an older pod template in place.
+				SelfUpgradeAvailable: func() bool { return canSelfUpgrade(rootCtx, k8s.GetClient(), namespace, deploymentName) },
 				Handler:              srv.Handler(),
 			})
 			if runErr != nil && !errors.Is(runErr, context.Canceled) {
@@ -500,7 +536,7 @@ func startServer(srv *server.Server, startupStart time.Time) (context.Context, c
 	k8s.LogTiming(" Server listening: %v (since start)", time.Since(startupStart))
 
 	// Write port file so MCP clients can discover the running server
-	app.WriteMCPPortFile(srv.ActualPort())
+	app.WriteMCPPortFile(srv.ActualPort(), srv.BasePath())
 
 	return rootCtx, rootCancel
 }
@@ -665,4 +701,46 @@ func (h *headerFromEnvFlag) Set(raw string) error {
 	}
 	h.m[key] = envName
 	return nil
+}
+
+// canSelfUpgrade reports whether Radar's ServiceAccount may patch its own
+// Deployment, which is what rbac.selfUpgrade's Role grants. Advertising this
+// to Hub from anything other than the apiserver's own answer produces an
+// upgrade button that 403s: a chart-set env marker is invisible to an
+// image-only self-upgrade, and identity env vars ship unconditionally.
+func canSelfUpgrade(ctx context.Context, client kubernetes.Interface, namespace, deploymentName string) bool {
+	if namespace == "" || deploymentName == "" {
+		return false
+	}
+	if client == nil {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	// Every operation the endpoint performs, not just the mutation: it gets the
+	// Deployment, reads the Helm release manifest out of the storage Secrets,
+	// then patches. A stock chart grants these together, but a BYO-RBAC install
+	// can pass a patch-only probe and still fail mid-upgrade.
+	//
+	// The Deployment reviews MUST name it: rbac.selfUpgrade's Role is scoped
+	// with resourceNames, so an unnamed "can I patch deployments here" review
+	// answers no even where self-upgrade is correctly enabled.
+	for _, probe := range []authv1.ResourceAttributes{
+		{Namespace: namespace, Group: "apps", Resource: "deployments", Name: deploymentName, Verb: "get"},
+		{Namespace: namespace, Group: "apps", Resource: "deployments", Name: deploymentName, Verb: "patch"},
+		{Namespace: namespace, Resource: "secrets", Verb: "list"},
+	} {
+		review := &authv1.SelfSubjectAccessReview{
+			Spec: authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &probe},
+		}
+		result, err := client.AuthorizationV1().SelfSubjectAccessReviews().Create(probeCtx, review, metav1.CreateOptions{})
+		if err != nil {
+			log.Printf("[cloud] self-upgrade capability probe failed, advertising unavailable: %v", err)
+			return false
+		}
+		if !result.Status.Allowed {
+			return false
+		}
+	}
+	return true
 }

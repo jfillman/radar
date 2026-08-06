@@ -92,6 +92,21 @@ export interface Capabilities {
   resources?: ResourcePermissions // Per-resource-type permissions
   authEnabled?: boolean   // Auth is enabled on the backend
   username?: string       // Authenticated user's username (when auth enabled)
+  // Which Cloud-connect lane this deployment gets. Optional on the wire:
+  // older backends don't advertise it — consumers fall back to wizard links.
+  cloudConnect?: CloudConnectCapability
+}
+
+// CloudConnectCapability picks the Cloud funnel's connect lane: 'driver'
+// means the in-product connect flow can run on this server (local, no auth,
+// no existing tunnel); 'wizard' routes to the Hub's connect wizard at appUrl.
+export interface CloudConnectCapability {
+  lane: 'driver' | 'wizard'
+  appUrl: string
+  // Hub API origin the connect dialog reads its live copy from. Absent means
+  // the server decided this deployment must not fetch — consumers render their
+  // compiled-in copy instead.
+  apiUrl?: string
 }
 
 export interface FeatureCapabilities {

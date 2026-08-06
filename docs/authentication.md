@@ -148,6 +148,8 @@ When an admin disables a user at the IdP level (e.g., disables an Okta account),
 
 To enable, set `--auth-oidc-backchannel-logout` (or `auth.oidc.backchannelLogout: true` in Helm), then register `https://radar.example.com/auth/backchannel-logout` as the Back-Channel Logout URI in your IdP.
 
+If Radar is served under a base path, the route sits at `{basePath}/auth/backchannel-logout` — register that. An unprefixed URI is not routed to Radar, and the IdP's POST is silently lost: disabling a user leaves their Radar session live until the cookie expires, which is the exact failure this feature exists to prevent.
+
 ```yaml
 auth:
   mode: oidc
@@ -212,7 +214,7 @@ Under cloud-mode (`RADAR_CLOUD_MODE=true`, set automatically by the chart when `
 
 - Forces `--auth-mode=proxy` with pinned `X-Forwarded-User` / `X-Forwarded-Groups` headers. Radar accepts those headers only on requests marked in-process by its authenticated Cloud tunnel; the ordinary pod TCP listener cannot assert Cloud identity.
 - Ships three default ClusterRoleBindings mapping Cloud's `radar:owner` / `radar:member` / `radar:viewer` groups (canonical; the legacy `cloud:*` equivalents are still emitted and bound during the deprecation window) to the standard K8s `admin` / `edit` / `view` ClusterRoles. Configurable via `cloud.defaultRbac.*` in `values.yaml`.
-- Adds a **cluster-read add-on** (`cloud.defaultRbac.clusterScopedRead.{viewer,member,owner}`, each default on) granting `get/list/watch` on the cluster-scoped infra the built-in `view`/`edit`/`admin` roles exclude — Nodes, PersistentVolumes, StorageClasses, IngressClasses, PriorityClasses, RuntimeClasses, CRDs, and admission webhook configurations. When the matching collection is enabled, it also grants APIServices, PrometheusRules, Karpenter kinds, and node metrics. It does not grant Secrets, RBAC objects, API-server metrics, or kubelet proxy access. It's an independent axis per tier: set a tier `false` to make it namespaced-only (e.g. `clusterScopedRead.viewer: false`). Owner node cordon/drain is a separate cluster-scoped *write*, off by default (`cloud.defaultRbac.nodeOps`).
+- Adds a **cluster-read add-on** (`cloud.defaultRbac.clusterScopedRead.{viewer,member,owner}`, each default on) granting `get/list/watch` on infrastructure the built-in `view`/`edit`/`admin` roles exclude — Nodes, PersistentVolumes, StorageClasses, IngressClasses, PriorityClasses, RuntimeClasses, CRDs, and admission webhook configurations — plus list-only Upgrade impact source evidence for CSIStorageCapacities, legacy PodSecurityPolicies, and API flow-control configuration. When the matching collection is enabled, it also grants APIServices, PrometheusRules, Karpenter kinds, and node metrics. It does not grant Secrets, RBAC objects, API-server metrics, or kubelet proxy access. It's an independent axis per tier: set a tier `false` to make it namespaced-only (e.g. `clusterScopedRead.viewer: false`). Owner node cordon/drain is a separate cluster-scoped *write*, off by default (`cloud.defaultRbac.nodeOps`).
 - Restricts the ordinary pod/ClusterIP TCP listener to `/api/health`; the full handler is served only over yamux streams from the outbound Cloud tunnel. Cloud mode also omits `/debug/pprof/*` and narrows auth exemptions to health only.
 
 <a id="cloud-mode-helm-bindings"></a>

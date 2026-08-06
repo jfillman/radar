@@ -34,6 +34,12 @@ type OIDCHandler struct {
 	httpClient         *http.Client          // custom TLS client for OIDC provider calls; nil = default
 	revoker            *MemoryRevoker        // session revocation store; nil = backchannel logout disabled
 
+	// basePath is the URL prefix Radar serves under ("" at the root). Where Radar
+	// is mounted is the server's concern, not part of the shared auth config, but
+	// the post-login redirect has to land inside the app: under a no-strip subpath
+	// ingress only {basePath}/* is routed here, so "/" would leave the app.
+	basePath string
+
 	// Discovery: backchannel logout support
 	backchannelLogoutSupported        bool
 	backchannelLogoutSessionSupported bool
@@ -63,9 +69,11 @@ var supportedOIDCSigningAlgorithms = map[string]bool{
 	oidc.EdDSA: true,
 }
 
-// NewOIDCHandler creates a new OIDC handler. Returns an error if the provider
-// cannot be discovered (network error, invalid issuer URL, etc.).
-func NewOIDCHandler(ctx context.Context, cfg Config) (*OIDCHandler, error) {
+// NewOIDCHandler creates a new OIDC handler. basePath is the URL prefix Radar is
+// served under ("" at the root), which the post-login redirect must target.
+// Returns an error if the provider cannot be discovered (network error, invalid
+// issuer URL, etc.).
+func NewOIDCHandler(ctx context.Context, cfg Config, basePath string) (*OIDCHandler, error) {
 	// Build a custom HTTP client for OIDC provider TLS when configured
 	var httpClient *http.Client
 	if cfg.OIDCCACert != "" {
@@ -122,6 +130,7 @@ func NewOIDCHandler(ctx context.Context, cfg Config) (*OIDCHandler, error) {
 
 	h := &OIDCHandler{
 		cfg:                               cfg,
+		basePath:                          basePath,
 		provider:                          provider,
 		oauth:                             oauthCfg,
 		verifier:                          verifier,
@@ -200,10 +209,48 @@ func resolveOIDCProviderMetadata(ctx context.Context, cfg Config) (*oidcProvider
 	metadata.ProviderConfig.IssuerURL = cfg.OIDCIssuer
 	metadata.ProviderConfig.Algorithms = filterOIDCSigningAlgorithms(metadata.ProviderConfig.Algorithms)
 	applyOIDCEndpointConfig(&metadata, cfg)
+	if stuck := unreachableInternalEndpoints(cfg, metadata.ProviderConfig); len(stuck) > 0 {
+		log.Printf("[oidc] WARNING: these server-side endpoints were not rewritten to the internal issuer host: %s. If the Radar pod cannot reach these hosts, set the matching --auth-oidc-<endpoint>-url override.", strings.Join(stuck, ", "))
+	}
 	if err := validateOIDCProviderMetadata(metadata.ProviderConfig); err != nil {
 		return nil, err
 	}
 	return &metadata, nil
+}
+
+// unreachableInternalEndpoints reports server-side endpoints (token, JWKS,
+// userinfo) that resolve to a host other than the internal issuer's when an
+// internal issuer is configured. Those endpoints were not derivable from the
+// public issuer base (the IdP serves them elsewhere), so the rewrite left them
+// pointing at a host the pod may not reach. Endpoints with an explicit override
+// are trusted as configured and skipped.
+func unreachableInternalEndpoints(cfg Config, metadata oidc.ProviderConfig) []string {
+	if cfg.OIDCInternalIssuer == "" {
+		return nil
+	}
+	internalHost := oidcURLHost(cfg.OIDCInternalIssuer)
+	if internalHost == "" {
+		return nil
+	}
+	var stuck []string
+	if cfg.OIDCTokenURL == "" && metadata.TokenURL != "" && oidcURLHost(metadata.TokenURL) != internalHost {
+		stuck = append(stuck, "token")
+	}
+	if cfg.OIDCJWKSURL == "" && metadata.JWKSURL != "" && oidcURLHost(metadata.JWKSURL) != internalHost {
+		stuck = append(stuck, "jwks")
+	}
+	if cfg.OIDCUserInfoURL == "" && metadata.UserInfoURL != "" && oidcURLHost(metadata.UserInfoURL) != internalHost {
+		stuck = append(stuck, "userinfo")
+	}
+	return stuck
+}
+
+func oidcURLHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 func hasExplicitRequiredOIDCEndpoints(cfg Config) bool {
@@ -501,8 +548,10 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[oidc] User %s authenticated (groups: %v)", username, groups)
 
-	// Redirect to app
-	http.Redirect(w, r, "/", http.StatusFound)
+	// Redirect to the app root under its base path. A bare "/" would leave the
+	// user outside Radar on a subpath deployment, where the ingress routes only
+	// the prefix to this service.
+	http.Redirect(w, r, h.basePath+"/", http.StatusFound)
 }
 
 // sessionIssued reports whether a CreateSessionCookie result actually

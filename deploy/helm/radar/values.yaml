@@ -198,6 +198,12 @@ service:
   type: ClusterIP
   port: 9280
 
+# URL path prefix that Radar itself serves under, e.g. /radar. Set this when
+# your ingress forwards a subpath through to the service without stripping it.
+# Leave empty for root serving or for ingresses that rewrite /radar -> /.
+# Cannot be combined with cloud.enabled — Radar Cloud owns the URL path.
+basePath: ""
+
 ingress:
   enabled: false
   className: ""
@@ -394,9 +400,12 @@ cloud:
     ownerClusterRole: admin
     memberClusterRole: edit
     viewerClusterRole: view
-    # Grant cluster-scoped READ (Nodes, PVs, StorageClasses, IngressClasses,
-    # PriorityClasses, RuntimeClasses, CRDs, and admission webhooks) on top of
-    # the built-in view/edit/admin roles, which exclude cluster-scoped resources.
+    # Grant cluster-wide infrastructure read (Nodes, PVs, StorageClasses,
+    # IngressClasses, PriorityClasses, RuntimeClasses, CRDs, and admission
+    # webhooks) plus list-only Upgrade impact source evidence
+    # (CSIStorageCapacities, legacy PodSecurityPolicies, and API flow-control
+    # config) on top of the built-in view/edit/admin roles, which don't cover
+    # all of them.
     # When their matching collection is enabled, the add-on also grants read on
     # APIServices, PrometheusRules, Karpenter kinds, and node metrics. Per tier,
     # each default true — Radar is a cluster-wide observability tool, so by

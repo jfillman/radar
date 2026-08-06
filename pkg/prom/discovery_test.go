@@ -554,3 +554,149 @@ func TestDiscover_LoggerCalledSerially(t *testing.T) {
 		t.Fatal("expected error logs from failed well-known lookups")
 	}
 }
+
+// TestDiscover_CarettaVMRanksAfterDynamicPrometheus pins that caretta-vm, a
+// last-resort fallback that commonly lacks workload metrics, never outranks a
+// real Prometheus — including one discoverable only via the dynamic scan
+// (non-standard namespace/name). Before the fallback tier existed, caretta-vm
+// (a well-known location) sorted ahead of every dynamic candidate.
+func TestDiscover_CarettaVMRanksAfterDynamicPrometheus(t *testing.T) {
+	carettaVM := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "caretta-vm", Namespace: "caretta"},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: "10.0.0.9",
+			Ports:     []corev1.ServicePort{{Port: 8428}},
+		},
+	}
+	// A real Prometheus at a non-standard location — found only by the dynamic
+	// scan via its app.kubernetes.io/name identity label.
+	dynamicProm := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "prom",
+			Namespace: "myteam",
+			Labels:    map[string]string{"app.kubernetes.io/name": "prometheus"},
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: "10.0.0.10",
+			Ports:     []corev1.ServicePort{{Port: 9090}},
+		},
+	}
+
+	k8s := fake.NewSimpleClientset(carettaVM, dynamicProm)
+	cands, err := Discover(context.Background(), k8s, DiscoverOptions{IncludeDynamic: true, MaxDynamic: 5})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	idx := func(ns, name string) int {
+		for i, c := range cands {
+			if c.Namespace == ns && c.Name == name {
+				return i
+			}
+		}
+		return -1
+	}
+	dynIdx := idx("myteam", "prom")
+	carettaIdx := idx("caretta", "caretta-vm")
+	if dynIdx < 0 {
+		t.Fatalf("dynamic prometheus not discovered: %+v", cands)
+	}
+	if carettaIdx < 0 {
+		t.Fatalf("caretta-vm fallback not discovered: %+v", cands)
+	}
+	if carettaIdx < dynIdx {
+		t.Fatalf("caretta-vm (idx %d) ranked before dynamic prometheus (idx %d) — fallback must rank last", carettaIdx, dynIdx)
+	}
+	if carettaIdx != len(cands)-1 {
+		t.Fatalf("caretta-vm at idx %d, want last candidate (%d): %+v", carettaIdx, len(cands)-1, cands)
+	}
+}
+
+// TestDiscover_CarettaVMReturnedWhenSoleBackend guards the safety net: when
+// caretta-vm is the only metrics backend, it must still be returned so the
+// cluster keeps working — demoting it to a fallback tier must not drop it.
+func TestDiscover_CarettaVMReturnedWhenSoleBackend(t *testing.T) {
+	carettaVM := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "caretta-vm", Namespace: "caretta"},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: "10.0.0.9",
+			Ports:     []corev1.ServicePort{{Port: 8428}},
+		},
+	}
+	k8s := fake.NewSimpleClientset(carettaVM)
+	cands, err := Discover(context.Background(), k8s, DiscoverOptions{IncludeDynamic: true, MaxDynamic: 5})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(cands) != 1 || cands[0].Namespace != "caretta" || cands[0].Name != "caretta-vm" {
+		t.Fatalf("want sole caretta-vm candidate, got %+v", cands)
+	}
+}
+
+// TestDiscover_FallbackSurvivesListFailure guards finding-1: when the cluster
+// list fails (get-but-not-list RBAC) but caretta-vm is fetchable via targeted
+// Get, the fallback tier must still be returned — not silently dropped.
+func TestDiscover_FallbackSurvivesListFailure(t *testing.T) {
+	carettaVM := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "caretta-vm", Namespace: "caretta"},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: "10.0.0.9",
+			Ports:     []corev1.ServicePort{{Port: 8428}},
+		},
+	}
+	k8s := fake.NewSimpleClientset(carettaVM)
+	k8s.PrependReactor("list", "services", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("forbidden: cannot list services at cluster scope")
+	})
+	cands, err := Discover(context.Background(), k8s, DiscoverOptions{IncludeDynamic: true, MaxDynamic: 5})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(cands) != 1 || cands[0].Namespace != "caretta" || cands[0].Name != "caretta-vm" {
+		t.Fatalf("fallback dropped on list failure: got %+v", cands)
+	}
+}
+
+// TestDiscover_CarettaVMLastEvenWithNonStandardServicePort guards finding-2: a
+// caretta-vm Service fronted by service port 80 -> container 8428 keys as :80 in
+// the dynamic scan but :8428 in the fallback tier. A port-keyed dedup alone would
+// let it reappear among dynamics and lose the last-place invariant; name-based
+// suppression keeps it single and last.
+func TestDiscover_CarettaVMLastEvenWithNonStandardServicePort(t *testing.T) {
+	carettaVM := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "caretta-vm", Namespace: "caretta"},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: "10.0.0.9",
+			Ports:     []corev1.ServicePort{{Port: 80, TargetPort: intstr.FromInt(8428)}},
+		},
+	}
+	dynamicProm := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "prom",
+			Namespace: "myteam",
+			Labels:    map[string]string{"app.kubernetes.io/name": "prometheus"},
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: "10.0.0.10",
+			Ports:     []corev1.ServicePort{{Port: 9090}},
+		},
+	}
+	k8s := fake.NewSimpleClientset(carettaVM, dynamicProm)
+	cands, err := Discover(context.Background(), k8s, DiscoverOptions{IncludeDynamic: true, MaxDynamic: 5})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	carettaCount, carettaIdx := 0, -1
+	for i, c := range cands {
+		if c.Name == "caretta-vm" {
+			carettaCount++
+			carettaIdx = i
+		}
+	}
+	if carettaCount != 1 {
+		t.Fatalf("caretta-vm appeared %d times, want 1: %+v", carettaCount, cands)
+	}
+	if carettaIdx != len(cands)-1 {
+		t.Fatalf("caretta-vm at idx %d, want last (%d): %+v", carettaIdx, len(cands)-1, cands)
+	}
+}

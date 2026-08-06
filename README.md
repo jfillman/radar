@@ -208,6 +208,7 @@ output) for plain text. URLs, tokens, and suggested commands remain unstyled.
 | `--namespace-scope` | `false` | Pin namespaced informer caches to a **single** namespace for large clusters (scoping to multiple namespaces is not supported yet). Requires `--namespace`, a kubeconfig context namespace, or a saved local single-namespace pick. Local mode can rebuild the cache when switching namespaces; auth/cloud mode locks the shared cache to the startup namespace. |
 | `--port` | `9280` | Server port |
 | `--listen-address` | `127.0.0.1` | HTTP listen address. Use `127.0.0.1` or `localhost` for local-only access; use `0.0.0.0` explicitly for containers, VMs, WSL, or remote/shared access, together with authentication and network controls. |
+| `--base-path` | | Serve Radar under a URL prefix such as `/radar`. Use when an ingress forwards a subpath without stripping it — everything, including `/api/health`, moves under the prefix. Not supported with `--cloud-url`. |
 | `--no-browser` | `false` | Don't auto-open browser |
 | `--browser` | | Browser to use when opening the UI, e.g. `firefox`, `google-chrome`, or `Google Chrome` on macOS |
 | `--timeline-storage` | `memory` | Timeline storage backend: `memory` or `sqlite` |
@@ -510,6 +511,8 @@ No auth by default (local use). See the **[Authentication Guide](docs/authentica
 Radar auto-discovers any CRD in your cluster. Popular tools get [dedicated integrations](docs/integrations.md) with topology edges, detail views, and AI summaries.
 
 **Default chart RBAC** covers the built-in Kubernetes kinds listed below — Workloads, Networking (including NetworkPolicies and PodDisruptionBudgets), Configuration, Storage (PersistentVolumes, PersistentVolumeClaims, StorageClasses), HorizontalPodAutoscalers, ServiceAccounts, LimitRanges, ResourceQuotas, Nodes, Namespaces, and Events. RBAC objects (Roles, ClusterRoles, RoleBindings, ClusterRoleBindings) are opt-in via `rbac.viewRBAC=true`. **CRD-based integrations** (Gateway API, VerticalPodAutoscaler, ArgoCD, FluxCD, cert-manager, etc.) need both the CRD installed in your cluster *and* read access granted — most groups are default-on under `rbac.crdGroups.<name>` (e.g. `gatewayApi`, `verticalPodAutoscaler`); check `values.yaml` or add custom rules via `rbac.additionalRules`.
+
+Upgrade impact also gets list-only access to CSIStorageCapacities, FlowSchemas, PriorityLevelConfigurations, and PodSecurityPolicies on clusters where those kinds are served. These reads inspect source-manifest evidence and do not add the kinds to Radar's resource browser.
 
 | Category | Resources |
 |----------|-----------|

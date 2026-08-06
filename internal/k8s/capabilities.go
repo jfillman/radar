@@ -95,6 +95,7 @@ type Capabilities struct {
 	Resources      *ResourcePermissions     `json:"resources,omitempty"`   // Per-resource-type permissions
 	Visibility     *VisibilitySummary       `json:"visibility,omitempty"`  // Present when resource visibility is limited enough to make diagnostics incomplete
 	Karpenter      IntegrationCapability    `json:"karpenter"`             // Per-request Karpenter discovery + NodePool read state; populated by the HTTP layer after user SAR.
+	CloudConnect   *CloudConnectCapability  `json:"cloudConnect,omitempty"`
 }
 
 type IntegrationCapability struct {
@@ -104,6 +105,19 @@ type IntegrationCapability struct {
 	// right now" — a distinct condition every consumer must map to unavailable
 	// coverage, never to an observed/available source.
 	CacheUnavailable bool `json:"cacheUnavailable,omitempty"`
+}
+
+// CloudConnectCapability tells the frontend which Cloud-connect lane this
+// deployment gets: "driver" (the in-product connect flow can run here) or
+// "wizard" (route to the Hub's connect wizard at AppURL instead).
+type CloudConnectCapability struct {
+	Lane   string `json:"lane"`
+	AppURL string `json:"appUrl"`
+	// APIURL is the Hub API origin the connect dialog reads its live copy
+	// from. Omitted when the dialog must not fetch — the frontend treats its
+	// absence as "render the compiled-in copy", so disabling the fetch is a
+	// server-side decision rather than client policy.
+	APIURL string `json:"apiUrl,omitempty"`
 }
 
 type FeatureCapabilities struct {

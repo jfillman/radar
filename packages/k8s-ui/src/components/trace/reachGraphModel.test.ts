@@ -371,31 +371,36 @@ describe('buildGraph edges', () => {
 // Prior-blocker A from the PR #1037 review: node colour comes from the
 // resource's OWN health, and an apiserver-proxy failure is indirect evidence
 // that must never condemn it.
-describe('node health from probes', () => {
-  const toneOf = (t: Trace, originId: string, _id: string) =>
+describe('node dots are resource health, never probe outcomes', () => {
+  const toneOf = (t: Trace, originId: string) =>
     buildGraph({ trace: t, route: route(), origin: pick(t, originId) }).nodes.find((n) => n.kind === 'PODS')!.tone
 
-  it('a failed real probe never renders as healthy', () => {
+  // The legend says "dot = how this resource is doing". Probe outcomes made the
+  // Ingress dot green under one vantage and grey under another with nothing
+  // about the resource changed - the dot must be vantage-invariant, and what a
+  // request experienced lives on edges and rows.
+  it('a failed probe does not move the dot - the failure lives on the edge', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [p({ path: 'data', ok: false, tone: 'unhealthy' })])
-    expect(toneOf(t, 'incluster', 'n:endpoints')).toBe('unhealthy')
+    expect(toneOf(t, 'incluster')).toBe('healthy')
   })
 
-  it('a failed apiserver probe leaves health unknown, never red', () => {
-    const t = trace([pod('a', true, '10.0.0.1')], [p({ path: 'apiserver', ok: false, tone: 'unhealthy' })])
-    expect(toneOf(t, 'apiserver', 'n:endpoints')).toBe('unknown')
-  })
-
-  it('a real failure still condemns even when a proxy probe passed', () => {
+  it('the dot is identical across vantages', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [
       p({ path: 'apiserver', ok: true, tone: 'healthy' }),
       p({ path: 'data', ok: false, tone: 'unhealthy' }),
     ])
-    expect(toneOf(t, 'incluster', 'n:endpoints')).toBe('unhealthy')
+    expect(toneOf(t, 'incluster')).toBe(toneOf(t, 'apiserver'))
   })
 
-  it('a degraded probe reads degraded, not unhealthy', () => {
-    const t = trace([pod('a', true, '10.0.0.1')], [p({ path: 'data', ok: true, tone: 'degraded' })])
-    expect(toneOf(t, 'incluster', 'n:endpoints')).toBe('degraded')
+  it('nothing ready to serve is unhealthy even with no finding', () => {
+    const t = trace([pod('a', false, '10.0.0.1')], [])
+    expect(toneOf(t, 'incluster')).toBe('unhealthy')
+  })
+
+  it('a warning finding degrades the dot', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [])
+    t.downstream![1].findings = [{ code: 'x', severity: 'warning', message: 'w' }]
+    expect(toneOf(t, 'incluster')).toBe('degraded')
   })
 })
 

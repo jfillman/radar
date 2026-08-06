@@ -633,3 +633,14 @@ describe('a proxy-only failure never claims the target answered', () => {
     expect(s.path.body).not.toMatch(/target answered/i)
   })
 })
+
+describe('the terminal "nothing to do" state is quiet', () => {
+  it('no call-to-action styling, no duplicate Re-run, no repeated ceiling caveat', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    const s = buildSidebar(undefined, ctx(t, 'incluster'))
+    expect(s.path.next.quiet).toBe(true)
+    expect(s.path.next.ctas).toHaveLength(0)
+    expect(s.path.next.body).toMatch(/strongest evidence/i)
+    expect(s.path.next.blocked).toBeUndefined()
+  })
+})

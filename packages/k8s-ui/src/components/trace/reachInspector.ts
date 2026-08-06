@@ -45,7 +45,7 @@ export interface Sidebar {
     scope: { k: string; v: string }[]
     evidence: { mark: Mark; text: string }[]
     notProve: string[]
-    next: { header: string; body: string; blocked?: string; ctas: InspectorCTA[] }
+    next: { header: string; body: string; blocked?: string; ctas: InspectorCTA[]; quiet?: boolean }
   }
   /** Every hop on the selected path, in order - the whole story for this path
    *  seen from this vantage, rather than a summary plus whichever node was last
@@ -205,14 +205,16 @@ function gapNext(
     }
   }
   if (!actionable) {
+    // Terminal state: there is nothing to do, and a call-to-action box whose
+    // message is "no action" shouts its own irrelevance. One quiet line of
+    // closure; no Re-run (the header already owns that control - the same
+    // one-copy rule as inClusterCTA), and no ceiling caveat (WHAT THIS
+    // DOESN'T PROVE states it on this same pane).
     return {
       header: 'NO STRONGER TEST AVAILABLE',
-      // actionableGap stops at anything weaker than an already-proven origin, so
-      // weaker vantages CAN remain unused - claiming everything had been tried
-      // was false and discouraged useful comparison checks.
-      body: `Radar already has the strongest evidence it can collect for this path. Weaker vantages stay available as comparison checks.${allPaths}`,
-      blocked: ceilingNote,
-      ctas: [{ text: '⟳ Re-run', action: 'run-probes' }],
+      body: `This is the strongest evidence Radar can collect for this path.${allPaths}`,
+      ctas: [],
+      quiet: true,
     }
   }
   return {

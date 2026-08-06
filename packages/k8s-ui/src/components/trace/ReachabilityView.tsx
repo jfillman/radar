@@ -676,8 +676,13 @@ function InspectorPanel({
       )}
       <Caveats items={path.notProve} />
 
-      <div className="rounded-md px-2.5 py-2.5" style={{ border: '1px solid var(--accent)', background: 'var(--accent-muted)' }}>
-        <div className="text-[9.5px] font-bold tracking-[0.05em]" style={{ color: 'var(--accent-text)' }}>
+      {/* The terminal "nothing to do" state renders as one quiet line - the
+          callout styling is reserved for states that carry an actual next move. */}
+      <div
+        className={path.next.quiet ? 'border-t border-theme-border pt-2.5' : 'rounded-md px-2.5 py-2.5'}
+        style={path.next.quiet ? undefined : { border: '1px solid var(--accent)', background: 'var(--accent-muted)' }}
+      >
+        <div className="text-[9.5px] font-bold tracking-[0.05em]" style={{ color: path.next.quiet ? 'var(--text-tertiary)' : 'var(--accent-text)' }}>
           {path.next.header}
         </div>
         <div className="mt-1 text-[11.5px] leading-snug text-theme-text-secondary text-pretty">{path.next.body}</div>

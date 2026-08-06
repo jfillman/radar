@@ -40,6 +40,15 @@ var DefaultImageRef = "ghcr.io/skyhook-io/radar:dev"
 // config (the MCP path passes an empty override arg).
 var configuredImage string
 
+// LatestReleaseImage, when set, names the most recent PUBLISHED radar image.
+// main() installs it only for dev-shaped versions (git-describe tags), whose
+// version-matched image never exists on the registry - without this, every
+// in-cluster test from a locally-built binary ImagePullBackOffs. Released
+// binaries keep their exact version-matched default and never consult it.
+// Returns "" when the release lookup fails, which falls through to
+// DefaultImageRef so the (informative) pull error still names the situation.
+var LatestReleaseImage func() string
+
 // SetConfiguredImage records the operator's --reachability-image override so
 // ResolveImage honors it regardless of which path (REST/MCP) resolves the image.
 func SetConfiguredImage(img string) { configuredImage = img }
@@ -71,6 +80,11 @@ func ResolveImage(ctx context.Context, selfClient kubernetes.Interface, override
 	}
 	if env := os.Getenv("RADAR_IMAGE"); env != "" {
 		return env
+	}
+	if LatestReleaseImage != nil {
+		if img := LatestReleaseImage(); img != "" {
+			return img
+		}
 	}
 	return DefaultImageRef
 }

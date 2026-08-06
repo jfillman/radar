@@ -476,3 +476,32 @@ func TestSelfPodImage(t *testing.T) {
 		t.Errorf("missing downward-API env should yield empty, got %q", got)
 	}
 }
+
+// A dev build's git-describe tag never exists on the registry, so main()
+// installs LatestReleaseImage to fall back to the newest published release.
+// It must rank BELOW every explicit source (override, self-read, RADAR_IMAGE)
+// and above only the version default; a failed lookup ("") keeps the default.
+func TestResolveImage_DevFallsBackToLatestRelease(t *testing.T) {
+	old := DefaultImageRef
+	DefaultImageRef = "ghcr.io/skyhook-io/radar:1.10.3-78-gabc123"
+	defer func() { DefaultImageRef = old }()
+	t.Setenv("MY_POD_NAME", "")
+	t.Setenv("RADAR_IMAGE", "")
+
+	LatestReleaseImage = func() string { return "ghcr.io/skyhook-io/radar:1.10.3" }
+	defer func() { LatestReleaseImage = nil }()
+	if got := ResolveImage(context.Background(), nil, ""); got != "ghcr.io/skyhook-io/radar:1.10.3" {
+		t.Errorf("dev build should fall back to the latest published release, got %q", got)
+	}
+
+	t.Setenv("RADAR_IMAGE", "env/radar:x")
+	if got := ResolveImage(context.Background(), nil, ""); got != "env/radar:x" {
+		t.Errorf("RADAR_IMAGE must still outrank the latest-release fallback, got %q", got)
+	}
+	t.Setenv("RADAR_IMAGE", "")
+
+	LatestReleaseImage = func() string { return "" }
+	if got := ResolveImage(context.Background(), nil, ""); got != DefaultImageRef {
+		t.Errorf("a failed release lookup keeps the version default, got %q", got)
+	}
+}

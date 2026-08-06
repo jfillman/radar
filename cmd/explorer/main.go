@@ -11,6 +11,7 @@ import (
 	neturl "net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -26,6 +27,7 @@ import (
 	mcppkg "github.com/skyhook-io/radar/internal/mcp"
 	"github.com/skyhook-io/radar/internal/reachability"
 	"github.com/skyhook-io/radar/internal/server"
+	versionpkg "github.com/skyhook-io/radar/internal/version"
 	"golang.org/x/net/http/httpguts"
 	authv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +39,10 @@ import (
 var (
 	version = "dev"
 )
+
+// releaseVersionRe matches a published release version ("1.10.3", "v1.10.3").
+// Anything else - git-describe suffixes, "dev", "-dirty" - is a dev build.
+var releaseVersionRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
 
 func main() {
 	// Subcommand dispatch (before flag parsing — subcommands own their flags).
@@ -69,6 +75,19 @@ func main() {
 	// The flag override is applied just after it is parsed (see below) so BOTH the
 	// REST handler and the MCP diagnose(inCluster) path resolve the same image.
 	reachability.DefaultImageRef = "ghcr.io/skyhook-io/radar:" + version
+	// A dev build's git-describe version ("1.10.3-78-gabc123", "dev") is never a
+	// published image tag, so its version-matched default ImagePullBackOffs on
+	// every in-cluster test. Fall back to the latest published release instead -
+	// only for dev-shaped versions; a released binary keeps its exact match.
+	// CheckForUpdate is cached and cheap relative to the probe run it precedes.
+	if !releaseVersionRe.MatchString(version) {
+		reachability.LatestReleaseImage = func() string {
+			if u := versionpkg.CheckForUpdate(context.Background()); u != nil && u.LatestVersion != "" {
+				return "ghcr.io/skyhook-io/radar:" + u.LatestVersion
+			}
+			return ""
+		}
+	}
 
 	// `radar cloud <sub>` — the one subcommand family, dispatched before flag
 	// parsing. Supported subcommands handle themselves and exit; the reserved

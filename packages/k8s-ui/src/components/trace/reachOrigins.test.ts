@@ -315,3 +315,30 @@ describe('first paint agrees with the headline', () => {
     expect(headlineEvidenceOrigin({ route: 'GET /', outcome: 'not-tested' } as any)).toBeUndefined()
   })
 })
+
+describe('a laptop with nothing to dial says so', () => {
+  const base = () => ({
+    subject: { kind: 'Service', name: 'shop', namespace: 'store' },
+    verdict: 'unknown', brokenAt: -1, upstreams: [],
+    downstream: [{ resource: { kind: 'Service', name: 'shop', namespace: 'store' }, edge: 'service', findings: [],
+      probes: [{ layer: 'http', target: 'shop:80', vantage: 'local', path: 'apiserver', ok: false, skipped: true, reason: 'x', port: 80 }] }],
+  }) as never
+  it('after a run with no front door, the local vantage states why it cannot be used', () => {
+    const local = buildOrigins(base()).find((o) => o.id === 'local')!
+    expect(local.mark).toBe('blocked')
+    expect(local.unavailable).toMatch(/no entry point .* from your machine|no Ingress/i)
+  })
+  it('with no probes at all it stays plainly untested - nothing is claimed', () => {
+    const t = base() as { downstream: { probes?: unknown[] }[] }
+    t.downstream[0].probes = []
+    const local = buildOrigins(t as never).find((o) => o.id === 'local')!
+    expect(local.mark).toBe('untested')
+    expect(local.unavailable).toBeUndefined()
+  })
+  it('with a front door the laptop CAN dial, nothing is claimed either', () => {
+    const t = base() as { upstreams: unknown[] }
+    t.upstreams = [{ resource: { kind: 'Ingress', name: 'in', namespace: 'store' }, edge: 'ingress->service', findings: [] }]
+    const local = buildOrigins(t as never).find((o) => o.id === 'local')!
+    expect(local.unavailable).toBeUndefined()
+  })
+})

@@ -261,6 +261,14 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
 
   const localProbes = byOrigin.get('local') ?? []
   const localMark = markFor(localProbes, 'local', ctx)
+  // A probed run that produced NOTHING from the laptop, on a subject with no
+  // front door, is not "not tested yet" - there is nothing the laptop could
+  // dial. The vantage stays on the rail (the evidence ceiling must stay
+  // visible, exactly like the caller and external gaps) but it must say WHY it
+  // cannot be used - a bare "not tested" reads as a test someone forgot to run.
+  // Only claimed after a run: with no probes anywhere, "not tested yet" is the
+  // honest state for everyone.
+  const localCannotDial = probes.length > 0 && localProbes.length === 0 && localMark === 'untested' && (trace?.upstreams ?? []).length === 0
   const local: Origin = {
     id: 'local',
     glyph: '▣',
@@ -271,9 +279,14 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
     // Not the cluster dataplane: from a laptop a request never traverses
     // kube-proxy, NetworkPolicy or the mesh, so it cannot sit in that lane.
     lane: 'control',
-    mark: localMark,
+    mark: localCannotDial ? 'blocked' : localMark,
     identity: localIdentity(localProbes),
-    unavailable: localMark === 'blocked' ? skipReason(localProbes) : undefined,
+    unavailable:
+      localMark === 'blocked'
+        ? skipReason(localProbes)
+        : localCannotDial
+          ? 'This Service has no entry point Radar can dial from your machine — no Ingress, Gateway address or LoadBalancer. From here Radar can only relay through the API-server proxy.'
+          : undefined,
   }
 
   const radarProbes = byOrigin.get('radar-incluster') ?? []

@@ -70,7 +70,10 @@ export const MARKS: Record<Mark, MarkStyle> = {
 export type MarkCategory = 'happened' | 'tested' | 'why-not' | 'state'
 export const MARK_LEGEND: { mark: Mark; text: string; category: MarkCategory }[] = [
   { mark: 'proved', text: 'a request got through', category: 'happened' },
-  { mark: 'answered', text: 'answered, but not with what we asked for', category: 'happened' },
+  // 'answered' also wears a proxy-only failure (nothing answered there), so the
+  // legend describes the CLASS - an attempt that fell short of verification -
+  // and leaves "answered" vs "couldn't get through" to the chip.
+  { mark: 'answered', text: 'the attempt didn’t verify the asked-for path', category: 'happened' },
   { mark: 'failed', text: 'a request was refused', category: 'happened' },
   { mark: 'proxied', text: 'answered via the API server — not live traffic', category: 'tested' },
   { mark: 'inconclusive', text: 'tested, but kept informational — a throwaway identity can\u2019t condemn the path', category: 'tested' },

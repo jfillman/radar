@@ -568,7 +568,7 @@ describe('a skipped route says why, from the exact vantage that skipped it', () 
     const t = mkSkipped(proxySkip)
     for (const id of ['local', 'incluster']) {
       const texts = buildSidebar(undefined, ctx(t, id, skipped())).path.evidence.map((e) => e.text).join('\n')
-      expect(texts).not.toContain('API-server proxy')
+      expect(texts).not.toContain('speaks plain HTTP')
     }
   })
 
@@ -607,5 +607,29 @@ describe('an attempted in-cluster run that never started keeps its attempt', () 
     const texts = s.path.evidence.map((e) => e.text).join('\n')
     expect(texts).toContain('image could not be pulled')
     expect(texts).not.toContain('no test has been run from here')
+  })
+})
+
+describe('a vantage that cannot be used explains itself in WHAT WE SAW', () => {
+  it('the laptop with nothing to dial shows the structural reason, not "no test has been run"', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [])
+    t.verdict = 'unknown'
+    t.routes = [route({ outcome: 'not-tested', confidence: undefined, byVantage: undefined })]
+    t.downstream![0].probes = [p({ target: 'shop:80', port: 80, vantage: 'local', path: 'apiserver', skipped: true, reason: 'proxy said no', ok: false })]
+    const s = buildSidebar(undefined, ctx(t, 'local', t.routes[0]))
+    const texts = s.path.evidence.map((e) => e.text).join('\n')
+    expect(texts).toMatch(/no entry point .* from your machine|no Ingress/i)
+    expect(texts).not.toContain('no test has been run from here')
+  })
+})
+
+describe('a proxy-only failure never claims the target answered', () => {
+  it('the body states the relayed dial failed and the real path stays untested', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({ path: 'apiserver', ok: false, tone: 'unhealthy' })])
+    const r = route({ outcome: 'unreachable', confidence: 'indirect' })
+    t.routes = [r]
+    const s = buildSidebar(undefined, ctx(t, 'apiserver', r))
+    expect(s.path.body).toMatch(/relayed dial failed/i)
+    expect(s.path.body).not.toMatch(/target answered/i)
   })
 })

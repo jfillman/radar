@@ -454,7 +454,7 @@ function VerdictBand({
         )}
         {stats.checks > 0 && (
           <Tooltip
-            content={`${layerBreakdown}${stats.vantages > 1 ? ` — from ${stats.vantages} vantages` : ''}. Every check is a real dial; skipped ones are listed with their reasons, never counted.`}
+            content={`${layerBreakdown}${stats.vantages > 1 ? ` — from ${stats.vantages} vantages` : ''}. Every check is a real dial; skipped ones are listed with their reasons, never counted. Each check waits up to ~1s, inside a 3s budget per run — a slow backend can time out and read as not tested.`}
             wrapperClassName="mt-1 inline-flex cursor-help"
           >
             <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-theme-text-secondary">

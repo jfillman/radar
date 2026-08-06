@@ -681,7 +681,10 @@ func proxyResult(ctx context.Context, req *rest.Request, r Result) Result {
 		// itself. Naming one cause turned an inconclusive timeout into a
 		// diagnosis, so the reason lists the possibilities and concludes nothing.
 		r.Skipped = true
-		r.Reason = "no response before the check gave up - could be a slow or starting backend, a port expecting TLS, or the relay itself; nothing was concluded"
+		// The measured latency IS the wait: at a deadline it equals the budget
+		// this dial was given, so stating it keeps the copy honest even when the
+		// configured timeouts change.
+		r.Reason = fmt.Sprintf("no response within the %.1fs this check waits - could be a slow or starting backend, a port expecting TLS, or the relay itself; nothing was concluded", r.Latency.Seconds())
 		return r
 	}
 	if code == 0 && isClusterUnreachable(err) {

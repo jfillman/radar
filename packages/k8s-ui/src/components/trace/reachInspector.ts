@@ -380,7 +380,10 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
           ? 'Radar cannot test from here, so nothing has been learned this way'
           : origin.mark === 'denied'
             ? 'not permitted to run this test'
-            : 'no test has been run from here'),
+            : // A vantage that CANNOT be used states why (nothing dialable from
+              // the laptop, a skipped mechanism) - "no test has been run" reads
+              // as a test someone forgot, which is a different claim.
+              origin.unavailable || 'no test has been run from here'),
     )
   }
 
@@ -415,7 +418,12 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
             ? 'This result predates a change to the cluster, so it is set aside rather than trusted.'
             : mark === 'running'
               ? 'A test is running. Earlier results stay until new ones replace them.'
-              : 'The target answered, but not with what was asked for.'
+              : // A proxy-only failure wears the same amber mark as a real answer,
+                // but nothing answered - saying "the target answered" here sent
+                // the reader to debug an application response that never existed.
+                asSeen?.outcome === 'unreachable' && asSeen?.confidence === 'indirect'
+                ? 'The relayed dial failed. The proxy bypasses the real path, so this does not condemn it — but nothing answered, and the real path is still untested.'
+                : 'The target answered, but not with what was asked for.'
 
   return {
     chipTone: asSeen ? routeTone(asSeen, { stale: ctx.stale, running: ctx.running }) : 'unknown',

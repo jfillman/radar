@@ -126,8 +126,25 @@ stays non-red.
   relay itself; nothing was concluded").
 - **Accepted (medium):** `blocked` legend → "never completed — an earlier failure or
   a skip stopped it" (covers both the downstream-of-break and all-dials-skipped cases).
-- **Open (deferred, user call):** mark for proxy-only unreachable stays `answered`
-  (amber ◑) — arguably `inconclusive` (blue) fits better, but that changes edge
-  color semantics; deferred. WHAT-WE-SAW for an attempted-but-failed in-cluster run
-  still reads "no test has been run from here" (the capsule + body carry the error);
-  fix #7 in list — small, not yet applied.
+- **Resolved (2nd codex pass, Q1):** proxy-only failure keeps the AMBER family
+  (attention - the only signal is negative and the real path is untested; blue
+  would file an actionable negative as harmless disposition), but no surface may
+  claim an answer: the `answered` legend now reads "the attempt didn't verify the
+  asked-for path" (class description; the chip carries answered-vs-couldn't), and
+  the sidebar body for indirect-unreachable states "The relayed dial failed... the
+  real path is still untested" instead of "The target answered". The mark RENAME
+  codex proposed was rejected as churn - same user-facing result via legend+body.
+- **Resolved (user decision, Q2):** budget stays 3s; transparency shipped instead -
+  the timeout skip reason states the measured wait ("no response within the 1.0s
+  this check waits"), and the band trust tooltip states the ~1s/check + 3s/run
+  budget. A "retry with longer timeout" preset (codex: must raise BOTH TotalBudget
+  and the 1s proxy child deadline, probes.go:713) is the agreed follow-up, later.
+- **Fixed (scenario 33, missed by the audit):** local vantage on a subject with no
+  front door is STRUCTURALLY undialable - after a probed run with zero local
+  probes and no upstreams, the capsule says "couldn't test" and the sidebar states
+  "This Service has no entry point Radar can dial from your machine - no Ingress,
+  Gateway address or LoadBalancer..." instead of a bare "not tested". Gated on
+  localMark==='untested' so an own-route result is never overridden, and never
+  claimed before any run.
+- **Fixed:** WHAT-WE-SAW for an attempted-but-failed in-cluster run carries the
+  execution error (fix #7).

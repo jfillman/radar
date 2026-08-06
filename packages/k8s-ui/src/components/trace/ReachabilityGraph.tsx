@@ -121,6 +121,10 @@ export function ReachabilityGraph({
           ))}
           {model.edges.map((e) => {
             const s = markStyle(e.mark)
+            // A boundary CONTINUATION extends one observed break across its
+            // span - same colour so the span reads as one failure, dashed and
+            // lighter so it never claims a second observation.
+            const continuation = e.boundary === 'continuation'
             return (
               <path
                 key={e.id}
@@ -128,8 +132,8 @@ export function ReachabilityGraph({
                 fill="none"
                 stroke={s.color}
                 strokeWidth={selected === e.id ? s.strokeWidth + 1 : s.strokeWidth}
-                strokeDasharray={s.dash}
-                strokeOpacity={s.strokeOpacity}
+                strokeDasharray={continuation ? '6 5' : s.dash}
+                strokeOpacity={continuation ? 0.6 : s.strokeOpacity}
                 strokeLinecap="round"
                 className={e.mark === 'running' ? 'reach-edge-testing' : undefined}
               />

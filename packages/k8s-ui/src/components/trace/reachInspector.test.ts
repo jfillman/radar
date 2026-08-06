@@ -48,7 +48,17 @@ function ctx(t: Trace, originId: string, r = route()) {
   const origins = buildOrigins(t)
   const origin = origins.find((o) => o.id === originId)!
   const g = buildGraph({ trace: t, route: r, origin })
-  return { trace: t, route: r, origin, origins, nodes: g.nodes, breakNodeId: g.breakNodeId, pathNodeIds: g.pathNodeIds }
+  return {
+    trace: t,
+    route: r,
+    origin,
+    origins,
+    nodes: g.nodes,
+    breakNodeId: g.breakNodeId,
+    breakAtExitOf: g.breakAtExitOf,
+    nonNetworkNodeIds: g.nonNetworkNodeIds,
+    pathNodeIds: g.pathNodeIds,
+  }
 }
 
 describe('the diagnosis is always present', () => {
@@ -402,5 +412,33 @@ describe('localization facts belong to the vantage that produced them', () => {
     const s = buildSidebar(undefined, ctx(t, 'incluster', localized()))
     const texts = s.path.evidence.map((e) => e.text).join('\n')
     expect(texts).not.toMatch(/checked directly/)
+  })
+})
+
+
+describe('a Service-routing boundary in the sidebar', () => {
+  const brokenRouting = (): RouteResult =>
+    route({
+      outcome: 'unreachable',
+      confidence: 'real',
+      byVantage: [{ vantage: 'in-cluster', path: 'data', outcome: 'unreachable', failedBoundary: 'service-routing' }],
+    })
+  const withWorkload = () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    t.downstream![1].config!.workload = { kind: 'Deployment', name: 'web', namespace: 'store' }
+    return t
+  }
+
+  it('the SERVICE hop carries the break, exit-phrased', () => {
+    const s = buildSidebar(undefined, ctx(withWorkload(), 'incluster', brokenRouting()))
+    const svc = s.hops.find((h) => h.kind.startsWith('SERVICE'))!
+    expect(svc.state).toBe('break')
+    expect(svc.chipText).toMatch(/just past here/)
+  })
+
+  it('the workload hop is never a journey participant', () => {
+    const s = buildSidebar(undefined, ctx(withWorkload(), 'incluster', brokenRouting()))
+    const wl = s.hops.find((h) => h.kind.startsWith('DEPLOYMENT'))!
+    expect(wl.state).toBe('plain')
   })
 })

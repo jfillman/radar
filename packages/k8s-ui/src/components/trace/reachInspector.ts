@@ -201,6 +201,13 @@ interface Ctx {
   nodes: GraphNode[]
   /** Where the path first broke, from the graph model. */
   breakNodeId?: string
+  /** A Service-routing boundary: the node whose EXIT the request never got
+   *  past. The break renders on that hop with exit-phrased copy - no node is
+   *  blamed. */
+  breakAtExitOf?: string
+  /** Inline nodes that are NOT network hops (the workload). Never given
+   *  journey states - a workload is neither "reached" nor a stopping place. */
+  nonNetworkNodeIds?: string[]
   /** The selected route's chain in traversal order, from the graph model. */
   pathNodeIds?: string[]
   stale?: boolean
@@ -459,8 +466,15 @@ export function buildSidebar(sel: Selection, ctx: Ctx): Sidebar {
   const chain = (ctx.pathNodeIds ?? [])
     .map((id) => byId.get(id))
     .filter((n): n is GraphNode => !!n && !n.isOrigin)
-  const breakIdx = ctx.breakNodeId ? chain.findIndex((n) => n.id === ctx.breakNodeId) : -1
-  const stateOf = (i: number): HopState => {
+  const nonNetwork = new Set(ctx.nonNetworkNodeIds ?? [])
+  // A boundary break anchors to the EXIT of its source hop (the Service);
+  // breakNodeId anchors to a landing node. Either way one index carries 'break'.
+  const anchorId = ctx.breakNodeId ?? ctx.breakAtExitOf
+  const breakIdx = anchorId ? chain.findIndex((n) => n.id === anchorId) : -1
+  const stateOf = (i: number, id: string): HopState => {
+    // The workload is not a network hop: it is never "reached", never a place
+    // a request stops - whatever happens around it.
+    if (nonNetwork.has(id)) return 'plain'
     if (breakIdx < 0) return 'plain'
     if (i < breakIdx) return 'before'
     return i === breakIdx ? 'break' : 'after'
@@ -474,7 +488,13 @@ export function buildSidebar(sel: Selection, ctx: Ctx): Sidebar {
     hops: chain.map((n, i) => ({
       ...resourceSection(n),
       id: n.id,
-      state: stateOf(i),
+      state: stateOf(i, n.id),
+      // Exit-phrased for a boundary break: the SERVICE hop carries it, and
+      // "stopped here" would blame the hop itself for its exit's failure.
+      chipText:
+        i === breakIdx && ctx.breakAtExitOf === n.id
+          ? 'routing to its Pods breaks just past here'
+          : resourceSection(n).chipText,
       expanded: sel ? n.id === sel : i === defaultOpen,
     })),
   }

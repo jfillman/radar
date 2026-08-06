@@ -199,6 +199,8 @@ function ReachabilityBoard(props: BoardProps) {
         origins,
         nodes: model.nodes,
         breakNodeId: model.breakNodeId,
+        breakAtExitOf: model.breakAtExitOf,
+        nonNetworkNodeIds: model.nonNetworkNodeIds,
         pathNodeIds: model.pathNodeIds,
         stale,
         running,

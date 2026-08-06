@@ -96,6 +96,13 @@ export interface GraphEdge {
   /** SVG path data. */
   d: string
   mark: Mark
+  /** Set on the edges of a BOUNDARY span (a Service→Pods routing failure whose
+   *  segment the workload node happens to sit inside): 'start' carries the one
+   *  observed break; 'continuation' extends the same break across the span
+   *  without claiming a second observation (rendered dashed, no pill). Break
+   *  detection skips both - a boundary anchors to the exit of its source node
+   *  (GraphModel.breakAtExitOf), never to a node halo. */
+  boundary?: 'start' | 'continuation'
   label: string
   /** The untruncated label. ALWAYS set: the pill has a pixel cap as well as a
    *  character cap, so text can be visually cut without `label` being shortened,
@@ -128,6 +135,16 @@ export interface GraphModel {
    *  node tone (resource health), because those are different questions, and
    *  only from the SELECTED vantage's edges. */
   breakNodeId?: string
+  /** A Service-routing boundary break: the node whose EXIT the request never
+   *  got past. Set instead of breakNodeId for this boundary - the failure is
+   *  the segment between the Service and its Pods, and a halo on either node
+   *  (or on the workload that merely sits inside the span) would blame a
+   *  resource for its edge's failure. */
+  breakAtExitOf?: string
+  /** Nodes rendered inline that are NOT network hops (the workload that runs
+   *  the Pods). Consumers must never give them journey states - a workload is
+   *  neither "reached" nor a place a request stops. */
+  nonNetworkNodeIds?: string[]
   /** The selected route's own chain, in traversal order. Consumers must read
    *  this rather than sorting rendered nodes by position: sorting flattens
    *  PARALLEL backends into what looks like a serial path, and sweeps in
@@ -1035,7 +1052,7 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
   // reading a break off them let a workstation failure order the report while
   // the in-cluster vantage the reader had chosen was succeeding.
   const foreignEdges = new Set<string>()
-  const connect = (id: string, fromId: string, toId: string, mark: Mark, label: string, full?: string, slot = 0) => {
+  const connect = (id: string, fromId: string, toId: string, mark: Mark, label: string, full?: string, slot = 0, boundarySpan?: 'start' | 'continuation') => {
     const a = pos.get(fromId)
     const b = pos.get(toId)
     if (!a || !b) return
@@ -1121,6 +1138,7 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
       id,
       d: cubicPath(cubic),
       mark,
+      boundary: boundarySpan,
       label: truncate(label),
       title: full || label,
       px: p.x,
@@ -1269,17 +1287,51 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
       : backends.length === 0
         ? new Set([subjectNodeId]) // single chain: the subject IS the Service
         : new Set<string>()
+  let breakAtExitOf: string | undefined
   for (const g of podGroups) {
     const broke = boundary === 'service-routing' && boundaryParents.has(g.parentId)
+    // A Service-routing break is a BOUNDARY, not a node: the request never got
+    // past the Service's exit. The break anchors there (breakAtExitOf) with no
+    // node halo - a halo on the workload blamed the Deployment for kube-proxy,
+    // and one on the Pods blamed the endpoints for their Service's routing.
+    if (broke) breakAtExitOf = g.parentId
     if (showWorkload) {
-      // The boundary belongs to the SERVICE's own routing, so it stays on the
-      // edge leaving the Service - inserting the workload must not move the
-      // blame onto it.
-      connect(`e:${g.id}-workload`, g.parentId, workloadNodeId, broke ? 'failed' : 'config', broke ? 'breaks here' : 'selects')
-      connect(`e:${g.id}`, workloadNodeId, g.id, 'config', 'runs')
+      const breakTitle =
+        'The Service\u2019s routing to its Pods fails here. The Deployment sits between them as the thing that runs the Pods \u2014 it is not a network hop and not the culprit.'
+      connect(
+        `e:${g.id}-workload`,
+        g.parentId,
+        workloadNodeId,
+        broke ? 'failed' : 'config',
+        broke ? 'breaks here' : 'selects',
+        broke ? breakTitle : undefined,
+        0,
+        broke ? 'start' : undefined,
+      )
+      // The continuation extends the SAME observed break across the span the
+      // workload sits inside - dashed, no pill, never a second failed claim.
+      connect(
+        `e:${g.id}`,
+        workloadNodeId,
+        g.id,
+        broke ? 'failed' : 'config',
+        broke ? '' : 'runs',
+        broke ? 'Continuation of the same break \u2014 the routing failure is between the Service and its Pods.' : undefined,
+        0,
+        broke ? 'continuation' : undefined,
+      )
       continue
     }
-    connect(`e:${g.id}`, g.parentId, g.id, broke ? 'failed' : 'config', broke ? 'breaks here' : 'selects')
+    connect(
+      `e:${g.id}`,
+      g.parentId,
+      g.id,
+      broke ? 'failed' : 'config',
+      broke ? 'breaks here' : 'selects',
+      undefined,
+      0,
+      broke ? 'start' : undefined,
+    )
   }
 
   separatePills(edges, geom)
@@ -1329,7 +1381,7 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
   // Column order, not array order, so it does not depend on the sequence edges
   // happened to be built in.
   const failed = edges
-    .filter((e) => e.mark === 'failed' && !foreignEdges.has(e.id))
+    .filter((e) => e.mark === 'failed' && !e.boundary && !foreignEdges.has(e.id))
     .map((e) => pos.get(edgeTo.get(e.id) ?? ''))
     .filter((n): n is GraphNode => !!n)
     .sort((a, b) => a.x - b.x)
@@ -1348,5 +1400,17 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
     ...podGroups.filter((g) => g.parentId === subjectNodeId || selectedBackendIds.has(g.parentId)).map((g) => g.id),
   ].filter((id, i, all) => pos.has(id) && all.indexOf(id) === i)
 
-  return { nodes, edges, brackets, originIsControl, canvas, laneControl, laneData, breakNodeId, pathNodeIds }
+  return {
+    nodes,
+    edges,
+    brackets,
+    originIsControl,
+    canvas,
+    laneControl,
+    laneData,
+    breakNodeId,
+    breakAtExitOf,
+    nonNetworkNodeIds: showWorkload ? [workloadNodeId] : undefined,
+    pathNodeIds,
+  }
 }

@@ -960,7 +960,7 @@ describe('the workload behind the Service appears in the graph', () => {
   // The producer localises the break to the SERVICE's own routing. Inserting a
   // node after the Service must not slide that blame onto the workload, which
   // routes nothing.
-  it('keeps a localized break on the edge leaving the Service', () => {
+  it('a Service-routing break is a boundary span, and no node is blamed', () => {
     const t = traceWithWorkload('web')
     const broken = route({
       outcome: 'unreachable',
@@ -972,10 +972,24 @@ describe('the workload behind the Service appears in the graph', () => {
       route: broken,
       origin: pick(t, 'incluster'),
     })
+    // One observed break on the edge leaving the Service...
     const breaks = g.edges.filter((e) => e.label === 'breaks here')
     expect(breaks).toHaveLength(1)
     expect(breaks[0].id).toMatch(/-workload$/)
-    expect(g.edges.find((e) => e.label === 'runs')!.mark).toBe('config')
+    expect(breaks[0].boundary).toBe('start')
+    // ...continued as the SAME break across the span the workload sits inside -
+    // failed colour, marked continuation, no pill (empty label), never a second
+    // failed observation.
+    const cont = g.edges.find((e) => e.boundary === 'continuation')!
+    expect(cont.mark).toBe('failed')
+    expect(cont.label).toBe('')
+    // The break anchors to the Service's EXIT. A halo may sit on the Service
+    // itself (the route edge INTO it failed) but never on the workload or the
+    // Pods - that would blame a node for its segment's failure.
+    expect(g.breakAtExitOf).toBe('n:Service/store/shop')
+    expect([undefined, g.breakAtExitOf]).toContain(g.breakNodeId)
+    expect(g.breakNodeId).not.toBe('n:workload')
+    expect(g.nonNetworkNodeIds).toContain('n:workload')
   })
 
   it('is absent when no workload is in scope', () => {

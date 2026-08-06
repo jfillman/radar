@@ -56,16 +56,16 @@ export function summarizeInClusterTests(tests: InClusterTestRow[] | undefined): 
       evidenceOnly: false,
     }
   }
-  // No hard failure. If nothing folded but evidence rows exist, the run changed no
-  // route outcome - surface it so a run whose every route was override-mismatch /
-  // throwaway-denied / guessed isn't a silent no-op with a vanished status.
-  if (!anyFolded) {
-    const evidence = entries.find(isEvidence)
-    if (evidence) {
-      return { partial: false, evidenceOnly: true, evidence: evidence.status, fallback: evidence.fallbackCommand }
-    }
+  // No hard failure. Any evidence row means at least one route's outcome did
+  // NOT move - surface its honest per-shape explanation. This deliberately
+  // includes the mixed case (some routes folded, some kept informational):
+  // suppressing the note there presented a partially-inconclusive run as a
+  // clean one, with the kept-informational route's status silently vanished.
+  const evidence = entries.find(isEvidence)
+  if (evidence) {
+    return { partial: false, evidenceOnly: true, evidence: evidence.status, fallback: evidence.fallbackCommand }
   }
-  // Clean full run (everything folded), or a mix of folded + evidence with no
-  // failure - the merged trace already reflects the outcomes; no banner needed.
+  // Clean full run - everything folded; the merged trace already reflects the
+  // outcomes, so there is nothing left to explain.
   return { partial: false, evidenceOnly: false }
 }

@@ -54,8 +54,11 @@ describe('routeTone', () => {
 
 describe('routeChip', () => {
   it('names the caveat rather than claiming verification', () => {
-    // Asserts the meaning: an indirect result must say it skipped the real path.
-    expect(routeChip(r({ outcome: 'verified', confidence: 'indirect' }))).toMatch(/skipped/i)
+    // Asserts the meaning: an indirect result must name the API-server relay
+    // rather than claim a clean pass. ("Skipped the cluster network" was the old
+    // wording - false, since the proxy still crosses the cluster network; what
+    // it skips is the front door and the normal traffic path.)
+    expect(routeChip(r({ outcome: 'verified', confidence: 'indirect' }))).toMatch(/API server/i)
     expect(routeChip(r({ outcome: 'verified', confidence: 'real' }))).toBe('got through')
   })
 })

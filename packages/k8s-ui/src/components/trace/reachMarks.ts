@@ -59,7 +59,7 @@ export const MARKS: Record<Mark, MarkStyle> = {
  *  for the same thing. */
 export const MARK_LEGEND: { mark: Mark; text: string }[] = [
   { mark: 'proved', text: 'a request got through' },
-  { mark: 'proxied', text: 'answered, but skipped the cluster network' },
+  { mark: 'proxied', text: 'answered via the API server — not live traffic' },
   { mark: 'answered', text: 'answered, but not with what we asked for' },
   { mark: 'config', text: 'configured this way — not tested' },
   { mark: 'failed', text: 'a request was refused' },
@@ -273,9 +273,9 @@ export function routeChip(r: RouteResult, opts: { stale?: boolean; running?: boo
   const indirect = r.confidence === 'indirect'
   switch (r.outcome) {
     case 'verified':
-      return indirect ? 'skipped the cluster network' : 'got through'
+      return indirect ? 'got through via the API server' : 'got through'
     case 'reached':
-      return indirect ? 'skipped the cluster network' : 'answered, not confirmed'
+      return indirect ? 'answered via the API server' : 'answered, not confirmed'
     case 'server-error':
       return 'the app returned an error'
     case 'unreachable':

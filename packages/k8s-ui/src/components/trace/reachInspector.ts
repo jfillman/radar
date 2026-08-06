@@ -138,6 +138,19 @@ function gapNext(
   // filter on what the button will do.
   const allPaths = multiPath ? ' The test covers every path on this resource, not only this one.' : ''
 
+  // Mid-run, a running origin is not a "gap" any more, so the no-gap branch
+  // below would claim Radar "already has the strongest evidence" BEFORE the
+  // result exists. Being in flight is its own state, and it is the whole truth
+  // about this panel right now.
+  const runningOrigin = origins.find((o) => o.mark === 'running')
+  if (runningOrigin) {
+    return {
+      header: 'TEST RUNNING',
+      body: `${runningOrigin.name} is testing now — the result lands here when it finishes.`,
+      ctas: [],
+    }
+  }
+
   if (!actionable && denied) {
     const ns = namespace || '<namespace>'
     return {
@@ -254,7 +267,18 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
   const hasFrontDoor = (trace.upstreams ?? []).length > 0
   const external = origins.find((o) => o.id === 'external')
   if (hasFrontDoor && external?.unsupported && origin.id !== 'external') {
-    notProve.push('That people on the internet can reach it — no request has come in from outside.')
+    // "No request has come in from outside" is only true until Radar's own
+    // machine dials the public entry and gets an answer - that request DID come
+    // from outside. What stays unproven then is narrower: a real user's request.
+    const outsideDialAnswered = (trace.upstreams ?? []).some((h) => {
+      const m = hopEvidenceFor(h, { id: 'local' }, trace.runVantage)?.mark
+      return m === 'proved' || m === 'answered'
+    })
+    notProve.push(
+      outsideDialAnswered
+        ? 'That real users can reach it — Radar dialled the public entry from outside and got an answer, but no real user request has been observed.'
+        : 'That people on the internet can reach it — no request has come in from outside.',
+    )
   }
 
   const evidence: { mark: Mark; text: string }[] = []

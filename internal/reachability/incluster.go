@@ -190,6 +190,18 @@ func runInClusterTests(ctx context.Context, typed kubernetes.Interface, image st
 		count++
 		results, fallback, err := runProbe(runCtx, typed, opts)
 		cancel()
+		// Stamp the issuer HERE, not at the hop-stamping step downstream: these
+		// same results are folded into the route via ApplyInClusterResults, and
+		// an unstamped result is read as Radar's own. That put a successful
+		// in-cluster run into a vantage the reader never sees, so the test
+		// appeared to do nothing.
+		for i := range results {
+			results[i].Source = probe.SourceProbeJob
+			results[i].Vantage = probe.VantageInCluster
+			if results[i].Path == "" {
+				results[i].Path = probe.PathData
+			}
+		}
 		switch {
 		case err != nil:
 			res.Status = err.Error()

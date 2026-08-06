@@ -439,3 +439,37 @@ func TestDiagnosisIgnoresBenignRoutesWhenAttributing(t *testing.T) {
 		t.Errorf("want the non-benign route attributed, got %+v", d)
 	}
 }
+
+// A completed in-cluster run must land in the vantage the reader can actually
+// select. Unstamped results were read as Radar's own, so a successful run put
+// its evidence in an origin the UI filters out when Radar runs on a laptop -
+// and the test appeared to have done nothing at all.
+func TestInClusterResultsLandInTheProbeJobVantage(t *testing.T) {
+	tr := &Trace{
+		Subject:  ResourceRef{Kind: "Service", Namespace: "prod", Name: "web"},
+		BrokenAt: -1,
+		Routes: []RouteResult{{
+			Route: "GET /", Target: "web:80", Outcome: OutcomeNotTested,
+			ByVantage: []VantageResult{{Vantage: "local", Path: "data", Outcome: OutcomeNotTested}},
+		}},
+		Downstream: []Hop{{Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "web"}}},
+	}
+	ApplyInClusterResults(tr, map[string][]probe.Result{
+		InClusterResultKey("GET /", "web:80", ""): {{
+			Layer: probe.LayerHTTP, OK: true, Tone: probe.ToneHealthy, Detail: "HTTP 200",
+			Vantage: probe.VantageInCluster, Path: probe.PathData, Source: probe.SourceProbeJob,
+		}},
+	})
+	var found *VantageResult
+	for i := range tr.Routes[0].ByVantage {
+		if tr.Routes[0].ByVantage[i].Source == probe.SourceProbeJob {
+			found = &tr.Routes[0].ByVantage[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no probe-job vantage row after an in-cluster run: %+v", tr.Routes[0].ByVantage)
+	}
+	if found.Outcome != OutcomeVerified {
+		t.Errorf("probe-job outcome = %q, want %q", found.Outcome, OutcomeVerified)
+	}
+}

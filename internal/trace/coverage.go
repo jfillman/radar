@@ -2110,6 +2110,14 @@ func buildNotTested(t *Trace) []RouteSkip {
 	var out []RouteSkip
 	seen := map[string]bool{}
 	for _, h := range t.Downstream {
+		// Pod dials are LOCALIZATION evidence behind the Service, never intended
+		// routes - sweeping their skips in here grew per-Pod "routes" beside the
+		// Service's own (a Service:80 and its Pod:8080 read as "2 routes"). The
+		// probes stay fully visible on the hop itself (pod rows, anomalies,
+		// sampling notes all read Downstream[].Probes).
+		if h.Resource.Kind == "Pods" {
+			continue
+		}
 		for _, p := range h.Probes {
 			if !p.Skipped || p.Reason == "" {
 				continue

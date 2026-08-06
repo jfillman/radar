@@ -282,14 +282,20 @@ func TestComputeCoverage_NotTestedClassification(t *testing.T) {
 			{Resource: ResourceRef{Kind: "Ingress", Name: "x"}, Edge: "entry:Ingress", Probes: []probe.Result{
 				{Layer: probe.LayerDNS, Target: "*.example.com", Skipped: true, Reason: "wildcard host - test a concrete hostname to check reachability", Command: "curl https://YOUR-SUB.example.com/"},
 			}},
+			{Resource: ResourceRef{Kind: "Service", Name: "shop"}, Edge: "Ingress->Service", Probes: []probe.Result{
+				{Layer: probe.LayerTCP, Target: "shop.internal:80", Skipped: true, Reason: `"shop.internal" resolves to an internal address your machine can't reach`},
+			}},
+			// Pod dials are localization evidence, never intended routes - their
+			// skips must NOT become NotTested rows (a Service:80 and its Pod:8080
+			// used to read as "2 routes"). Their honesty lives on the hop probes.
 			{Resource: ResourceRef{Kind: "Pods"}, Edge: "Service->Pods", Probes: []probe.Result{
 				{Layer: probe.LayerTCP, Skipped: true, Reason: "sampled 2 of 5 ready pods"},
-				{Layer: probe.LayerTCP, Target: "10.0.0.5:80", Skipped: true, Reason: `"shop.internal" resolves to an internal address your machine can't reach`},
+				{Layer: probe.LayerTCP, Target: "10.0.0.5:8080", Skipped: true, Reason: `"shop.internal" resolves to an internal address your machine can't reach`},
 			}},
 		},
 	}
 	computeCoverage(tr)
-	byReason := map[string]string{} // class keyed by a reason substring
+	byReason := map[string]string{}
 	for _, s := range tr.NotTested {
 		switch {
 		case strings.Contains(s.Reason, "wildcard"):
@@ -303,17 +309,21 @@ func TestComputeCoverage_NotTestedClassification(t *testing.T) {
 	if byReason["wildcard"] != SkipClassCoverage {
 		t.Errorf("wildcard skip class = %q, want coverage", byReason["wildcard"])
 	}
-	if byReason["sampled"] != SkipClassBenign {
-		t.Errorf("pod-sampling skip class = %q, want benign", byReason["sampled"])
-	}
 	if byReason["internal"] != SkipClassVantage {
 		t.Errorf("internal-address skip class = %q, want vantage", byReason["internal"])
 	}
-	// Benign skips (the "sampled 2 of 5 ready pods" row) lose no coverage, so they
-	// are excluded from the Skipped gap tally - only the coverage + vantage skips
-	// count. Otherwise a fully-tested route would be downgraded to footnote-green.
+	if _, podRowLeaked := byReason["sampled"]; podRowLeaked {
+		t.Errorf("a Pods-hop skip became a NotTested row - pod dials are localization, not routes")
+	}
+	for _, s := range tr.NotTested {
+		if strings.Contains(s.Route, "10.0.0.5") {
+			t.Errorf("a per-Pod target leaked into NotTested: %+v", s)
+		}
+	}
+	// One wildcard coverage gap + one vantage gap; the Pods-hop rows contribute
+	// nothing.
 	if tr.Coverage == nil || tr.Coverage.Skipped != 2 {
-		t.Errorf("coverage.skipped = %v, want 2 (benign excluded)", tr.Coverage)
+		t.Errorf("coverage.skipped = %v, want 2", tr.Coverage)
 	}
 }
 

@@ -325,17 +325,27 @@ function ReachabilityBoard(props: BoardProps) {
 
 /** The hostnames folded into one tab. Only a hover when there is more than one -
  *  a single host is already the tab's own label. */
-function TabTooltip({ hosts, members, children }: { hosts: string[]; members: string[]; children: React.ReactNode }) {
+function TabTooltip({ hosts, members, verdict, children }: { hosts: string[]; members: string[]; verdict?: string; children: React.ReactNode }) {
   // Hostnames when they really are hostnames, otherwise the route labels
   // themselves - a Service port folded with a Pod is neither "2 hostnames" nor
   // meaningfully summarised by dropping one of them.
   const items = hosts.length === members.length && hosts.length > 0 ? hosts : members
   const noun = items === hosts ? 'hostnames' : 'paths'
-  if (items.length < 2) return <>{children}</>
+  // Below the widescreen cutoff the row shows only a tone dot, so the verdict
+  // words must live here - a dot alone answers nothing on hover.
+  if (items.length < 2 && !verdict) return <>{children}</>
+  if (items.length < 2) {
+    return (
+      <Tooltip content={verdict} wrapperClassName="flex-none cursor-help">
+        {children}
+      </Tooltip>
+    )
+  }
   return (
     <Tooltip
       content={
         <span className="flex flex-col gap-0.5">
+          {verdict && <span className="font-semibold">{verdict}</span>}
           <span className="font-semibold">
             Same result on {items.length} {noun}
           </span>
@@ -378,15 +388,18 @@ function ScenarioPicker({
       className="absolute right-3 top-2 z-10 max-w-[46%] rounded-lg border border-theme-border bg-theme-elevated shadow-theme-md"
     >
       <div className="px-2.5 pb-0.5 pt-1.5 text-[9px] font-bold tracking-[0.07em] text-theme-text-tertiary">PATH</div>
-      {/* Rows, not tabs: a corner column scales to N paths (scrolls past ~5)
-          where a horizontal bar overflowed. Tone dot + mono label + verdict
-          chip - the same vocabulary as everywhere else, nothing invented. */}
-      <div className="flex max-h-[38vh] flex-col overflow-y-auto pb-1">
+      {/* Rows, not tabs: a corner column scales to N paths - capped at ~5 rows
+          with a half-row peek, then scrolls, so many-port Services can't eat
+          the graph. Tone dot + mono label; the verdict CHIP only gets a column
+          on widescreen - below that the dot carries the tone and the words
+          live on the hover, because eight long chips drowned the labels. */}
+      <div className="flex max-h-[126px] flex-col overflow-y-auto pb-1">
         {scenarios.map((s) => {
           const tone = routeTone(s.primary, { stale, running })
           const active = s.key === activeKey
+          const chip = routeChip(s.primary, { stale, running })
           return (
-            <TabTooltip hosts={s.hosts} members={s.members} key={s.key}>
+            <TabTooltip hosts={s.hosts} members={s.members} verdict={chip} key={s.key}>
               <button
                 type="button"
                 onClick={() => onPick(s.key)}
@@ -397,7 +410,7 @@ function ScenarioPicker({
               >
                 <span className="inline-block shrink-0 rounded-full" style={{ width: 7, height: 7, background: SEV_COLOR[tone] }} />
                 <span className="min-w-0 max-w-[200px] truncate font-mono text-[11.5px] font-semibold text-theme-text-primary">{s.label}</span>
-                <span className={`badge-sm shrink-0 whitespace-nowrap ${SEV_BADGE[tone]}`}>{routeChip(s.primary, { stale, running })}</span>
+                <span className={`badge-sm hidden shrink-0 whitespace-nowrap 2xl:inline-flex ${SEV_BADGE[tone]}`}>{chip}</span>
               </button>
             </TabTooltip>
           )

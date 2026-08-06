@@ -275,6 +275,11 @@ function Node({
     <div
       role="button"
       tabIndex={0}
+      // The visible text is kind + name in separate spans a screen reader joins
+      // unpredictably; one explicit name says what this is and (for a vantage
+      // capsule) what selecting it does.
+      aria-label={isOrigin ? `Vantage: ${node.name} — show what was tested from here` : `${node.kind} ${node.name}`}
+      aria-pressed={selected}
       onClick={() => onSelect(node.id)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {

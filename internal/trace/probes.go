@@ -619,6 +619,25 @@ func hostPortForURL(host string, port, schemeDefault int32) string {
 // apiserver path is reachable; in-cluster without a client falls back to
 // direct TCP only. The apiserver path is HTTP-only, so non-HTTP ports are
 // skipped with a reason instead of producing a false fail.
+// declaredPortLabel names a declared ServicePort for skip rows. The bare
+// number was not an identity: Kubernetes permits TCP and UDP ports with the
+// same number (kube-dns declares both :53), and two rows reading "port 53"
+// were indistinguishable. The protocol rides on non-TCP ports and the declared
+// name (usually the protocol: dns-tcp, otlp-grpc, redis) rides always - for
+// untestable non-HTTP ports the name IS the useful information.
+func declaredPortLabel(p PortMap) string {
+	label := fmt.Sprintf("port %d", p.Port)
+	if proto := strings.ToUpper(strings.TrimSpace(p.Protocol)); proto != "" && proto != "TCP" {
+		label += "/" + proto
+	}
+	if name := strings.TrimSpace(p.Name); name != "" {
+		label += " (" + name + ")"
+	} else if ap := strings.TrimSpace(p.AppProtocol); ap != "" {
+		label += " (" + ap + ")"
+	}
+	return label
+}
+
 func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kubernetes.Interface, path string) []probe.Result {
 	if h.Config == nil || len(h.Config.Ports) == 0 {
 		return nil
@@ -640,7 +659,7 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 			if proto == "SCTP" {
 				cmd = fmt.Sprintf("# %s.%s:%d is SCTP - test with an SCTP-capable client (e.g. sctp_test)", h.Resource.Name, h.Resource.Namespace, p.Port)
 			}
-			skip := probe.SkippedCmd(probe.LayerTCP, fmt.Sprintf("port %d", p.Port), vantage,
+			skip := probe.SkippedCmd(probe.LayerTCP, declaredPortLabel(p), vantage,
 				fmt.Sprintf("port %d is %s - a TCP dial can't test it; reachability not verified. Test with a %s client.", p.Port, proto, proto),
 				cmd)
 			skip.Port = p.Port
@@ -660,7 +679,7 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 			// Budget expired during the data-path probe. Running the apiserver probe
 			// now would map a context-deadline error into a false "Timed out …
 			// unreachable" row - emit an honest budget skip instead.
-			skip := probe.SkippedCmd(probe.LayerHTTP, fmt.Sprintf("port %d", p.Port), vantage,
+			skip := probe.SkippedCmd(probe.LayerHTTP, declaredPortLabel(p), vantage,
 				"the test ran out of time before the API-server path could be tested", "")
 			skip.Path = probe.PathAPIServer
 			skip.Port = p.Port
@@ -668,7 +687,7 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 			break
 		}
 		if client != nil {
-			target := fmt.Sprintf("port %d", p.Port)
+			target := declaredPortLabel(p)
 			if !isHTTPProbablePort(p.Name, p.AppProtocol, p.Port) {
 				cmd := portForwardCmd("svc", h.Resource.Namespace, h.Resource.Name, p.Port)
 				if isGRPCLike(p.Name, p.AppProtocol) {
@@ -737,7 +756,7 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 				reason = "Apiserver path couldn't be tested for this request - your identity may lack permission to proxy."
 				cmd = fmt.Sprintf("kubectl auth can-i get services/proxy -n %s", h.Resource.Namespace)
 			}
-			skip := probe.SkippedCmd(probe.LayerHTTP, fmt.Sprintf("port %d", p.Port), vantage, reason, cmd)
+			skip := probe.SkippedCmd(probe.LayerHTTP, declaredPortLabel(p), vantage, reason, cmd)
 			skip.Path = probe.PathAPIServer
 			out = append(out, skip)
 		}

@@ -1773,3 +1773,69 @@ func TestProtocolBoundaryFailsClosed(t *testing.T) {
 		t.Error("the HTTP route lost its request")
 	}
 }
+
+// Kubernetes permits TCP and UDP ServicePorts with the same number (kube-dns:
+// UDP :53 beside TCP :53). The number alone is not a route identity.
+func TestDuplicatePortNumber_IsNotAnIdentity(t *testing.T) {
+	dup := []PortMap{
+		{Port: 53, Protocol: "UDP", Name: "dns"},
+		{Port: 53, Protocol: "TCP", Name: "dns-tcp"},
+	}
+	// Fail-closed regardless of declaration ORDER: TCP-first must not let the
+	// UDP sibling acquire a guessed HTTP Job.
+	tcpFirst := []PortMap{
+		{Port: 80, Protocol: "TCP", Name: "http"},
+		{Port: 80, Protocol: "UDP", Name: "http-udp"},
+	}
+	if httpProbablePort(dup, 53) {
+		t.Fatal("ambiguous 53 (UDP+TCP) must not be HTTP-probable")
+	}
+	if httpProbablePort(tcpFirst, 80) {
+		t.Fatal("TCP-first declaration must not make the ambiguous 80 HTTP-probable")
+	}
+	if !httpProbablePort([]PortMap{{Port: 80, Name: "http"}}, 80) {
+		t.Fatal("a plain TCP http port must stay HTTP-probable")
+	}
+
+	// Scheme hints belong to the TCP entry - requests only travel TCP.
+	cfg := &HopConfig{Ports: dup}
+	if got := portFromTarget("kube-dns:53", cfg); got.Name != "dns-tcp" {
+		t.Fatalf("portFromTarget must prefer the TCP entry, got %q", got.Name)
+	}
+
+	// Labels distinguish the two declared paths and carry the protocol.
+	if a, b := declaredPortLabel(dup[0]), declaredPortLabel(dup[1]); a == b {
+		t.Fatalf("duplicate-number labels must differ, both %q", a)
+	} else {
+		if !strings.Contains(a, "UDP") {
+			t.Fatalf("UDP label must name the protocol, got %q", a)
+		}
+		if !strings.Contains(b, "dns-tcp") {
+			t.Fatalf("TCP label should carry the declared name, got %q", b)
+		}
+	}
+
+	// A preserved TCP route must not absorb the UDP sibling's skip row.
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Service", Name: "kube-dns", Namespace: "kube-system"},
+		Routes:  []RouteResult{{Route: "kube-dns:53", Target: "kube-dns:53", Outcome: OutcomeReached}},
+		Downstream: []Hop{{
+			Resource: ResourceRef{Kind: "Service", Name: "kube-dns", Namespace: "kube-system"},
+			Config:   &HopConfig{Ports: dup},
+			Probes: []probe.Result{{
+				Layer: probe.LayerTCP, Target: "port 53/UDP (dns)", Port: 53,
+				Skipped: true, Reason: "port 53 is UDP - a TCP dial can't test it",
+			}},
+		}},
+	}
+	skips := buildNotTested(tr)
+	found := false
+	for _, s := range skips {
+		if strings.Contains(s.Route, "UDP") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the UDP :53 row must survive beside the TCP route, got %+v", skips)
+	}
+}

@@ -1598,14 +1598,22 @@ func hopsHaveScaleZero(hops []Hop) bool {
 // ran. extraLoc (the behind-the-gate pod facts) is appended to every route.
 // httpProbablePort reports whether the declared Service port speaks HTTP per
 // the SAME predicate the prober used to decide what to dial. Fail-closed: an
-// unknown port must not become a guessed HTTP probe Job.
+// unknown port must not become a guessed HTTP probe Job. EVERY declared entry
+// for the number must pass - Kubernetes permits TCP and UDP ports with the
+// same number, and first-match let a UDP :80 acquire an HTTP Job whenever its
+// TCP sibling happened to be declared first.
 func httpProbablePort(ports []PortMap, port int32) bool {
+	matched := false
 	for _, pm := range ports {
-		if pm.Port == port {
-			return httpProbablePortMap(pm)
+		if pm.Port != port {
+			continue
 		}
+		if !httpProbablePortMap(pm) {
+			return false
+		}
+		matched = true
 	}
-	return false
+	return matched
 }
 
 // httpProbablePortMap is the one protocol boundary for anything that would
@@ -2127,6 +2135,27 @@ func layerRank(l probe.Layer) int {
 	return 4
 }
 
+// unambiguousTCPPort reports whether every declared entry for the number is
+// TCP (or defaulted). Kubernetes forbids duplicate (port, protocol) pairs, so
+// more than one match always means a non-TCP sibling exists. No declaration to
+// check means nothing contradicts the TCP assumption.
+func unambiguousTCPPort(cfg *HopConfig, port int32) bool {
+	if cfg == nil {
+		return true
+	}
+	for _, pm := range cfg.Ports {
+		if pm.Port != port {
+			continue
+		}
+		switch strings.ToUpper(strings.TrimSpace(pm.Protocol)) {
+		case "", "TCP":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // buildNotTested lists every distinct skip on the intended route (DOWNSTREAM
 // only - upstreams are context, not the subject's routes), classified. A
 // truncated fan-out is itself a coverage gap.
@@ -2166,7 +2195,12 @@ func buildNotTested(t *Trace) []RouteSkip {
 			if !p.Skipped || p.Reason == "" {
 				continue
 			}
-			if p.Port != 0 && preserved[fmt.Sprintf("%s\x00%s\x00%d", hopNS, h.Resource.Name, p.Port)] {
+			// Absorption is keyed by port NUMBER, and a preserved route is a TCP
+			// candidate - so it may only absorb a skip whose number is
+			// unambiguously TCP. kube-dns declares UDP :53 beside TCP :53; the
+			// TCP route swallowing the UDP row erased a declared path that the
+			// route's test cannot speak for.
+			if p.Port != 0 && unambiguousTCPPort(h.Config, p.Port) && preserved[fmt.Sprintf("%s\x00%s\x00%d", hopNS, h.Resource.Name, p.Port)] {
 				continue
 			}
 			key := string(p.Layer) + "|" + p.Target + "|" + p.Reason
@@ -2471,10 +2505,27 @@ func portFromTarget(target string, cfg *HopConfig) PortMap {
 		}
 	}
 	if cfg != nil {
-		for _, p := range cfg.Ports {
-			if p.Port == num {
-				return p
+		// A route target is something a request was (or would be) sent to, and
+		// requests only travel TCP - so when TCP and UDP share the number, the
+		// TCP entry owns the scheme hints. First-match handed them to whichever
+		// protocol was declared first.
+		var fallback *PortMap
+		for i := range cfg.Ports {
+			p := cfg.Ports[i]
+			if p.Port != num {
+				continue
 			}
+			switch strings.ToUpper(strings.TrimSpace(p.Protocol)) {
+			case "", "TCP":
+				return p
+			default:
+				if fallback == nil {
+					fallback = &p
+				}
+			}
+		}
+		if fallback != nil {
+			return *fallback
 		}
 	}
 	return PortMap{Port: num}

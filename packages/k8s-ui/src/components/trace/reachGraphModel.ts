@@ -535,6 +535,7 @@ const SHORT_MECH: Record<string, string> = {
 const SHORT_KIND_TAG: Record<string, string> = {
   SYNTHETIC: 'SYNTHETIC',
   'REAL CLIENT': 'REAL CLIENT',
+  'AS A CLIENT': 'AS A CLIENT',
   'REAL CALLER': 'REAL CALLER',
   'RELAYED · NOT A CALLER': 'RELAYED',
 }

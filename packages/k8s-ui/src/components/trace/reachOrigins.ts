@@ -48,6 +48,12 @@ export const ORIGIN_KIND_TAG: Record<OriginKind, string> = {
   relayed: 'RELAYED · NOT A CALLER',
 }
 
+/** The laptop's own tag. It shares the 'real-client' KIND with the external
+ *  origin, but the tags must differ: a genuine request from the public internet
+ *  IS a real client; Radar dialling from the operator's machine behaves AS one
+ *  - the sender is Radar, and saying "real client" upgraded it into a user. */
+export const LAPTOP_TAG = 'AS A CLIENT'
+
 /** Evidence strength, strongest first. Drives the "next strongest test" prompt. */
 export const ORIGIN_STRENGTH: OriginId[] = ['caller', 'external', 'incluster', 'radar-incluster', 'local', 'apiserver']
 
@@ -230,7 +236,7 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
     name: 'Radar on your machine',
     mech: 'this machine, over your own network',
     kind: 'real-client',
-    kindTag: ORIGIN_KIND_TAG['real-client'],
+    kindTag: LAPTOP_TAG,
     // Not the cluster dataplane: from a laptop a request never traverses
     // kube-proxy, NetworkPolicy or the mesh, so it cannot sit in that lane.
     lane: 'control',

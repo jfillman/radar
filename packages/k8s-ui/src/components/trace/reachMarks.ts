@@ -514,10 +514,30 @@ export function scenariosFor(
   notTested: { route?: string; reason: string }[],
   upstreams: Hop[] = [],
 ): Scenario[] {
+  // A not-tested ROUTE and the raw skip rows for its host describe the SAME
+  // gap (the producer preserves the declared candidate as a route so the
+  // in-cluster recovery has a target). Mirroring recountCoverage's host-level
+  // absorption: rows whose host a route already covers must not become a
+  // second scenario for the same gap.
+  const covered = new Set(
+    routes.flatMap((r) => [routeHostOf(r.route), hostOfTarget(r.target)]).filter(Boolean),
+  )
   const synthesized: RouteResult[] = notTested
     .filter((s) => !!s.route)
+    .filter((s) => {
+      const h = routeHostOf(s.route as string) || hostOfTarget(s.route)
+      return !h || !covered.has(h)
+    })
     .map((s) => ({ route: s.route as string, outcome: 'not-tested' as RouteOutcome, evidence: s.reason }))
   return groupRoutes([...routes, ...synthesized], upstreams)
+}
+
+/** The bare host of a probe-target-shaped string ("api:80" → "api"). */
+function hostOfTarget(t?: string): string {
+  const s = (t ?? '').trim()
+  if (!s) return ''
+  const i = s.lastIndexOf(':')
+  return (i > 0 ? s.slice(0, i) : s).toLowerCase()
 }
 
 /**

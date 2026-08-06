@@ -647,3 +647,21 @@ describe('a backend-scoped pass never reads as a bare pass', () => {
     expect(vantageSignature(a)).not.toBe(vantageSignature(b))
   })
 })
+
+describe('a preserved candidate is one gap, not two scenarios', () => {
+  it('a skip row for a host a not-tested route covers is absorbed', () => {
+    const s = scenariosFor(
+      [{ route: 'argocd:80', target: 'argocd:80', outcome: 'not-tested' }],
+      [{ route: 'argocd:80', reason: 'the API-server proxy timed out' }],
+    )
+    expect(s).toHaveLength(1)
+  })
+
+  it('a skip row for an UNcovered host still surfaces', () => {
+    const s = scenariosFor(
+      [{ route: 'argocd:80', target: 'argocd:80', outcome: 'not-tested' }],
+      [{ route: 'other-svc:9090', reason: 'not reachable from here' }],
+    )
+    expect(s).toHaveLength(2)
+  })
+})

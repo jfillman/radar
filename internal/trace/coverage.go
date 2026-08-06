@@ -284,6 +284,14 @@ func localizeBoundaries(t *Trace) {
 
 func backendKey(namespace, name string) string { return namespace + "\x00" + name }
 
+// hopPorts is the hop's declared Service port map, nil-safe.
+func hopPorts(h Hop) []PortMap {
+	if h.Config == nil {
+		return nil
+	}
+	return h.Config.Ports
+}
+
 // backendPair is one backend Service hop with the Pods hop that sits behind it.
 type backendPair struct {
 	svc  *Hop
@@ -1432,7 +1440,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 		// intended-route test, one route per Service port; the Pods-hop probes sit
 		// behind the Service, so they're localization, never a separate route.
 		podLoc := factsFromProbes(downstreamProbes(t.Downstream[1:]))
-		routes := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, podLoc, traceHasFrontDoor(t))
+		routes := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, podLoc, hopPorts(entry), traceHasFrontDoor(t))
 		setTargetNamespace(routes, entry.Resource.Namespace)
 		markBenignScaleZero(routes, entry)
 		attachInClusterRequest(routes, "", "", entry.Config)
@@ -1517,7 +1525,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 			}
 			shared := entryProbesForHost(entry, scopeHost)
 			outcomeProbes := append(append([]probe.Result{}, shared...), backend.Probes...)
-			routes := routesByPort(rr.label, backend.Resource.Name, target, outcomeProbes, rr.ports, podLoc, true)
+			routes := routesByPort(rr.label, backend.Resource.Name, target, outcomeProbes, rr.ports, podLoc, hopPorts(backend), true)
 			if len(routes) > 0 {
 				setTargetNamespace(routes, backend.Resource.Namespace)
 				markBenignScaleZero(routes, backend)
@@ -1535,7 +1543,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 	// entry path). Surface the Gateway's OWN front-door reachability as the route
 	// so its probe evidence isn't dropped and coverage doesn't read empty.
 	if entry.Resource.Kind == "Gateway" && len(out) == 0 {
-		gw := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, nil, false)
+		gw := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, nil, hopPorts(entry), false)
 		setTargetNamespace(gw, entry.Resource.Namespace)
 		out = append(out, gw...)
 	}
@@ -1588,7 +1596,19 @@ func hopsHaveScaleZero(hops []Hop) bool {
 // empty scope means every probed port is an intended route (a Service subject's
 // own ports). fallbackTarget labels the host-level route when no per-port probe
 // ran. extraLoc (the behind-the-gate pod facts) is appended to every route.
-func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Result, scope []int32, extraLoc []ProbeFact, backendScoped bool) []RouteResult {
+// httpProbablePort reports whether the declared Service port speaks HTTP per
+// the SAME predicate the prober used to decide what to dial. Fail-closed: an
+// unknown port must not become a guessed HTTP probe Job.
+func httpProbablePort(ports []PortMap, port int32) bool {
+	for _, pm := range ports {
+		if pm.Port == port {
+			return isHTTPProbablePort(pm.Name, pm.AppProtocol, port)
+		}
+	}
+	return false
+}
+
+func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Result, scope []int32, extraLoc []ProbeFact, ports []PortMap, backendScoped bool) []RouteResult {
 	inScope := func(port int32) bool {
 		if len(scope) == 0 {
 			return true
@@ -1659,6 +1679,19 @@ func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Re
 		}
 		if r, ok := emit(rid, target, ps); ok {
 			out = append(out, r)
+			continue
+		}
+		// Every probe for this declared port SKIPPED (apiserver timeout, budget
+		// exhaustion, vantage). Dropping the route erased the declared test
+		// candidate with it - InClusterRequest only rides on routes - so the
+		// offered in-cluster recovery could not run exactly when it was the
+		// recovery. Preserve the candidate as an honest not-tested route (the
+		// skip rows keep the reasons; recountCoverage absorbs them per host).
+		// ONLY for ports the prober itself considers HTTP: a deliberately
+		// skipped Redis/gRPC/UDP port must not become a guessed HTTP Job that
+		// fabricates identity/mTLS evidence.
+		if len(ps) > 0 && httpProbablePort(ports, port) {
+			out = append(out, RouteResult{Route: rid, Target: target, Outcome: OutcomeNotTested})
 		}
 	}
 	return out

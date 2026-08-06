@@ -1276,7 +1276,7 @@ func TestRoutesByPort_SharedFrontDoorDoesNotVerifyPort(t *testing.T) {
 	skipped := probe.Skipped(probe.LayerHTTP, "port 9090", probe.VantageLocal, "non-HTTP port - can't verify from here")
 	skipped.Port = 9090
 	probes := append(append([]probe.Result{}, shared...), skipped)
-	routes := routesByPort("api/", "api", "api:9090", probes, []int32{9090}, nil, false)
+	routes := routesByPort("api/", "api", "api:9090", probes, []int32{9090}, nil, nil, false)
 	if len(routes) != 1 {
 		t.Fatalf("want 1 route, got %d", len(routes))
 	}
@@ -1296,7 +1296,7 @@ func TestRoutesByPort_OwnHealthyStillVerifies(t *testing.T) {
 	}
 	own := probe.Result{Layer: probe.LayerHTTP, Target: "port 80", Port: 80, OK: true, Tone: probe.ToneHealthy, Vantage: probe.VantageInCluster}
 	probes := append(append([]probe.Result{}, shared...), own)
-	routes := routesByPort("api/", "api", "api:80", probes, []int32{80}, nil, false)
+	routes := routesByPort("api/", "api", "api:80", probes, []int32{80}, nil, nil, false)
 	if len(routes) != 1 || routes[0].Outcome != OutcomeVerified {
 		t.Fatalf("want a verified route from the port's own healthy probe, got %+v", routes)
 	}
@@ -1622,5 +1622,71 @@ func TestZeroTestedDiagnosisCollapsesIdenticalReasons(t *testing.T) {
 	d := computeDiagnosis(tr)
 	if d == nil || !strings.Contains(d.Summary, same) || strings.Contains(d.Summary, "different reasons") {
 		t.Errorf("summary = %+v, want the one shared reason stated once", d)
+	}
+}
+
+// The declared test candidate must survive a skipped-only first probe: an
+// apiserver timeout / budget skip erased the route, and InClusterRequest only
+// rides on routes - so the offered in-cluster recovery could not run exactly
+// when it was the recovery.
+func TestSkippedOnlyHTTPPortKeepsItsDeclaredCandidate(t *testing.T) {
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Service", Namespace: "prod", Name: "argocd"},
+		Downstream: []Hop{
+			{
+				Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "argocd"},
+				Config:   &HopConfig{ClusterIP: "10.0.0.9", Ports: []PortMap{{Port: 80, Name: "http", TargetPort: "8080"}}},
+				Probes: []probe.Result{{
+					Layer: probe.LayerHTTP, Target: "argocd:80", Port: 80,
+					Vantage: probe.VantageLocal, Path: probe.PathAPIServer,
+					Skipped: true, Reason: "the API-server proxy timed out",
+				}},
+			},
+			{Resource: ResourceRef{Kind: "Pods", Namespace: "prod"}, Edge: "Service->Pods"},
+		},
+	}
+	computeCoverage(tr)
+
+	if len(tr.Routes) != 1 {
+		t.Fatalf("routes = %d, want 1 - the declared HTTP port must survive as a not-tested route: %+v", len(tr.Routes), tr.Routes)
+	}
+	r := tr.Routes[0]
+	if r.Outcome != OutcomeNotTested {
+		t.Errorf("Outcome = %q, want not-tested", r.Outcome)
+	}
+	if r.InClusterRequest == nil {
+		t.Fatalf("InClusterRequest = nil - the in-cluster recovery has no target to run")
+	}
+	// The intended-route count is the invariant (dedup is host-level absorption).
+	if tr.Coverage == nil || tr.Coverage.Skipped != 1 {
+		t.Errorf("Coverage.Skipped = %+v, want 1 intended-route gap", tr.Coverage)
+	}
+}
+
+// A deliberately-skipped non-HTTP port must NOT become a guessed HTTP Job -
+// the tcp,http-shaped probe would fabricate identity/mTLS evidence about a
+// protocol it never spoke.
+func TestSkippedOnlyNonHTTPPortStaysRouteless(t *testing.T) {
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Service", Namespace: "prod", Name: "redis"},
+		Downstream: []Hop{
+			{
+				Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "redis"},
+				Config:   &HopConfig{ClusterIP: "10.0.0.10", Ports: []PortMap{{Port: 6379, Name: "redis", TargetPort: "6379"}}},
+				Probes: []probe.Result{{
+					Layer: probe.LayerTCP, Target: "redis:6379", Port: 6379,
+					Vantage: probe.VantageLocal, Path: probe.PathData,
+					Skipped: true, Reason: "redis is not an HTTP port",
+				}},
+			},
+			{Resource: ResourceRef{Kind: "Pods", Namespace: "prod"}, Edge: "Service->Pods"},
+		},
+	}
+	computeCoverage(tr)
+
+	for _, r := range tr.Routes {
+		if r.InClusterRequest != nil {
+			t.Fatalf("a non-HTTP skipped port grew a runnable HTTP request: %+v", r)
+		}
 	}
 }

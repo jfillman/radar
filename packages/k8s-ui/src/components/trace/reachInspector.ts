@@ -3,7 +3,7 @@ import type { Mark, SevTone } from './reachMarks'
 import { routeMark, routeChip, routeTone, routeAsSeenFrom, originRouteEvidence, routeForOrigin } from './reachMarks'
 import type { Origin, OriginId } from './reachOrigins'
 import { strongestGap, actionableGap } from './reachOrigins'
-import { originProducedEvidence, type GraphNode } from './reachGraphModel'
+import { hopEvidenceFor, originProducedEvidence, type GraphNode } from './reachGraphModel'
 
 // 'run-probes' re-runs the reachability probes. It is deliberately NOT
 // 'refresh': the panel that offers it promises fresh evidence, and a static
@@ -47,19 +47,43 @@ export interface Sidebar {
     notProve: string[]
     next: { header: string; body: string; blocked?: string; ctas: InspectorCTA[] }
   }
-  resource?: {
-    kind: string
-    name: string
-    chipTone: SevTone
-    chipText: string
-    body: string
-    facts: { k: string; v: string }[]
-    rows?: { mark: Mark; name: string; detail: string }[]
-    moreRows?: number
-    anomalies?: { mark: Mark; text: string }[]
-    notProve: string[]
-    openRef?: ResourceRef
-  }
+  /** Every hop on the selected path, in order - the whole story for this path
+   *  seen from this vantage, rather than a summary plus whichever node was last
+   *  clicked. Reading beat clicking: understanding a path used to take three
+   *  clicks whose panel meant something different after each one. */
+  hops: HopReport[]
+}
+
+export interface HopDetail {
+  kind: string
+  name: string
+  chipTone: SevTone
+  chipText: string
+  body: string
+  facts: { k: string; v: string }[]
+  rows?: { mark: Mark; name: string; detail: string }[]
+  moreRows?: number
+  anomalies?: { mark: Mark; text: string }[]
+  notProve: string[]
+  openRef?: ResourceRef
+}
+
+/**
+ * A hop's place in the story.
+ *
+ *  - `break`   where the request is known to have stopped. Expanded by default;
+ *              it is the answer.
+ *  - `before`  reached before that. Collapsed - it worked, so it is context.
+ *  - `after`   never tried, because something earlier stopped. Collapsed, and
+ *              labelled so its silence is not read as health.
+ *  - `plain`   no break to order around.
+ */
+export type HopState = 'before' | 'break' | 'after' | 'plain'
+
+export interface HopReport extends HopDetail {
+  id: string
+  state: HopState
+  expanded: boolean
 }
 
 const NOT_DATAPLANE = 'Nothing about the normal network path. Kubernetes relayed this for us, so routing, network policy and the mesh were all skipped.'
@@ -100,10 +124,11 @@ function gapNext(
   // panel must say that HERE, instead of recommending it as the strongest
   // evidence available and letting the operator find out by clicking.
   const notRunnable = 'No path on this resource has a request Radar can send from inside the cluster, so this test would have nothing to run.'
-  const inClusterCTA = (): InspectorCTA[] =>
-    inClusterRunnable
-      ? [{ text: '⚗ Run in-cluster test', primary: true, action: 'run-in-cluster' }]
-      : [{ text: '⚗ Run in-cluster test', action: 'run-in-cluster', disabledReason: notRunnable }]
+  // No button here. The in-cluster run is offered ON the vantage capsule in the
+  // graph, which is the thing that would produce the missing evidence - and a
+  // third copy of the same control (header, panel, capsule) was one too many.
+  // The panel keeps the REASONING, which is what it is good at.
+  const inClusterCTA = (): InspectorCTA[] => []
   const actionable = actionableGap(origins)
   const ceiling = strongestGap(origins)
   const ceilingNote = ceiling?.unsupported ? `Even then, ${ceiling.name.toLowerCase()} stays untested — ${ceiling.unavailable}` : undefined
@@ -161,6 +186,10 @@ interface Ctx {
   origin: Origin
   origins: Origin[]
   nodes: GraphNode[]
+  /** Where the path first broke, from the graph model. */
+  breakNodeId?: string
+  /** The selected route's chain in traversal order, from the graph model. */
+  pathNodeIds?: string[]
   stale?: boolean
   running?: boolean
   /** More than one scenario is on screen, so scope has to be stated explicitly. */
@@ -205,6 +234,11 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
   // A config-derived break is true of every vantage and observed by none, so it
   // reads as a configuration fact - never as this origin's failed dial.
   const fromConfig = ev.kind === 'config'
+  // Which KIND of derived break. Declared-config is broken whatever the cluster
+  // is doing; cluster-state is true right now and changes when the workload
+  // does. Calling the second one a configuration failure sends the reader to
+  // edit YAML when the fix is to get Pods ready.
+  const basis = ev.kind === 'config' ? ev.result.basis : undefined
   const hasEvidence = ev.kind === 'own' || (ev.kind === 'rollup' && originProducedEvidence(origin))
   const mark: Mark = fromConfig
     ? 'config'
@@ -232,6 +266,17 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
     evidence.push({ mark: m, text })
   }
   if ((hasEvidence || fromConfig) && asSeen?.evidence) add(mark, asSeen.evidence)
+  // What this vantage saw at each HOP. The route is built from the backend's
+  // probes, so a laptop that dialled the front door and got an answer had all
+  // of it discarded and read as "no test has been run from here" - beside a
+  // graph drawing that very dial.
+  const hopSeen = ctx.nodes
+    .filter((n) => !n.isOrigin && n.hop)
+    .map((n) => ({ node: n, ev: hopEvidenceFor(n.hop, origin, trace.runVantage, { stale: ctx.stale, running: ctx.running }) }))
+    .filter((x): x is { node: GraphNode; ev: NonNullable<ReturnType<typeof hopEvidenceFor>> } => !!x.ev)
+  if (!hasEvidence && !fromConfig) {
+    for (const { node, ev: e } of hopSeen) add(e.mark, `${node.kind.toLowerCase()} ${node.name} — ${e.title || e.label}`)
+  }
   // The one boundary two observations can establish. Stated as the reasoning
   // that produced it, so it reads as evidence rather than as a verdict.
   if (ev.kind === 'own' && routeForOrigin(route, origin.id)?.failedBoundary === 'service-routing') {
@@ -264,8 +309,13 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
   // the selected path's - the route's own evidence is what remains true.
   const rawDiagnosis = trace.diagnosis
   const diagnosis = rawDiagnosis && (!rawDiagnosis.route || rawDiagnosis.route === route?.route) ? rawDiagnosis : undefined
-  const body = fromConfig
+  const reachedSomething = !hasEvidence && !fromConfig && hopSeen.some((x) => x.ev.mark !== 'failed')
+  const body = basis === 'cluster-state'
+    ? 'Nothing is ready to serve this path right now, so it cannot work from any vantage. No request was sent to establish that — it is read off the current state of the cluster, and it changes when the workload does.'
+    : fromConfig
     ? 'The configuration itself is broken, so this path cannot work from any vantage. No request was sent to establish that — it is read off what is declared.'
+    : reachedSomething
+    ? 'This vantage did reach part of the path — see what it saw below. It has no result for this route as a whole, so the end-to-end journey from here is still unproven.'
     : !hasEvidence
     ? origin.unavailable || 'Nothing has been tested from here, so this says nothing about whether traffic gets through.'
     : failed
@@ -306,7 +356,7 @@ function pathSection(ctx: Ctx): Sidebar['path'] {
 }
 
 /** The additive detail for a selected node. Never replaces the diagnosis. */
-function resourceSection(node: GraphNode): Sidebar['resource'] {
+function resourceSection(node: GraphNode): HopDetail {
   const hop = node.hop
   const findings = hop?.findings ?? []
 
@@ -378,8 +428,32 @@ function resourceSection(node: GraphNode): Sidebar['resource'] {
  */
 export function buildSidebar(sel: Selection, ctx: Ctx): Sidebar {
   const path = pathSection(ctx)
-  const node = sel ? ctx.nodes.find((n) => n.id === sel && !n.isOrigin) : undefined
-  return { path, resource: node ? resourceSection(node) : undefined }
+  // The selected route's own chain, from the graph's traversal - NOT every node
+  // sorted by position. Sorting served siblings up as if they were sequential
+  // hops and included branches this route never touches.
+  const byId = new Map(ctx.nodes.map((n) => [n.id, n]))
+  const chain = (ctx.pathNodeIds ?? [])
+    .map((id) => byId.get(id))
+    .filter((n): n is GraphNode => !!n && !n.isOrigin)
+  const breakIdx = ctx.breakNodeId ? chain.findIndex((n) => n.id === ctx.breakNodeId) : -1
+  const stateOf = (i: number): HopState => {
+    if (breakIdx < 0) return 'plain'
+    if (i < breakIdx) return 'before'
+    return i === breakIdx ? 'break' : 'after'
+  }
+  // What to open when the reader has not chosen: the break if there is one,
+  // else the destination - the point of the path. Never everything at once,
+  // which is how a report becomes a wall.
+  const defaultOpen = breakIdx >= 0 ? breakIdx : chain.length - 1
+  return {
+    path,
+    hops: chain.map((n, i) => ({
+      ...resourceSection(n),
+      id: n.id,
+      state: stateOf(i),
+      expanded: sel ? n.id === sel : i === defaultOpen,
+    })),
+  }
 }
 
 /** The headline verdict band. Derived from the selected scenario, never from an
@@ -389,7 +463,6 @@ const VERDICT_TONE: Record<string, SevTone> = { healthy: 'healthy', degraded: 'd
 export function buildVerdict(
   trace: Trace,
   route: RouteResult | undefined,
-  origins: Origin[],
   opts: { stale?: boolean; running?: boolean; pathLabel?: string; originId?: string; originName?: string } = {},
 ): {
   tone: SevTone
@@ -401,14 +474,7 @@ export function buildVerdict(
   title: string
   problem?: string
   body: string
-  facts: { k: string; v: string }[]
 } {
-  const used = origins.filter((o) => !['untested', 'blocked', 'denied'].includes(o.mark))
-  // The headline gap names what can still be DONE. Naming the permanently
-  // unavailable real-caller test here made every resource carry the same
-  // un-actionable line; that ceiling belongs in the inspector's caveats.
-  const actionable = actionableGap(origins)
-  const denied = origins.find((o) => o.mark === 'denied')
   // With no route there is nothing to derive a tone from, but the backend has
   // still reached a verdict (e.g. a config fault found without probing). Falling
   // through to 'unknown' showed a grey dot on a resource the tracer called
@@ -420,27 +486,6 @@ export function buildVerdict(
   // exists to represent.
   const seen = opts.originId ? routeAsSeenFrom(route, opts.originId) : route
   const tone: SevTone = opts.running ? 'info' : seen ? routeTone(seen, opts) : VERDICT_TONE[trace.verdict] ?? 'unknown'
-  const mark = seen ? routeMark(seen, opts) : 'untested'
-  const facts = [
-    { k: 'origins:', v: used.length > 0 ? used.map((o) => o.name).join(' · ') : 'none used yet' },
-    { k: 'proven to:', v: mark === 'proved' ? seen?.target || 'the backend' : mark === 'proxied' ? 'a serving process exists' : 'nothing' },
-    {
-      k: 'first failure:',
-      v:
-        mark !== 'failed'
-          ? 'none'
-          : // Same rule as the path panel: a sibling route's cause is not this
-            // route's first failure.
-            (!trace.diagnosis?.route || trace.diagnosis.route === route?.route ? trace.diagnosis?.summary : '') ||
-            route?.evidence ||
-            route?.target ||
-            'the backend',
-    },
-    {
-      k: 'next:',
-      v: actionable ? `test from ${actionable.name}` : denied ? 'blocked by RBAC — grant or delegate' : 'nothing stronger Radar can run',
-    },
-  ]
   return {
     tone,
     chipText: opts.running ? 'testing' : seen ? routeChip(seen, opts) : 'not tested',
@@ -477,6 +522,5 @@ export function buildVerdict(
       ? undefined
       : trace.diagnosis?.summary,
     body: trace.diagnosis ? '' : trace.reason || '',
-    facts,
   }
 }

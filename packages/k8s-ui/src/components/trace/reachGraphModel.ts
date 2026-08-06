@@ -58,6 +58,11 @@ export interface GraphNode {
   ref?: ResourceRef
   hop?: Hop
   isOrigin?: boolean
+  /** An action offered ON the node, when the node IS the thing that would
+   *  produce the missing evidence. Deliberately a button and never a
+   *  click-the-capsule gesture: selecting a vantage is free, and this one
+   *  creates Pods in the user's cluster. */
+  action?: { text: string; kind: 'run-in-cluster'; disabledReason?: string }
   lane: 'control' | 'data'
 }
 
@@ -118,6 +123,16 @@ export interface LaneBox {
 export interface GraphModel {
   nodes: GraphNode[]
   edges: GraphEdge[]
+  /** The node the first FAILED edge lands on - the first place a request is
+   *  known to have stopped. Derived from edge marks (path truth), never from
+   *  node tone (resource health), because those are different questions, and
+   *  only from the SELECTED vantage's edges. */
+  breakNodeId?: string
+  /** The selected route's own chain, in traversal order. Consumers must read
+   *  this rather than sorting rendered nodes by position: sorting flattens
+   *  PARALLEL backends into what looks like a serial path, and sweeps in
+   *  branches the selected route never touches. */
+  pathNodeIds: string[]
   brackets: { d: string }[]
   originIsControl: boolean
   canvas: { w: number; h: number }
@@ -179,8 +194,138 @@ function estHeight(n: {
   )
 }
 
+/** A graph edge's cubic, kept so a pill can be re-placed anywhere along it.
+ *  cy1/cy2 are the control-point heights - equal to the endpoints for an
+ *  ordinary edge, pulled aside for one that has to route around a node. */
+interface Cubic {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  dx: number
+  cy1: number
+  cy2: number
+}
+
+const cubicPath = (c: Cubic): string => `M${c.x1},${c.y1} C${c.x1 + c.dx},${c.cy1} ${c.x2 - c.dx},${c.cy2} ${c.x2},${c.y2}`
+
+/** The point at fraction t along an edge's curve. Evaluates the SAME cubic the
+ *  path draws, so a pill is on the line by construction. */
+function bezierAt(c: Cubic, t: number): { x: number; y: number } {
+  const u = 1 - t
+  const f = (p0: number, p1: number, p2: number, p3: number) =>
+    u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3
+  return { x: f(c.x1, c.x1 + c.dx, c.x2 - c.dx, c.x2), y: f(c.y1, c.cy1, c.cy2, c.y2) }
+}
+
+/**
+ * What ONE origin actually observed at ONE hop.
+ *
+ * Every probe on the wire already names the hop it hit, the vantage that sent
+ * it and the mechanism it used - so an entry edge never needs to borrow the
+ * route's rollup to know how it went. It used to: a laptop that dialled a public
+ * Ingress and got an answer was drawn as "not tested", because the route is
+ * built from the SERVICE hop's probes and the Ingress dials never reach it.
+ *
+ * Returns undefined when this origin sent nothing here, so callers keep their
+ * existing fallback rather than inventing a verdict.
+ */
+export function hopEvidenceFor(
+  hop: Hop | undefined,
+  origin: Origin,
+  runVantage?: string,
+  opts: { stale?: boolean; running?: boolean } = {},
+): { mark: Mark; label: string; title?: string } | undefined {
+  const live = probesFromOrigin(hop?.probes ?? [], origin, runVantage).filter((p) => !p.skipped)
+  if (live.length === 0) return undefined
+  if (opts.running) return { mark: 'running', label: 'testing now' }
+  if (opts.stale) return { mark: 'stale', label: 'out of date' }
+  const worst =
+    live.find((p) => !p.ok || p.tone === 'unhealthy') ??
+    live.find((p) => p.tone === 'degraded') ??
+    // The most specific layer that succeeded is the most informative: an HTTP
+    // answer says more than the TCP dial underneath it.
+    [...live].sort((a, b) => LAYER_RANK.indexOf(b.layer) - LAYER_RANK.indexOf(a.layer))[0]
+  const relayed = worst.path === 'apiserver'
+  const mark: Mark = !worst.ok || worst.tone === 'unhealthy' ? 'failed' : worst.tone === 'degraded' ? 'answered' : relayed ? 'proxied' : 'proved'
+  const detail = shortEvidence(worst.detail) || shortEvidence(worst.reason)
+  return { mark, label: detail || (relayed ? 'relayed by Kubernetes' : 'request'), title: worst.detail || worst.reason }
+}
+
+const LAYER_RANK = ['dns', 'tcp', 'tls', 'http']
+
+/** The most telling thing one origin saw anywhere along the path - a failure if
+ *  there is one, else the furthest it got. Used when the ROUTE has no row for
+ *  this vantage but its probes plainly did something. */
+function bestHopEvidence(trace: Trace, o: Origin, opts: { stale?: boolean; running?: boolean }) {
+  const hops = [...(trace.upstreams ?? []), ...(trace.downstream ?? [])]
+  const seen = hops.map((h) => hopEvidenceFor(h, o, trace.runVantage, opts)).filter((x): x is NonNullable<typeof x> => !!x)
+  return seen.find((x) => x.mark === 'failed') ?? seen[0]
+}
+
+/** Clearance between a detouring edge and the node it routes around. */
+const DETOUR_GAP = 22
+
+/**
+ * Slides overlapping pills along their own curves until they stop colliding.
+ *
+ * Several edges fanning into one node genuinely share a midpoint, so no fixed
+ * offset separates them - but the curves are furthest apart near their SOURCES,
+ * where each still hugs its own origin. Pulling a colliding pill back toward its
+ * source therefore both separates it and keeps it on its line, which putting the
+ * text on the origin capsule instead did not: that duplicated the edge and cost
+ * a row of height per vantage.
+ */
+function separatePills(edges: GraphEdge[], geom: Map<string, Cubic>): void {
+  const W = PILL_MAX_PX + 14
+  const H = 26
+  const t = new Map<string, number>()
+  const withText = edges.filter((e) => e.label)
+  for (let pass = 0; pass < 6; pass++) {
+    let moved = false
+    for (let i = 0; i < withText.length; i++) {
+      for (let j = i + 1; j < withText.length; j++) {
+        const a = withText[i]
+        const b = withText[j]
+        if (Math.abs(a.px - b.px) >= W || Math.abs(a.py - b.py) >= H) continue
+        const c = geom.get(b.id)
+        if (!c) continue
+        const next = Math.max(0.16, (t.get(b.id) ?? 0.5) - 0.09)
+        if (next === t.get(b.id)) continue
+        t.set(b.id, next)
+        const p = bezierAt(c, next)
+        b.px = p.x
+        b.py = p.y
+        moved = true
+      }
+    }
+    if (!moved) return
+  }
+}
+
 /** Rendered per node before collapsing; the rest stay one click away. */
 const HOP_NOTE_MAX = 2
+
+/** Longest a note may be before it stops being a headline. */
+const NOTE_MAX_CHARS = 46
+
+/**
+ * The headline of a finding, for a box the size of a node.
+ *
+ * Producer messages are written to be read in full - "Accepted:
+ * NoMatchingListenerHostname - Gateway x/y listeners http, https: There were no
+ * hostname intersections..." is nine lines inside a graph node, which buries the
+ * path it is drawn on. Cut at the first real clause break so the CODE survives
+ * ("Accepted: NoMatchingListenerHostname"), and let the hover carry the rest.
+ */
+export function noteHeadline(msg: string): string {
+  const t = (msg ?? '').trim()
+  // " - " and ". " separate a headline from its explanation; ":" does not - it
+  // usually introduces the very thing worth naming.
+  const cut = t.search(/\s[-–—]\s|\.\s/)
+  const head = (cut > 0 ? t.slice(0, cut) : t).replace(/[.:]$/, '').trim()
+  return head.length <= NOTE_MAX_CHARS ? head : `${head.slice(0, NOTE_MAX_CHARS - 1)}…`
+}
 
 /**
  * A hop's findings as node rows: the parsed `cause` when the detector produced
@@ -195,8 +340,9 @@ function hopNotes(hop?: Hop): HopNote[] {
   const ordered = [...findings].sort((a, b) => (rank[a.severity] ?? 3) - (rank[b.severity] ?? 3))
   const notes = ordered.slice(0, HOP_NOTE_MAX).map((f) => ({
     severity: f.severity,
-    text: f.cause || f.message,
-    detail: [f.message, f.action || f.remediation].filter((x) => !!x && x !== (f.cause || f.message)).join(' — '),
+    text: noteHeadline(f.cause || f.message),
+    // The WHOLE message, always, however short the headline got.
+    detail: [f.message, f.action || f.remediation].filter(Boolean).join(' — '),
   }))
   const hidden = ordered.length - notes.length
   if (hidden > 0) {
@@ -292,6 +438,23 @@ function populationAnomalies(roster: PodStatus[], total: number, probes: ProbeRe
   return out
 }
 
+/**
+ * Short forms of each vantage's mechanism, for the capsule only.
+ *
+ * `sub` renders at 10px in a 172px box - about 28 characters per line - and
+ * every full mech string is 33-46, so each capsule wrapped to two lines and paid
+ * a row of height for it. The full wording still renders in the inspector under
+ * MECHANISM, where there is room for it.
+ */
+const SHORT_MECH: Record<string, string> = {
+  local: 'your machine, your network',
+  apiserver: 'relayed by Kubernetes',
+  incluster: 'a throwaway Pod, in-cluster',
+  'radar-incluster': 'Radar’s own Pod',
+  caller: 'your app’s own Pod',
+  external: 'from the public internet',
+}
+
 /** Short forms for the origin capsule's tag - the full wording would overrun
  *  the box and collide with the node beside it. */
 const SHORT_KIND_TAG: Record<string, string> = {
@@ -312,8 +475,62 @@ interface BuildOpts {
   trace: Trace
   route?: RouteResult
   origin: Origin
+  /** Every vantage that can actually run, so all of them are drawn at once and
+   *  the comparison between them is visible rather than reconstructed across
+   *  clicks. Defaults to just the selected one. */
+  origins?: Origin[]
+  /** The workload the reader actually opened, when this trace is really about
+   *  it. A Deployment has no address, so the traced subject is the Service in
+   *  front of it - but the Pods at the end of the path ARE the workload, and
+   *  naming them so puts it in the picture instead of in a banner above it. */
+  servedWorkload?: { kind: string; name: string }
   stale?: boolean
   running?: boolean
+}
+
+/** One origin's own verdict on the selected route - the mark for its entry edge
+ *  and the words for its pill. Computed per origin so a vantage that never ran
+ *  is drawn as never-run beside one that succeeded, instead of the whole graph
+ *  speaking for whichever is selected. */
+export function originEntryEvidence(
+  trace: Trace,
+  route: RouteResult | undefined,
+  o: Origin,
+  opts: { stale?: boolean; running?: boolean } = {},
+): { mark: Mark; label: string; title?: string } {
+  // A vantage mid-run has no evidence YET, and the evidence gate below would
+  // swallow that - so being in flight is stated first. It is the whole truth
+  // about this origin right now.
+  if (opts.running) return { mark: 'running', label: 'testing now' }
+  const ev = originRouteEvidence(route, o.id, trace.runVantage)
+  const asSeen = ev.kind === 'none' ? undefined : ev.result
+  const fromConfig = ev.kind === 'config'
+  const hasEvidence = ev.kind === 'own' || (ev.kind === 'rollup' && originProducedEvidence(o))
+  const rm: Mark = asSeen ? routeMark(asSeen, opts) : 'untested'
+  // Only the API-server RELAY may downgrade a proved result. A laptop is also
+  // outside the cluster, but a request it sends to a real Ingress address goes
+  // over the real network and exercises the real path from the ingress inward -
+  // calling that "proxied" (which means "bypassed the dataplane") was false.
+  const relayed = o.id === 'apiserver'
+  // No row for this route does not mean this vantage did nothing - it may have
+  // dialled the front door. Report what it actually reached, so the capsule's
+  // words agree with its glyph instead of showing a proved dot beside the
+  // phrase "not tested".
+  const alongPath = !hasEvidence && !fromConfig ? bestHopEvidence(trace, o, opts) : undefined
+  const noEvidenceLabel = o.mark === 'denied' ? 'not permitted' : o.mark === 'blocked' ? 'not routable' : 'not tested'
+  const mark: Mark = fromConfig
+    ? 'config'
+    : !hasEvidence
+      ? alongPath?.mark ?? (o.mark === 'denied' || o.mark === 'blocked' ? o.mark : 'untested')
+      : relayed && rm === 'proved'
+        ? 'proxied'
+        : rm
+  const label = fromConfig
+    ? 'broken as configured'
+    : !hasEvidence
+      ? alongPath?.label ?? noEvidenceLabel
+      : shortEvidence(asSeen?.evidence) || (relayed ? 'relayed by Kubernetes' : 'request')
+  return { mark, label, title: hasEvidence || fromConfig ? asSeen?.evidence : alongPath?.title }
 }
 
 /**
@@ -325,7 +542,7 @@ interface BuildOpts {
  * mesh entirely. Drawing both the same way would be the central lie this view
  * exists to prevent.
  */
-export function buildGraph({ trace, route, origin, stale, running }: BuildOpts): GraphModel {
+export function buildGraph({ trace, route, origin, origins, servedWorkload, stale, running }: BuildOpts): GraphModel {
   const placed: Placed[] = []
   const originIsControl = origin.lane === 'control'
 
@@ -431,7 +648,27 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const COL_ENTRY = 1
   const colSubject = upstreams.length > 0 ? COL_ENTRY + 1 : COL_ENTRY
   const colBackend = colSubject + 1
-  const colPods = backends.length > 0 ? colBackend + 1 : colSubject + 1
+  // The workload sits between the Service and its Pods, the way the topology
+  // view draws it. It routes nothing - both its edges are declared, not observed
+  // - but it is what the reader opened, and a network view that omits it makes
+  // them hold the connection in their head. Only in the single-chain case: a
+  // multi-backend entry has no single workload to place.
+  // Only the vantage actually being exercised reads as running. Passing the
+  // flag to every origin made all of them animate during one probe run - the
+  // same "one vantage's state shown under another's name" this view exists to
+  // prevent, in motion.
+  const isRunning = (id: string) => !!running && id === 'incluster'
+
+  const workloadNodeId = 'n:workload'
+  // The producer resolves this from the Pods' owner chain, so it is present for
+  // ANY subject - a Service traced on its own gets its Deployment too, not just
+  // the workload-scoped tab. servedWorkload stays as a fallback for traces from
+  // a producer that doesn't send it.
+  const tracedWorkload = downstream.find(isPodsHop)?.config?.workload
+  const theWorkload = tracedWorkload ?? (servedWorkload ? { kind: servedWorkload.kind, name: servedWorkload.name } : undefined)
+  const showWorkload = !!theWorkload && backends.length === 0
+  const colWorkload = showWorkload ? colSubject + 1 : -1
+  const colPods = backends.length > 0 ? colBackend + 1 : showWorkload ? colSubject + 2 : colSubject + 1
 
   /**
    * Two mechanisms never touch the front door, so drawing them through it is a
@@ -449,27 +686,58 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
    */
   // Route kinds carry no address; a probe reaches their backends, never them.
   const subjectIsAddressable = trace.subject.kind !== 'HTTPRoute' && trace.subject.kind !== 'GRPCRoute'
-  const bypassesFrontDoor = origin.id === 'apiserver' || origin.id === 'incluster'
-  const originSkipsEntries = upstreams.length > 0 && bypassesFrontDoor
-  const colOrigin = originSkipsEntries ? COL_ENTRY : COL_ORIGIN
+  const skipsEntries = (id: string) => upstreams.length > 0 && (id === 'apiserver' || id === 'incluster')
+  const originSkipsEntries = skipsEntries(origin.id)
 
-  placed.push({
-    col: colOrigin,
-    // Below the entries it sits beside, so the edge to the subject never has to
-    // cross one of them.
-    row: originSkipsEntries ? upstreams.length : 0,
-    w: COL_W.origin,
-    node: {
-      id: `origin:${origin.id}`,
-      kind: 'TESTED FROM',
-      name: origin.name,
-      sub: origin.mech,
-      tone: 'info',
-      tag: SHORT_KIND_TAG[origin.kindTag] ?? origin.kindTag,
-      isOrigin: true,
-      lane: originIsControl ? 'control' : 'data',
-    },
-  })
+  // Every runnable vantage is drawn, in ONE stable order that does not depend on
+  // which is selected. Placing the selected one first made the capsules swap
+  // places on every click, so the thing you just clicked moved out from under
+  // the cursor and the rail's spatial memory was lost.
+  const liveOrigins = (origins?.length ? origins : [origin]).filter((o) => !o.unsupported)
+  const rowInCol = new Map<number, number>([[COL_ENTRY, upstreams.length]])
+  const originPlacement = new Map<string, { col: number; skips: boolean }>()
+  for (const o of liveOrigins) {
+    const skips = skipsEntries(o.id)
+    const col = skips ? COL_ENTRY : COL_ORIGIN
+    const row = rowInCol.get(col) ?? 0
+    rowInCol.set(col, row + 1)
+    originPlacement.set(o.id, { col, skips })
+    // The verdict rides on the capsule rather than on the edge: several origins
+    // fan into one node, so their edge pills genuinely want the same point, and
+    // "what this vantage found" is a property of the vantage anyway.
+    const verdict = originEntryEvidence(trace, route, o, { stale, running: isRunning(o.id) })
+    placed.push({
+      col,
+      row,
+      w: COL_W.origin,
+      node: {
+        id: `origin:${o.id}`,
+        kind: 'TESTED FROM',
+        name: o.name,
+        sub: SHORT_MECH[o.id] ?? o.mech,
+        anomalies: [{ mark: verdict.mark, text: verdict.label }],
+        // Offered where the gap is: this vantage says "not tested", and the
+        // control that would change that sits on it. Only when it has produced
+        // nothing yet - an origin with results has nothing to run.
+        action:
+          o.id === 'incluster' && !originProducedEvidence(o)
+            ? {
+                text: 'Run this test',
+                kind: 'run-in-cluster' as const,
+                disabledReason: o.unavailable,
+              }
+            : undefined,
+        tone: 'info',
+        tag: SHORT_KIND_TAG[o.kindTag] ?? o.kindTag,
+        isOrigin: true,
+        // Dimmed when it is not the one driving the rest of the graph. Its EDGE
+        // keeps full-strength marking - that mark is why it is drawn at all.
+        dim: o.id !== origin.id,
+        lane: o.lane === 'control' ? 'control' : 'data',
+      },
+    })
+  }
+  const others = liveOrigins.filter((o) => o.id !== origin.id)
 
   upstreams.forEach((up, i) => {
     const active = activeUpstreams.includes(up)
@@ -552,6 +820,25 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   }
 
   const deliveryBlocked = (asSeen ? routeMark(asSeen, { stale, running }) : 'untested') === 'failed'
+  if (showWorkload && theWorkload) {
+    placed.push({
+      col: colWorkload,
+      row: 0,
+      w: COL_W.hop,
+      node: {
+        id: workloadNodeId,
+        kind: theWorkload.kind.toUpperCase(),
+        name: theWorkload.name,
+        ref: tracedWorkload,
+        // Deliberately thin. This is a network view; the workload's own health,
+        // replicas and rollout state live on its other tabs.
+        sub: 'runs these Pods',
+        tone: 'unknown',
+        lane: 'data',
+      },
+    })
+  }
+
   podGroups.forEach((g, i) => {
     const hop = g.hop
     const roster = hop.config?.pods ?? []
@@ -651,51 +938,80 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
 
   const controlPlaced = placed.filter((p) => p.node.lane === 'control')
   const dataPlaced = placed.filter((p) => p.node.lane === 'data')
-  const controlH = controlPlaced.reduce((m, p) => Math.max(m, heightOf(p)), 0)
-  const controlTop = controlPlaced.length > 0 ? LANE_PAD.top : 0
-  const dataTop = controlPlaced.length > 0 ? controlTop + controlH + LANE_PAD.bottom + LANE_GAP + LANE_PAD.top : LANE_PAD.top
 
   const nodes: GraphNode[] = []
   const pos = new Map<string, GraphNode>()
 
-  for (const p of controlPlaced) {
-    const n: GraphNode = { ...p.node, x: colX.get(p.col)!, y: controlTop, w: colW.get(p.col)!, h: heightOf(p) }
-    nodes.push(n)
-    pos.set(n.id, n)
-  }
-
-  const byCol = new Map<number, Placed[]>()
-  for (const p of dataPlaced) {
-    const arr = byCol.get(p.col) ?? []
-    arr.push(p)
-    byCol.set(p.col, arr)
-  }
-  const colHeights = new Map<number, number>()
-  for (const [c, list] of byCol) {
-    colHeights.set(c, list.reduce((sum, p) => sum + heightOf(p), 0) + (list.length - 1) * ROW_GAP)
-  }
-  const dataH = Math.max(0, ...colHeights.values())
-
-  for (const [c, list] of byCol) {
-    let y = dataTop + (dataH - colHeights.get(c)!) / 2
-    for (const p of list.sort((a, b) => a.row - b.row)) {
-      const h = heightOf(p)
-      const n: GraphNode = { ...p.node, x: colX.get(c)!, y, w: colW.get(c)!, h }
-      nodes.push(n)
-      pos.set(n.id, n)
-      y += h + ROW_GAP
+  /**
+   * Stacks one lane's nodes by column and returns its height.
+   *
+   * The control lane used to pin every node to a single y, which was fine while
+   * only one vantage was ever drawn - and put two on top of each other the
+   * moment they all became visible at once.
+   */
+  const layoutLane = (list: Placed[], top: number): number => {
+    const byCol = new Map<number, Placed[]>()
+    for (const p of list) {
+      const arr = byCol.get(p.col) ?? []
+      arr.push(p)
+      byCol.set(p.col, arr)
     }
+    const colHeights = new Map<number, number>()
+    for (const [c, l] of byCol) {
+      colHeights.set(c, l.reduce((sum, p) => sum + heightOf(p), 0) + (l.length - 1) * ROW_GAP)
+    }
+    const laneH = Math.max(0, ...colHeights.values())
+    for (const [c, l] of byCol) {
+      let y = top + (laneH - colHeights.get(c)!) / 2
+      for (const p of [...l].sort((a, b) => a.row - b.row)) {
+        const h = heightOf(p)
+        const n: GraphNode = { ...p.node, x: colX.get(c)!, y, w: colW.get(c)!, h }
+        nodes.push(n)
+        pos.set(n.id, n)
+        y += h + ROW_GAP
+      }
+    }
+    return laneH
   }
+
+  const controlTop = controlPlaced.length > 0 ? LANE_PAD.top : 0
+  const controlH = layoutLane(controlPlaced, controlTop)
+  const dataTop = controlPlaced.length > 0 ? controlTop + controlH + LANE_PAD.bottom + LANE_GAP + LANE_PAD.top : LANE_PAD.top
+  layoutLane(dataPlaced, dataTop)
 
   // ---- edges ----
   const edges: GraphEdge[] = []
+  const geom = new Map<string, Cubic>()
   const brackets: { d: string }[] = []
   const crossesLanes = new Set<string>()
 
   // `full` is the untruncated text for the hover. Without it a shortened pill
   // label became the tooltip too, so the explanation was discarded rather than
   // moved somewhere it fits.
-  const connect = (id: string, fromId: string, toId: string, mark: Mark, label: string, full?: string) => {
+  /**
+   * Where along an edge its pill sits, as a fraction of the curve.
+   *
+   * Every pill used to sit at the midpoint, which is fine for one edge and
+   * collides the moment several fan into the same node: their midpoints are
+   * genuinely the same point. Slotting moves them apart ALONG their own curve,
+   * so each stays on the line it describes instead of floating beside it.
+   */
+  const pillT = (slot: number): number => {
+    if (slot <= 0) return 0.5
+    const step = 0.13
+    // Alternate above/below the midpoint so a fan spreads both ways.
+    const dir = slot % 2 === 1 ? -1 : 1
+    const mag = Math.ceil(slot / 2) * step
+    return Math.min(0.78, Math.max(0.22, 0.5 + dir * mag))
+  }
+
+  const edgeTo = new Map<string, string>()
+  // Edges belonging to a vantage OTHER than the selected one. They are drawn so
+  // the comparison is visible, but they must never speak for the selection -
+  // reading a break off them let a workstation failure order the report while
+  // the in-cluster vantage the reader had chosen was succeeding.
+  const foreignEdges = new Set<string>()
+  const connect = (id: string, fromId: string, toId: string, mark: Mark, label: string, full?: string, slot = 0) => {
     const a = pos.get(fromId)
     const b = pos.get(toId)
     if (!a || !b) return
@@ -705,14 +1021,86 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     const x2 = b.x
     const y2 = b.y + b.h / 2
     const dx = Math.max(30, (x2 - x1) * 0.45)
+    // An edge that SKIPS a column runs straight through whatever sits in it -
+    // the in-cluster probe bypassing an HTTPRoute drew its line, and parked its
+    // pill, on top of the very node it does not touch. Route around instead:
+    // detour under the obstacles when the curve would cross them.
+    const lo = Math.min(y1, y2)
+    const hi = Math.max(y1, y2)
+    const blocked = [...pos.values()].filter(
+      (n) =>
+        n.id !== fromId &&
+        n.id !== toId &&
+        n.x > Math.min(x1, x2) &&
+        n.x + n.w < Math.max(x1, x2) &&
+        n.y < hi + DETOUR_GAP &&
+        n.y + n.h > lo - DETOUR_GAP,
+    )
+    // A cubic only travels ~3/4 of the way toward its control points, so setting
+    // them AT the clearance line leaves the curve short of it - fine for a short
+    // node, straight through a tall one. Solve for the control height that puts
+    // the CURVE itself past the obstacle:
+    //   y(0.5) = (y1 + y2)/8 + (3/4)·D   ⇒   D = (clear - (y1 + y2)/8) / 0.75
+    //
+    // The SIDE is chosen, never assumed. An edge dropping from the control lane
+    // is already above the obstacle; forcing it under sends it swooping below
+    // and back up, which is longer and reads as a detour to nowhere. Go round
+    // whichever way the line is already passing.
+    const controlFor = (clear: number) => (clear - (y1 + y2) / 8) / 0.75
+    let cy1 = y1
+    let cy2 = y2
+    if (blocked.length > 0) {
+      const mid = (y1 + y2) / 2
+      const above = Math.min(...blocked.map((n) => n.y)) - DETOUR_GAP
+      const below = Math.max(...blocked.map((n) => n.y + n.h)) + DETOUR_GAP
+      const goAbove = Math.abs(mid - above) < Math.abs(mid - below)
+      const overTop = goAbove && controlFor(above) > LANE_PAD.top
+
+      // Clearing the curve's MIDPOINT is not the same as clearing the node. An
+      // asymmetric edge has already descended by the time it crosses the node's
+      // far edge, so it grazed the corner while the midpoint sat comfortably
+      // clear. Sample the span the node actually occupies and push the control
+      // until every sampled point clears it.
+      const worstOverlap = (control: number): number => {
+        const c: Cubic = { x1, y1, x2, y2, dx, cy1: control, cy2: control }
+        let worst = 0
+        for (let i = 1; i < 20; i++) {
+          const pt = bezierAt(c, i / 20)
+          for (const n of blocked) {
+            if (pt.x < n.x - 2 || pt.x > n.x + n.w + 2) continue
+            const need = overTop ? n.y - DETOUR_GAP : n.y + n.h + DETOUR_GAP
+            const over = overTop ? pt.y - need : need - pt.y
+            if (over > worst) worst = over
+          }
+        }
+        return worst
+      }
+
+      let control = controlFor(overTop ? above : below)
+      for (let i = 0; i < 8; i++) {
+        const over = worstOverlap(control)
+        if (over <= 0.5) break
+        control += overTop ? -over : over
+      }
+      cy1 = control
+      cy2 = control
+    }
+    const cubic: Cubic = { x1, y1, x2, y2, dx, cy1, cy2 }
+    // Evaluate the SAME cubic the path draws, so the pill is on the line by
+    // construction rather than by a midpoint approximation that only holds when
+    // the curve happens to be symmetric.
+    const t = pillT(slot)
+    const p = bezierAt(cubic, t)
+    geom.set(id, cubic)
+    edgeTo.set(id, toId)
     edges.push({
       id,
-      d: `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`,
+      d: cubicPath(cubic),
       mark,
       label: truncate(label),
       title: full || label,
-      px: (x1 + x2) / 2,
-      py: (y1 + y2) / 2,
+      px: p.x,
+      py: p.y,
     })
   }
 
@@ -723,27 +1111,34 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
   const hasEvidence = ev.kind === 'own' || (ev.kind === 'rollup' && originProducedEvidence(origin))
   // Known broken from configuration: true of every vantage, dialled by none.
   const fromConfig = ev.kind === 'config'
-  const routeMarkNow: Mark = asSeen ? routeMark(asSeen, { stale, running }) : 'untested'
+  const routeMarkNow: Mark = asSeen ? routeMark(asSeen, { stale, running: isRunning(origin.id) }) : 'untested'
   // A relay can never read as proof: it bypassed the real network path however
   // clean the response was.
-  const entryMark: Mark = fromConfig
+  const entryMark: Mark = isRunning(origin.id)
+    ? 'running'
+    : fromConfig
     ? 'config'
     : !hasEvidence
     ? origin.mark
-    : originIsControl && routeMarkNow === 'proved'
+    : origin.id === 'apiserver' && routeMarkNow === 'proved'
       ? 'proxied'
       : routeMarkNow
   const originBlocked = !!origin.unavailable && origin.mark === 'blocked'
   const noEvidenceLabel =
     origin.mark === 'denied' ? 'not permitted' : origin.mark === 'blocked' ? 'not routable' : 'not tested'
-  const entryLabel = fromConfig
+  const entryLabel = isRunning(origin.id)
+    ? 'testing now'
+    : fromConfig
     ? 'broken as configured'
     : !hasEvidence
     ? noEvidenceLabel
-    : shortEvidence(asSeen?.evidence) || (originIsControl ? 'relayed by Kubernetes' : 'request')
+    : shortEvidence(asSeen?.evidence) || (origin.id === 'apiserver' ? 'relayed by Kubernetes' : 'request')
   // The whole sentence, for the hover.
   const entryTitle = !hasEvidence && !fromConfig ? undefined : asSeen?.evidence || undefined
 
+  // Only the backends this route resolves to - shared by the selected origin's
+  // bypass edge and by every other origin's.
+  const bypassBackends = focusBranches ? matchedBackends : expanded
   // The request enters at the entry points that serve this host; everything
   // after is configuration, drawn dotted. There is no segment-local evidence to
   // claim otherwise.
@@ -751,13 +1146,17 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     for (const up of upstreams) {
       const id = `n:${refId(up.resource)}`
       const active = activeUpstreams.includes(up)
+      // This entry's OWN result for this origin, when it has one. The route
+      // rollup is the fallback, not the source: it is built from the backend's
+      // probes and cannot see a front-door dial.
+      const own = active ? hopEvidenceFor(up, origin, trace.runVantage, { stale, running: isRunning(origin.id) }) : undefined
       connect(
         `e:origin-${id}`,
         originNodeId,
         id,
-        originBlocked ? 'blocked' : active ? entryMark : 'untested',
-        active ? entryLabel : 'other host',
-        active ? entryTitle : undefined,
+        originBlocked ? 'blocked' : active ? own?.mark ?? 'untested' : 'untested',
+        active ? own?.label ?? 'not tested' : 'other host',
+        active ? own?.title : undefined,
       )
       connect(`e:${id}-subject`, id, subjectNodeId, 'config', 'routes to')
     }
@@ -775,7 +1174,6 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     // every expanded backend would spread ONE route's evidence across siblings
     // it says nothing about - the cross-backend leak the producer now refuses to
     // make, reintroduced a layer up.
-    const bypassBackends = focusBranches ? matchedBackends : expanded
     const bypassTargets = !subjectIsAddressable && originSkipsEntries ? bypassBackends.map((b) => b.id) : []
     if (bypassTargets.length > 0) {
       for (const id of bypassTargets) {
@@ -792,6 +1190,33 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
       )
     }
   }
+  // Each unselected origin gets its own edge carrying ITS OWN mark AND its own
+  // words. Without them the capsule is decoration and the comparison still costs
+  // a click - which is the entire reason the vantages are drawn together. The
+  // origins stack vertically, so their edge midpoints do too and the pills
+  // separate on their own.
+  others.forEach((o, oi) => {
+    const p = originPlacement.get(o.id)
+    const from = `origin:${o.id}`
+    const mine = (id: string) => {
+      foreignEdges.add(id)
+      return id
+    }
+    const ev = originEntryEvidence(trace, route, o, { stale, running: isRunning(o.id) })
+    const slot = oi + 1
+    if (!p?.skips && upstreams.length > 0) {
+      for (const up of activeUpstreams) {
+        connect(mine(`e:origin-${o.id}-${refId(up.resource)}`), from, `n:${refId(up.resource)}`, ev.mark, '', ev.title || ev.label, slot)
+      }
+      return
+    }
+    if (!subjectIsAddressable && p?.skips) {
+      for (const b of bypassBackends) connect(mine(`e:origin-${o.id}-${b.id}`), from, b.id, ev.mark, '', ev.title || ev.label, slot)
+      return
+    }
+    connect(mine(`e:origin-${o.id}-subject`), from, subjectNodeId, ev.mark, '', ev.title || ev.label, slot)
+  })
+
   for (const b of expanded) {
     const onPath = !focusBranches || matchedBackends.includes(b)
     connect(`e:subject-${b.id}`, subjectNodeId, b.id, onPath ? 'config' : 'excluded', onPath ? 'sends to' : 'other host')
@@ -814,8 +1239,18 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
         : new Set<string>()
   for (const g of podGroups) {
     const broke = boundary === 'service-routing' && boundaryParents.has(g.parentId)
+    if (showWorkload) {
+      // The boundary belongs to the SERVICE's own routing, so it stays on the
+      // edge leaving the Service - inserting the workload must not move the
+      // blame onto it.
+      connect(`e:${g.id}-workload`, g.parentId, workloadNodeId, broke ? 'failed' : 'config', broke ? 'breaks here' : 'selects')
+      connect(`e:${g.id}`, workloadNodeId, g.id, 'config', 'runs')
+      continue
+    }
     connect(`e:${g.id}`, g.parentId, g.id, broke ? 'failed' : 'config', broke ? 'breaks here' : 'selects')
   }
+
+  separatePills(edges, geom)
 
   // ---- lane boxes: bound only their own nodes ----
   const boxFor = (list: GraphNode[], label: string, help: string, color: string, dashed?: boolean): LaneBox | undefined => {
@@ -850,10 +1285,36 @@ export function buildGraph({ trace, route, origin, stale, running }: BuildOpts):
     }
   }
 
+  // Detouring edges bow BELOW the nodes they route around, so the canvas has to
+  // reserve room for the deepest of them or the curve clips at the bottom edge.
+  const deepest = Math.max(0, ...edges.map((e) => e.py))
   const canvas = {
     w: Math.max(...nodes.map((n) => n.x + n.w), 300) + LANE_PAD.x + 4,
-    h: Math.max(...nodes.map((n) => n.y + n.h), 200) + LANE_PAD.bottom + 4,
+    h: Math.max(...nodes.map((n) => n.y + n.h), deepest, 200) + LANE_PAD.bottom + 4,
   }
 
-  return { nodes, edges, brackets, originIsControl, canvas, laneControl, laneData }
+  // Leftmost failed edge = the first place a request is known to have stopped.
+  // Column order, not array order, so it does not depend on the sequence edges
+  // happened to be built in.
+  const failed = edges
+    .filter((e) => e.mark === 'failed' && !foreignEdges.has(e.id))
+    .map((e) => pos.get(edgeTo.get(e.id) ?? ''))
+    .filter((n): n is GraphNode => !!n)
+    .sort((a, b) => a.x - b.x)
+  const breakNodeId = failed[0]?.id
+
+  // Traversal order, not screen order: entries the route arrives through, the
+  // subject, the workload behind it, only the backends this route resolves to,
+  // and only those backends' Pods.
+  const selectedBackends = focusBranches ? matchedBackends : expanded
+  const selectedBackendIds = new Set(selectedBackends.map((b) => b.id))
+  const pathNodeIds = [
+    ...activeUpstreams.map((up) => `n:${refId(up.resource)}`),
+    subjectNodeId,
+    ...(showWorkload ? [workloadNodeId] : []),
+    ...selectedBackends.map((b) => b.id),
+    ...podGroups.filter((g) => g.parentId === subjectNodeId || selectedBackendIds.has(g.parentId)).map((g) => g.id),
+  ].filter((id, i, all) => pos.has(id) && all.indexOf(id) === i)
+
+  return { nodes, edges, brackets, originIsControl, canvas, laneControl, laneData, breakNodeId, pathNodeIds }
 }

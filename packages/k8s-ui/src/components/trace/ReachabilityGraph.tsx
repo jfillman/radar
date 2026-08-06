@@ -69,10 +69,12 @@ export function ReachabilityGraph({
   model,
   selected,
   onSelect,
+  onAction,
 }: {
   model: GraphModel
   selected?: string
   onSelect: (id: string) => void
+  onAction?: (a: NonNullable<GraphNode['action']>) => void
 }) {
   const { canvas, laneControl, laneData } = model
   const [fitRef, scale, availH, clipped] = useFit(canvas.w, canvas.h)
@@ -129,15 +131,21 @@ export function ReachabilityGraph({
                 strokeDasharray={s.dash}
                 strokeOpacity={s.strokeOpacity}
                 strokeLinecap="round"
+                className={e.mark === 'running' ? 'reach-edge-testing' : undefined}
               />
             )
           })}
         </svg>
-        {model.edges.map((e) => (
-          <EdgePill key={e.id} edge={e} />
-        ))}
+        {/* An edge with no words carries its evidence in its line style alone -
+            drawing an empty capsule for it put a bare glyph on top of whichever
+            real pill shared that point. */}
+        {model.edges
+          .filter((e) => !!e.label)
+          .map((e) => (
+            <EdgePill key={e.id} edge={e} />
+          ))}
         {model.nodes.map((n) => (
-          <Node key={n.id} node={n} selected={selected === n.id} onSelect={onSelect} />
+          <Node key={n.id} node={n} selected={selected === n.id} onSelect={onSelect} onAction={onAction} />
         ))}
         </div>
         </div>
@@ -231,7 +239,17 @@ function EdgePill({ edge }: { edge: GraphEdge }) {
   )
 }
 
-function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean; onSelect: (id: string) => void }) {
+function Node({
+  node,
+  selected,
+  onSelect,
+  onAction,
+}: {
+  node: GraphNode
+  selected: boolean
+  onSelect: (id: string) => void
+  onAction?: (a: NonNullable<GraphNode['action']>) => void
+}) {
   const isOrigin = node.isOrigin
   const style: CSSProperties = {
     left: node.x,
@@ -254,7 +272,19 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
     opacity: node.dim ? 0.5 : 1,
   }
   return (
-    <button type="button" onClick={() => onSelect(node.id)} className="absolute cursor-pointer px-2.5 py-1.5 text-left" style={style}>
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(node.id)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelect(node.id)
+        }
+      }}
+      className="absolute cursor-pointer px-2.5 py-1.5 text-left"
+      style={style}
+    >
       <div className="flex items-center gap-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-[8.5px] font-bold tracking-[0.06em] text-theme-text-tertiary">{node.kind}</span>
         {node.tag && <TinyTag text={node.tag} tone={node.lane === 'control' ? 'var(--color-info)' : 'var(--color-warning-dark)'} />}
@@ -282,7 +312,11 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
                   className="mt-1 inline-block shrink-0 rounded-full"
                   style={{ width: 6, height: 6, background: SEV_COLOR[FINDING_TONE[n.severity]] }}
                 />
-                <span className="min-w-0 flex-1 text-left text-[9.5px] leading-[1.35] text-theme-text-secondary">{n.text}</span>
+                {/* Hard guard: whatever the producer writes, a node note may
+                    never grow past two lines and push the graph around. */}
+                <span className="line-clamp-2 min-w-0 flex-1 text-left text-[9.5px] leading-[1.35] text-theme-text-secondary">
+                  {n.text}
+                </span>
               </div>
             </Tooltip>
           ))}
@@ -326,7 +360,24 @@ function Node({ node, selected, onSelect }: { node: GraphNode; selected: boolean
           {!!node.moreRows && <div className="text-[9px] text-theme-text-tertiary">+{node.moreRows} more not shown</div>}
         </div>
       )}
-    </button>
+      {/* Offered where the gap is. Deliberately its own button rather than a
+          click on the capsule: selecting a vantage is free, and this creates
+          Pods in the user's cluster. */}
+      {node.action && (
+        <button
+          type="button"
+          disabled={!!node.action.disabledReason}
+          title={node.action.disabledReason}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (!node.action?.disabledReason) onAction?.(node.action!)
+          }}
+          className="mt-1.5 w-full rounded border border-theme-border bg-theme-surface px-2 py-1 text-[9.5px] font-semibold text-theme-text-primary transition-colors hover:bg-theme-hover disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          ⚗ {node.action.text}
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -364,27 +415,43 @@ export function MarkGlyph({ mark }: { mark: Mark }) {
   )
 }
 
-/** Only the marks actually on screen. The full vocabulary is nine symbols;
- *  listing marks this trace never uses is vocabulary the reader has to skip. */
+/**
+ * One line, not a symbol table.
+ *
+ * Every glyph on screen already sits beside its own words - an edge pill, a
+ * capsule verdict, a Pod row - and every one carries markHelp on hover. Spelling
+ * the vocabulary out again cost a permanent band to repeat what the thing itself
+ * says. What is NOT discoverable anywhere is the GRAMMAR: that a dot and a line
+ * answer different questions. That stays, with the vocabulary on hover for
+ * anyone who wants the whole set.
+ */
 function Legend({ model }: { model: GraphModel }) {
   const present = new Set<Mark>([
     ...model.edges.map((e) => e.mark),
     ...model.nodes.flatMap((n) => [...(n.anomalies ?? []).map((a) => a.mark), ...(n.podRows ?? []).map((r) => r.mark)]),
   ])
   const shown = MARK_LEGEND.filter((l) => present.has(l.mark))
+  if (shown.length === 0) return null
   return (
-    <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-theme-border-subtle px-3.5 py-2 text-[10.5px] text-theme-text-tertiary">
-      {shown.map((l) => (
-        <span key={l.mark} className="inline-flex items-baseline gap-1">
-          <span style={glyphStyle(l.mark as Mark)}>{markStyle(l.mark as Mark).glyph}</span>
-          {l.text}
-        </span>
-      ))}
-      <div className="flex-1" />
-      {/* The dot is NOT pure resource health: hopTone folds in this vantage's
-          probe results, which is deliberate. Saying "is the resource healthy"
-          described behaviour the code does not have. */}
-      <span className="italic">dot = how this resource is doing · line = did traffic get through, from the selected vantage</span>
+    <div className="mt-0.5 flex items-center justify-end border-t border-theme-border-subtle px-3.5 py-1.5 text-[10.5px] text-theme-text-tertiary">
+      <Tooltip
+        content={
+          <span className="flex flex-col gap-0.5">
+            {shown.map((l) => (
+              <span key={l.mark} className="inline-flex items-baseline gap-1.5">
+                <span style={glyphStyle(l.mark as Mark)}>{markStyle(l.mark as Mark).glyph}</span>
+                {l.text}
+              </span>
+            ))}
+          </span>
+        }
+        wrapperClassName="cursor-help"
+      >
+        {/* The dot is NOT pure resource health: hopTone folds in this vantage's
+            probe results, which is deliberate. Saying "is the resource healthy"
+            described behaviour the code does not have. */}
+        <span className="italic">dot = how this resource is doing · line = did traffic get through, from the selected vantage</span>
+      </Tooltip>
     </div>
   )
 }

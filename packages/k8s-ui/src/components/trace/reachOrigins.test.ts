@@ -227,3 +227,24 @@ describe('Radar-as-a-Pod is not the throwaway probe Job', () => {
     expect(radar?.mark).toBe('proved')
   })
 })
+
+describe('an unanswered capability check is not a denial', () => {
+  // The SSAR takes a moment. While it is in flight the answer is UNKNOWN, and
+  // saying "not permitted" for those frames claims a denial that was never
+  // established - the exact overclaim this view exists to prevent.
+  it('reads as untested, not denied, while the check is in flight', () => {
+    const t = traceWith([])
+    const pending = buildOrigins(t, { inClusterAllowed: undefined }).find((o) => o.id === 'incluster')!
+    expect(pending.mark).toBe('untested')
+    expect(pending.unavailable).toBeUndefined()
+  })
+
+  it('reads as denied once the check actually says no', () => {
+    const t = traceWith([])
+    const denied = buildOrigins(t, { inClusterAllowed: false, inClusterDeniedReason: 'needs create jobs' }).find(
+      (o) => o.id === 'incluster',
+    )!
+    expect(denied.mark).toBe('denied')
+    expect(denied.unavailable).toMatch(/create jobs/)
+  })
+})

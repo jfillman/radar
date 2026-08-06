@@ -100,9 +100,13 @@ function markFor(probes: ProbeResult[], id: OriginId, ctx: OriginContext): Mark 
     if (ctx.stale) return 'stale'
     return routeMark(ev.result, {})
   }
-  // The producer sent a breakdown and this origin is not in it: untested for
-  // THIS route, whatever it may have found on others.
-  if (ev?.kind === 'none') {
+  // The producer sent a breakdown and this origin is not in it. That means the
+  // ROUTE has no result from here - it does NOT mean this vantage sent nothing.
+  // A laptop that dialled a public Ingress and got an answer has real evidence
+  // on the entry hop; the route is built from the backend's probes and cannot
+  // see it. Saying "not tested" there contradicted the graph beside it, which
+  // was drawing that very dial. Fall through to what this origin actually did.
+  if (ev?.kind === 'none' && probes.filter((p) => !p.skipped).length === 0) {
     if (id === 'incluster' && ctx.inClusterAllowed === false) return 'denied'
     return 'untested'
   }

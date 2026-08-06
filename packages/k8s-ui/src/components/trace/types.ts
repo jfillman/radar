@@ -204,6 +204,10 @@ export interface HopConfig {
   podNames?: string[]
   pods?: PodStatus[]
   podTotal?: number
+  /** What RUNS these Pods, resolved through their owner chain by the producer.
+   *  Absent when the selected Pods have no single owner - a bare Pod, or two
+   *  workloads behind one Service, where naming one would be a guess. */
+  workload?: ResourceRef
 }
 
 export type UnknownClass = 'by-design' | 'investigate'

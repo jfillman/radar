@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildGraph, shortEvidence, POD_ROW_MAX, PILL_MAX_PX } from './reachGraphModel'
+import { buildGraph, shortEvidence, noteHeadline, hopEvidenceFor, POD_ROW_MAX, PILL_MAX_PX } from './reachGraphModel'
 import { buildOrigins } from './reachOrigins'
 import type { Trace, RouteResult, PodStatus, ProbeResult } from './types'
 
@@ -616,12 +616,22 @@ describe('hop findings are carried onto the node', () => {
     expect(n.notes?.[2].text).toMatch(/\+1 more/)
   })
 
-  it('reserves height for wrapped notes, so a node cannot grow into the row below', () => {
-    const long = 'a'.repeat(120)
-    const t = withFindings([{ code: 'x', severity: 'warning', message: long }])
+  it('reserves height for a note, so a node cannot grow into the row below', () => {
+    const t = withFindings([{ code: 'x', severity: 'warning', message: 'a'.repeat(120) }])
     const withNote = buildGraph({ trace: t, route: route(), origin: pick(t, 'local') }).nodes.find((x) => x.kind === 'SERVICE')!
     const bare = buildGraph({ trace: withFindings([]), route: route(), origin: pick(withFindings([]), 'local') }).nodes.find((x) => x.kind === 'SERVICE')!
-    expect(withNote.h).toBeGreaterThan(bare.h + 40)
+    expect(withNote.h).toBeGreaterThan(bare.h)
+  })
+
+  // The stronger invariant now that notes are headlines: a node's height is
+  // bounded by the LAYOUT, not by how much the producer wrote. A message ten
+  // times longer must not make the box ten times taller.
+  it('does not grow with the length of the message', () => {
+    const node = (msg: string) => {
+      const t = withFindings([{ code: 'x', severity: 'warning', message: msg }])
+      return buildGraph({ trace: t, route: route(), origin: pick(t, 'local') }).nodes.find((x) => x.kind === 'SERVICE')!.h
+    }
+    expect(node('a'.repeat(400))).toBe(node('a'.repeat(120)))
   })
 
   it('a clean hop carries no notes at all', () => {
@@ -909,5 +919,426 @@ describe('evidence written for a hover is shortened for a pill', () => {
     expect(edge.label).toBe('Connection refused')
     // The explanation is moved to the hover, not thrown away.
     expect(edge.title).toBe(long)
+  })
+})
+
+describe('the workload the reader opened appears in the graph', () => {
+  // A Deployment has no address, so the traced subject is the Service in front
+  // of it. The Pods at the end of the path ARE the workload, so naming them so
+  // puts it in the picture - it used to live in a full-width banner above the
+  // graph that spent a row of height on one sentence.
+  const withWorkload = () =>
+    buildGraph({
+      trace: trace([pod('a', true, '10.0.0.1')], [p({})]),
+      route: route(),
+      origin: pick(trace([pod('a', true, '10.0.0.1')], [p({})]), 'incluster'),
+      servedWorkload: { kind: 'Deployment', name: 'external-secrets-webhook' },
+    })
+
+  it('draws it between the Service and its Pods', () => {
+    const g = withWorkload()
+    const svc = g.nodes.find((n) => n.kind === 'SERVICE')!
+    const wl = g.nodes.find((n) => n.kind === 'DEPLOYMENT')!
+    const pods = g.nodes.find((n) => n.kind === 'PODS')!
+    expect(wl.name).toBe('external-secrets-webhook')
+    expect(svc.x).toBeLessThan(wl.x)
+    expect(wl.x).toBeLessThan(pods.x)
+  })
+
+  // It routes nothing, so neither of its edges may claim observed traffic.
+  it('declares both its edges rather than claiming traffic', () => {
+    const g = withWorkload()
+    const into = g.edges.find((e) => e.id.endsWith('-workload'))!
+    const outOf = g.edges.find((e) => e.label === 'runs')!
+    expect(into.mark).toBe('config')
+    expect(outOf.mark).toBe('config')
+  })
+
+  // The producer localises the break to the SERVICE's own routing. Inserting a
+  // node after the Service must not slide that blame onto the workload, which
+  // routes nothing.
+  it('keeps a localized break on the edge leaving the Service', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({})])
+    const broken = route({
+      outcome: 'unreachable',
+      confidence: 'real',
+      byVantage: [{ vantage: 'in-cluster', path: 'data', outcome: 'unreachable', failedBoundary: 'service-routing' }],
+    })
+    const g = buildGraph({
+      trace: t,
+      route: broken,
+      origin: pick(t, 'incluster'),
+      servedWorkload: { kind: 'Deployment', name: 'web' },
+    })
+    const breaks = g.edges.filter((e) => e.label === 'breaks here')
+    expect(breaks).toHaveLength(1)
+    expect(breaks[0].id).toMatch(/-workload$/)
+    expect(g.edges.find((e) => e.label === 'runs')!.mark).toBe('config')
+  })
+
+  it('is absent when no workload is in scope', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({})])
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    expect(g.nodes.some((n) => n.kind === 'DEPLOYMENT')).toBe(false)
+    expect(g.nodes.find((n) => n.kind === 'PODS')!.sub).toMatch(/eligible/)
+  })
+})
+
+describe('only the vantage being exercised reads as running', () => {
+  // The running flag used to reach every origin, so one probe run animated all
+  // of them - the same "one vantage's state under another's name" this view
+  // exists to prevent, in motion.
+  const t = () => trace([pod('a', true, '10.0.0.1')], [p({ vantage: 'local', path: 'data', ok: true })])
+
+  it('marks the in-cluster edge running and leaves the others alone', () => {
+    const tr = t()
+    const g = buildGraph({
+      trace: tr,
+      route: route(),
+      origin: pick(tr, 'incluster'),
+      origins: buildOrigins(tr),
+      running: true,
+    })
+    const originEdges = g.edges.filter((e) => e.id.startsWith('e:origin'))
+    expect(originEdges.some((e) => e.mark === 'running')).toBe(true)
+    // The laptop probed and succeeded; a run elsewhere must not repaint it.
+    const local = g.edges.find((e) => e.id.includes('local'))
+    if (local) expect(local.mark).not.toBe('running')
+  })
+
+  it('marks nothing running when no test is in flight', () => {
+    const tr = t()
+    const g = buildGraph({ trace: tr, route: route(), origin: pick(tr, 'incluster'), origins: buildOrigins(tr) })
+    expect(g.edges.some((e) => e.mark === 'running')).toBe(false)
+  })
+})
+
+describe('a finding on a node is a headline, not the whole message', () => {
+  // Rendered in full this was nine lines inside a graph node, burying the path
+  // the node sits on.
+  const gatewayMsg =
+    "Accepted: NoMatchingListenerHostname - Gateway primary-gateway-system/primary-gateway listeners http, https: There were no hostname intersections between the HTTPRoute and this parent ref's Listener(s)."
+
+  it('keeps the code and drops the explanation', () => {
+    expect(noteHeadline(gatewayMsg)).toBe('Accepted: NoMatchingListenerHostname')
+  })
+
+  // A colon usually introduces the very thing worth naming, so it is not a cut
+  // point - cutting there would leave a bare "Accepted".
+  it('does not cut at a colon', () => {
+    expect(noteHeadline('Accepted: NoMatchingListenerHostname')).toBe('Accepted: NoMatchingListenerHostname')
+  })
+
+  it('cuts at a sentence break too', () => {
+    expect(noteHeadline('Connection refused. Nothing is listening on the port.')).toBe('Connection refused')
+  })
+
+  it('truncates a headline with no break at all', () => {
+    const out = noteHeadline('x'.repeat(120))
+    expect(out.length).toBeLessThanOrEqual(46)
+    expect(out.endsWith('…')).toBe(true)
+  })
+
+  it('leaves a short message alone', () => {
+    expect(noteHeadline('No ready endpoints')).toBe('No ready endpoints')
+  })
+
+  it('puts the whole message on the hover', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({})])
+    t.downstream[0].findings = [{ code: 'gw:x', severity: 'warning', message: gatewayMsg }]
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    const note = g.nodes.find((n) => n.kind === 'SERVICE')!.notes![0]
+    expect(note.text).toBe('Accepted: NoMatchingListenerHostname')
+    expect(note.detail).toBe(gatewayMsg)
+  })
+})
+
+describe('the selected vantage is a real scope boundary', () => {
+  // Every drawn vantage contributes edges. Reading the break off all of them let
+  // a workstation failure order the report while the in-cluster vantage the
+  // reader had selected was succeeding.
+  it('does not take the break from another vantage\'s failed edge', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [
+      p({ vantage: 'in-cluster', path: 'data', ok: true, tone: 'healthy' }),
+      p({ vantage: 'local', path: 'data', ok: false, tone: 'unhealthy' }),
+    ])
+    const good = route({
+      outcome: 'verified',
+      confidence: 'real',
+      byVantage: [
+        { vantage: 'in-cluster', path: 'data', outcome: 'verified' },
+        { vantage: 'local', path: 'data', outcome: 'unreachable' },
+      ],
+    })
+    const g = buildGraph({ trace: t, route: good, origin: pick(t, 'incluster'), origins: buildOrigins(t) })
+    expect(g.breakNodeId).toBeUndefined()
+  })
+
+  it('still finds the break on the selected vantage\'s own edge', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({ vantage: 'in-cluster', path: 'data', ok: false, tone: 'unhealthy' })])
+    const bad = route({ outcome: 'unreachable', confidence: 'real' })
+    const g = buildGraph({ trace: t, route: bad, origin: pick(t, 'incluster'), origins: buildOrigins(t) })
+    expect(g.breakNodeId).toBeDefined()
+  })
+
+  // Sorting rendered nodes by position turned PARALLEL backends into what read
+  // as a serial chain, and swept in branches the route never touches.
+  it('reports the route\'s own chain in traversal order', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({})])
+    const g = buildGraph({
+      trace: t,
+      route: route(),
+      origin: pick(t, 'incluster'),
+      servedWorkload: { kind: 'Deployment', name: 'web' },
+    })
+    const kinds = g.pathNodeIds.map((id) => g.nodes.find((n) => n.id === id)!.kind)
+    expect(kinds).toEqual(['SERVICE', 'DEPLOYMENT', 'PODS'])
+  })
+
+  it('emits no duplicates and only nodes that exist', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({})])
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    expect(new Set(g.pathNodeIds).size).toBe(g.pathNodeIds.length)
+    for (const id of g.pathNodeIds) expect(g.nodes.some((n) => n.id === id)).toBe(true)
+  })
+})
+
+describe('only the relay may downgrade a proved result', () => {
+  // A laptop is outside the cluster, but a request it sends to a real address
+  // travels the real network - "proxied" means "bypassed the dataplane", which
+  // is a claim about the API-server relay and nothing else.
+  it('keeps a laptop success as proved', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({ vantage: 'local', path: 'data', ok: true, tone: 'healthy' })])
+    const g = buildGraph({ trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: pick(t, 'local') })
+    expect(g.edges.find((e) => e.id === 'e:origin-subject')!.mark).toBe('proved')
+  })
+
+  it('still downgrades the API-server relay', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({ path: 'apiserver', ok: true, tone: 'healthy' })])
+    const g = buildGraph({ trace: t, route: route({ outcome: 'verified', confidence: 'real' }), origin: pick(t, 'apiserver') })
+    expect(g.edges.find((e) => e.id === 'e:origin-subject')!.mark).toBe('proxied')
+  })
+})
+
+// Re-derives an edge's cubic from its rendered path so a test can walk the
+// SAME curve the browser draws, rather than trusting a single reported point.
+function edgeCubic(e: { d: string }) {
+  const m = e.d.match(/M([\d.-]+),([\d.-]+) C([\d.-]+),([\d.-]+) ([\d.-]+),([\d.-]+) ([\d.-]+),([\d.-]+)/)!
+  const n = m.slice(1).map(Number)
+  return { p0: [n[0], n[1]], p1: [n[2], n[3]], p2: [n[4], n[5]], p3: [n[6], n[7]] } as const
+}
+function cubicPoint(c: ReturnType<typeof edgeCubic>, t: number) {
+  const u = 1 - t
+  const f = (a: number, b: number, cc: number, d: number) => u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * cc + t * t * t * d
+  return { x: f(c.p0[0], c.p1[0], c.p2[0], c.p3[0]), y: f(c.p0[1], c.p1[1], c.p2[1], c.p3[1]) }
+}
+
+describe('an edge that skips a column routes around it', () => {
+  // The in-cluster probe bypasses an HTTPRoute, so its edge spans from the
+  // origin to the BACKEND - straight through the Route node sitting between
+  // them, parking its pill on top of the very node it does not touch.
+  const routeTrace = (): Trace => ({
+    subject: { kind: 'HTTPRoute', name: 'shop-route', namespace: 'store' },
+    verdict: 'healthy',
+    brokenAt: -1,
+    upstreams: [{ resource: { kind: 'Gateway', name: 'gw', namespace: 'infra' }, edge: 'gateway->route', findings: [] }],
+    downstream: [
+      {
+        resource: { kind: 'HTTPRoute', name: 'shop-route', namespace: 'store' },
+        edge: 'entry:HTTPRoute',
+        // A REAL route carries findings, which make the node tall. A bare node
+        // is short enough that a too-shallow detour still clears it - which is
+        // exactly how a broken detour passed its first test.
+        findings: [
+          {
+            code: 'gw:no-listener',
+            severity: 'warning',
+            message:
+              "Accepted: NoMatchingListenerHostname - Gateway primary-gateway-system/primary-gateway listeners http, https: There were no hostname intersections between the HTTPRoute and this parent ref's Listener(s).",
+          },
+        ],
+      },
+      { resource: { kind: 'Service', name: 'shop', namespace: 'store' }, edge: 'HTTPRoute->Service', findings: [], config: { clusterIP: '10.96.0.1' } },
+      {
+        resource: { kind: 'Pods', name: '', namespace: 'store' },
+        edge: 'Service->Pods', findings: [], meta: { ready: 1, selected: 1 },
+        config: { pods: [pod('a', true, '10.0.0.1')], podTotal: 1 },
+      },
+    ],
+  })
+
+  const bypassEdge = () => {
+    const t = routeTrace()
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster'), origins: buildOrigins(t) })
+    const e = g.edges.find((x) => x.id === 'e:origin-n:Service/store/shop')!
+    return { g, e }
+  }
+
+  it('clears the node it passes, instead of crossing it', () => {
+    const { g, e } = bypassEdge()
+    const routeNode = g.nodes.find((n) => n.kind === 'HTTPROUTE')!
+    // The pill rides the curve, so its height is a fair probe of where the line
+    // actually goes at the point it crosses that column.
+    expect(e.py).toBeGreaterThan(routeNode.y + routeNode.h)
+  })
+
+  // The obstacle's HEIGHT is what broke the first attempt: a cubic reaches only
+  // ~3/4 of the way to its control points, so clearance has to be solved for,
+  // not assumed.
+  it('clears a tall node by as much as a short one', () => {
+    const { g, e } = bypassEdge()
+    const routeNode = g.nodes.find((n) => n.kind === 'HTTPROUTE')!
+    expect(routeNode.h).toBeGreaterThan(90)
+    expect(e.py - (routeNode.y + routeNode.h)).toBeGreaterThan(8)
+  })
+
+  // The API-server capsule sits in the control lane, well ABOVE the route it
+  // bypasses. Forcing every detour downward sent it swooping under the node and
+  // back up to the Service - longer, and it reads as a detour to nowhere.
+  it('routes an edge coming from above OVER the node, not under it', () => {
+    const t = routeTrace()
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'apiserver'), origins: buildOrigins(t) })
+    const e = g.edges.find((x) => x.id === 'e:origin-n:Service/store/shop')!
+    const routeNode = g.nodes.find((n) => n.kind === 'HTTPROUTE')!
+    expect(e.py).toBeLessThan(routeNode.y)
+  })
+
+  it('still routes an edge coming from below UNDER the node', () => {
+    const { g, e } = bypassEdge()
+    const routeNode = g.nodes.find((n) => n.kind === 'HTTPROUTE')!
+    expect(e.py).toBeGreaterThan(routeNode.y + routeNode.h)
+  })
+
+  // The pill rides the curve's midpoint, so it can sit clear while the LINE
+  // still grazes the node's far corner - an asymmetric edge has already
+  // descended by the time it crosses there. Sample the whole span.
+  it('clears the node along its entire width, not just at the midpoint', () => {
+    const t = routeTrace()
+    for (const originId of ['apiserver', 'incluster'] as const) {
+      const g = buildGraph({ trace: t, route: route(), origin: pick(t, originId), origins: buildOrigins(t) })
+      const e = g.edges.find((x) => x.id === 'e:origin-n:Service/store/shop')!
+      const n = g.nodes.find((x) => x.kind === 'HTTPROUTE')!
+      const c = edgeCubic(e)
+      for (let i = 1; i < 20; i++) {
+        const pt = cubicPoint(c, i / 20)
+        if (pt.x < n.x || pt.x > n.x + n.w) continue
+        const clears = pt.y < n.y || pt.y > n.y + n.h
+        expect(clears).toBe(true)
+      }
+    }
+  })
+
+  it('reserves canvas height for the detour', () => {
+    const { g, e } = bypassEdge()
+    expect(g.canvas.h).toBeGreaterThanOrEqual(e.py)
+  })
+
+  // Only edges that actually skip something detour; an ordinary hop-to-hop edge
+  // must stay where it was.
+  it('leaves an adjacent-column edge alone', () => {
+    const t = trace([pod('a', true, '10.0.0.1')], [p({})])
+    const g = buildGraph({ trace: t, route: route(), origin: pick(t, 'incluster') })
+    const e = g.edges.find((x) => x.label === 'selects')!
+    const pods = g.nodes.find((n) => n.kind === 'PODS')!
+    expect(e.py).toBeLessThan(pods.y + pods.h)
+  })
+})
+
+describe('an entry hop reports its own result, not the route rollup', () => {
+  // The route is built from the BACKEND's probes. A laptop that dialled a public
+  // Ingress and got an answer therefore had no route row at all, and the entry
+  // edge - drawn from the rollup - read "not tested" while the trace held six
+  // successful dials against that very Ingress.
+  const withIngress = (): Trace => ({
+    subject: { kind: 'Service', name: 'web', namespace: 'prod' },
+    verdict: 'healthy',
+    brokenAt: -1,
+    upstreams: [
+      {
+        resource: { kind: 'Ingress', name: 'web', namespace: 'prod' },
+        edge: 'ingress->service',
+        findings: [],
+        config: { hostnames: ['web.example.com'], addresses: ['34.23.121.209'] },
+        probes: [
+          { layer: 'tcp', target: '34.23.121.209:443', vantage: 'local', ok: true },
+          { layer: 'http', target: 'web.example.com', vantage: 'local', ok: true, tone: 'reached', detail: 'HTTP 404 · reached' },
+        ],
+      },
+    ],
+    downstream: [
+      {
+        resource: { kind: 'Service', name: 'web', namespace: 'prod' },
+        edge: 'service',
+        findings: [],
+        config: { clusterIP: '10.96.0.1' },
+        // From a laptop the ClusterIP is only reachable through the relay.
+        probes: [{ layer: 'http', target: 'web:80', vantage: 'local', path: 'apiserver', ok: true, tone: 'healthy', detail: 'HTTP 404' }],
+      },
+      {
+        resource: { kind: 'Pods', name: '', namespace: 'prod' },
+        edge: 'service->pods', findings: [], meta: { ready: 1, selected: 1 },
+        config: { pods: [pod('a', true, '10.0.0.1')], podTotal: 1 },
+      },
+    ],
+  })
+
+  // The route carries only the relayed backend result, so it has no local/data row.
+  const routeViaRelay = () =>
+    route({
+      outcome: 'reached',
+      confidence: 'indirect',
+      byVantage: [{ vantage: 'local', path: 'apiserver', outcome: 'reached' }],
+    })
+
+  it('marks the entry edge from the entry\'s own dials', () => {
+    const t = withIngress()
+    const g = buildGraph({ trace: t, route: routeViaRelay(), origin: pick(t, 'local'), origins: buildOrigins(t) })
+    const e = g.edges.find((x) => x.id === 'e:origin-n:Ingress/prod/web')!
+    expect(e.mark).toBe('proved')
+    expect(e.label).not.toMatch(/not tested/i)
+  })
+
+  it('does not credit the entry to a vantage that never dialled it', () => {
+    const t = withIngress()
+    const g = buildGraph({ trace: t, route: routeViaRelay(), origin: pick(t, 'incluster'), origins: buildOrigins(t) })
+    const e = g.edges.find((x) => x.id === 'e:origin-n:Ingress/prod/web')
+    if (e) expect(e.mark).not.toBe('proved')
+  })
+
+  // A proved glyph beside the words "not tested" is the contradiction this
+  // whole change exists to remove; the pair must always agree.
+  it('never pairs an evidence glyph with the words not tested', () => {
+    const t = withIngress()
+    const g = buildGraph({ trace: t, route: routeViaRelay(), origin: pick(t, 'local'), origins: buildOrigins(t) })
+    const evidence: Mark[] = ['proved', 'answered', 'proxied', 'failed', 'slow']
+    for (const e of g.edges) {
+      if (evidence.includes(e.mark)) expect(e.label).not.toMatch(/^not tested$/i)
+    }
+    const capsule = g.nodes.find((n) => n.isOrigin)!
+    const verdict = capsule.anomalies?.[0]
+    if (verdict && evidence.includes(verdict.mark)) expect(verdict.text).not.toMatch(/^not tested$/i)
+  })
+
+  // A hop this vantage never dialled is untested AT THAT HOP, whatever it
+  // managed elsewhere - an HTTPRoute has no address to dial at all.
+  it('marks an undialled hop untested even when the vantage reached others', () => {
+    const t = withIngress()
+    t.upstreams.push({
+      resource: { kind: 'HTTPRoute', name: 'web', namespace: 'prod' },
+      edge: 'route->service',
+      findings: [],
+      config: { hostnames: ['web.example.com'] },
+      probes: [{ layer: 'tcp', target: '', vantage: 'local', ok: false, skipped: true, reason: 'route has no own address' }],
+    })
+    const g = buildGraph({ trace: t, route: routeViaRelay(), origin: pick(t, 'local'), origins: buildOrigins(t) })
+    const e = g.edges.find((x) => x.id === 'e:origin-n:HTTPRoute/prod/web')!
+    expect(e.mark).toBe('untested')
+    expect(e.label).toMatch(/not tested/i)
+  })
+
+  it('prefers the most specific layer that answered', () => {
+    const t = withIngress()
+    const ev = hopEvidenceFor(t.upstreams[0], buildOrigins(t).find((o) => o.id === 'local')!)!
+    expect(ev.title).toMatch(/HTTP 404/)
   })
 })

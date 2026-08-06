@@ -6,6 +6,10 @@ import { Badge } from '../ui/Badge'
 import { StatusDot, type StatusTone } from '../ui/status-tone'
 
 export interface TracePanelProps {
+  /** The workload the reader opened, when this trace is of the Service in front
+   *  of it. Names the Pods at the end of the path so the workload appears in the
+   *  picture rather than in a banner above it. */
+  servedWorkload?: { kind: string; name: string }
   trace: Trace | undefined
   isLoading?: boolean
   error?: Error | null

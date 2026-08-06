@@ -48,7 +48,7 @@ function ctx(t: Trace, originId: string, r = route()) {
   const origins = buildOrigins(t)
   const origin = origins.find((o) => o.id === originId)!
   const g = buildGraph({ trace: t, route: r, origin })
-  return { trace: t, route: r, origin, origins, nodes: g.nodes }
+  return { trace: t, route: r, origin, origins, nodes: g.nodes, breakNodeId: g.breakNodeId, pathNodeIds: g.pathNodeIds }
 }
 
 describe('the diagnosis is always present', () => {
@@ -63,13 +63,16 @@ describe('the diagnosis is always present', () => {
     expect(s.resource).toBeUndefined()
   })
 
-  it('selecting a node ADDS detail without replacing the diagnosis', () => {
+  // Every hop is reported whether or not anything was clicked; a selection only
+  // changes which one is open. Understanding a path used to take three clicks.
+  it('reports the whole path without any selection, and a click only opens one', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({})])
     const c = ctx(t, 'incluster')
     const before = buildSidebar(undefined, c)
+    expect(before.hops.map((h) => h.kind)).toContain('PODS')
     const after = buildSidebar(podsNodeId(t), c)
     expect(after.path).toEqual(before.path)
-    expect(after.resource?.kind).toBe('PODS')
+    expect(after.hops.find((h) => h.kind === 'PODS')!.expanded).toBe(true)
   })
 
   it('an apiserver result always states what it skipped', () => {
@@ -138,7 +141,7 @@ describe('the sidebar is scoped to the selected vantage', () => {
   it('a stale result does not lead with its old assertion', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({})])
     t.headline = 'Reachable in-cluster on :80'
-    const v = buildVerdict(t, route(), buildOrigins(t), { stale: true })
+    const v = buildVerdict(t, route(), { stale: true })
     expect(v.title).not.toMatch(/Reachable/)
     expect(v.title).toMatch(/out of date/i)
   })
@@ -147,7 +150,7 @@ describe('the sidebar is scoped to the selected vantage', () => {
 describe('node detail is additive', () => {
   it('a Pods node reports what is and is not taking traffic', () => {
     const t = mk([pod('a', true, '10.0.0.1'), pod('b', false, '10.0.0.2', 'readiness failing')], [p({})])
-    const r = buildSidebar(podsNodeId(t), ctx(t, 'incluster')).resource!
+    const r = buildSidebar(podsNodeId(t), ctx(t, 'incluster')).hops.find((h) => h.kind === 'PODS')!
     expect(r.facts.find((x) => x.k === 'SITTING OUT')!.v).toMatch(/not ready/)
     // Derived from readiness, so it must not claim observed delivery.
     expect(r.facts.some((x) => x.k === 'ELIGIBLE')).toBe(true)
@@ -160,50 +163,56 @@ describe('node detail is additive', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({})])
     const c = ctx(t, 'incluster')
     const svc = c.nodes.find((n) => n.kind === 'SERVICE')!
-    const r = buildSidebar(svc.id, c).resource!
+    const r = buildSidebar(svc.id, c).hops.find((h) => h.id === svc.id)!
     expect(r.facts.some((x) => x.k === 'CLUSTER IP')).toBe(true)
     expect(r.openRef?.name).toBe('shop')
   })
 
-  it('the origin capsule is not selectable', () => {
+  // A vantage is not a hop on the path - it is where the path was watched from.
+  it('the origin capsule is never a hop in the report', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({})])
     const c = ctx(t, 'incluster')
     const cap = c.nodes.find((n) => n.isOrigin)!
-    expect(buildSidebar(cap.id, c).resource).toBeUndefined()
+    expect(buildSidebar(cap.id, c).hops.some((h) => h.id === cap.id)).toBe(false)
   })
 })
 
 describe('verdict band', () => {
+  // These rules used to be asserted through the header's fact strip. The strip
+  // is gone - every one of its four facts is now shown by the graph or the
+  // panel - so each rule is pinned where it actually renders.
   it('reports nothing proven when no origin has run', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [])
-    const v = buildVerdict(t, route({ outcome: 'not-tested' }), buildOrigins(t))
+    const v = buildVerdict(t, route({ outcome: 'not-tested' }))
     expect(v.tone).toBe('unknown')
-    expect(v.facts.find((f) => f.k === 'proven to:')?.v).toBe('nothing')
-    expect(v.facts.find((f) => f.k === 'origins:')?.v).toMatch(/none/)
+    expect(v.chipText).toMatch(/not tested/i)
   })
 
   it('an apiserver-only pass never claims the backend was proven', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({ path: 'apiserver' })])
-    const v = buildVerdict(t, route({ confidence: 'indirect' }), buildOrigins(t))
+    const v = buildVerdict(t, route({ confidence: 'indirect' }))
     expect(v.tone).toBe('degraded')
-    expect(v.facts.find((f) => f.k === 'proven to:')?.v).toMatch(/serving process/)
+    const s = buildSidebar(undefined, ctx(t, 'apiserver', route({ confidence: 'indirect' })))
+    // It may say something is SERVING; it must also say that is not the same as
+    // the normal path working.
+    expect(s.path.body).toMatch(/serving/i)
+    expect(s.path.body).toMatch(/not that the normal path works/i)
   })
 
   it('points the next step at something Radar can actually do', () => {
     // The real caller is the strongest missing origin AND permanently
-    // unavailable. Naming it here would give every resource the same
-    // un-actionable line.
+    // unavailable. Offering it would give every resource the same
+    // un-actionable next step.
     const t = mk([pod('a', true, '10.0.0.1')], [p({ path: 'apiserver' })])
-    const v = buildVerdict(t, route({ confidence: 'indirect' }), buildOrigins(t))
-    const next = v.facts.find((f) => f.k === 'next:')!.v
-    expect(next).toMatch(/in-cluster probe/i)
-    expect(next).not.toMatch(/real caller/i)
+    const s = buildSidebar(undefined, ctx(t, 'apiserver', route({ confidence: 'indirect' })))
+    expect(s.path.next.body).toMatch(/in-cluster probe/i)
+    expect(s.path.next.header).toMatch(/run this next/i)
   })
 
   it('says so plainly when nothing stronger can be run', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({}), p({ path: 'apiserver' }), p({ vantage: 'local', path: 'data' })])
-    const v = buildVerdict(t, route(), buildOrigins(t))
-    expect(v.facts.find((f) => f.k === 'next:')!.v).toMatch(/nothing stronger/i)
+    const s = buildSidebar(undefined, ctx(t, 'incluster'))
+    expect(s.path.next.header).toMatch(/no stronger test/i)
   })
 
   it('falls back to the backend verdict when there is no route to derive a tone from', () => {
@@ -228,7 +237,7 @@ describe('verdict band', () => {
 
   it('a running test is informational, never green', () => {
     const t = mk([pod('a', true, '10.0.0.1')], [p({})])
-    const v = buildVerdict(t, route(), buildOrigins(t), { running: true })
+    const v = buildVerdict(t, route(), { running: true })
     expect(v.tone).toBe('info')
     expect(v.chipText).toBe('testing')
   })
@@ -245,11 +254,11 @@ describe('an in-cluster test that could not run says so first', () => {
     return t
   }
 
-  it('disables the action instead of offering it', () => {
+  // The button moved to the vantage capsule in the graph, so the panel must not
+  // offer a third copy of it - it keeps the reasoning instead.
+  it('offers no run button of its own', () => {
     const s = buildSidebar(undefined, ctx(noRunnableRoute(), 'apiserver'))
-    const cta = s.path.next.ctas.find((c) => c.action === 'run-in-cluster')
-    expect(cta?.disabledReason).toMatch(/nothing to run/i)
-    expect(cta?.primary).toBeFalsy()
+    expect(s.path.next.ctas.some((c) => c.action === 'run-in-cluster')).toBe(false)
   })
 
   it('explains it in the body rather than promising stronger evidence', () => {
@@ -258,9 +267,77 @@ describe('an in-cluster test that could not run says so first', () => {
     expect(s.path.next.body).toMatch(/skipped before a request could be formed/i)
   })
 
-  it('still offers it when a route does carry a request', () => {
+  it('still explains the run is available when a route carries a request', () => {
     const s = buildSidebar(undefined, ctx(mk([pod('a', true, '10.0.0.1')], [p({ path: 'apiserver' })]), 'apiserver'))
-    const cta = s.path.next.ctas.find((c) => c.action === 'run-in-cluster')
-    expect(cta?.disabledReason).toBeUndefined()
+    expect(s.path.next.body).toMatch(/strongest evidence/i)
+  })
+})
+
+describe('the report is ordered around the break', () => {
+  // The break is the answer, so it opens; what came before it worked and is
+  // context; what came after was never tried and must not read as healthy.
+  const brokenTrace = () => mk([pod('a', true, '10.0.0.1')], [p({ ok: false, tone: 'unhealthy' })])
+  const brokenRoute = () => route({ outcome: 'unreachable', confidence: 'real', evidence: 'connection refused' })
+
+  it('opens the hop where the request stopped, not the last one', () => {
+    const t = brokenTrace()
+    const c = ctx(t, 'incluster', brokenRoute())
+    const s = buildSidebar(undefined, c)
+    expect(c.breakNodeId).toBeDefined()
+    const open = s.hops.filter((h) => h.expanded)
+    expect(open).toHaveLength(1)
+    expect(open[0].id).toBe(c.breakNodeId)
+    expect(open[0].state).toBe('break')
+  })
+
+  it('opens exactly one hop when nothing is selected', () => {
+    const s = buildSidebar(undefined, ctx(mk([pod('a', true, '10.0.0.1')], [p({})]), 'incluster'))
+    expect(s.hops.filter((h) => h.expanded)).toHaveLength(1)
+  })
+
+  it('labels hops past the break as never tried, not as fine', () => {
+    const t = brokenTrace()
+    const c = ctx(t, 'incluster', brokenRoute())
+    const s = buildSidebar(undefined, c)
+    expect(c.breakNodeId).toBeDefined()
+    const after = s.hops.slice(s.hops.findIndex((h) => h.id === c.breakNodeId) + 1)
+    for (const h of after) expect(h.state).toBe('after')
+  })
+
+  it('keeps hops in path order', () => {
+    const s = buildSidebar(undefined, ctx(mk([pod('a', true, '10.0.0.1')], [p({})]), 'incluster'))
+    expect(s.hops.map((h) => h.kind)).toEqual(['SERVICE', 'PODS'])
+  })
+})
+
+describe('a derived break says which KIND it is', () => {
+  const derived = (basis: 'declared-config' | 'cluster-state'): RouteResult => ({
+    route: 'GET /', target: 'web:80', outcome: 'unreachable', basis,
+  })
+
+  // Calling "no ready endpoints" a configuration failure sends the reader to
+  // edit YAML when the fix is to get Pods running.
+  it('does not call a cluster-state break a configuration failure', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [])
+    const s = buildSidebar(undefined, ctx(t, 'incluster', derived('cluster-state')))
+    expect(s.path.body).not.toMatch(/configuration/i)
+    expect(s.path.body).toMatch(/ready to serve/i)
+    expect(s.path.body).toMatch(/changes when the workload does/i)
+  })
+
+  it('still calls a declared-config break a configuration failure', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [])
+    const s = buildSidebar(undefined, ctx(t, 'incluster', derived('declared-config')))
+    expect(s.path.body).toMatch(/configuration itself is broken/i)
+  })
+
+  // Both are DERIVED: neither was dialled, so neither may read as an
+  // observation of the selected vantage.
+  it('attributes neither to the selected vantage', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [])
+    for (const b of ['declared-config', 'cluster-state'] as const) {
+      const s = buildSidebar(undefined, ctx(t, 'local', derived(b)))
+      expect(s.path.body).not.toMatch(/from here/i)
+    }
   })
 })

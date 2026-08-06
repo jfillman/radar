@@ -1,12 +1,14 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Trace, RouteResult, ResourceRef } from './types'
 import { ReachActions, JustTestedNote, CopyableCommand, type TracePanelProps } from './TracePanel'
 import { AlertBanner } from '../ui/drawer-components'
-import { ReachabilityGraph, TinyTag, MarkGlyph } from './ReachabilityGraph'
+import { PaneLoader } from '../ui/PaneLoader'
+import { ReachabilityGraph, MarkGlyph } from './ReachabilityGraph'
+import { ChevronRight } from 'lucide-react'
 import { Tooltip } from '../ui/Tooltip'
-import { buildGraph, originProducedEvidence } from './reachGraphModel'
+import { buildGraph } from './reachGraphModel'
 import { buildOrigins, defaultOrigin, type Origin, type OriginId } from './reachOrigins'
-import { buildSidebar, buildVerdict, type Sidebar, type InspectorCTA, type Selection } from './reachInspector'
+import { buildSidebar, buildVerdict, type Sidebar, type HopReport, type InspectorCTA, type Selection } from './reachInspector'
 import { markStyle, glyphStyle, markHelp, scenariosFor, routeTone, routeChip, routeIdentity, SEV_COLOR, SEV_BADGE, type Scenario } from './reachMarks'
 import { DEV_STATES, devTrace, type DevState } from './reachFixtures'
 
@@ -45,15 +47,25 @@ export function ReachabilityView(props: TracePanelProps) {
   // Dev-only: drive the view from fixtures so the empty / failing / sampled /
   // denied states are reachable without a cluster shaped like each one.
   const devEnabled = !!import.meta.env?.DEV
+  // Survives re-renders, and deliberately NOT state: flipping it must not cause
+  // a render of its own.
+  const shownRef = useRef(false)
   const [devState, setDevState] = useState<DevState | null>(null)
   const trace = devState ? devTrace(devState) : liveTrace
   const running = devState === 'running' || !!props.inClusterRunning
   const stale = devState === 'stale' || !!clusterChangedSinceTest
   const inClusterAllowed = devState === 'rbac' ? false : props.inClusterAllowed
 
-  if (isLoading && !trace) {
-    return <div className="p-4 text-sm text-theme-text-tertiary">Loading reachability…</div>
+  // The full-pane loader is for the FIRST paint only. Returning it later
+  // UNMOUNTS the board, which throws away the vantage and path the operator had
+  // selected - so starting an in-cluster test dropped them back to a default
+  // view of a different vantage, mid-test. Once the board has been shown it
+  // stays shown, and progress is expressed inside it (the tested path animates).
+  const firstPaintDone = shownRef.current
+  if (isLoading && !firstPaintDone && (!trace || !props.probed)) {
+    return <PaneLoader className="flex-1 py-10" label="Testing reachability…" />
   }
+  if (trace) shownRef.current = true
   if (error && !trace) {
     return (
       <div className="p-1">
@@ -160,14 +172,30 @@ function ReachabilityBoard(props: BoardProps) {
 
   const [selection, setSelection] = useState<Selection>(undefined)
 
-  const model = useMemo(() => buildGraph({ trace, route, origin, stale, running }), [trace, route, origin, stale, running])
+  const model = useMemo(
+    () => buildGraph({ trace, route, origin, origins, servedWorkload: props.servedWorkload, stale, running }),
+    [trace, route, origin, origins, props.servedWorkload, stale, running],
+  )
   const multiPath = scenarios.length > 1
   const sidebar = useMemo(
-    () => buildSidebar(selection, { trace, route, origin, origins, nodes: model.nodes, stale, running, multiPath, httpPath: props.probePath }),
+    () =>
+      buildSidebar(selection, {
+        trace,
+        route,
+        origin,
+        origins,
+        nodes: model.nodes,
+        breakNodeId: model.breakNodeId,
+        pathNodeIds: model.pathNodeIds,
+        stale,
+        running,
+        multiPath,
+        httpPath: props.probePath,
+      }),
     [selection, trace, route, origin, origins, model, stale, running, multiPath, props.probePath],
   )
   const verdict = useMemo(
-    () => buildVerdict(trace, route, origins, { stale, running, originId: origin?.id, originName: origin?.name, pathLabel: multiPath ? scenario?.primary.target || scenario?.label : undefined }),
+    () => buildVerdict(trace, route, { stale, running, originId: origin?.id, originName: origin?.name, pathLabel: multiPath ? scenario?.primary.target || scenario?.label : undefined }),
     [trace, route, origins, stale, running, multiPath, scenario, origin],
   )
 
@@ -213,25 +241,52 @@ function ReachabilityBoard(props: BoardProps) {
           stacked, separately-scrolling regions and left neither enough room.
           Narrow widths tighten the two rails instead - they are a picker and a
           reading column, and both compress better than the path does. */}
-      <div className="grid min-h-0 flex-1 items-stretch grid-cols-[minmax(168px,186px)_minmax(0,1fr)_minmax(248px,278px)] xl:grid-cols-[minmax(196px,210px)_minmax(0,1fr)_minmax(290px,21%)]">
-        {/* Picking a vantage re-routes the graph and returns the inspector to
-            the PATH result from there. It used to select the origin itself,
-            which answered "define this vantage" when the user asked "show me
-            the result from it" - and, for an unusable vantage, replaced a
-            working graph with a blocked one. The origin's own detail is still
-            one click away on its capsule in the graph. */}
-        <div className="min-h-0 overflow-y-auto border-r border-theme-border [scrollbar-gutter:stable]">
-          <OriginRail origins={origins} active={origin?.id} onPick={(id) => { setOriginId(id); setSelection(undefined) }} />
-        </div>
-        <div className="min-h-0 min-w-0">
-          <ReachabilityGraph model={model} selected={selection} onSelect={setSelection} />
+      {/* Wider than it was: the vantage rail used to own a column of its own, and
+          that width now belongs to the two panes that carry content. */}
+      <div className="grid min-h-0 flex-1 items-stretch grid-cols-[minmax(0,1fr)_minmax(300px,336px)] xl:grid-cols-[minmax(0,1fr)_minmax(340px,25%)]">
+        {/* The vantages are IN the graph now, one node each, so the rail that
+            listed them again is gone and its width belongs to the path. */}
+        <div className="flex min-h-0 min-w-0 flex-col">
+          <ReachabilityGraph
+            model={model}
+            onAction={(a) => {
+              if (a.kind !== 'run-in-cluster') return
+              // Pin the vantage you just asked to exercise. Without this the
+              // origin stayed on whatever the default resolved to, and when the
+              // results arrived the default moved - so you were sent away from
+              // the very test you started.
+              setOriginId('incluster')
+              setSelection(undefined)
+              onRunInCluster?.()
+            }}
+            selected={selection}
+            onSelect={(id) => {
+              // An origin capsule selects the VANTAGE - the rest of the graph
+              // and the inspector re-route to it. Any other node selects the
+              // resource, as before.
+              const originId = id?.startsWith('origin:') ? (id.slice('origin:'.length) as OriginId) : undefined
+              if (originId) {
+                setOriginId(originId)
+                setSelection(undefined)
+                return
+              }
+              setSelection(id)
+            }}
+          />
+
         </div>
         <div className="min-h-0 overflow-y-auto [scrollbar-gutter:stable]">
-          <InspectorPanel sidebar={sidebar} onCTA={onCTA} onOpen={(r) => onNavigateToResource?.(r)} />
+          <InspectorPanel
+            sidebar={sidebar}
+            onCTA={onCTA}
+            onOpen={(r) => onNavigateToResource?.(r)}
+            selected={selection}
+            onSelect={setSelection}
+          />
         </div>
       </div>
 
-      <CoverageFooter trace={trace} testedAt={testedAt} stale={stale} />
+      <CoverageFooter trace={trace} testedAt={testedAt} stale={stale} origins={origins} />
     </div>
   )
 }
@@ -325,13 +380,8 @@ function VerdictBand({
   actions: React.ReactNode
   runNonce?: number
 }) {
-  const c = SEV_COLOR[verdict.tone]
   return (
     <div className="flex items-start gap-3 border-b border-theme-border px-5 py-3">
-      <span
-        className="mt-1 shrink-0 rounded-full"
-        style={{ width: 12, height: 12, background: c, boxShadow: `0 0 0 4px color-mix(in srgb, ${c} 15%, transparent)` }}
-      />
       <div className="min-w-0 flex-1">
         {/* The headline covers the whole resource while the badge follows the
             selected path. Unlabelled, the two read as one claim. */}
@@ -356,13 +406,6 @@ function VerdictBand({
           </div>
         )}
         {verdict.body && <div className="mt-1 max-w-[76ch] text-xs leading-relaxed text-theme-text-secondary text-pretty">{verdict.body}</div>}
-        <div className="mt-1.5 flex flex-wrap gap-x-3.5 gap-y-1 text-[11px] text-theme-text-tertiary">
-          {verdict.facts.map((f) => (
-            <span key={f.k}>
-              <b className="font-semibold text-theme-text-secondary">{f.k}</b> {f.v}
-            </span>
-          ))}
-        </div>
       </div>
       <div className="flex flex-none gap-2">{actions}</div>
     </div>
@@ -370,100 +413,6 @@ function VerdictBand({
 }
 
 // ------------------------------------------------------------------ origins
-
-/** Hover-level decoder for the identity tags, which had none anywhere. */
-const KIND_TAG_HELP: Record<string, string> = {
-  synthetic: 'Radar’s own test client — not your application, so anything that checks who is calling may answer differently.',
-  radar: 'Radar itself, dialling from its own Pod with its own ServiceAccount — a real in-cluster client, but not your application.',
-  'real-client': 'A real client, but not your application.',
-  'real-caller': 'Your application itself, with its own identity.',
-  relayed: 'Not a caller at all — Kubernetes passes the request along on our behalf.',
-}
-
-function OriginRail({ origins, active, onPick }: { origins: Origin[]; active?: OriginId; onPick: (id: OriginId) => void }) {
-  // Ordered by what was actually LEARNED, not by theoretical strength. The rail
-  // is sorted worst-first elsewhere, but here an origin that produced evidence
-  // is the one the reader wants: it led with vantages that had never run, so the
-  // only row carrying a result sat at the bottom.
-  const usable = origins.filter((o) => !o.unsupported)
-  const tested = usable.filter((o) => originProducedEvidence(o))
-  const notRun = usable.filter((o) => !originProducedEvidence(o))
-  return (
-    <div className="bg-theme-surface py-2.5">
-      <div className="px-3 pb-1 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">TESTED FROM</div>
-      <Tooltip
-        content="Each row is a different way to reach this resource. Picking one shows what that test found — and what it cannot tell you."
-        wrapperClassName="block cursor-help px-3 pb-2"
-      >
-        <span className="text-[10.5px] leading-snug text-theme-text-tertiary">Pick one to see what it found.</span>
-      </Tooltip>
-      {tested.map((o) => (
-        <OriginTile key={o.id} origin={o} selected={o.id === active} onPick={onPick} />
-      ))}
-      {notRun.length > 0 && tested.length > 0 && (
-        <div className="mx-2 mb-1.5 mt-2 border-t border-theme-border pt-2 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">
-          NOT RUN YET
-        </div>
-      )}
-      {notRun.map((o) => (
-        <OriginTile key={o.id} origin={o} selected={o.id === active} onPick={onPick} />
-      ))}
-      <UntestableNote origins={origins} />
-    </div>
-  )
-}
-
-function OriginTile({ origin: o, selected: sel, onPick }: { origin: Origin; selected: boolean; onPick: (id: OriginId) => void }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onPick(o.id)}
-      className="mx-2 mb-1.5 block w-[calc(100%-16px)] cursor-pointer rounded-[20px] px-2.5 py-2 text-left"
-      style={{
-        border: `1px ${sel ? 'solid var(--accent)' : 'dashed var(--border-default)'}`,
-        background: sel ? 'var(--selection-bg)' : 'var(--bg-base)',
-      }}
-    >
-      <div className="flex items-center gap-1.5">
-        <span className="flex-none text-xs" style={{ color: sel ? 'var(--accent-text)' : 'var(--text-tertiary)' }}>
-          {o.glyph}
-        </span>
-        <span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-theme-text-primary">{o.name}</span>
-        <MarkGlyph mark={o.mark} />
-      </div>
-      {/* Deliberately terse. The mechanism, identity and the reason an origin is
-          unusable all render in the inspector the moment it is selected -
-          repeating them here made the rail taller than the graph and pushed the
-          path off the pane. */}
-      <div className="mt-1.5 flex flex-wrap items-center gap-1">
-        <TinyTag
-          text={o.kindTag}
-          tone={o.kind === 'synthetic' ? 'var(--color-warning-dark)' : o.kind === 'relayed' ? 'var(--color-info)' : 'var(--color-success-dark)'}
-          title={KIND_TAG_HELP[o.kind]}
-        />
-        <TinyTag
-          text={o.lane === 'dataplane' ? 'CLUSTER NETWORK' : 'NOT THE CLUSTER NETWORK'}
-          tone={o.lane === 'dataplane' ? 'var(--accent-text)' : 'var(--color-info)'}
-          title={
-            o.lane === 'dataplane'
-              ? 'Runs from a Pod in the cluster, so the request goes through the cluster’s routing, network policy and mesh. It dials the backend directly, so it cannot show whether the front door works.'
-              : 'Does not traverse kube-proxy, NetworkPolicy or the mesh. A dial from your machine uses your own network; a relayed request is carried by the Kubernetes control plane, which reaches the target from inside but not over the path real traffic takes.'
-          }
-        />
-        {/* An origin that already produced evidence is not "unavailable" - it
-            just can't be run again. Showing both at once had the rail denying a
-            result the graph beside it was displaying. */}
-        {o.unavailable && (
-          <Tooltip content={o.unavailable} wrapperClassName="cursor-help">
-            <span className="text-[9px] text-theme-text-tertiary">
-              {originProducedEvidence(o) ? '⊘ can’t run again' : '⊘ unavailable'}
-            </span>
-          </Tooltip>
-        )}
-      </div>
-    </button>
-  )
-}
 
 /** The vantages Radar cannot run, stated rather than offered. These are real
  *  holes in the evidence, so they must stay on screen - but as ONE limit on the
@@ -473,8 +422,8 @@ function UntestableNote({ origins }: { origins: Origin[] }) {
   const out = origins.filter((o) => o.unsupported)
   if (out.length === 0) return null
   return (
-    <div className="mx-2 mt-2 border-t border-theme-border pt-2">
-      <div className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">NEVER TESTED</div>
+    <>
+      <span className="text-theme-border">|</span>
       <Tooltip
         content={
           <span className="flex flex-col gap-1">
@@ -485,13 +434,13 @@ function UntestableNote({ origins }: { origins: Origin[] }) {
             ))}
           </span>
         }
-        wrapperClassName="mt-1 block cursor-help"
+        wrapperClassName="cursor-help"
       >
-        <span className="text-[10px] leading-snug text-theme-text-tertiary">
+        <span className="text-theme-text-tertiary">
           {out.map((o) => o.glyph).join(' ')} {untestableSummary(out)}
         </span>
       </Tooltip>
-    </div>
+    </>
   )
 }
 
@@ -510,25 +459,79 @@ function untestableSummary(out: Origin[]): string {
 
 // ---------------------------------------------------------------- inspector
 
-function Caveats({ items }: { items: string[] }) {
-  if (items.length === 0) return null
-  // Quieter than a fault: these are limits on the claim, not problems with the
-  // cluster. Giving them the same amber box trained people to skip amber boxes.
+/**
+ * The panel's one disclosure, matching drawer-components' Section: a rotating
+ * ChevronRight and a grid-template-rows transition. Hand-rolled "›"/"⌄" toggles
+ * neither looked like the rest of Radar nor animated, so a section appearing was
+ * an abrupt jump with no affordance saying it could be opened at all.
+ */
+function Disclosure({
+  open,
+  onToggle,
+  label,
+  count,
+  children,
+}: {
+  open: boolean
+  onToggle: () => void
+  label: string
+  count?: number
+  children: React.ReactNode
+}) {
   return (
-    <div className="border-l-2 border-theme-border pl-2.5">
-      <div className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">WHAT THIS DOESN’T PROVE</div>
-      {items.map((n, i) => (
-        <div key={i} className="mt-1 text-[10.5px] leading-snug text-theme-text-tertiary">
-          {n}
-        </div>
-      ))}
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1.5 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary transition-colors hover:text-theme-text-secondary"
+      >
+        <ChevronRight className={`h-3 w-3 flex-none transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
+        <span>{label}</span>
+        {count !== undefined && <span className="flex-1 text-right font-normal tracking-normal">{count}</span>}
+      </button>
+      <div className="grid transition-[grid-template-rows] duration-200 ease-out" style={{ gridTemplateRows: open ? '1fr' : '0fr' }}>
+        <div className="overflow-hidden">{children}</div>
+      </div>
     </div>
   )
 }
 
-function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (c: InspectorCTA) => void; onOpen: (r: ResourceRef) => void }) {
+function Caveats({ items, defaultOpen = false }: { items: string[]; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
+  if (items.length === 0) return null
+  // Collapsed by default. These are limits on the CLAIM, and they are the same
+  // sentences for every result of a given kind - so at full height they pushed
+  // the evidence and the path below the fold on every single view to say
+  // something invariant. Quieter than a fault, and one click from being read.
+  return (
+    <div>
+      <Disclosure open={open} onToggle={() => setOpen((v) => !v)} label="WHAT THIS DOESN’T PROVE" count={items.length}>
+        {items.map((n, i) => (
+          <div key={i} className="mt-1 text-[10.5px] leading-snug text-theme-text-tertiary">
+            {n}
+          </div>
+        ))}
+      </Disclosure>
+    </div>
+  )
+}
+
+function InspectorPanel({
+  sidebar,
+  onCTA,
+  onOpen,
+  selected,
+  onSelect,
+}: {
+  sidebar: Sidebar
+  onCTA: (c: InspectorCTA) => void
+  onOpen: (r: ResourceRef) => void
+  selected?: string
+  onSelect: (id: string) => void
+}) {
   const [scopeOpen, setScopeOpen] = useState(false)
-  const { path, resource } = sidebar
+  const { path } = sidebar
   return (
     <div className="flex h-full flex-col gap-3 bg-theme-surface px-3.5 py-3 border-l border-theme-border">
       {/* The diagnosis is ALWAYS here. Whether traffic got through must never
@@ -550,24 +553,14 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
       </div>
 
       {path.scope.length > 0 && (
-        <div>
-          <button
-            type="button"
-            onClick={() => setScopeOpen((v) => !v)}
-            className="flex w-full items-center gap-1.5 text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary hover:text-theme-text-secondary"
-          >
-            <span>TEST DETAILS</span>
-            <span className="flex-1 text-right font-normal tracking-normal">{path.scope.length}</span>
-            <span>{scopeOpen ? '⌄' : '›'}</span>
-          </button>
-          {scopeOpen &&
-            path.scope.map((p, i) => (
-              <div key={i} className="mt-0.5 flex gap-2 border-b border-theme-border-subtle py-0.5">
-                <span className="w-[86px] flex-none pt-0.5 text-[9px] font-bold tracking-[0.04em] text-theme-text-tertiary">{p.k}</span>
-                <span className="flex-1 break-words font-mono text-[10px] leading-snug text-theme-text-secondary">{p.v}</span>
-              </div>
-            ))}
-        </div>
+        <Disclosure open={scopeOpen} onToggle={() => setScopeOpen((v) => !v)} label="TEST DETAILS" count={path.scope.length}>
+          {path.scope.map((p, i) => (
+            <div key={i} className="mt-0.5 flex gap-2 border-b border-theme-border-subtle py-0.5">
+              <span className="w-[86px] flex-none pt-0.5 text-[9px] font-bold tracking-[0.04em] text-theme-text-tertiary">{p.k}</span>
+              <span className="flex-1 break-words font-mono text-[10px] leading-snug text-theme-text-secondary">{p.v}</span>
+            </div>
+          ))}
+        </Disclosure>
       )}
 
       {path.evidence.length > 0 && (
@@ -582,6 +575,17 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
         </div>
       )}
 
+      {/* The whole path, in order. Every hop is here whether or not it was
+          clicked; the break opens by default because it is the answer, and the
+          rest stay one line so the report never becomes a wall. */}
+      {sidebar.hops.length > 0 && (
+        <div className="border-t border-theme-border pt-3">
+          <div className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">ALONG THIS PATH</div>
+          {sidebar.hops.map((h) => (
+            <HopSection key={h.id} hop={h} selected={selected === h.id} onSelect={onSelect} onOpen={onOpen} />
+          ))}
+        </div>
+      )}
       <Caveats items={path.notProve} />
 
       <div className="rounded-md px-2.5 py-2.5" style={{ border: '1px solid var(--accent)', background: 'var(--accent-muted)' }}>
@@ -612,33 +616,88 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
         )}
       </div>
 
-      {/* Additive: a selected node appends its own detail below the diagnosis
-          rather than replacing it. */}
-      {resource && (
-        <div className="border-t border-theme-border pt-3">
-          <div className="flex items-center gap-2">
-            <span className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">{resource.kind}</span>
-            <div className="flex-1" />
-            <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[resource.chipTone]}`}>{resource.chipText}</span>
-          </div>
-          <div className="mt-1.5 flex items-baseline gap-2">
-            <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] font-semibold text-theme-text-primary">{resource.name}</span>
-            {resource.openRef?.name && (
-              <button type="button" onClick={() => onOpen(resource.openRef!)} className="shrink-0 text-[11px] text-accent-text hover:underline">
-                Open ↗
-              </button>
-            )}
-          </div>
-          <div className="mt-1 text-[11.5px] leading-relaxed text-theme-text-secondary text-pretty">{resource.body}</div>
-          {resource.facts.map((f, i) => (
+    </div>
+  )
+}
+
+const HOP_STATE_NOTE: Record<HopReport['state'], string> = {
+  break: 'the request stopped here',
+  before: 'reached',
+  after: 'never tried — something earlier stopped',
+  plain: '',
+}
+
+function HopSection({
+  hop,
+  selected,
+  onSelect,
+  onOpen,
+}: {
+  hop: HopReport
+  selected: boolean
+  onSelect: (id: string) => void
+  onOpen: (r: ResourceRef) => void
+}) {
+  const [openOverride, setOpenOverride] = useState<boolean | null>(null)
+  const open = openOverride ?? hop.expanded
+  const ref = useRef<HTMLDivElement>(null)
+  // A click on the graph scrolls its hop into view instead of replacing the
+  // panel - the gesture still means "I care about this one", it just no longer
+  // costs the reader the rest of the story.
+  //
+  // Selecting also CLEARS any manual collapse. A hop the reader had folded shut
+  // kept that override forever, so clicking its node in the graph highlighted a
+  // closed section and appeared to do nothing at all - asking to look at
+  // something has to be able to open it.
+  useEffect(() => {
+    if (!selected) return
+    setOpenOverride(null)
+    ref.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [selected])
+  return (
+    <div
+      ref={ref}
+      // A flat tint plus a hairline ring, not a heavy left bar: the bar read as a
+      // scrollbar against the panel edge and its background ran under the border.
+      // `.selection` / `.selection-ring` are the repo's own tokens for exactly
+      // this, so selection here looks like selection everywhere else.
+      className={`mt-2 rounded-md px-2 py-1 transition-colors duration-200 ${selected ? 'selection selection-ring' : ''}`}
+    >
+      <button
+        type="button"
+        onClick={() => {
+          setOpenOverride(!open)
+          onSelect(hop.id)
+        }}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1.5 text-left"
+      >
+        <ChevronRight className={`h-3 w-3 flex-none text-theme-text-tertiary transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
+        <span className="text-[9px] font-bold tracking-[0.04em] text-theme-text-tertiary">{hop.kind}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] font-semibold text-theme-text-primary">{hop.name}</span>
+        <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[hop.chipTone]}`}>{hop.chipText || HOP_STATE_NOTE[hop.state]}</span>
+      </button>
+      {!open && hop.state !== 'plain' && (
+        <div className="pl-[18px] text-[10px] leading-snug text-theme-text-tertiary">{HOP_STATE_NOTE[hop.state]}</div>
+      )}
+      <div className="grid transition-[grid-template-rows] duration-200 ease-out" style={{ gridTemplateRows: open ? '1fr' : '0fr' }}>
+        <div className="overflow-hidden">
+        <div className="pb-1 pl-[18px]">
+          {hop.openRef?.name && (
+            <button type="button" onClick={() => onOpen(hop.openRef!)} className="text-[11px] text-accent-text hover:underline">
+              Open ↗
+            </button>
+          )}
+          <div className="mt-1 text-[11.5px] leading-relaxed text-theme-text-secondary text-pretty">{hop.body}</div>
+          {hop.facts.map((f, i) => (
             <div key={i} className="mt-0.5 flex gap-2 border-b border-theme-border-subtle py-0.5">
               <span className="w-[86px] flex-none pt-0.5 text-[9px] font-bold tracking-[0.04em] text-theme-text-tertiary">{f.k}</span>
               <span className="flex-1 break-words font-mono text-[10px] leading-snug text-theme-text-secondary">{f.v}</span>
             </div>
           ))}
-          {resource.anomalies && resource.anomalies.length > 0 && (
+          {hop.anomalies && hop.anomalies.length > 0 && (
             <div className="mt-2">
-              {resource.anomalies.map((a, i) => (
+              {hop.anomalies.map((a, i) => (
                 <div key={i} className="mb-1 flex items-baseline gap-1.5">
                   <span style={glyphStyle(a.mark)}>{markStyle(a.mark).glyph}</span>
                   <span className="text-[10.5px] leading-snug text-theme-text-secondary">{a.text}</span>
@@ -646,9 +705,9 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
               ))}
             </div>
           )}
-          {resource.rows && resource.rows.length > 0 && (
+          {hop.rows && hop.rows.length > 0 && (
             <div className="mt-2 flex flex-col gap-0.5">
-              {resource.rows.map((r) => (
+              {hop.rows.map((r) => (
                 <Tooltip
                   key={r.name}
                   content={
@@ -662,25 +721,36 @@ function InspectorPanel({ sidebar, onCTA, onOpen }: { sidebar: Sidebar; onCTA: (
                   <div className="flex w-full items-baseline gap-1.5">
                     <span style={glyphStyle(r.mark)}>{markStyle(r.mark).glyph}</span>
                     <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-theme-text-secondary">{r.name}</span>
-                    <span className="shrink-0 text-[9.5px] text-theme-text-tertiary">{r.detail}</span>
+                    <span className="min-w-0 flex-1 truncate text-right text-[9.5px] text-theme-text-tertiary">{r.detail}</span>
                   </div>
                 </Tooltip>
               ))}
-              {!!resource.moreRows && <div className="text-[9.5px] text-theme-text-tertiary">+{resource.moreRows} more not shown</div>}
+              {!!hop.moreRows && <div className="text-[9.5px] text-theme-text-tertiary">+{hop.moreRows} more not shown</div>}
             </div>
           )}
           <div className="mt-2">
-            <Caveats items={resource.notProve} />
+            <Caveats items={hop.notProve} />
           </div>
         </div>
-      )}
+        </div>
+      </div>
     </div>
   )
 }
 
 // ------------------------------------------------------------------- footer
 
-function CoverageFooter({ trace, testedAt, stale }: { trace: Trace; testedAt?: Date; stale: boolean }) {
+function CoverageFooter({
+  trace,
+  testedAt,
+  stale,
+  origins,
+}: {
+  trace: Trace
+  testedAt?: Date
+  stale: boolean
+  origins: Origin[]
+}) {
   const c = trace.coverage
   const skips = trace.notTested ?? []
   // Only skips that actually cost coverage belong in the headline count - a
@@ -698,6 +768,10 @@ function CoverageFooter({ trace, testedAt, stale }: { trace: Trace; testedAt?: D
     <div className="flex flex-wrap items-center gap-2.5 border-t border-theme-border bg-theme-surface px-5 py-2 text-[11px] text-theme-text-tertiary">
       <span className="text-[9.5px] font-bold tracking-[0.07em]">WHAT WAS TESTED</span>
       <span className="font-mono text-theme-text-secondary">{coverageText}</span>
+      {/* The vantages Radar can never run are a COVERAGE fact, so they belong on
+          the coverage line - as their own band they were a third row of chrome
+          restating what this one is for. */}
+      <UntestableNote origins={origins} />
       <span className="text-theme-border">|</span>
       <span className="text-[9.5px] font-bold tracking-[0.07em]">WHEN</span>
       <span className="font-mono" style={{ color: stale ? 'var(--color-warning-dark)' : 'var(--text-secondary)' }}>

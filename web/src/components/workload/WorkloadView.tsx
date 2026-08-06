@@ -1583,7 +1583,12 @@ function useProbeRun(kind: string, namespace: string, name: string) {
 // in-cluster data never lingers.
 function useInClusterTest(base: NetworkTrace | undefined, kind: string, namespace: string, name: string) {
   const [running, setRunning] = useState(false)
-  const [allowed, setAllowed] = useState(false)
+  // undefined = the capability SSAR has not answered yet. Starting at `false`
+  // made the in-cluster capsule claim "not permitted" for the first frames of
+  // every load - a definitive denial for a check still in flight, which is the
+  // one thing this view must never do. Consumers gate on `=== false`, so an
+  // unknown answer now reads as unknown.
+  const [allowed, setAllowed] = useState<boolean | undefined>(undefined)
   const [cap, setCap] = useState<InClusterCapability | undefined>(undefined)
   const [merged, setMerged] = useState<NetworkTrace | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
@@ -1682,13 +1687,14 @@ function WorkloadReachabilityTab({
   if (!svc) return null
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2 rounded border border-theme-border bg-theme-surface px-3 py-2 text-[11.5px] text-theme-text-secondary">
-        <span className="text-theme-text-tertiary">
-          {kind} <span className="font-medium text-theme-text-primary">{name}</span> has no address of its own — traffic reaches it through
-          {servingServices.length > 1 ? ' one of these Services:' : ' Service'}
-        </span>
-        {servingServices.length > 1 ? (
-          servingServices.map((s, i) => (
+      {/* Only when there is a CHOICE to make. A full-width band to say "this
+          Deployment has no address" spent a row of height on a sentence, and the
+          workload now names the Pods at the end of the path in the graph itself -
+          which is where the reader is already looking. */}
+      {servingServices.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 px-1 text-[11.5px] text-theme-text-tertiary">
+          <span>Reached through:</span>
+          {servingServices.map((s, i) => (
             <button
               key={`${s.namespace ?? ''}/${s.name}`}
               type="button"
@@ -1699,26 +1705,16 @@ function WorkloadReachabilityTab({
             >
               {s.name}
             </button>
-          ))
-        ) : (
-          <span className="font-mono text-[11px] font-semibold text-theme-text-primary">{svc.name}</span>
-        )}
-        {onNavigate && (
-          <button
-            type="button"
-            onClick={() => onNavigate({ kind: 'services', namespace: svc.namespace ?? namespace, name: svc.name, group: '' })}
-            className="ml-auto text-[11px] text-accent-text hover:underline"
-          >
-            Open Service →
-          </button>
-        )}
-      </div>
+          ))}
+        </div>
+      )}
       <div className="min-h-0 flex-1">
         <DiagnoseTabContent
           key={`${svc.namespace ?? namespace}/${svc.name}`}
           kind="Service"
           namespace={svc.namespace ?? namespace}
           name={svc.name}
+          servedWorkload={{ kind, name }}
           onNavigate={onNavigate}
         />
       </div>
@@ -1726,7 +1722,19 @@ function WorkloadReachabilityTab({
   )
 }
 
-function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: string; namespace: string; name: string; onNavigate?: NavigateToResource }) {
+function DiagnoseTabContent({
+  kind,
+  namespace,
+  name,
+  servedWorkload,
+  onNavigate,
+}: {
+  kind: string
+  namespace: string
+  name: string
+  servedWorkload?: { kind: string; name: string }
+  onNavigate?: NavigateToResource
+}) {
   const { data: staticTrace, isLoading, error, refetch } = useTrace(kind, namespace, name)
   const { probeTrace, probeError, running, runProbes, resetProbe } = useProbeRun(kind, namespace, name)
   const baseTrace = probeTrace ?? staticTrace
@@ -1898,6 +1906,7 @@ function DiagnoseTabContent({ kind, namespace, name, onNavigate }: { kind: strin
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ReachabilityView
+        servedWorkload={servedWorkload}
         trace={displayTrace}
         isLoading={isLoading || running}
         error={error as Error | null}

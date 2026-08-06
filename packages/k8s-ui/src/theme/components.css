@@ -258,3 +258,18 @@
   animation: reach-flash 1.6s ease-out;
   border-radius: 4px;
 }
+
+/* reach-edge-testing: a request is IN FLIGHT along this edge right now.
+   The dash pattern flows toward the target, so the graph shows the probe
+   travelling the path it is testing rather than the page just saying
+   "running" in a button. Semantic, not decorative: only edges the running
+   vantage is actually exercising get it. */
+@keyframes reach-edge-flow {
+  to { stroke-dashoffset: -24; }
+}
+.reach-edge-testing {
+  animation: reach-edge-flow 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reach-edge-testing { animation: none; }
+}

@@ -316,8 +316,3 @@ export function actionableGap(origins: Origin[]): Origin | undefined {
   return origins.slice(0, ceiling).find((o) => isGap(o) && !o.unsupported && o.mark !== 'denied')
 }
 
-/** True when the only thing left is something Radar cannot do - the point at
- *  which "no stronger test available" is the honest thing to say. */
-export function atEvidenceCeiling(origins: Origin[]): boolean {
-  return !actionableGap(origins)
-}

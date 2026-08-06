@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { reachVerdict, hostFromTarget, VIA_API_SERVER, directLaneLabel } from './reachVerdict'
+import { reachVerdict, hostFromTarget, VIA_API_SERVER } from './reachVerdict'
 import type { Trace, RouteResult, Hop, ProbeResult } from './types'
 
 // Anti-drift pin: the one operator-facing name for the apiserver-proxy vantage
@@ -8,18 +8,6 @@ import type { Trace, RouteResult, Hop, ProbeResult } from './types'
 describe('VIA_API_SERVER - single vantage name, must match the Go const', () => {
   it('is exactly "via API server"', () => {
     expect(VIA_API_SERVER).toBe('via API server')
-  })
-})
-
-describe('directLaneLabel - position-aware "From Radar"', () => {
-  it('local vantage → your machine', () => {
-    expect(directLaneLabel('local')).toBe('From Radar · your machine')
-  })
-  it('in-cluster vantage → in-cluster', () => {
-    expect(directLaneLabel('in-cluster')).toBe('From Radar · in-cluster')
-  })
-  it('unknown vantage (no probe yet) → bare "From Radar"', () => {
-    expect(directLaneLabel(undefined)).toBe('From Radar')
   })
 })
 

@@ -1,4 +1,4 @@
-import type { Trace, ResourceRef, ProbeVantage, Finding } from './types'
+import type { Trace, ResourceRef, Finding } from './types'
 import type { StatusTone } from '../ui/status-tone'
 
 // VIA_API_SERVER is the ONE operator-facing name for the apiserver-proxy vantage
@@ -292,16 +292,6 @@ export function reachVerdict(trace: Trace, probed?: boolean): ReachVerdictView {
   return result
 }
 
-/** The "direct dial" lane names Radar as the prober, but WHERE Radar sits changes
- *  what a direct result proves - a laptop dial is out-of-cluster (a ClusterIP can
- *  read red while the Service is fine); an in-cluster Radar dials from a pod. Suffix
- *  the position when a probe vantage is known so "From Radar" self-describes rather
- *  than meaning opposite things on the two deployments. */
-export function directLaneLabel(vantage?: ProbeVantage): string {
-  if (vantage === 'local') return 'From Radar · your machine'
-  if (vantage === 'in-cluster') return 'From Radar · in-cluster'
-  return 'From Radar'
-}
 
 function reachVerdictBase(trace: Trace, probed?: boolean): ReachVerdictView {
   // ExternalName - a DNS alias to a host outside the cluster. It IS testable:

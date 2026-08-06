@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeMark, routeTone, routeChip, worstMark, orderRoutes, scenariosFor, groupRoutes, vantageSignature, routeIdentity, isSlow, formatLatency, hostMatches, declaredHosts, routeHostOf, routeForOrigin, routeAsSeenFrom, originRouteEvidence, MARKS } from './reachMarks'
+import { routeMark, routeTone, routeChip, orderRoutes, scenariosFor, groupRoutes, vantageSignature, routeIdentity, isSlow, formatLatency, hostMatches, declaredHosts, routeHostOf, routeForOrigin, routeAsSeenFrom, originRouteEvidence, MARKS } from './reachMarks'
 import type { RouteResult, Hop } from './types'
 
 const r = (o: Partial<RouteResult>): RouteResult => ({ route: 'GET /', outcome: 'verified', ...o })
@@ -60,20 +60,6 @@ describe('routeChip', () => {
     // it skips is the front door and the normal traffic path.)
     expect(routeChip(r({ outcome: 'verified', confidence: 'indirect' }))).toMatch(/API server/i)
     expect(routeChip(r({ outcome: 'verified', confidence: 'real' }))).toBe('got through')
-  })
-})
-
-describe('worstMark', () => {
-  it('a failure survives aggregation with any number of successes', () => {
-    expect(worstMark(['proved', 'proved', 'failed', 'proved'])).toBe('failed')
-  })
-
-  it('an empty aggregate is untested, not healthy', () => {
-    expect(worstMark([])).toBe('untested')
-  })
-
-  it('untested outranks proved so a partial sample never reads complete', () => {
-    expect(worstMark(['proved', 'untested'])).toBe('untested')
   })
 })
 

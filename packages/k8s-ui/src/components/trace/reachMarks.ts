@@ -88,32 +88,6 @@ export function glyphStyle(m: Mark): React.CSSProperties {
 }
 
 /**
- * Ranks marks by how much they should dominate an aggregate. A confirmed
- * failure outranks everything: when several segments collapse into one summary,
- * the failure must survive rather than average away. `proved` ranks LOWEST of
- * the real signals so a single success never masks a sibling's problem.
- */
-const MARK_RANK: Record<Mark, number> = {
-  failed: 100,
-  denied: 90,
-  slow: 80,
-  stale: 70,
-  answered: 60,
-  running: 50,
-  blocked: 40,
-  untested: 30,
-  excluded: 20,
-  config: 10,
-  proxied: 5,
-  proved: 0,
-}
-
-export function worstMark(marks: Mark[]): Mark {
-  if (marks.length === 0) return 'untested'
-  return marks.reduce((a, b) => (MARK_RANK[b] > MARK_RANK[a] ? b : a))
-}
-
-/**
  * The selected origin's OWN result for a route, or undefined when that origin
  * produced nothing for it.
  *

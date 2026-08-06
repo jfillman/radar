@@ -23,6 +23,7 @@ import (
 )
 
 const oidcStateCookieName = "radar_oidc_state"
+const oidcVerifierCookieName = "radar_oidc_verifier"
 const oidcForceLoginCookieName = "radar_force_login"
 
 // OIDCHandler handles the OIDC login flow
@@ -34,6 +35,7 @@ type OIDCHandler struct {
 	endSessionEndpoint string                // from OIDC discovery; empty if IdP doesn't support RP-Initiated Logout
 	httpClient         *http.Client          // custom TLS client for OIDC provider calls; nil = default
 	revoker            *MemoryRevoker        // session revocation store; nil = backchannel logout disabled
+	pkceEnabled        bool                  // opt-in PKCE (S256) for the authorization-code flow
 
 	// basePath is the URL prefix Radar serves under ("" at the root). Where Radar
 	// is mounted is the server's concern, not part of the shared auth config, but
@@ -161,6 +163,11 @@ func NewOIDCHandler(ctx context.Context, cfg Config, basePath string) (*OIDCHand
 		httpClient:                        httpClient,
 		backchannelLogoutSupported:        providerClaims.BackchannelLogoutSupported,
 		backchannelLogoutSessionSupported: providerClaims.BackchannelLogoutSessionSupported,
+		pkceEnabled:                       cfg.OIDCEnablePKCE,
+	}
+
+	if h.pkceEnabled {
+		log.Printf("[oidc] PKCE (S256) enabled")
 	}
 
 	if cfg.OIDCBackchannelLogout {
@@ -395,6 +402,37 @@ func replaceOIDCURLBase(raw, fromBase, toBase string) string {
 	return raw
 }
 
+// newFlowCookie builds a short-lived (5 min) HttpOnly cookie for a login-flow
+// secret (state nonce, PKCE verifier). Secure is derived from the request so
+// HTTP/loopback logins can still return the cookie; both the state and verifier
+// cookies go through here so their attributes can't drift apart.
+func (h *OIDCHandler) newFlowCookie(name, value string, r *http.Request) *http.Cookie {
+	return &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   300, // 5 minutes
+		HttpOnly: true,
+		Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+// clearFlowCookie builds the deletion cookie for a flow cookie. Path and Secure
+// must match the cookie being cleared — some browsers won't evict a Secure
+// cookie with a non-Secure deletion, so over HTTPS the secret would otherwise
+// linger until its own expiry.
+func (h *OIDCHandler) clearFlowCookie(name string, r *http.Request) *http.Cookie {
+	return &http.Cookie{
+		Name:     name,
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
 // HandleLogin redirects to the OIDC provider for authentication
 func (h *OIDCHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	// Generate random state nonce and store in a short-lived cookie for CSRF protection
@@ -406,15 +444,7 @@ func (h *OIDCHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	state := hex.EncodeToString(b)
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     oidcStateCookieName,
-		Value:    state,
-		Path:     "/",
-		MaxAge:   300, // 5 minutes
-		HttpOnly: true,
-		Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
-		SameSite: http.SameSiteLaxMode,
-	})
+	http.SetCookie(w, h.newFlowCookie(oidcStateCookieName, state, r))
 
 	// If the user just logged out, force the IdP to show a login prompt instead
 	// of silently re-authenticating with an existing SSO session.
@@ -427,6 +457,14 @@ func (h *OIDCHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			Path:   "/",
 			MaxAge: -1,
 		})
+	}
+
+	// PKCE (opt-in): generate a per-request verifier, stash it in a cookie for
+	// the callback, and send its S256 challenge to the IdP.
+	if h.pkceEnabled {
+		verifier := oauth2.GenerateVerifier()
+		http.SetCookie(w, h.newFlowCookie(oidcVerifierCookieName, verifier, r))
+		authOpts = append(authOpts, oauth2.S256ChallengeOption(verifier))
 	}
 
 	http.Redirect(w, r, h.oauth.AuthCodeURL(state, authOpts...), http.StatusFound)
@@ -452,12 +490,32 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid state parameter", http.StatusBadRequest)
 		return
 	}
-	// Clear the state cookie
+
+	// Read the PKCE verifier before clearing it. When PKCE is disabled this stays
+	// empty and the flow is byte-for-byte identical to the non-PKCE path.
+	var verifier string
+	if h.pkceEnabled {
+		if c, err := r.Cookie(oidcVerifierCookieName); err == nil {
+			verifier = c.Value
+		}
+	}
+
+	// Clear the state cookie. Clear the verifier cookie at the same point (after
+	// state is validated) so a stale PKCE secret never lingers past a successful
+	// state check, regardless of what happens next in the exchange.
 	http.SetCookie(w, &http.Cookie{
 		Name:   oidcStateCookieName,
 		Path:   "/",
 		MaxAge: -1,
 	})
+	if h.pkceEnabled {
+		http.SetCookie(w, h.clearFlowCookie(oidcVerifierCookieName, r))
+	}
+
+	if h.pkceEnabled && verifier == "" {
+		http.Error(w, "missing PKCE verifier — please retry login", http.StatusBadRequest)
+		return
+	}
 
 	// Exchange code for token
 	code := r.URL.Query().Get("code")
@@ -466,7 +524,11 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.oauth.Exchange(ctx, code)
+	var exchangeOpts []oauth2.AuthCodeOption
+	if h.pkceEnabled {
+		exchangeOpts = append(exchangeOpts, oauth2.VerifierOption(verifier))
+	}
+	token, err := h.oauth.Exchange(ctx, code, exchangeOpts...)
 	if err != nil {
 		// The browser navigating away mid-login (common during a first-load 401
 		// burst) cancels this request's context. That's the client's doing, not a

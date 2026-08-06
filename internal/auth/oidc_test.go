@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -149,6 +150,35 @@ func TestWarnIfInsecureOIDCOrigin(t *testing.T) {
 		if warned != wantWarn {
 			t.Errorf("warnIfInsecureOIDCOrigin(%q) warned=%v, want %v (log: %q)", redirectURL, warned, wantWarn, buf.String())
 		}
+	}
+}
+
+func TestHandleCallback_ClearsVerifierWithSecure(t *testing.T) {
+	h := newTestOIDCHandler()
+	h.pkceEnabled = true
+	h.oauth = oauth2.Config{Endpoint: oauth2.Endpoint{TokenURL: "http://127.0.0.1:1/token"}}
+
+	// Behind a TLS-terminating proxy: the verifier cookie was issued Secure, so
+	// its deletion must be Secure too or the browser may not evict it.
+	r := httptest.NewRequest("GET", "/auth/callback?state=abc&code=xyz", nil)
+	r.Header.Set("X-Forwarded-Proto", "https")
+	r.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: "abc"})
+	r.AddCookie(&http.Cookie{Name: oidcVerifierCookieName, Value: "some-verifier"})
+	w := httptest.NewRecorder()
+
+	h.HandleCallback(w, r) // exchange fails (no IdP), but clears are written first
+
+	var cleared *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == oidcVerifierCookieName && c.MaxAge < 0 {
+			cleared = c
+		}
+	}
+	if cleared == nil {
+		t.Fatal("verifier cookie was not cleared")
+	}
+	if !cleared.Secure {
+		t.Error("verifier deletion cookie must be Secure to evict a Secure cookie over HTTPS")
 	}
 }
 
@@ -725,6 +755,7 @@ type fakeIDP struct {
 	tokenStatus int    // if >= 400, /token returns an error instead of a token
 	omitIDToken bool   // if true, /token omits the id_token from the response
 	claims      string // id_token claims JSON; empty means defaultClaims()
+	gotVerifier string // code_verifier the /token endpoint received (PKCE)
 }
 
 func newFakeIDP(t *testing.T, alg string) *fakeIDP {
@@ -747,6 +778,7 @@ func newFakeIDP(t *testing.T, alg string) *fakeIDP {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		idp.gotVerifier = r.FormValue("code_verifier")
 		if idp.tokenStatus >= 400 {
 			w.WriteHeader(idp.tokenStatus)
 			w.Write([]byte(`{"error":"invalid_grant"}`))
@@ -1115,5 +1147,162 @@ func TestHandleCallback_RedirectsUnderBasePath(t *testing.T) {
 				t.Errorf("Location = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// cookieByName returns the cookie with the given name from a recorded response,
+// or nil if absent.
+func cookieByName(w *httptest.ResponseRecorder, name string) *http.Cookie {
+	for _, c := range w.Result().Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+// loginRedirectQuery runs HandleLogin and returns the parsed query of the
+// resulting authorization redirect URL.
+func loginRedirectQuery(t *testing.T, w *httptest.ResponseRecorder) url.Values {
+	t.Helper()
+	if w.Code != http.StatusFound {
+		t.Fatalf("HandleLogin status = %d, want 302", w.Code)
+	}
+	loc, err := url.Parse(w.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse redirect Location: %v", err)
+	}
+	return loc.Query()
+}
+
+func TestHandleLogin_PKCEEnabled(t *testing.T) {
+	h := newTestOIDCHandler()
+	h.pkceEnabled = true
+	h.oauth = oauth2.Config{
+		ClientID:    "test-client",
+		Endpoint:    oauth2.Endpoint{AuthURL: "https://accounts.google.com/o/oauth2/v2/auth"},
+		RedirectURL: "http://localhost:9280/auth/callback",
+		Scopes:      []string{"openid"},
+	}
+
+	r := httptest.NewRequest("GET", "/auth/login", nil)
+	w := httptest.NewRecorder()
+	h.HandleLogin(w, r)
+
+	verifierCookie := cookieByName(w, oidcVerifierCookieName)
+	if verifierCookie == nil || verifierCookie.Value == "" {
+		t.Fatal("expected verifier cookie to be set when PKCE enabled")
+	}
+	// Verifier cookie must mirror the state cookie's flow attributes.
+	if verifierCookie.MaxAge != 300 || !verifierCookie.HttpOnly || verifierCookie.SameSite != http.SameSiteLaxMode || verifierCookie.Path != "/" {
+		t.Errorf("verifier cookie attributes drift from state cookie: %+v", verifierCookie)
+	}
+
+	q := loginRedirectQuery(t, w)
+	if got := q.Get("code_challenge_method"); got != "S256" {
+		t.Errorf("code_challenge_method = %q, want S256", got)
+	}
+	// The challenge must be derived from the exact verifier stored in the cookie.
+	want := oauth2.S256ChallengeFromVerifier(verifierCookie.Value)
+	if got := q.Get("code_challenge"); got != want {
+		t.Errorf("code_challenge = %q, want %q (S256 of cookie verifier)", got, want)
+	}
+}
+
+func TestHandleLogin_PKCEDisabled(t *testing.T) {
+	h := newTestOIDCHandler() // pkceEnabled defaults to false
+	h.oauth = oauth2.Config{
+		ClientID:    "test-client",
+		Endpoint:    oauth2.Endpoint{AuthURL: "https://accounts.google.com/o/oauth2/v2/auth"},
+		RedirectURL: "http://localhost:9280/auth/callback",
+		Scopes:      []string{"openid"},
+	}
+
+	r := httptest.NewRequest("GET", "/auth/login", nil)
+	w := httptest.NewRecorder()
+	h.HandleLogin(w, r)
+
+	if c := cookieByName(w, oidcVerifierCookieName); c != nil {
+		t.Errorf("no verifier cookie expected when PKCE disabled, got %+v", c)
+	}
+	q := loginRedirectQuery(t, w)
+	if q.Get("code_challenge") != "" || q.Get("code_challenge_method") != "" {
+		t.Errorf("no PKCE params expected when disabled, got challenge=%q method=%q", q.Get("code_challenge"), q.Get("code_challenge_method"))
+	}
+}
+
+func TestHandleCallback_PKCEMissingVerifier(t *testing.T) {
+	h := newTestOIDCHandler()
+	h.pkceEnabled = true
+
+	// Valid state, but no verifier cookie present.
+	r := httptest.NewRequest("GET", "/auth/callback?state=abc&code=xyz", nil)
+	r.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: "abc"})
+	w := httptest.NewRecorder()
+	h.HandleCallback(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "PKCE verifier") {
+		t.Errorf("expected PKCE verifier error, got %q", w.Body.String())
+	}
+}
+
+// TestPKCEFullFlow drives the real login→callback flow against a fake IdP with
+// PKCE enabled: HandleLogin mints the verifier + challenge, and the extracted
+// state + verifier cookie are fed back into HandleCallback. Asserts the exchange
+// succeeds AND the token endpoint received the code_verifier bound to the
+// challenge the browser was redirected with.
+func TestPKCEFullFlow(t *testing.T) {
+	idp := newFakeIDP(t, oidc.RS256)
+	h := idp.newHandler(t, Config{OIDCEnablePKCE: true})
+
+	// Drive HandleLogin to obtain the real state + verifier the handler generated.
+	lw := httptest.NewRecorder()
+	h.HandleLogin(lw, httptest.NewRequest("GET", "/auth/login", nil))
+	q := loginRedirectQuery(t, lw)
+	state := q.Get("state")
+	if state == "" {
+		t.Fatal("no state in login redirect")
+	}
+	verifierCookie := cookieByName(lw, oidcVerifierCookieName)
+	if verifierCookie == nil || verifierCookie.Value == "" {
+		t.Fatal("no verifier cookie from HandleLogin")
+	}
+	if got, want := q.Get("code_challenge"), oauth2.S256ChallengeFromVerifier(verifierCookie.Value); got != want {
+		t.Fatalf("login challenge %q not bound to verifier cookie (want %q)", got, want)
+	}
+
+	// Feed BOTH the state and the verifier cookie into HandleCallback.
+	cr := httptest.NewRequest("GET", "/auth/callback?state="+url.QueryEscape(state)+"&code=c", nil)
+	cr.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: state})
+	cr.AddCookie(verifierCookie)
+	cw := httptest.NewRecorder()
+	h.HandleCallback(cw, cr)
+
+	if cw.Code != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302 (body: %s)", cw.Code, cw.Body.String())
+	}
+	if idp.gotVerifier != verifierCookie.Value {
+		t.Errorf("token endpoint code_verifier = %q, want %q", idp.gotVerifier, verifierCookie.Value)
+	}
+	// Verifier cookie must be cleared after a successful callback.
+	if c := cookieByName(cw, oidcVerifierCookieName); c == nil || c.MaxAge != -1 {
+		t.Errorf("verifier cookie should be cleared (MaxAge -1) after callback, got %+v", c)
+	}
+}
+
+// TestPKCEDisabledSendsNoVerifier confirms the opt-out path is byte-for-byte
+// unchanged: with PKCE off, the token endpoint receives no code_verifier.
+func TestPKCEDisabledSendsNoVerifier(t *testing.T) {
+	idp := newFakeIDP(t, oidc.RS256)
+	h := idp.newHandler(t, Config{}) // PKCE off
+	w := runCallback(h)
+	if w.Code != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302 (body: %s)", w.Code, w.Body.String())
+	}
+	if idp.gotVerifier != "" {
+		t.Errorf("token endpoint received code_verifier %q with PKCE disabled", idp.gotVerifier)
 	}
 }

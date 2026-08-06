@@ -337,6 +337,10 @@ auth:
     # a signed logout_token to /auth/backchannel-logout to revoke sessions.
     # Single-replica only — revocations are stored in memory and lost on pod restart.
     backchannelLogout: false
+    # Enable PKCE (S256) for the OIDC authorization-code flow (opt-in). Default off —
+    # existing deployments are unaffected. Enable only if your IdP supports PKCE and
+    # you want the extra protection against authorization-code interception.
+    enablePKCE: false
 
 # Radar Cloud (hosted SaaS at radarhq.io) — outbound-only tunnel. When
 # enabled, this Radar instance dials out to the Cloud service over

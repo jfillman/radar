@@ -43,6 +43,7 @@ type Config struct {
 	OIDCInsecureSkipVerify    bool     // skip TLS verification for OIDC provider (dev/test only)
 	OIDCCACert                string   // path to CA certificate file for OIDC provider TLS
 	OIDCBackchannelLogout     bool     // enable backchannel logout endpoint
+	OIDCEnablePKCE            bool     // enable PKCE (S256) for the OIDC authorization-code flow (opt-in)
 }
 
 // SessionRevoker checks whether a session has been revoked (e.g., via OIDC

@@ -167,6 +167,9 @@ spec:
             {{- if .Values.auth.oidc.backchannelLogout }}
             - --auth-oidc-backchannel-logout
             {{- end }}
+            {{- if .Values.auth.oidc.enablePKCE }}
+            - --auth-oidc-enable-pkce
+            {{- end }}
             {{- end }}
             {{- if .Values.cloud.enabled }}
             {{- if not (or .Values.cloud.token .Values.cloud.existingSecret) }}

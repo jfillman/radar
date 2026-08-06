@@ -52,6 +52,9 @@ export interface Sidebar {
    *  clicked. Reading beat clicking: understanding a path used to take three
    *  clicks whose panel meant something different after each one. */
   hops: HopReport[]
+  /** Configured-but-bypassed resources: on screen for orientation, outside the
+   *  journey. The label says WHY they are not part of this vantage's path. */
+  context?: { label: string; hops: HopReport[] }
 }
 
 export interface HopDetail {
@@ -66,6 +69,30 @@ export interface HopDetail {
   anomalies?: { mark: Mark; text: string }[]
   notProve: string[]
   openRef?: ResourceRef
+}
+
+/** Configured-but-bypassed resources, grouped under one label naming WHY they
+ *  are outside this vantage's journey. Their config sections stay readable;
+ *  their journey-state words do not apply. */
+function contextGroup(ctx: Ctx, byId: Map<string, GraphNode>): Sidebar['context'] {
+  const nodes = (ctx.contextNodeIds ?? []).map((id) => byId.get(id)).filter((n): n is GraphNode => !!n)
+  if (nodes.length === 0) return undefined
+  const label =
+    ctx.origin.id === 'apiserver'
+      ? 'CONFIGURED ENTRY — KUBERNETES RELAYED THE REQUEST PAST THIS'
+      : ctx.origin.id === 'incluster' || ctx.origin.id === 'radar-incluster'
+        ? 'CONFIGURED ENTRY — THE PROBE DIALS THE SERVICE DIRECTLY'
+        : 'PARALLEL ENTRY — NOT ON THIS ROUTE\u2019S PATH'
+  return {
+    label,
+    hops: nodes.map((n) => ({
+      ...resourceSection(n),
+      id: n.id,
+      state: 'plain' as const,
+      chipText: '',
+      expanded: false,
+    })),
+  }
 }
 
 /**
@@ -84,6 +111,9 @@ export interface HopReport extends HopDetail {
   id: string
   state: HopState
   expanded: boolean
+  /** Set on entry hops when they are parallel members of one entry stage - the
+   *  note reads "one of N parallel entry points" instead of implying sequence. */
+  parallelCount?: number
 }
 
 const NOT_DATAPLANE = 'Nothing about the normal network path. Kubernetes relayed this for us, so routing, network policy and the mesh were all skipped.'
@@ -208,6 +238,14 @@ interface Ctx {
   /** Inline nodes that are NOT network hops (the workload). Never given
    *  journey states - a workload is neither "reached" nor a stopping place. */
   nonNetworkNodeIds?: string[]
+  /** Configured-but-bypassed entries - context, never the journey. */
+  contextNodeIds?: string[]
+  /** Non-network nodes spliced into the display after a journey hop. */
+  interleave?: { id: string; afterId: string }[]
+  /** >1 when the journey's entries are parallel members of one stage. */
+  entryParallelCount?: number
+  /** The journey's entry-hop node ids, from the graph model. */
+  journeyEntryNodeIds?: string[]
   /** The selected route's chain in traversal order, from the graph model. */
   pathNodeIds?: string[]
   stale?: boolean
@@ -463,9 +501,22 @@ export function buildSidebar(sel: Selection, ctx: Ctx): Sidebar {
   // sorted by position. Sorting served siblings up as if they were sequential
   // hops and included branches this route never touches.
   const byId = new Map(ctx.nodes.map((n) => [n.id, n]))
-  const chain = (ctx.pathNodeIds ?? [])
+  const journey = (ctx.pathNodeIds ?? [])
     .map((id) => byId.get(id))
     .filter((n): n is GraphNode => !!n && !n.isOrigin)
+  // Display order interleaves non-network nodes (the workload) after their
+  // parent - present to read, absent from the journey's state machine.
+  const chain: GraphNode[] = []
+  for (const n of journey) {
+    chain.push(n)
+    for (const iv of ctx.interleave ?? []) {
+      if (iv.afterId === n.id) {
+        const wl = byId.get(iv.id)
+        if (wl) chain.push(wl)
+      }
+    }
+  }
+  const entryIds = new Set(ctx.journeyEntryNodeIds ?? [])
   const nonNetwork = new Set(ctx.nonNetworkNodeIds ?? [])
   // A boundary break anchors to the EXIT of its source hop (the Service);
   // breakNodeId anchors to a landing node. Either way one index carries 'break'.
@@ -485,18 +536,23 @@ export function buildSidebar(sel: Selection, ctx: Ctx): Sidebar {
   const defaultOpen = breakIdx >= 0 ? breakIdx : chain.length - 1
   return {
     path,
-    hops: chain.map((n, i) => ({
-      ...resourceSection(n),
-      id: n.id,
-      state: stateOf(i, n.id),
-      // Exit-phrased for a boundary break: the SERVICE hop carries it, and
-      // "stopped here" would blame the hop itself for its exit's failure.
-      chipText:
-        i === breakIdx && ctx.breakAtExitOf === n.id
-          ? 'routing to its Pods breaks just past here'
-          : resourceSection(n).chipText,
-      expanded: sel ? n.id === sel : i === defaultOpen,
-    })),
+    hops: chain.map((n, i) => {
+      const section = resourceSection(n)
+      return {
+        ...section,
+        id: n.id,
+        state: stateOf(i, n.id),
+        // Exit-phrased for a boundary break: the SERVICE hop carries it, and
+        // "stopped here" would blame the hop itself for its exit's failure.
+        chipText:
+          i === breakIdx && ctx.breakAtExitOf === n.id
+            ? 'routing to its Pods breaks just past here'
+            : section.chipText,
+        parallelCount: entryIds.has(n.id) && (ctx.entryParallelCount ?? 0) > 1 ? ctx.entryParallelCount : undefined,
+        expanded: sel ? n.id === sel : i === defaultOpen,
+      }
+    }),
+    context: contextGroup(ctx, byId),
   }
 }
 

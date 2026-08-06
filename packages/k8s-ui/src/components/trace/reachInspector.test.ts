@@ -57,6 +57,10 @@ function ctx(t: Trace, originId: string, r = route()) {
     breakNodeId: g.breakNodeId,
     breakAtExitOf: g.breakAtExitOf,
     nonNetworkNodeIds: g.nonNetworkNodeIds,
+    contextNodeIds: g.contextNodeIds,
+    interleave: g.interleave,
+    entryParallelCount: g.entryParallelCount,
+    journeyEntryNodeIds: g.journeyEntryNodeIds,
     pathNodeIds: g.pathNodeIds,
   }
 }
@@ -440,5 +444,38 @@ describe('a Service-routing boundary in the sidebar', () => {
     const s = buildSidebar(undefined, ctx(withWorkload(), 'incluster', brokenRouting()))
     const wl = s.hops.find((h) => h.kind.startsWith('DEPLOYMENT'))!
     expect(wl.state).toBe('plain')
+  })
+})
+
+describe('bypassed and parallel entries are context, not journey', () => {
+  const withEntries = (n = 1): Trace => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    t.upstreams = Array.from({ length: n }, (_, i) => ({
+      resource: { kind: 'Ingress', name: `web-${i}`, namespace: 'store' },
+      edge: 'ingress->service',
+      findings: [],
+      config: { hostnames: [`h${i}.example.com`], addresses: ['34.0.0.1'] },
+    }))
+    return t
+  }
+
+  it('the apiserver vantage does not list entries as its path', () => {
+    const s = buildSidebar(undefined, ctx(withEntries(), 'apiserver'))
+    expect(s.hops.some((h) => h.kind.startsWith('INGRESS'))).toBe(false)
+    expect(s.context?.hops.some((h) => h.kind.startsWith('INGRESS'))).toBe(true)
+    expect(s.context?.label).toMatch(/RELAYED/)
+  })
+
+  it('the laptop vantage keeps entries on the path', () => {
+    const s = buildSidebar(undefined, ctx(withEntries(), 'local'))
+    expect(s.hops.some((h) => h.kind.startsWith('INGRESS'))).toBe(true)
+    expect(s.context).toBeUndefined()
+  })
+
+  it('two entries the route cannot be pinned to read as one parallel stage, never a sequence', () => {
+    const s = buildSidebar(undefined, ctx(withEntries(2), 'local'))
+    const entries = s.hops.filter((h) => h.kind.startsWith('INGRESS'))
+    expect(entries).toHaveLength(2)
+    for (const e of entries) expect(e.parallelCount).toBe(2)
   })
 })

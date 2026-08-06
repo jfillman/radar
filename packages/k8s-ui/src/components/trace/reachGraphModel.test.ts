@@ -1105,7 +1105,7 @@ describe('the selected vantage is a real scope boundary', () => {
 
   // Sorting rendered nodes by position turned PARALLEL backends into what read
   // as a serial chain, and swept in branches the route never touches.
-  it('reports the route\'s own chain in traversal order', () => {
+  it('reports the route\'s own chain in traversal order - the workload is display, not journey', () => {
     const t = trace([pod('a', true, '10.0.0.1')], [p({})])
     t.downstream![1].config!.workload = { kind: 'Deployment', name: 'web', namespace: 'store' }
     const g = buildGraph({
@@ -1114,7 +1114,10 @@ describe('the selected vantage is a real scope boundary', () => {
       origin: pick(t, 'incluster'),
     })
     const kinds = g.pathNodeIds.map((id) => g.nodes.find((n) => n.id === id)!.kind)
-    expect(kinds).toEqual(['SERVICE', 'DEPLOYMENT', 'PODS'])
+    // The Deployment renders inline but is NOT a hop the request traverses -
+    // it rides in `interleave` for display order instead.
+    expect(kinds).toEqual(['SERVICE', 'PODS'])
+    expect(g.interleave).toEqual([{ id: 'n:workload', afterId: 'n:Service/store/shop' }])
   })
 
   it('emits no duplicates and only nodes that exist', () => {

@@ -145,6 +145,19 @@ export interface GraphModel {
    *  the Pods). Consumers must never give them journey states - a workload is
    *  neither "reached" nor a place a request stops. */
   nonNetworkNodeIds?: string[]
+  /** Configured-but-bypassed resources: entries the selected vantage's request
+   *  does not traverse (a relay went past them), or parallel entries the
+   *  selected route does not use. Rendered as CONTEXT, never as the journey. */
+  contextNodeIds?: string[]
+  /** Non-network nodes to splice into the sidebar's display after a journey
+   *  hop - the workload after its Service. Display order without polluting the
+   *  journey list. */
+  interleave?: { id: string; afterId: string }[]
+  /** When >1, the journey's entry hops are PARALLEL members of one entry
+   *  stage - consumers must say so rather than implying a sequence. */
+  entryParallelCount?: number
+  /** The journey's entry-hop node ids (subset of pathNodeIds). */
+  journeyEntryNodeIds?: string[]
   /** The selected route's own chain, in traversal order. Consumers must read
    *  this rather than sorting rendered nodes by position: sorting flattens
    *  PARALLEL backends into what looks like a serial path, and sweeps in
@@ -1392,10 +1405,18 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
   // and only those backends' Pods.
   const selectedBackends = focusBranches ? matchedBackends : expanded
   const selectedBackendIds = new Set(selectedBackends.map((b) => b.id))
+  // The journey is what the selected vantage's request traverses. A bypassing
+  // origin (apiserver relay, in-cluster Job) traverses NO entry; a matched host
+  // traverses only ITS entries; parallel non-matched entries are context. The
+  // workload is rendered inline but is not a hop - it interleaves in display,
+  // never in the journey.
+  const journeyUpstreams = originSkipsEntries ? [] : activeUpstreams
+  const contextNodeIds = upstreams
+    .filter((up) => !journeyUpstreams.includes(up))
+    .map((up) => `n:${refId(up.resource)}`)
   const pathNodeIds = [
-    ...activeUpstreams.map((up) => `n:${refId(up.resource)}`),
+    ...journeyUpstreams.map((up) => `n:${refId(up.resource)}`),
     subjectNodeId,
-    ...(showWorkload ? [workloadNodeId] : []),
     ...selectedBackends.map((b) => b.id),
     ...podGroups.filter((g) => g.parentId === subjectNodeId || selectedBackendIds.has(g.parentId)).map((g) => g.id),
   ].filter((id, i, all) => pos.has(id) && all.indexOf(id) === i)
@@ -1411,6 +1432,10 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
     breakNodeId,
     breakAtExitOf,
     nonNetworkNodeIds: showWorkload ? [workloadNodeId] : undefined,
+    contextNodeIds: contextNodeIds.length ? contextNodeIds : undefined,
+    interleave: showWorkload ? [{ id: workloadNodeId, afterId: subjectNodeId }] : undefined,
+    entryParallelCount: journeyUpstreams.length > 1 ? journeyUpstreams.length : undefined,
+    journeyEntryNodeIds: journeyUpstreams.length ? journeyUpstreams.map((up) => `n:${refId(up.resource)}`) : undefined,
     pathNodeIds,
   }
 }

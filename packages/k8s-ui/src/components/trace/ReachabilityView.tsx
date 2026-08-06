@@ -201,6 +201,10 @@ function ReachabilityBoard(props: BoardProps) {
         breakNodeId: model.breakNodeId,
         breakAtExitOf: model.breakAtExitOf,
         nonNetworkNodeIds: model.nonNetworkNodeIds,
+        contextNodeIds: model.contextNodeIds,
+        interleave: model.interleave,
+        entryParallelCount: model.entryParallelCount,
+        journeyEntryNodeIds: model.journeyEntryNodeIds,
         pathNodeIds: model.pathNodeIds,
         stale,
         running,
@@ -610,6 +614,17 @@ function InspectorPanel({
           ))}
         </div>
       )}
+      {/* Configured-but-bypassed resources: readable for orientation, outside
+          the journey - listing them under ALONG THIS PATH claimed a traversal
+          the selected vantage explicitly does not make. */}
+      {sidebar.context && (
+        <div className="border-t border-theme-border pt-3">
+          <div className="text-[9.5px] font-bold tracking-[0.07em] text-theme-text-tertiary">{sidebar.context.label}</div>
+          {sidebar.context.hops.map((h) => (
+            <HopSection key={h.id} hop={h} selected={selected === h.id} onSelect={onSelect} onOpen={onOpen} />
+          ))}
+        </div>
+      )}
       <Caveats items={path.notProve} />
 
       <div className="rounded-md px-2.5 py-2.5" style={{ border: '1px solid var(--accent)', background: 'var(--accent-muted)' }}>
@@ -708,8 +723,12 @@ function HopSection({
         <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] font-semibold text-theme-text-primary">{hop.name}</span>
         <span className={`badge-sm whitespace-nowrap ${SEV_BADGE[hop.chipTone]}`}>{hop.chipText || HOP_STATE_NOTE[hop.state]}</span>
       </button>
-      {!open && hop.state !== 'plain' && (
-        <div className="pl-[18px] text-[10px] leading-snug text-theme-text-tertiary">{HOP_STATE_NOTE[hop.state]}</div>
+      {!open && (hop.state !== 'plain' || hop.parallelCount) && (
+        <div className="pl-[18px] text-[10px] leading-snug text-theme-text-tertiary">
+          {[hop.parallelCount ? `one of ${hop.parallelCount} parallel entry points` : '', HOP_STATE_NOTE[hop.state]]
+            .filter(Boolean)
+            .join(' — ')}
+        </div>
       )}
       <div className="grid transition-[grid-template-rows] duration-200 ease-out" style={{ gridTemplateRows: open ? '1fr' : '0fr' }}>
         <div className="overflow-hidden">

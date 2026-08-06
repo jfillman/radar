@@ -112,6 +112,10 @@ export interface ProbeResult {
   ok: boolean
   tone?: ProbeTone
   skipped?: boolean
+  /** Structured skip class from the producer. 'informational' means the probe
+   *  RAN and was deliberately kept out of the verdict - a disposition, never a
+   *  coverage gap. */
+  skipClass?: string
   reason?: string
   latencyNs?: number
   /** The Service/target port this result is for, when port-scoped (lets the UI group

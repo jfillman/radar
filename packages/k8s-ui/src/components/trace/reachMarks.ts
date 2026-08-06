@@ -19,6 +19,7 @@ export type Mark =
   | 'blocked' // never ran because an earlier segment failed
   | 'excluded' // not in the path by design (NotReady, not an eligible endpoint)
   | 'untested' // no origin has exercised this
+  | 'inconclusive' // ran, and deliberately kept informational - never a verdict
   | 'stale' // observed, but before a change that invalidates it
   | 'running' // in flight right now
   | 'denied' // we are not permitted to run this test
@@ -47,6 +48,7 @@ export const MARKS: Record<Mark, MarkStyle> = {
   failed: { glyph: '✕', color: 'var(--color-error-dark)', dash: 'none', strokeWidth: 2.6, strokeOpacity: 1 },
   blocked: { glyph: '⊘', color: 'var(--text-disabled)', dash: '3 6', strokeWidth: 1.8, strokeOpacity: 0.75 },
   excluded: { glyph: '⊗', color: 'var(--text-disabled)', dash: '3 6', strokeWidth: 1.8, strokeOpacity: 0.75 },
+  inconclusive: { glyph: '◍', color: 'var(--color-warning-dark)', dash: '3 6', strokeWidth: 1.8, strokeOpacity: 0.9 },
   untested: { glyph: '○', color: 'var(--text-disabled)', dash: '3 6', strokeWidth: 1.8, strokeOpacity: 0.75 },
   stale: { glyph: '◷', color: 'var(--color-warning-dark)', dash: '6 4', strokeWidth: 1.8, strokeOpacity: 1 },
   running: { glyph: '◌', color: 'var(--color-info)', dash: '4 4', strokeWidth: 1.8, strokeOpacity: 1 },
@@ -67,6 +69,7 @@ export const MARK_LEGEND: { mark: Mark; text: string; category: MarkCategory }[]
   { mark: 'answered', text: 'answered, but not with what we asked for', category: 'happened' },
   { mark: 'failed', text: 'a request was refused', category: 'happened' },
   { mark: 'proxied', text: 'answered via the API server — not live traffic', category: 'tested' },
+  { mark: 'inconclusive', text: 'tested, but kept informational — a throwaway identity can\u2019t condemn the path', category: 'tested' },
   { mark: 'config', text: 'configured this way — not tested', category: 'tested' },
   { mark: 'untested', text: 'not tested from here', category: 'why-not' },
   { mark: 'blocked', text: 'never tried — something failed earlier', category: 'why-not' },

@@ -248,3 +248,49 @@ describe('an unanswered capability check is not a denial', () => {
     expect(denied.unavailable).toMatch(/create jobs/)
   })
 })
+
+describe('a demoted Job run is inconclusive, never "never tried"', () => {
+  // The producer demotes a probe that DIALLED and was refused/degraded to a
+  // skip with skipClass 'informational' - a disposition, not a coverage gap.
+  it('maps all-skipped-with-informational to inconclusive', () => {
+    const t: Trace = {
+      subject: { kind: 'Service', name: 'web', namespace: 'prod' },
+      verdict: 'unknown',
+      brokenAt: -1,
+      upstreams: [],
+      downstream: [
+        {
+          resource: { kind: 'Service', name: 'web', namespace: 'prod' },
+          edge: 'service',
+          findings: [],
+          probes: [
+            { layer: 'http', target: 'web:80', vantage: 'in-cluster', path: 'data', source: 'probe-job', ok: false, skipped: true, skipClass: 'informational', reason: 'kept informational' },
+          ],
+        },
+      ],
+    }
+    const o = buildOrigins(t).find((x) => x.id === 'incluster')!
+    expect(o.mark).toBe('inconclusive')
+  })
+
+  it('an ordinary all-skipped origin still reads blocked', () => {
+    const t: Trace = {
+      subject: { kind: 'Service', name: 'web', namespace: 'prod' },
+      verdict: 'unknown',
+      brokenAt: -1,
+      upstreams: [],
+      downstream: [
+        {
+          resource: { kind: 'Service', name: 'web', namespace: 'prod' },
+          edge: 'service',
+          findings: [],
+          probes: [
+            { layer: 'tcp', target: '10.96.0.1:80', vantage: 'local', path: 'data', ok: false, skipped: true, reason: 'a ClusterIP is not routable from a laptop' },
+          ],
+        },
+      ],
+    }
+    const o = buildOrigins(t).find((x) => x.id === 'local')!
+    expect(o.mark).toBe('blocked')
+  })
+})

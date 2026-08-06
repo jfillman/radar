@@ -125,6 +125,12 @@ const (
 const (
 	SourceRadar    = "radar"     // Radar's own process, inline with the trace
 	SourceProbeJob = "probe-job" // a throwaway Job Radar created in the cluster
+
+	// SkipClassInformational marks a probe that RAN and was deliberately kept
+	// informational (a throwaway identity's failure or degraded answer must not
+	// condemn the path). A disposition, never a coverage gap: consumers must not
+	// describe it as "never tried".
+	SkipClassInformational = "informational"
 )
 
 // Layer names which network layer this Result attests to. Higher layers

@@ -1180,7 +1180,9 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
       : routeMarkNow
   const originBlocked = !!origin.unavailable && origin.mark === 'blocked'
   const noEvidenceLabel =
-    origin.mark === 'denied'
+    origin.mark === 'inconclusive'
+      ? 'ran — kept informational'
+      : origin.mark === 'denied'
       ? 'not permitted'
       : // An in-cluster ATTEMPT whose probe never started: execution failure is
         // its own state - "not routable"/"not tested" would erase the attempt.

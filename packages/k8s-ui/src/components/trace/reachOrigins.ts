@@ -119,6 +119,10 @@ function markFor(probes: ProbeResult[], id: OriginId, ctx: OriginContext): Mark 
     return 'untested'
   }
   const live = probes.filter((p) => !p.skipped)
+  // A demoted run is a DISPOSITION, not a coverage gap: the probe dialled and
+  // its answer was deliberately kept informational. 'blocked' ("never tried -
+  // something failed earlier") was false on both clauses.
+  if (live.length === 0 && probes.some((p) => p.skipped && p.skipClass === 'informational')) return 'inconclusive'
   if (live.length === 0) return 'blocked'
   if (ctx.stale) return 'stale'
   if (live.some((p) => !p.ok || p.tone === 'unhealthy')) return 'failed'

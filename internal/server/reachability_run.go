@@ -237,6 +237,10 @@ func stampInClusterProbes(tr *trace.Trace, tests []reachability.InClusterTestRes
 				// degraded probe, so this only touches unfolded results.
 				if !pr.Skipped && (!pr.OK || pr.Tone == probe.ToneDegraded) {
 					pr.Skipped = true
+					// Structural marker: this probe RAN and was demoted - it is a
+					// disposition, not a coverage gap, and the UI must never
+					// render it as "never tried".
+					pr.SkipClass = probe.SkipClassInformational
 					if pr.Reason == "" {
 						if pr.OK {
 							pr.Reason = "in-cluster probe from a throwaway pod reached the backend but got a degraded response (a server error, or a TLS/certificate problem) - the pod's identity/path/auth can differ from real clients, so it's kept informational, not a confirmed failure"

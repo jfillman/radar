@@ -88,6 +88,19 @@ export function ReachabilityView(props: TracePanelProps) {
     <div className="flex h-full min-h-0 flex-col gap-2">
       {devEnabled && <DevStateBar state={devState} onPick={setDevState} />}
 
+      {/* A dead backend must not present a frozen board as current truth: once
+          anything rendered, poll failures kept the old verdict + timestamp on
+          screen with no indication - and while polls fail, the cluster-changed
+          staleness detector is blind. */}
+      {error && trace && (
+        <div
+          className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11.5px]"
+          style={{ borderColor: 'var(--color-warning)', background: 'color-mix(in srgb, var(--color-warning) 8%, transparent)', color: 'var(--text-secondary)' }}
+        >
+          <span style={{ color: 'var(--color-warning-dark)' }}>◷</span>
+          Live updates unavailable — showing the last result. Changes in the cluster since then are not reflected.
+        </div>
+      )}
       {probeError && (
         <AlertBanner variant="error" title="Reachability test failed" message={probeError.message}>
           {onRunProbes && (
@@ -148,7 +161,7 @@ interface BoardProps extends TracePanelProps {
 }
 
 function ReachabilityBoard(props: BoardProps) {
-  const { trace, running, stale, onNavigateToResource, onRunInCluster, onRunProbes, inClusterAllowed, inClusterError, testedAt, runNonce } = props
+  const { trace, running, stale, onNavigateToResource, onRunInCluster, onRunProbes, inClusterAllowed, inClusterDeniedReason, inClusterError, testedAt, runNonce } = props
 
   // Scenarios group routes that agree in every respect - a Gateway route with
   // three hostnames and one backend is one situation, not three.
@@ -164,8 +177,8 @@ function ReachabilityBoard(props: BoardProps) {
   const route: RouteResult | undefined = scenario?.primary
 
   const origins = useMemo(
-    () => buildOrigins(trace, { inClusterAllowed, inClusterRunning: running, inClusterRunError: inClusterError, stale, route }),
-    [trace, inClusterAllowed, running, inClusterError, stale, route],
+    () => buildOrigins(trace, { inClusterAllowed, inClusterDeniedReason, inClusterRunning: running, inClusterRunError: inClusterError, stale, route }),
+    [trace, inClusterAllowed, inClusterDeniedReason, running, inClusterError, stale, route],
   )
   const [originId, setOriginId] = useState<OriginId | null>(null)
   const origin = origins.find((o) => o.id === (originId ?? defaultOrigin(origins))) ?? origins[0]

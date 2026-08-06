@@ -341,3 +341,66 @@ describe('a derived break says which KIND it is', () => {
     }
   })
 })
+
+describe('the verdict band follows the selected origin', () => {
+  // The band sits directly above the inspector, which reads the SELECTED
+  // origin's own result. On the merged rollup the two contradicted each other
+  // in adjacent panes - "could not get through" over "got through" - on exactly
+  // the disagreeing traces per-vantage evidence exists to represent. This seam
+  // regressed once already and had no pin.
+  const disagreeing = (): RouteResult =>
+    route({
+      outcome: 'unreachable',
+      confidence: 'real',
+      byVantage: [
+        { vantage: 'local', path: 'data', outcome: 'unreachable' },
+        { vantage: 'in-cluster', path: 'data', outcome: 'verified', confidence: 'real' },
+      ],
+    })
+
+  it('shows the origin-scoped result, not the rollup, and names its scope', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    const v = buildVerdict(t, disagreeing(), { originId: 'incluster', originName: 'In-cluster probe' })
+    expect(v.tone).not.toBe('unhealthy')
+    expect(v.chipText).toBe('got through')
+    expect(v.chipScope).toContain('from In-cluster probe')
+  })
+
+  it('an origin absent from a produced breakdown reads not tested, never the rollup chip', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    const only = route({
+      outcome: 'verified',
+      confidence: 'real',
+      byVantage: [{ vantage: 'in-cluster', path: 'data', outcome: 'verified', confidence: 'real' }],
+    })
+    const v = buildVerdict(t, only, { originId: 'local', originName: 'Radar on your machine' })
+    expect(v.chipText).toBe('not tested')
+  })
+})
+
+describe('localization facts belong to the vantage that produced them', () => {
+  // route.localization rows are apiserver-relay observations (direct-pod dials
+  // past the entry point). Crediting them to the in-cluster origin would claim
+  // observations that vantage never made.
+  const localized = (): RouteResult =>
+    route({
+      outcome: 'verified',
+      confidence: 'indirect',
+      byVantage: [{ vantage: 'local', path: 'apiserver', outcome: 'verified' }],
+      localization: [{ layer: 'tcp', ok: true, detail: 'Pods answered directly, Service did not' }],
+    })
+
+  it('shows them under the apiserver origin', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({ vantage: 'local', path: 'apiserver' })])
+    const s = buildSidebar(undefined, ctx(t, 'apiserver', localized()))
+    const texts = s.path.evidence.map((e) => e.text).join('\n')
+    expect(texts).toMatch(/checked directly, past the entry point/)
+  })
+
+  it('never credits them to the in-cluster origin', () => {
+    const t = mk([pod('a', true, '10.0.0.1')], [p({})])
+    const s = buildSidebar(undefined, ctx(t, 'incluster', localized()))
+    const texts = s.path.evidence.map((e) => e.text).join('\n')
+    expect(texts).not.toMatch(/checked directly/)
+  })
+})

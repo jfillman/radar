@@ -1610,7 +1610,11 @@ function useInClusterTest(base: NetworkTrace | undefined, kind: string, namespac
   const tokenRef = useRef(0)
   useEffect(() => {
     let alive = true
-    fetchInClusterCapability(kind, namespace, name).then((c) => { if (alive) { setAllowed(!!c.allowed); setCap(c) } }).catch(() => { if (alive) setAllowed(false) })
+    // A fetch ERROR is not a denial: `false` is reserved for the server
+    // definitively saying no, and consumers render `=== false` as "not
+    // permitted". A 503 while the cache warms or a network blip must leave the
+    // answer unknown, not paint a permanent RBAC denial.
+    fetchInClusterCapability(kind, namespace, name).then((c) => { if (alive) { setAllowed(!!c.allowed); setCap(c) } }).catch(() => {})
     return () => { alive = false }
   }, [kind, namespace, name])
   useEffect(() => {
@@ -1921,7 +1925,13 @@ function DiagnoseTabContent({
         onRunProbes={() => runProbes(probePath)}
         onRunInCluster={() => requestInClusterRun(probePath)}
         inClusterRunning={inClusterRunning}
-        inClusterAllowed={inClusterAllowed && (probeTrace !== undefined)}
+        // Permission only - never fold readiness in: `allowed && !probeTrace`
+        // evaluated to false, which every consumer renders as a definitive
+        // "not permitted". A missing base trace (probe failed, re-run in
+        // flight, staleness mask) is not a denial; run() already no-ops
+        // harmlessly until the base exists.
+        inClusterAllowed={inClusterAllowed}
+        inClusterDeniedReason={inClusterCap?.reason}
         inClusterError={inClusterError}
         inClusterPartial={inClusterPartial}
         inClusterFallback={inClusterFallback}

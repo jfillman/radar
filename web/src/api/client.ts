@@ -692,9 +692,15 @@ export async function runInClusterMerged(kind: string, namespace: string, name: 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: path ?? '/' }),
   })
-  const body = await response.json()
+  // A gateway/proxy failure (chi's 60s timeout, a Hub ingress 502) returns
+  // HTML - an unguarded .json() surfaced "Unexpected token <" instead of the
+  // status. Mirror fetchJSON's tolerant parse.
+  const body = await response.json().catch(() => undefined)
   if (!response.ok || body?.error) {
     throw new Error(body?.error || `In-cluster test failed (${response.status})`)
+  }
+  if (body === undefined) {
+    throw new Error('In-cluster test returned an unreadable response')
   }
   return body
 }

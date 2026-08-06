@@ -43,6 +43,10 @@ export interface TracePanelProps {
   onRunInCluster?: () => void
   inClusterRunning?: boolean
   inClusterAllowed?: boolean
+  /** WHY the in-cluster test is denied, from the server's capability check -
+   *  it names the first missing verb ("you don't have permission to create
+   *  Jobs in …"). Without it every denial rendered the same generic line. */
+  inClusterDeniedReason?: string
   /** Set when the in-cluster test couldn't produce a result (e.g. a cold-start
    *  timeout) - surfaced so the click is never a silent no-op. */
   inClusterError?: string

@@ -17,6 +17,10 @@ The active layer can escalate the static verdict when probes give clear evidence
 
 Probes run from the operator's current vantage (laptop or in-cluster). A failure caused by the vantage itself - NetworkPolicy blocking Radar's path, a service-mesh mTLS handshake without a client cert, an API-server-proxy probe that can't reach an internal address - is **never** allowed to set the headline. Only a real-traffic (data-path) result escalates the verdict; an API-server-proxy-only or otherwise vantage-attributable failure annotates the hop and localizes the symptom but leaves the verdict at *unknown* / *not confirmed* rather than condemning a path that real traffic may well reach. This is the fail-toward-silence rule: Radar would rather say "couldn't confirm from here" than false-condemn a healthy path. See "What it deliberately does NOT do" below for the boundaries of what probes can and cannot tell you.
 
+![The Reachability tab: the verdict band with the live-check count, selectable vantage capsules on the left, the path graph, and the journey inspector on the right](images/reachability/reachability-verdict-and-path.png)
+
+*Reached via the API-server relay: the verdict says so out loud, the capsule that produced the evidence is highlighted, and the inspector names what the result does not prove.*
+
 ## Mental model
 
 ```
@@ -86,6 +90,15 @@ Each row reports outcome (`ok` / `fail` / `skipped`), latency, the path it trave
 Every claim on the page carries its evidence: the verdict band states the live-check volume ("8 live checks from 2 vantages", with the DNS/TCP/TLS/HTTP breakdown on hover), a skipped route states WHY it was skipped from the exact vantage that skipped it, and node dots show each resource's own health - cluster state, never a test result (edges carry the test truth).
 
 **RBAC for active probes (from a laptop):** the user identity reading the trace must hold `get services/proxy` and `get pods/proxy` in the target namespace. In-cluster Radar uses the data path directly and doesn't need these. To disable the active layer entirely, deny those permissions to the role Radar uses.
+
+
+![A Redis Service: the in-cluster probe capsule offers Run now, and the path shows the declared TCP route](images/reachability/reachability-non-http-service.png)
+
+*A non-HTTP Service (Redis on 6379). The declared port survives as a runnable candidate the in-cluster test can dial with TCP - no HTTP request is ever sent at it.*
+
+![A Service declaring both TCP and UDP on port 53: the PATH picker lists them separately](images/reachability/reachability-dual-protocol-port.png)
+
+*kube-dns declares TCP and UDP on the same number. Each is its own declared path: the TCP route is testable, and the UDP one stays a stated gap rather than being folded away.*
 
 ## What it deliberately does NOT do
 

@@ -17,9 +17,9 @@ The active layer can escalate the static verdict when probes give clear evidence
 
 Probes run from the operator's current vantage (laptop or in-cluster). A failure caused by the vantage itself - NetworkPolicy blocking Radar's path, a service-mesh mTLS handshake without a client cert, an API-server-proxy probe that can't reach an internal address - is **never** allowed to set the headline. Only a real-traffic (data-path) result escalates the verdict; an API-server-proxy-only or otherwise vantage-attributable failure annotates the hop and localizes the symptom but leaves the verdict at *unknown* / *not confirmed* rather than condemning a path that real traffic may well reach. This is the fail-toward-silence rule: Radar would rather say "couldn't confirm from here" than false-condemn a healthy path. See "What it deliberately does NOT do" below for the boundaries of what probes can and cannot tell you.
 
-![The Reachability tab: the verdict band with the live-check count, selectable vantage capsules on the left, the path graph, and the journey inspector on the right](images/reachability/reachability-verdict-and-path.png)
+![A Service reached by both an Ingress and an HTTPRoute: parallel entry points on the left, the path graph, and the journey inspector on the right](images/reachability/reachability-parallel-entries.png)
 
-*Reached via the API-server relay: the verdict says so out loud, the capsule that produced the evidence is highlighted, and the inspector names what the result does not prove.*
+*One Service, two declared front doors. Each entry is judged on its own - the HTTPRoute here is not attached to any listener - and the verdict names the vantage it speaks from: reached via the API-server relay, which is not the live-traffic path.*
 
 ## Mental model
 
@@ -94,11 +94,15 @@ Every claim on the page carries its evidence: the verdict band states the live-c
 
 ![A Redis Service: the in-cluster probe capsule offers Run now, and the path shows the declared TCP route](images/reachability/reachability-non-http-service.png)
 
-*A non-HTTP Service (Redis on 6379). The declared port survives as a runnable candidate the in-cluster test can dial with TCP - no HTTP request is ever sent at it.*
+*A non-HTTP Service (Redis on 6379) after an in-cluster test: the throwaway Pod connected over TCP, and the coverage line states the ceiling of that proof - "TCP connections only - application protocol not checked".*
 
 ![A Service declaring both TCP and UDP on port 53: the PATH picker lists them separately](images/reachability/reachability-dual-protocol-port.png)
 
 *kube-dns declares TCP and UDP on the same number. Each is its own declared path: the TCP route is testable, and the UDP one stays a stated gap rather than being folded away.*
+
+![An Ingress subject: the front door is dialled from outside and the backend answers, with the entry path called out as unexercised](images/reachability/reachability-ingress-front-door.png)
+
+*A front-door subject. Radar dials the declared hostname from your machine (DNS, TCP, TLS, then HTTP) - here a 308 redirect - while the headline stays honest that a backend-only confirmation does not exercise the entry path.*
 
 ## What it deliberately does NOT do
 

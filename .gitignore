@@ -9,10 +9,15 @@
 vendor/
 
 # Node
-node_modules/
-web/node_modules/
+# No trailing slash: a pattern ending in `/` matches directories only, so a
+# `node_modules` symlink is NOT ignored. That bites when working from a git
+# worktree, where the usual fix is to symlink deps from another checkout rather
+# than reinstall — the symlinks then show as untracked and are easy to commit
+# by accident with `git add -A`.
+node_modules
+web/node_modules
 web/dist/
-packages/*/node_modules/
+packages/*/node_modules
 
 # IDE
 .idea/

@@ -215,6 +215,26 @@ PODS ?= 50000
 loadtest: frontend embed
 	go run ./cmd/testserver -port $(LOADTEST_PORT) -pods $(PODS)
 
+# Bootstrap a kind cluster pre-loaded with curated CloudNativePG fixtures
+# (four clusters all 2/2 Ready with four different badges, a real WAL-archiving
+# failure, Pooler/ScheduledBackup/Backups, plus Velero + KubeBlocks CRs for the
+# shared `backups`/`clusters` plurals).
+# See scripts/cnpg-demo/README.md for the coverage matrix and, more importantly,
+# why the WAL failure is induced rather than patched.
+cnpg-demo:
+	./scripts/cnpg-demo.sh up
+
+cnpg-demo-down:
+	./scripts/cnpg-demo.sh down
+
+cnpg-demo-status:
+	./scripts/cnpg-demo.sh status
+
+# Same fixtures with the operator LEFT RUNNING — real failovers and backup
+# runs, but hand-written terminal phases won't hold. For v2/v3 work.
+cnpg-demo-live:
+	./scripts/cnpg-demo.sh live
+
 # Run linter
 lint:
 	go vet ./...

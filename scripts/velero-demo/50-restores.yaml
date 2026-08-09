@@ -1,0 +1,108 @@
+# Restores across the phase vocabulary, including both partial-failure
+#   variants that collapse onto a single label in the table.
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: r-completed
+  namespace: velero
+spec:
+  backupName: nightly-20260807010000
+  includedNamespaces:
+    - default
+status:
+  completionTimestamp: "@now-1864m"
+  phase: Completed
+  progress:
+    itemsRestored: 300
+    totalItems: 300
+  startTimestamp: "@now-1870m"
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: r-failed
+  namespace: velero
+spec:
+  backupName: nightly-20260807010000
+  includedNamespaces:
+    - default
+status:
+  completionTimestamp: "@now-1864m"
+  errors: 5
+  failureReason: "restore failed: could not connect to object store"
+  phase: Failed
+  startTimestamp: "@now-1870m"
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: r-failedvalidation
+  namespace: velero
+spec:
+  backupName: nightly-20260807010000
+  includedNamespaces:
+    - default
+status:
+  phase: FailedValidation
+  validationErrors:
+    - Backup nightly-20260807010000 not found
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: r-finalizing-partial
+  namespace: velero
+spec:
+  backupName: nightly-20260807010000
+  includedNamespaces:
+    - default
+status:
+  errors: 1
+  phase: FinalizingPartiallyFailed
+  startTimestamp: "@now-1870m"
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: r-inprogress
+  namespace: velero
+spec:
+  backupName: nightly-20260807010000
+  includedNamespaces:
+    - default
+status:
+  phase: InProgress
+  progress:
+    itemsRestored: 140
+    totalItems: 300
+  startTimestamp: "@now-1870m"
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: r-partiallyfailed
+  namespace: velero
+spec:
+  backupName: nightly-20260807010000
+  includedNamespaces:
+    - default
+status:
+  completionTimestamp: "@now-1864m"
+  errors: 7
+  phase: PartiallyFailed
+  startTimestamp: "@now-1870m"
+  warnings: 2
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: r-waitingplugins
+  namespace: velero
+spec:
+  backupName: nightly-20260807010000
+  includedNamespaces:
+    - default
+status:
+  phase: WaitingForPluginOperations
+  startTimestamp: "@now-1870m"

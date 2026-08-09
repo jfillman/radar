@@ -129,15 +129,15 @@ demoing anything.
 **Anything requiring a live controller.** With Velero scaled to 0 there is no
 reconciliation, so:
 
-- **Data mover (`DataUpload` / `DataDownload`)** — needed for RAD-316. These
-  are emitted by a running controller during a real CSI-snapshot backup.
-  Reproducing them needs, at minimum, in-cluster object storage (MinIO) *and* a
-  snapshot-capable CSI driver (`csi-hostpath-driver`; kind's default
-  local-path provisioner cannot snapshot) *and* the node agent enabled *and* a
-  workload with a bound PVC. That is a different and much more fragile fixture,
-  not a flag on this one — which is why it isn't one. Faking `DataUpload` CRs
-  by hand would test our renderer against our own guess at the shape rather
-  than against Velero, and the shape is the thing in doubt.
+- **Data mover (`DataUpload` / `DataDownload`)**, which is what data-mover
+  support would need. These are emitted by a running controller during a real
+  CSI-snapshot backup. Reproducing them needs, at minimum, in-cluster object
+  storage (MinIO) *and* a snapshot-capable CSI driver (`csi-hostpath-driver`;
+  kind's default local-path provisioner cannot snapshot) *and* the node agent
+  enabled *and* a workload with a bound PVC. That is a different and much more
+  fragile fixture, not a flag on this one — which is why it isn't one. Faking
+  `DataUpload` CRs by hand would test our renderer against our own guess at the
+  shape rather than against Velero, and the shape is the thing in doubt.
 - **Real progress counters, backup logs, and per-item error detail.** Error and
   warning *counts* are in the CR and are covered here; the messages behind them
   live in a results artifact in object storage, reachable only through a

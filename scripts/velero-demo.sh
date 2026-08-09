@@ -157,7 +157,24 @@ install_velero() {
   # The load-bearing step. See the header comment.
   step "Scaling the Velero controller to 0 so hand-written status survives"
   k -n "${NS}" scale deployment/velero --replicas=0 >/dev/null
-  k -n "${NS}" wait --for=delete pod -l deploy=velero --timeout=90s >/dev/null 2>&1 || true
+
+  # Poll the Deployment's own replica count rather than waiting on a pod label
+  # selector. A label guess that matches nothing makes `kubectl wait` return
+  # instantly and succeed, so the fixtures then race a controller that is still
+  # running and reconciles every hand-written phase away — a failure that only
+  # shows up as mysteriously empty phases. (The first version of this waited on
+  # `deploy=velero`; the chart labels pods `name=velero`, so it never waited at
+  # all and passed on timing luck.) `.status.replicas` is omitted once it hits
+  # zero, so empty counts as stopped.
+  local running=""
+  for _ in $(seq 1 45); do
+    running="$(k -n "${NS}" get deployment velero -o jsonpath='{.status.replicas}' 2>/dev/null || true)"
+    if [ -z "${running}" ] || [ "${running}" = "0" ]; then break; fi
+    sleep 2
+  done
+  if [ -n "${running}" ] && [ "${running}" != "0" ]; then
+    fail "Velero controller still has ${running} replica(s) after 90s — fixtures would be reconciled away"
+  fi
   ok "Controller stopped — nothing will reconcile the fixtures away"
 }
 
@@ -227,6 +244,16 @@ apply_fixtures() {
 verify_fixtures() {
   step "Verifying fixture state"
   local errs=0
+
+  # 0. The controller is down. Everything below is meaningless if it isn't —
+  #    a running Velero rewrites every phase here within a reconcile loop.
+  local reps
+  reps="$(k -n "${NS}" get deployment velero -o jsonpath='{.status.replicas}' 2>/dev/null || true)"
+  if [ -n "${reps}" ] && [ "${reps}" != "0" ]; then
+    warn "velero controller is running (${reps} replica(s)) — fixtures will not survive"; errs=$((errs+1))
+  else
+    ok "velero controller is stopped"
+  fi
 
   # 1. Every Backup phase in the enum is present exactly once.
   local expected="Completed Deleting Failed FailedValidation Finalizing FinalizingPartiallyFailed InProgress New PartiallyFailed Queued ReadyToStart WaitingForPluginOperations WaitingForPluginOperationsPartiallyFailed"

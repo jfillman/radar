@@ -174,6 +174,21 @@ gitops-demo-status:
 gitops-demo-drift:
 	./scripts/gitops-demo.sh drift
 
+# Bootstrap a kind cluster pre-loaded with Kyverno 1.18.2 and curated policy
+# fixtures (both API families, the four enforcement-posture cases, dual-API
+# PolicyExceptions, and ~40 real PolicyReports across several sources).
+# Useful for visual-testing policy UI changes against realistic state.
+# See scripts/kyverno-demo/README.md for the coverage matrix — and read the
+# 1.20-simulation warning before running `kyverno-demo.sh modern-only`.
+kyverno-demo:
+	./scripts/kyverno-demo.sh up
+
+kyverno-demo-down:
+	./scripts/kyverno-demo.sh down
+
+kyverno-demo-status:
+	./scripts/kyverno-demo.sh status
+
 # Bootstrap a kind cluster pre-loaded with curated Crossplane fixtures
 # (core + provider-kubernetes + function-patch-and-transform + XRD/Composition/XRs).
 # Useful for visual-testing Crossplane UI changes against realistic state.

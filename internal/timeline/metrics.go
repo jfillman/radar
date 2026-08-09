@@ -210,8 +210,9 @@ func (m *EventMetrics) Reset() {
 // DropsForCluster returns only the drop records attributed to clusterContext.
 // Read paths pass the active context so a straggler drop stamped with a
 // previously-connected cluster (recorded in the async informer-shutdown window
-// after a switch) is never shown on the new cluster. Strict equality also covers
-// the in-cluster case (both "" ).
+// after a switch) is never shown on the new cluster. Both the stamp and the read
+// filter come from ActiveClusterContext(), so the in-cluster case matches too
+// (both sides use the "in-cluster" sentinel).
 func DropsForCluster(drops []DropRecord, clusterContext string) []DropRecord {
 	out := make([]DropRecord, 0, len(drops))
 	for _, d := range drops {

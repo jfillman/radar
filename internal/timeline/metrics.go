@@ -231,6 +231,13 @@ func DropsForCluster(drops []DropRecord, clusterContext string) []DropRecord {
 // the same kind on the NEW cluster. Process uptime (startTime) is preserved:
 // it reports how long the event pipeline has been running, not a per-cluster
 // session, so it must survive the switch.
+//
+// Best-effort on the counters: unlike RecentDrops (stamped + filtered on read),
+// the counters have no cluster guard, so a straggler informer draining after the
+// switch (async shutdown, up to ~5s) can re-increment them with a few old-cluster
+// ticks after this reset. Accepted: counters carry only kind names, not resource
+// identity, so the exposure is a type label ("Secret") on a debug surface, never
+// a resource name.
 func ResetMetricsForContextSwitch() {
 	m := GetMetrics()
 	m.mu.Lock()

@@ -158,23 +158,35 @@ install_velero() {
   step "Scaling the Velero controller to 0 so hand-written status survives"
   k -n "${NS}" scale deployment/velero --replicas=0 >/dev/null
 
-  # Poll the Deployment's own replica count rather than waiting on a pod label
-  # selector. A label guess that matches nothing makes `kubectl wait` return
-  # instantly and succeed, so the fixtures then race a controller that is still
-  # running and reconciles every hand-written phase away — a failure that only
-  # shows up as mysteriously empty phases. (The first version of this waited on
-  # `deploy=velero`; the chart labels pods `name=velero`, so it never waited at
-  # all and passed on timing luck.) `.status.replicas` is omitted once it hits
-  # zero, so empty counts as stopped.
-  local running=""
+  # Wait for the POD to be gone, not for a replica count, and take the selector
+  # from the Deployment instead of guessing labels. Two traps here, both real:
+  #
+  #   A hardcoded selector that matches nothing makes `kubectl wait` return
+  #   instantly and succeed. (This started life as `-l deploy=velero`; the
+  #   chart labels pods `name=velero`, so it never waited at all.)
+  #
+  #   `.status.replicas` stops counting a pod the moment it starts terminating,
+  #   while the container keeps running for its grace period — and Velero's is
+  #   terminationGracePeriodSeconds: 3600. A replica count of zero therefore
+  #   says nothing about whether a controller is still reconciling.
+  #
+  # Nothing is in flight worth draining, so the leftover pod is force-deleted
+  # rather than waited out for up to an hour.
+  local sel
+  sel="$(k -n "${NS}" get deployment velero \
+    -o go-template='{{range $k, $v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}' 2>/dev/null | sed 's/,$//')"
+  [ -n "${sel}" ] || fail "could not read the velero Deployment's pod selector"
+
+  k -n "${NS}" delete pod -l "${sel}" --grace-period=0 --force --ignore-not-found >/dev/null 2>&1 || true
+
+  local pods=""
   for _ in $(seq 1 45); do
-    running="$(k -n "${NS}" get deployment velero -o jsonpath='{.status.replicas}' 2>/dev/null || true)"
-    if [ -z "${running}" ] || [ "${running}" = "0" ]; then break; fi
+    pods="$(k -n "${NS}" get pods -l "${sel}" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+    [ "${pods}" = "0" ] && break
     sleep 2
   done
-  if [ -n "${running}" ] && [ "${running}" != "0" ]; then
-    fail "Velero controller still has ${running} replica(s) after 90s — fixtures would be reconciled away"
-  fi
+  [ "${pods}" = "0" ] \
+    || fail "${pods} velero controller pod(s) still present after 90s — fixtures would be reconciled away"
   ok "Controller stopped — nothing will reconcile the fixtures away"
 }
 
@@ -245,14 +257,19 @@ verify_fixtures() {
   step "Verifying fixture state"
   local errs=0
 
-  # 0. The controller is down. Everything below is meaningless if it isn't —
+  # 0. No controller POD exists. Everything below is meaningless if one does —
   #    a running Velero rewrites every phase here within a reconcile loop.
-  local reps
-  reps="$(k -n "${NS}" get deployment velero -o jsonpath='{.status.replicas}' 2>/dev/null || true)"
-  if [ -n "${reps}" ] && [ "${reps}" != "0" ]; then
-    warn "velero controller is running (${reps} replica(s)) — fixtures will not survive"; errs=$((errs+1))
+  #    Checked as a pod count rather than a replica count: a terminating pod is
+  #    already excluded from .status.replicas but is still running its
+  #    container, and Velero's grace period is an hour.
+  local vsel vpods
+  vsel="$(k -n "${NS}" get deployment velero \
+    -o go-template='{{range $k, $v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}' 2>/dev/null | sed 's/,$//')"
+  vpods="$(k -n "${NS}" get pods -l "${vsel:-app.kubernetes.io/name=velero}" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "${vpods}" != "0" ]; then
+    warn "${vpods} velero controller pod(s) present — fixtures will not survive"; errs=$((errs+1))
   else
-    ok "velero controller is stopped"
+    ok "no velero controller pod running"
   fi
 
   # 1. Every Backup phase in the enum is present exactly once.

@@ -5530,7 +5530,13 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 	}
 
-	// 16. Add generic CRD nodes connected via owner references
+	// 16. Add Crossplane Claim/XR/MR nodes + manages edges (spec-ref driven).
+	// Runs before the generic CRD pass so XR nodes exist first.
+	if opts.IncludeGenericCRDs {
+		nodes, edges = b.addCrossplaneNodes(nodes, edges, opts)
+	}
+
+	// 17. Add generic CRD nodes connected via owner references
 	// Only includes CRDs already being watched and with owner refs to existing nodes
 	if opts.IncludeGenericCRDs {
 		nodes, edges = b.addGenericCRDNodes(nodes, edges, opts)

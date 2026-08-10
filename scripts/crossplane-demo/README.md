@@ -4,8 +4,8 @@ Bootstraps a `kind` cluster with Crossplane installed (core + provider-kubernete
 function-patch-and-transform) and a curated set of Crossplane fixtures covering the
 resource kinds Radar's Crossplane UI needs to render. Use it for visual-testing
 changes to the Crossplane surfaces (resource list, MR/XR/Claim/Composition/XRD/Function
-renderers, composed-resources panel, audit `crossplaneStuck` check) without needing a
-real cluster running a cloud provider.
+renderers, composed-resources panel) without needing a real cluster running a cloud
+provider.
 
 Both Crossplane API models are exercised on the one cluster:
 

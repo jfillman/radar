@@ -89,6 +89,7 @@ cmd_up() {
   grant_provider_cluster_admin
   install_function_patch_and_transform
   apply_provider_config
+  cleanup_legacy_fixtures
   apply_standalone_managed_resources
   apply_v1_claim_fixture
   apply_v2_namespaced_fixture
@@ -307,6 +308,19 @@ EOF
   ok "Standalone MRs applied (Object/standalone-configmap, Object/standalone-namespace)"
 }
 
+# cleanup_legacy_fixtures removes the previous demo's AppBundle XRD/Composition
+# when `up` reuses an existing cluster. Deleting the XRD cascades its XR
+# instances, so stale broken AppBundle XRs don't contaminate the new fixture
+# set or the status/topology output. Best-effort and idempotent.
+cleanup_legacy_fixtures() {
+  if kctl get xrd appbundles.demo.example.io >/dev/null 2>&1; then
+    step "Removing legacy AppBundle fixtures from a previous demo"
+    kctl delete composition appbundles.demo.example.io --ignore-not-found >/dev/null 2>&1 || true
+    kctl delete xrd appbundles.demo.example.io --ignore-not-found >/dev/null 2>&1 || true
+    ok "Legacy AppBundle XRD/Composition removed"
+  fi
+}
+
 # --- v1 Claim fixture (v1 Claim -> bound XR -> composed resources) ---------
 
 # An apiextensions.crossplane.io/v1 XRD with claimNames gives the classic v1
@@ -429,8 +443,13 @@ spec:
                     metadata:
                       name: placeholder
                       namespace: placeholder
-                    stringData:
-                      managed-by: crossplane-composition
+                    type: Opaque
+                    # base64("crossplane-composition"). Using `data` (not
+                    # stringData) avoids provider-kubernetes SSA drift — the
+                    # apiserver never returns stringData, so an observe would
+                    # perpetually diff and re-apply.
+                    data:
+                      managed-by: Y3Jvc3NwbGFuZS1jb21wb3NpdGlvbg==
             patches:
               - { type: FromCompositeFieldPath, fromFieldPath: spec.appName, toFieldPath: spec.forProvider.manifest.metadata.name, transforms: [{ type: string, string: { type: Format, fmt: "%s-conn" } }] }
               - { type: FromCompositeFieldPath, fromFieldPath: spec.namespace, toFieldPath: spec.forProvider.manifest.metadata.namespace }
@@ -621,6 +640,10 @@ wait_for_crd() {
   warn "CRD $name did not register within 90s"
 }
 
+# CHAINS_READY_HINT reflects the real reconcile state in the final summary, so
+# the summary never claims "Ready" when the wait timed out.
+CHAINS_READY_HINT="not checked"
+
 # wait_for_chains_healthy gates on the claim and the namespaced XR reaching
 # Ready=True so the summary reflects real reconciled state. Warns rather than
 # fails on timeout — a slow first image pull shouldn't abort the whole demo.
@@ -634,11 +657,13 @@ wait_for_chains_healthy() {
       -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
     if [ "$claim_ready" = "True" ] && [ "$xr_ready" = "True" ]; then
       ok "v1 claim and v2 XR both Ready"
+      CHAINS_READY_HINT="all Ready"
       return 0
     fi
     sleep 5
   done
-  warn "chains not fully Ready within 3m (claim Ready=${claim_ready:-?}, XR Ready=${xr_ready:-?}); check '$0 status'"
+  CHAINS_READY_HINT="NOT all Ready yet (claim Ready=${claim_ready:-?}, XR Ready=${xr_ready:-?}) — run '$0 status'"
+  warn "chains not fully Ready within 4m (claim Ready=${claim_ready:-?}, XR Ready=${xr_ready:-?}); check '$0 status'"
 }
 
 
@@ -719,9 +744,11 @@ print_summary() {
     ProviderConfig     — kubernetes.crossplane.io/default (InjectedIdentity)
     Standalone MRs     — Object/standalone-configmap, Object/standalone-namespace
     v1 Claim chain     — DatabaseClaim/example-database (demo-app) -> bound XR
-                         XDatabase -> 3 composed cluster-scoped Objects (Ready)
+                         XDatabase -> 3 composed cluster-scoped Objects
     v2 namespaced XR   — AppStack/web-stack (v2-app) -> 2 composed namespaced
-                         Objects (kubernetes.m.crossplane.io) (Ready)
+                         Objects (kubernetes.m.crossplane.io)
+
+  Live reconcile state (Ready/Synced): ${CHAINS_READY_HINT}
 
   Run Radar against this cluster:
     kubectl config use-context ${KUBECTL_CTX}

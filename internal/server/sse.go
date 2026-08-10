@@ -691,25 +691,30 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 			maxEstimated = int64(topo.EstimatedNodes)
 		}
 
-		// A synthesized NodeClass kind can contain several independently
-		// authorized provider APIs. Regroup against the exact tuples present in
-		// this build, then marshal once per effective provider permission set.
+		// A synthesized NodeClass kind, and cluster-scoped Crossplane XR/MR
+		// nodes, each contain independently authorized provider APIs. Regroup
+		// against the exact tuples present in this build, then marshal once per
+		// effective provider permission set.
 		type nodeClassGroup struct {
-			allowed  map[topology.SARTuple]bool
-			channels []chan SSEEvent
+			allowed        map[topology.SARTuple]bool
+			allowedDynamic map[topology.SARTuple]bool
+			channels       []chan SSEEvent
 		}
 		nodeClassGroups := make(map[string]*nodeClassGroup)
 		for ch, info := range group.clients {
-			allowed := authorizedNodeClassTuples(topo, nodeClassAuthorizer(info.Authorize))
-			authKey := nodeClassTuplesKey(allowed)
+			authorize := nodeClassAuthorizer(info.Authorize)
+			allowed := authorizedNodeClassTuples(topo, authorize)
+			allowedDynamic := authorizedClusterScopedDynamicTuples(topo, authorize)
+			authKey := nodeClassTuplesKey(allowed) + "\x02" + nodeClassTuplesKey(allowedDynamic)
 			if nodeClassGroups[authKey] == nil {
-				nodeClassGroups[authKey] = &nodeClassGroup{allowed: allowed}
+				nodeClassGroups[authKey] = &nodeClassGroup{allowed: allowed, allowedDynamic: allowedDynamic}
 			}
 			nodeClassGroups[authKey].channels = append(nodeClassGroups[authKey].channels, ch)
 		}
 		for _, authGroup := range nodeClassGroups {
 			filtered := cloneTopology(topo)
 			filtered.StripNodeClassesExcept(authGroup.allowed)
+			filtered.StripClusterScopedDynamicExcept(authGroup.allowedDynamic)
 			data, marshalErr := json.Marshal(filtered)
 			if marshalErr != nil {
 				log.Printf("Error marshaling topology for broadcast: %v", marshalErr)
@@ -765,6 +770,19 @@ func authorizedNodeClassTuples(topo *topology.Topology, authorize func(topology.
 		return allowed
 	}
 	for _, tuple := range topo.NodeClassRBACTuples() {
+		if authorize(tuple) {
+			allowed[tuple] = true
+		}
+	}
+	return allowed
+}
+
+func authorizedClusterScopedDynamicTuples(topo *topology.Topology, authorize func(topology.SARTuple) bool) map[topology.SARTuple]bool {
+	allowed := make(map[topology.SARTuple]bool)
+	if authorize == nil {
+		return allowed
+	}
+	for _, tuple := range topo.ClusterScopedDynamicRBACTuples() {
 		if authorize(tuple) {
 			allowed[tuple] = true
 		}

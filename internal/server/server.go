@@ -1647,6 +1647,16 @@ func (s *Server) applyClusterScopedTopologyRBAC(r *http.Request, topo *topology.
 		}
 	}
 	topo.StripNodeClassesExcept(allowedNodeClasses)
+
+	// Cluster-scoped Crossplane XR/MR nodes carry unbounded provider CRD kinds
+	// the fixed denylist can't cover; authorize each by its exact GVR.
+	allowedDynamic := make(map[topology.SARTuple]bool)
+	for _, tuple := range topo.ClusterScopedDynamicRBACTuples() {
+		if s.canRead(r, tuple.Group, tuple.Resource, "", "list") {
+			allowedDynamic[tuple] = true
+		}
+	}
+	topo.StripClusterScopedDynamicExcept(allowedDynamic)
 }
 
 // parseNamespaces parses the namespace filter from query parameters.

@@ -143,3 +143,177 @@ func TestBuildCrossplaneV2NamespacedXREdges(t *testing.T) {
 		}
 	}
 }
+
+// Cluster-scoped Crossplane XR/MR nodes must be authorizable by their exact
+// GVR so the topology RBAC strip can drop them for a user who can't list them.
+// Without this the pass leaks cluster-scoped resource identities.
+func TestCrossplaneClusterScopedNodesAreRBACStrippable(t *testing.T) {
+	claimGVR := schema.GroupVersionResource{Group: "demo.example.io", Version: "v1alpha1", Resource: "databaseclaims"}
+	xrGVR := schema.GroupVersionResource{Group: "demo.example.io", Version: "v1alpha1", Resource: "xdatabases"}
+	objGVR := schema.GroupVersionResource{Group: "kubernetes.crossplane.io", Version: "v1alpha2", Resource: "objects"}
+
+	claim := karpenterTopologyObject("demo.example.io/v1alpha1", "DatabaseClaim", "db", "c", map[string]any{
+		"spec": map[string]any{
+			"compositionRef": map[string]any{"name": "x"},
+			"resourceRef":    map[string]any{"apiVersion": "demo.example.io/v1alpha1", "kind": "XDatabase", "name": "db-xr"},
+		},
+	})
+	claim.SetNamespace("demo-app")
+	xr := karpenterTopologyObject("demo.example.io/v1alpha1", "XDatabase", "db-xr", "x", map[string]any{
+		"spec": map[string]any{"resourceRefs": []any{
+			map[string]any{"apiVersion": "kubernetes.crossplane.io/v1alpha2", "kind": "Object", "name": "db-cm"},
+		}},
+	})
+	mr := karpenterTopologyObject("kubernetes.crossplane.io/v1alpha2", "Object", "db-cm", "m", map[string]any{
+		"spec": map[string]any{"providerConfigRef": map[string]any{"name": "default"}},
+	})
+
+	newProvider := func() *karpenterDynamicProvider {
+		return &karpenterDynamicProvider{
+			exact:              map[string]schema.GroupVersionResource{},
+			resources:          map[schema.GroupVersionResource][]*unstructured.Unstructured{claimGVR: {claim}, xrGVR: {xr}, objGVR: {mr}},
+			kinds:              map[schema.GroupVersionResource]string{claimGVR: "DatabaseClaim", xrGVR: "XDatabase", objGVR: "Object"},
+			watched:            []schema.GroupVersionResource{claimGVR, xrGVR, objGVR},
+			listCalls:          make(map[schema.GroupVersionResource]int),
+			listNamespaceCalls: make(map[schema.GroupVersionResource]int),
+		}
+	}
+
+	xrTuple := SARTuple{Group: "demo.example.io", Resource: "xdatabases"}
+	objTuple := SARTuple{Group: "kubernetes.crossplane.io", Resource: "objects"}
+
+	// the cluster-scoped nodes advertise their GVR tuples
+	topo, _ := NewBuilder(&mockProvider{}).WithDynamic(newProvider()).Build(DefaultBuildOptions())
+	got := map[SARTuple]bool{}
+	for _, tp := range topo.ClusterScopedDynamicRBACTuples() {
+		got[tp] = true
+	}
+	if !got[xrTuple] || !got[objTuple] {
+		t.Fatalf("cluster-scoped tuples not advertised: %+v", got)
+	}
+
+	// deny everything: cluster-scoped XR + MR gone, namespaced Claim stays
+	topo.StripClusterScopedDynamicExcept(map[SARTuple]bool{})
+	if findNode(topo, "databaseclaim/demo-app/db") == nil {
+		t.Fatal("namespaced Claim node was wrongly stripped")
+	}
+	if findNode(topo, "xdatabase//db-xr") != nil || findNode(topo, "object//db-cm") != nil {
+		t.Fatalf("unauthorized cluster-scoped node leaked through strip; nodes=%+v", topo.Nodes)
+	}
+
+	// allow only the XR's GVR: XR stays, MR still stripped
+	topo2, _ := NewBuilder(&mockProvider{}).WithDynamic(newProvider()).Build(DefaultBuildOptions())
+	topo2.StripClusterScopedDynamicExcept(map[SARTuple]bool{xrTuple: true})
+	if findNode(topo2, "xdatabase//db-xr") == nil {
+		t.Fatal("authorized XR node was wrongly stripped")
+	}
+	if findNode(topo2, "object//db-cm") != nil {
+		t.Fatal("unauthorized MR node leaked (only XR was allowed)")
+	}
+}
+
+// A cluster-scoped XR/MR (empty namespace) must survive a namespace filter, or
+// the Claim->XR->composed chain silently breaks in a filtered topology view.
+func TestBuildCrossplaneClusterScopedSurvivesNamespaceFilter(t *testing.T) {
+	claimGVR := schema.GroupVersionResource{Group: "demo.example.io", Version: "v1alpha1", Resource: "databaseclaims"}
+	xrGVR := schema.GroupVersionResource{Group: "demo.example.io", Version: "v1alpha1", Resource: "xdatabases"}
+	objGVR := schema.GroupVersionResource{Group: "kubernetes.crossplane.io", Version: "v1alpha2", Resource: "objects"}
+
+	claim := karpenterTopologyObject("demo.example.io/v1alpha1", "DatabaseClaim", "db", "claim-uid", map[string]any{
+		"spec": map[string]any{
+			"compositionRef": map[string]any{"name": "xdatabases.demo.example.io"},
+			"resourceRef":    map[string]any{"apiVersion": "demo.example.io/v1alpha1", "kind": "XDatabase", "name": "db-xr"},
+		},
+	})
+	claim.SetNamespace("demo-app")
+	xr := karpenterTopologyObject("demo.example.io/v1alpha1", "XDatabase", "db-xr", "xr-uid", map[string]any{
+		"spec": map[string]any{"resourceRefs": []any{
+			map[string]any{"apiVersion": "kubernetes.crossplane.io/v1alpha2", "kind": "Object", "name": "db-cm"},
+		}},
+	})
+	mr := karpenterTopologyObject("kubernetes.crossplane.io/v1alpha2", "Object", "db-cm", "cm-uid", map[string]any{
+		"spec": map[string]any{"providerConfigRef": map[string]any{"name": "default"}},
+	})
+
+	dynamic := &karpenterDynamicProvider{
+		exact: map[string]schema.GroupVersionResource{},
+		resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{
+			claimGVR: {claim}, xrGVR: {xr}, objGVR: {mr},
+		},
+		kinds:              map[schema.GroupVersionResource]string{claimGVR: "DatabaseClaim", xrGVR: "XDatabase", objGVR: "Object"},
+		watched:            []schema.GroupVersionResource{claimGVR, xrGVR, objGVR},
+		listCalls:          make(map[schema.GroupVersionResource]int),
+		listNamespaceCalls: make(map[schema.GroupVersionResource]int),
+	}
+
+	opts := DefaultBuildOptions()
+	opts.Namespaces = []string{"demo-app"} // filter active
+	topo, err := NewBuilder(&mockProvider{}).WithDynamic(dynamic).Build(opts)
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	if !hasKarpenterTopologyEdge(topo, "databaseclaim/demo-app/db", "xdatabase//db-xr", EdgeManages) {
+		t.Fatalf("cluster-scoped XR dropped under namespace filter; edges=%+v", topo.Edges)
+	}
+	if !hasKarpenterTopologyEdge(topo, "xdatabase//db-xr", "object//db-cm", EdgeManages) {
+		t.Fatalf("cluster-scoped composed MR dropped under namespace filter; edges=%+v", topo.Edges)
+	}
+}
+
+// Same-named composed resources in different namespaces must not collide: each
+// namespaced XR must wire to the MR in ITS OWN namespace.
+func TestBuildCrossplaneSameNameDifferentNamespaceNoCollision(t *testing.T) {
+	xrGVR := schema.GroupVersionResource{Group: "demo.example.io", Version: "v1alpha1", Resource: "appstacks"}
+	objGVR := schema.GroupVersionResource{Group: "kubernetes.m.crossplane.io", Version: "v1alpha1", Resource: "objects"}
+
+	xrIn := func(ns string) *unstructured.Unstructured {
+		o := karpenterTopologyObject("demo.example.io/v1alpha1", "AppStack", "stack", "xr-"+ns, map[string]any{
+			"spec": map[string]any{"crossplane": map[string]any{"resourceRefs": []any{
+				// same composed name "shared-config" in both namespaces, no namespace on the ref
+				map[string]any{"apiVersion": "kubernetes.m.crossplane.io/v1alpha1", "kind": "Object", "name": "shared-config"},
+			}}},
+		})
+		o.SetNamespace(ns)
+		return o
+	}
+	mrIn := func(ns string) *unstructured.Unstructured {
+		o := karpenterTopologyObject("kubernetes.m.crossplane.io/v1alpha1", "Object", "shared-config", "mr-"+ns, map[string]any{
+			"spec": map[string]any{"providerConfigRef": map[string]any{"name": "default", "kind": "ProviderConfig"}},
+		})
+		o.SetNamespace(ns)
+		return o
+	}
+
+	dynamic := &karpenterDynamicProvider{
+		exact: map[string]schema.GroupVersionResource{},
+		resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{
+			xrGVR:  {xrIn("team-a"), xrIn("team-b")},
+			objGVR: {mrIn("team-a"), mrIn("team-b")},
+		},
+		kinds:              map[schema.GroupVersionResource]string{xrGVR: "AppStack", objGVR: "Object"},
+		watched:            []schema.GroupVersionResource{xrGVR, objGVR},
+		listCalls:          make(map[schema.GroupVersionResource]int),
+		listNamespaceCalls: make(map[schema.GroupVersionResource]int),
+	}
+
+	topo, err := NewBuilder(&mockProvider{}).WithDynamic(dynamic).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	// each XR wires to the MR in its OWN namespace, not the other's
+	if !hasKarpenterTopologyEdge(topo, "appstack/team-a/stack", "object/team-a/shared-config", EdgeManages) {
+		t.Fatalf("team-a XR did not wire to its own composed MR; edges=%+v", topo.Edges)
+	}
+	if !hasKarpenterTopologyEdge(topo, "appstack/team-b/stack", "object/team-b/shared-config", EdgeManages) {
+		t.Fatalf("team-b XR did not wire to its own composed MR; edges=%+v", topo.Edges)
+	}
+	// and NOT to the other namespace's MR
+	if hasKarpenterTopologyEdge(topo, "appstack/team-a/stack", "object/team-b/shared-config", EdgeManages) {
+		t.Fatalf("cross-namespace collision: team-a XR wired to team-b MR")
+	}
+	if hasKarpenterTopologyEdge(topo, "appstack/team-b/stack", "object/team-a/shared-config", EdgeManages) {
+		t.Fatalf("cross-namespace collision: team-b XR wired to team-a MR")
+	}
+}

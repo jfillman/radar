@@ -1470,6 +1470,16 @@ func applyClusterScopedTopologyRBAC(ctx context.Context, topo *topology.Topology
 		}
 	}
 	topo.StripNodeClassesExcept(allowedNodeClasses)
+
+	// Cluster-scoped Crossplane XR/MR nodes carry unbounded provider CRD kinds
+	// the fixed denylist can't cover; authorize each by its exact GVR.
+	allowedDynamic := make(map[topology.SARTuple]bool)
+	for _, tuple := range topo.ClusterScopedDynamicRBACTuples() {
+		if canReadInNamespace(ctx, tuple.Group, tuple.Resource, "", "list") {
+			allowedDynamic[tuple] = true
+		}
+	}
+	topo.StripClusterScopedDynamicExcept(allowedDynamic)
 }
 
 // topologySummary is an LLM-friendly text representation of the topology.

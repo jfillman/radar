@@ -9,6 +9,7 @@ import {
   getProviderConfigStatus,
   getProviderConfigRef,
   getCrossplaneResourceRefs,
+  getBoundXRRef,
   getExternalName,
   getComposingXRRef,
   isCrossplanePaused,
@@ -509,6 +510,73 @@ describe('getCrossplaneResourceRefs', () => {
     expect(getCrossplaneResourceRefs({} as const)).toEqual([])
     expect(getCrossplaneResourceRefs({ spec: {} } as const)).toEqual([])
     expect(getCrossplaneResourceRefs({ spec: { resourceRefs: 'oops' } } as const)).toEqual([])
+  })
+})
+
+describe('getBoundXRRef', () => {
+  it('returns the singular spec.resourceRef of a v1 claim', () => {
+    const claim = {
+      spec: {
+        compositionRef: { name: 'database' },
+        resourceRef: {
+          apiVersion: 'platform.example.org/v1alpha1',
+          kind: 'Database',
+          name: 'example-database-x7k2m',
+        },
+      },
+    } as const
+    const ref = getBoundXRRef(claim)
+    expect(ref?.kind).toBe('Database')
+    expect(ref?.name).toBe('example-database-x7k2m')
+    expect(ref?.apiVersion).toBe('platform.example.org/v1alpha1')
+  })
+
+  it('returns null when resourceRef is absent or malformed', () => {
+    expect(getBoundXRRef({ spec: {} } as const)).toBeNull()
+    expect(getBoundXRRef({ spec: { resourceRef: { name: 'no-kind' } } } as const)).toBeNull()
+    expect(getBoundXRRef({ spec: { resourceRef: { kind: 'X' } } } as const)).toBeNull()
+    expect(getBoundXRRef({} as const)).toBeNull()
+  })
+})
+
+describe('claim vs XR composed-refs split', () => {
+  // A v1 claim carries NO resourceRefs of its own — only a singular resourceRef
+  // to its bound XR. The composed refs live on that XR. The claim panel must
+  // follow the ref rather than read the claim, or it shows "No composed
+  // resources" for a claim that has composed plenty.
+  const claim = {
+    spec: {
+      compositionRef: { name: 'database' },
+      resourceRef: {
+        apiVersion: 'platform.example.org/v1alpha1',
+        kind: 'Database',
+        name: 'example-database-x7k2m',
+      },
+    },
+  } as const
+  const boundXR = {
+    spec: {
+      resourceRefs: [
+        { apiVersion: 'database.example.org/v1beta1', kind: 'Instance', name: 'example-database-x7k2m' },
+        { apiVersion: 'identity.example.org/v1beta1', kind: 'Role', name: 'example-database-access' },
+        { apiVersion: 'kubernetes.crossplane.io/v1alpha2', kind: 'Object', name: 'example-database-connection' },
+      ],
+    },
+  } as const
+
+  it('reads nothing off the claim itself', () => {
+    expect(getCrossplaneResourceRefs(claim)).toEqual([])
+  })
+
+  it('is detected as a claim with a bound XR', () => {
+    expect(isClaim(claim)).toBe(true)
+    expect(getBoundXRRef(claim)?.name).toBe('example-database-x7k2m')
+  })
+
+  it('reads the composed refs off the bound XR', () => {
+    const refs = getCrossplaneResourceRefs(boundXR)
+    expect(refs).toHaveLength(3)
+    expect(refs.map(r => r.kind)).toEqual(['Instance', 'Role', 'Object'])
   })
 })
 

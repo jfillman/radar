@@ -52,6 +52,28 @@ interface CompositeRendererProps {
    * of an unrelated Bucket from another provider. Populated by the host
    * wrapper. When absent, the renderer shows refs without status badges. */
   composedRefStatuses?: Map<string, ComposedRefStatus>
+  /** Composed-resource refs resolved by the host. A v1 Claim carries only a
+   * singular spec.resourceRef to its bound XR — the composed refs live on that
+   * XR, not the claim — so the host follows the ref, fetches the XR, and passes
+   * its refs here. When omitted, refs are read off `data` directly (correct for
+   * an XR/Composite viewed on its own). */
+  composedRefs?: CrossplaneResourceRef[]
+  /** State of the host's fetch of the claim's bound XR. Set only for a v1 Claim.
+   * Without it, a claim whose XR is still loading or unreadable (404/RBAC) would
+   * fall into the empty branch and read "No composed resources yet" — which is
+   * indistinguishable from a claim that genuinely has none. */
+  boundXRStatus?: BoundXRStatus
+}
+
+/** Fetch state of a claim's bound XR, reported by the host wrapper. */
+export interface BoundXRStatus {
+  /** true while the XR fetch is in flight */
+  loading?: boolean
+  /** 404 — the referenced XR does not exist (dangling resourceRef) */
+  missing?: boolean
+  /** any non-404 failure (auth, network, server error); message in errorMessage */
+  error?: boolean
+  errorMessage?: string
 }
 
 function makeRefKey(ref: CrossplaneResourceRef): string {
@@ -67,13 +89,13 @@ function groupFromApiVersion(apiVersion: string | undefined): string {
   return slash < 0 ? '' : apiVersion.slice(0, slash)
 }
 
-export function CompositeRenderer({ data, onNavigate, composedRefStatuses }: CompositeRendererProps) {
+export function CompositeRenderer({ data, onNavigate, composedRefStatuses, composedRefs, boundXRStatus }: CompositeRendererProps) {
   const status = getCrossplaneStatus(data)
   const reason = getCrossplaneStatusReason(data)
   const compositionRef = getCompositionRef(data)
   const compositionRevisionRef = getCompositionRevisionRef(data)
   const compositionUpdatePolicy = getCompositionUpdatePolicy(data)
-  const resourceRefs = getCrossplaneResourceRefs(data)
+  const resourceRefs = composedRefs ?? getCrossplaneResourceRefs(data)
   const claim = isClaim(data)
   const boundXR = claim ? getBoundXRRef(data) : null
   const paused = isCrossplanePaused(data)
@@ -153,9 +175,7 @@ export function CompositeRenderer({ data, onNavigate, composedRefStatuses }: Com
         defaultExpanded
       >
         {resourceRefs.length === 0 ? (
-          <div className="text-sm text-theme-text-tertiary py-2">
-            No composed resources yet — the composition has not produced any managed resources.
-          </div>
+          <ComposedResourcesEmpty boundXRStatus={boundXRStatus} boundXRName={boundXR?.name} />
         ) : (
           <div className="space-y-1">
             {resourceRefs.map((ref) => (
@@ -172,6 +192,44 @@ export function CompositeRenderer({ data, onNavigate, composedRefStatuses }: Com
 
       <ConditionsSection conditions={data?.status?.conditions} />
     </>
+  )
+}
+
+function ComposedResourcesEmpty({
+  boundXRStatus,
+  boundXRName,
+}: {
+  boundXRStatus?: BoundXRStatus
+  boundXRName?: string
+}) {
+  if (boundXRStatus?.loading) {
+    return (
+      <div className="text-sm text-theme-text-tertiary py-2">
+        Loading composed resources from the bound composite…
+      </div>
+    )
+  }
+  if (boundXRStatus?.missing) {
+    const named = boundXRName ? ` (${boundXRName})` : ''
+    return (
+      <div className="text-sm text-theme-text-tertiary py-2">
+        The bound composite{named} referenced by this claim was not found — it may not have been
+        created yet, or you may not have permission to read it.
+      </div>
+    )
+  }
+  if (boundXRStatus?.error) {
+    const named = boundXRName ? ` (${boundXRName})` : ''
+    return (
+      <div className="text-sm status-unhealthy rounded px-2 py-2">
+        Couldn't read the bound composite{named}: {boundXRStatus.errorMessage || 'fetch failed'}
+      </div>
+    )
+  }
+  return (
+    <div className="text-sm text-theme-text-tertiary py-2">
+      No composed resources yet — the composition has not produced any managed resources.
+    </div>
   )
 }
 

@@ -99,6 +99,7 @@ install_kyverno() {
   # policyExceptions is off by default; the exception fixtures need it on.
   # Single replicas keep a laptop-sized kind cluster responsive.
   helm upgrade --install kyverno kyverno/kyverno \
+    --kube-context "${KUBECTL_CTX}" \
     --version "${KYVERNO_CHART_VERSION}" \
     -n kyverno --create-namespace \
     --set admissionController.replicas=1 \
@@ -167,7 +168,7 @@ apply_fixtures() {
   # Apply in number order: the namespace and its label must exist before the
   # policies that select on it, and the aggregated ClusterRole must exist
   # before the ClusterCleanupPolicy whose admission check depends on it.
-  for f in $(ls "${FIXTURES_DIR}"/*.yaml 2>/dev/null | sort); do
+  while IFS= read -r f; do
     if ! grep -q '^[[:space:]]*[^#[:space:]-]' "$f"; then
       note "skipping $(basename "$f") (placeholder / comments only)"
       continue
@@ -188,7 +189,7 @@ apply_fixtures() {
       fi
       sleep 3
     done
-  done
+  done < <(find "${FIXTURES_DIR}" -maxdepth 1 -type f -name '*.yaml' | sort)
   ok "Fixtures applied"
 }
 
@@ -203,8 +204,7 @@ wait_for_reports() {
   if [ "${n:-0}" -gt 5 ]; then
     ok "${n} PolicyReports produced"
   else
-    warn "only ${n:-0} PolicyReports so far — the scanner may still be working"
-    note "re-run '$(basename "$0") status' in a minute"
+    fail "only ${n:-0} PolicyReports after 5 minutes — check the reports controller"
   fi
 }
 
@@ -229,6 +229,7 @@ cmd_openreports() {
 
   step "Switching report output to openreports.io"
   helm upgrade kyverno kyverno/kyverno \
+    --kube-context "${KUBECTL_CTX}" \
     --version "${KYVERNO_CHART_VERSION}" -n kyverno --reuse-values \
     --set openreports.enabled=true \
     --set openreports.installCrds=true \
@@ -236,11 +237,20 @@ cmd_openreports() {
   ok "openreports enabled"
 
   note "waiting for reports to migrate..."
-  sleep 60
+  local wg=0 or=0 wg_policy=0 wg_cluster=0 or_policy=0 or_cluster=0
+  for _ in $(seq 1 60); do
+    wg_policy=$({ k get policyreports.wgpolicyk8s.io -A --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
+    wg_cluster=$({ k get clusterpolicyreports.wgpolicyk8s.io --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
+    or_policy=$({ k get reports.openreports.io -A --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
+    or_cluster=$({ k get clusterreports.openreports.io --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
+    wg=$((wg_policy + wg_cluster))
+    or=$((or_policy + or_cluster))
+    [ "${wg}" = "0" ] && [ "${or}" -gt 5 ] && break
+    sleep 5
+  done
+  [ "${wg}" = "0" ] && [ "${or}" -gt 5 ] \
+    || fail "report migration did not settle (wgpolicyk8s.io=${wg}, openreports.io=${or})"
 
-  local wg or
-  wg=$(k get policyreports.wgpolicyk8s.io -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  or=$(k get reports.openreports.io -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
   printf "\n"
   ok "wgpolicyk8s.io: ${wg} reports (CRDs still SERVED)"
   ok "openreports.io: ${or} reports"
@@ -271,18 +281,23 @@ cmd_modern_only() {
 
   step "Removing legacy kyverno.io policy CRDs"
   # --no-hooks: the chart's post-upgrade migration job fails once the CRDs it
-  # migrates are gone. The CRD removal itself still applies.
+  # migrates are gone. Do not use --wait: the admission Deployment is expected
+  # to crashloop after the legacy CRDs disappear.
   helm upgrade kyverno kyverno/kyverno \
+    --kube-context "${KUBECTL_CTX}" \
     --version "${KYVERNO_CHART_VERSION}" -n kyverno --reuse-values \
     --set crds.groups.kyverno.clusterpolicies=false \
     --set crds.groups.kyverno.policies=false \
-    --no-hooks --wait --timeout 8m >/dev/null 2>&1 || true
+    --no-hooks >/dev/null
 
   printf "\n"
   local legacy modern reports
-  legacy=$(k get crd -o json 2>/dev/null | grep -c '"clusterpolicies.kyverno.io"' || true)
-  modern=$(k get crd -o json 2>/dev/null | jq -r '[.items[]|select(.spec.group=="policies.kyverno.io")]|length' 2>/dev/null || echo "?")
+  legacy=$({ k get crd clusterpolicies.kyverno.io policies.kyverno.io --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
+  modern=$(k get crd -o jsonpath='{range .items[?(@.spec.group=="policies.kyverno.io")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | wc -l | tr -d ' ')
   reports=$(k get policyreports -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  [ "${legacy}" = "0" ] || fail "${legacy} legacy policy CRD(s) still present"
+  [ "${modern}" -gt 0 ] || fail "modern policies.kyverno.io CRDs disappeared"
+  [ "${reports}" -gt 0 ] || fail "PolicyReports did not survive legacy CRD removal"
   ok "legacy ClusterPolicy CRD present: ${legacy} (expect 0)"
   ok "policies.kyverno.io CRDs: ${modern}"
   ok "PolicyReports surviving: ${reports}"
@@ -329,6 +344,8 @@ cmd_status() {
     "$(k get clusterpolicyreports.wgpolicyk8s.io --no-headers 2>/dev/null | wc -l | tr -d ' ')"
   printf "    %-34s %s\n" "openreports.io reports" \
     "$(k get reports.openreports.io -A --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+  printf "    %-34s %s\n" "openreports.io clusterreports" \
+    "$(k get clusterreports.openreports.io --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 
   printf "\n"
   step "Distinct results[].source values (the engine-taxonomy case)"

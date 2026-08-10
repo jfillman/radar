@@ -230,8 +230,8 @@ cnpg-demo-down:
 cnpg-demo-status:
 	./scripts/cnpg-demo.sh status
 
-# Same fixtures with the operator LEFT RUNNING — real failovers and backup
-# runs, but hand-written terminal phases won't hold. For v2/v3 work.
+# Live CNPG operator for real failovers and backup runs. Frozen-only terminal
+# phases and Backup rows are omitted because the controller owns them.
 cnpg-demo-live:
 	./scripts/cnpg-demo.sh live
 
@@ -348,6 +348,13 @@ help:
 	@echo "  make watch-backend   - Go with air hot reload (port 9280)"
 	@echo "  make run             - Run built binary"
 	@echo "  make test            - Run tests"
+	@echo ""
+	@echo "Demo clusters:"
+	@echo "  make gitops-demo      - GitOps fixtures (Argo CD + Flux)"
+	@echo "  make crossplane-demo  - Crossplane fixtures"
+	@echo "  make kyverno-demo     - Live Kyverno policy + report fixtures"
+	@echo "  make cnpg-demo        - Frozen CNPG rendering fixtures"
+	@echo "  make cnpg-demo-live   - CNPG fixtures with the operator running"
 	@echo ""
 	@echo "Desktop:"
 	@echo "  make desktop                - Build desktop app (frontend + Wails binary)"

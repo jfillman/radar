@@ -133,7 +133,7 @@ spec:
         resources: ["namespaces"]
   generate:
     - expression: >
-        generator.Apply("default-deny", [
+        generator.Apply(string(object.metadata.name), [
           {
             "apiVersion": dyn("networking.k8s.io/v1"),
             "kind": dyn("NetworkPolicy"),

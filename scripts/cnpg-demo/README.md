@@ -12,7 +12,7 @@ variety that matters.
 ## Quick start
 
 ```bash
-# Prerequisites: kind, kubectl
+# Prerequisites: kind, kubectl, python3
 ./scripts/cnpg-demo.sh up        # ~6 minutes on first run
 ./scripts/cnpg-demo.sh status    # inventory, and whether the operator is frozen
 
@@ -75,6 +75,11 @@ backup configuration fails and stamps `LastBackupSucceeded=False` on that
 cluster. The pristine baseline silently acquired a `Backup Failed` badge, via a
 resource attached to it rather than anything wrong with it. `07-backups.yaml`
 is therefore held back and applied after the operator is down.
+
+Before a frozen cluster is thawed, the script deletes those three Backup
+fixtures while the operator is still stopped. Otherwise a reused `up` or
+`live` run would let the controller attempt them and permanently contaminate
+the healthy baseline with `LastBackupSucceeded=False`.
 
 Velero's Backup is the exception: no controller is installed for it, so nothing
 reconciles it away and it can be patched at any point.
@@ -155,8 +160,9 @@ the collision handling cannot be verified at all.
 The frozen path is optimised for **rendering** verification, and it is the one
 that is proven. Work on failovers, switchovers, backup execution or anything
 that needs a reconciling controller wants the opposite — so `live` skips the
-freeze and the terminal phases with it, since the operator would reconcile them
-away within seconds.
+freeze and the terminal phases with it. It also removes the three hand-written
+Backup objects before the operator starts; otherwise the controller would
+attempt them and contaminate the healthy baseline.
 
 ## Notes
 

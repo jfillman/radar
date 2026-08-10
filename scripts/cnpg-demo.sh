@@ -12,13 +12,14 @@
 #             failover / switchover / backup work that needs a live controller.
 #   refreeze  Re-apply the freeze + terminal phases (after a `live` run, or if
 #             something reconciled them away).
-#   thaw      Scale the operator back up without deleting anything.
+#   thaw      Remove frozen-only Backup fixtures and scale the operator back up.
 #   status    Inventory the cluster and show what each fixture is doing.
 #   help      Show this message.
 #
 # Prerequisites:
 #   - kind         https://kind.sigs.k8s.io/
 #   - kubectl
+#   - python3
 #
 # Set CLUSTER_NAME=foo to use a different cluster (default: radar-cnpg-demo).
 #
@@ -65,15 +66,17 @@ cluster_exists() { kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; }
 
 # --- Lifecycle -------------------------------------------------------------
 
-cmd_up()   { bootstrap; freeze_and_patch; print_summary "frozen"; }
-cmd_live() { bootstrap; print_summary "live"; }
+cmd_up()   { bootstrap; freeze_and_patch; assert_healthy_baseline; print_summary "frozen"; }
+cmd_live() { bootstrap; assert_no_fixture_backups; print_summary "live"; }
 
 bootstrap() {
   require_cmd kind "https://kind.sigs.k8s.io/docs/user/quick-start/#installation (or 'brew install kind')"
   require_cmd kubectl "https://kubernetes.io/docs/tasks/tools/"
+  require_cmd python3 "https://www.python.org/downloads/"
 
   if cluster_exists; then
     step "Cluster '${CLUSTER_NAME}' already exists — reusing"
+    delete_fixture_backups
     thaw_operator_quiet
   else
     step "Creating kind cluster '${CLUSTER_NAME}'"
@@ -128,13 +131,13 @@ apply_fixtures() {
   step "Applying CNPG demo fixtures"
   [ -d "${FIXTURES_DIR}" ] || fail "Fixtures dir not found: ${FIXTURES_DIR}"
 
-  for f in $(ls "${FIXTURES_DIR}"/*.yaml 2>/dev/null | sort); do
+  while IFS= read -r f; do
     case "$(basename "$f")" in
       07-backups.yaml) note "deferring $(basename "$f") until after the freeze"; continue ;;
     esac
     note "applying $(basename "$f")"
     k apply -f "$f" >/dev/null
-  done
+  done < <(find "${FIXTURES_DIR}" -maxdepth 1 -type f -name '*.yaml' | sort)
   ok "Fixtures applied"
 }
 
@@ -153,7 +156,7 @@ wait_for_clusters() {
     if [ "${ready:-0}" = "2" ]; then
       ok "$c 2/2"
     else
-      warn "$c did not reach 2/2 within 7 minutes (continuing; check 'kubectl -n ${NS} get pods')"
+      fail "$c did not reach 2/2 within 7 minutes — check 'kubectl -n ${NS} get pods'"
     fi
   done
 }
@@ -176,9 +179,9 @@ wait_for_pooler() {
   if [ -n "$scheduled" ]; then
     ok "pg-healthy-pooler status.instances=${scheduled}"
   else
-    warn "Pooler never reported status.instances — its badge will read 'Unknown', not 'Scheduled'"
     note "most likely cause: a Service name collision. Check:"
     note "  kubectl -n cnpg-system logs deploy/cnpg-controller-manager | grep notOwnedServiceName"
+    fail "Pooler never reported status.instances — the fixture would render Unknown"
   fi
 }
 
@@ -201,8 +204,7 @@ break_wal_archiving() {
   primary=$(k -n "${NS}" get cluster.postgresql.cnpg.io pg-wal-failing \
     -o jsonpath='{.status.currentPrimary}' 2>/dev/null || echo "")
   if [ -z "$primary" ]; then
-    warn "pg-wal-failing has no primary yet; skipping (re-run '$0 up' once it is up)"
-    return 0
+    fail "pg-wal-failing has no primary after reaching 2/2"
   fi
 
   # Point it at an endpoint that never answers. TEST-NET-1 (RFC 5737) is
@@ -216,7 +218,7 @@ break_wal_archiving() {
         "secretAccessKey": {"name": "cnpg-demo-object-store", "key": "ACCESS_SECRET_KEY"}
       }
     }}}
-  }' >/dev/null || { warn "could not attach the object store"; return 0; }
+  }' >/dev/null || fail "could not attach the object store"
 
   # Give the archiver a segment to fail on. An idle cluster may not rotate on
   # its own, and an empty segment can be skipped.
@@ -243,8 +245,7 @@ break_wal_archiving() {
   if [ "$archiving" = "False" ] && [ "${ready:-0}" = "2" ]; then
     ok "ContinuousArchiving=False at ${ready}/2 Ready — healthy cluster, broken recovery point"
   else
-    warn "wanted ContinuousArchiving=False at 2/2; got '${archiving:-unset}' at '${ready:-unset}'/2"
-    warn "the scenario needs BOTH — a broken cluster with failing archiving is the wrong fixture"
+    fail "wanted ContinuousArchiving=False at 2/2; got '${archiving:-unset}' at '${ready:-unset}'/2"
   fi
 }
 
@@ -254,12 +255,25 @@ break_wal_archiving() {
 # a Velero backup stamped with a literal expiry renders "Expired" a few months
 # later, and "Started" ages into meaninglessness — so the fixture quietly stops
 # demonstrating the thing it was built to demonstrate.
-# BSD (macOS) and GNU date take different offset flags.
+# Python keeps the offset calculation identical on macOS and Linux.
 ts_offset() {
   local spec="$1"
-  date -u -v"${spec}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-    || date -u -d "${spec/#+/} ${spec:0:1}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-    || date -u +%Y-%m-%dT%H:%M:%SZ
+  python3 - "${spec}" <<'PY'
+import datetime
+import re
+import sys
+
+match = re.fullmatch(r"([+-])(\d+)([HMd])", sys.argv[1])
+if not match:
+    raise SystemExit(f"invalid timestamp offset: {sys.argv[1]}")
+
+sign, amount, unit = match.groups()
+field = {"H": "hours", "M": "minutes", "d": "days"}[unit]
+delta = datetime.timedelta(**{field: int(amount)})
+now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+timestamp = now - delta if sign == "-" else now + delta
+print(timestamp.strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
 }
 
 patch_backup_phases() {
@@ -289,7 +303,7 @@ patch_velero_backup() {
 patch_status() {
   local resource="$1" name="$2" patch="$3"
   k -n "${NS}" patch "$resource" "$name" --subresource=status --type=merge -p "$patch" >/dev/null 2>&1 \
-    || warn "could not patch $resource/$name"
+    || fail "could not patch $resource/$name"
 }
 
 # freeze_and_patch scales the operator to zero and then writes the terminal
@@ -305,7 +319,13 @@ freeze_and_patch() {
   k delete validatingwebhookconfiguration cnpg-validating-webhook-configuration --ignore-not-found >/dev/null
   k delete mutatingwebhookconfiguration cnpg-mutating-webhook-configuration --ignore-not-found >/dev/null
   k -n cnpg-system scale deployment/cnpg-controller-manager --replicas=0 >/dev/null
-  k -n cnpg-system wait --for=delete pod -l app.kubernetes.io/name=cloudnative-pg --timeout=120s >/dev/null 2>&1 || true
+  local pods=1
+  for _ in $(seq 1 60); do
+    pods=$(k -n cnpg-system get pods -l app.kubernetes.io/name=cloudnative-pg --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    [ "${pods}" = "0" ] && break
+    sleep 2
+  done
+  [ "${pods}" = "0" ] || fail "${pods} CNPG operator pod(s) still present after 2 minutes"
   ok "Operator scaled to 0, webhooks removed"
 
   step "Setting terminal phases"
@@ -325,7 +345,56 @@ freeze_and_patch() {
   note "which is the point: a red badge on a row whose counts look fine."
 }
 
-cmd_refreeze() { freeze_and_patch; }
+assert_healthy_baseline() {
+  local failed
+  failed=$(k -n "${NS}" get cluster.postgresql.cnpg.io pg-healthy \
+    -o jsonpath='{range .status.conditions[?(@.type=="LastBackupSucceeded")]}{.status}{end}' 2>/dev/null || echo "")
+  [ "${failed}" != "False" ] \
+    || fail "pg-healthy has LastBackupSucceeded=False — reset the demo cluster"
+  ok "pg-healthy baseline has no failed-backup condition"
+}
+
+assert_no_fixture_backups() {
+  local remaining
+  remaining=$(fixture_backup_count)
+  [ "${remaining}" = "0" ] || fail "${remaining} frozen-only Backup fixture(s) remain while the operator is live"
+}
+
+fixture_backup_count() {
+  local count=0 name
+  for name in pg-backup-ok pg-backup-wal-broken pg-backup-unknown-phase; do
+    if k -n "${NS}" get backup.postgresql.cnpg.io "${name}" >/dev/null 2>&1; then
+      count=$((count + 1))
+    fi
+  done
+  printf '%s\n' "${count}"
+}
+
+delete_fixture_backups() {
+  local remaining
+  remaining=$(fixture_backup_count)
+  [ "${remaining}" = "0" ] && return 0
+
+  step "Removing frozen-only Backup fixtures before the operator starts"
+  k -n "${NS}" delete backups.postgresql.cnpg.io \
+    pg-backup-ok pg-backup-wal-broken pg-backup-unknown-phase \
+    --ignore-not-found --wait=false >/dev/null
+
+  for _ in $(seq 1 30); do
+    remaining=$(fixture_backup_count)
+    [ "${remaining}" = "0" ] && break
+    sleep 1
+  done
+  [ "${remaining}" = "0" ] \
+    || fail "Backup fixtures are stuck deleting; run '$0 down' and rebuild the demo"
+  ok "Backup fixtures removed"
+}
+
+cmd_refreeze() {
+  require_cmd python3 "https://www.python.org/downloads/"
+  freeze_and_patch
+  assert_healthy_baseline
+}
 
 # Thawing is NOT just scaling back up. The operator builds its PKI at startup
 # by looking up its own webhook configurations, so with them deleted it fails
@@ -353,6 +422,7 @@ thaw_operator_quiet() {
 }
 
 cmd_thaw() {
+  delete_fixture_backups
   thaw_operator
   warn "Terminal phases will be reconciled away within seconds. Run '$0 refreeze' to restore them."
 }
@@ -403,6 +473,30 @@ print_summary() {
   local mode="$1"
   printf "\n"
   step "CNPG demo cluster ready (${mode})"
+  if [ "$mode" = "live" ]; then
+    cat <<EOF
+
+  Context:  ${KUBECTL_CTX}
+
+  The operator is running and every cluster is 2/2 Ready. The real
+  WAL-archiving failure remains active on pg-wal-failing. Hand-written
+  terminal phases and the three Backup phase fixtures are intentionally
+  absent — a live controller would reconcile or attempt them.
+
+  Also: Pooler · ScheduledBackup (method: plugin) · a Velero \`backups\` CR ·
+        a KubeBlocks \`clusters\` CRD for the shared-plural guards.
+
+  Run Radar against this cluster:
+    kubectl config use-context ${KUBECTL_CTX}
+    ./scripts/visual-test-start.sh
+
+  Return to the frozen rendering matrix:
+    $0 refreeze
+
+EOF
+    return
+  fi
+
   cat <<EOF
 
   Context:  ${KUBECTL_CTX}
@@ -429,15 +523,6 @@ print_summary() {
     $0 down       # delete cluster
 
 EOF
-  if [ "$mode" = "live" ]; then
-    cat <<'EOF'
-  NOTE: operator is running, so the two terminal-phase clusters show their
-  real phase, not "unrecoverable". That is the trade: a live controller gives
-  you real failovers, switchovers and backup runs, but will not hold a
-  hand-written phase. Run 'refreeze' when you want the rendering fixtures back.
-
-EOF
-  fi
 }
 
 cmd_help() { sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }

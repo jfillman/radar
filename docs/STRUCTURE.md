@@ -132,7 +132,7 @@ radar/
 │   └── package.json
 ├── deploy/                    # Docker, Helm, Krew configs
 ├── docs/                      # User + Claude-facing reference docs
-├── scripts/                   # Release scripts + gitops-demo + visual-test orchestration
+├── scripts/                   # Release scripts + demo-cluster + visual-test orchestration
 ├── .github/                   # CI workflows, issue/PR templates, dependabot
 └── Makefile
 ```

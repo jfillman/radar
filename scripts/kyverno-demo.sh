@@ -349,7 +349,11 @@ cmd_status() {
 
   printf "\n"
   step "Distinct results[].source values (the engine-taxonomy case)"
-  k get policyreports,clusterpolicyreports -A -o json 2>/dev/null \
+  local report_resources="policyreports.wgpolicyk8s.io,clusterpolicyreports.wgpolicyk8s.io"
+  if k get crd reports.openreports.io clusterreports.openreports.io >/dev/null 2>&1; then
+    report_resources="${report_resources},reports.openreports.io,clusterreports.openreports.io"
+  fi
+  k get "${report_resources}" -A -o json 2>/dev/null \
     | jq -r '[.items[].results[]?.source] | group_by(.) | map({s:.[0],n:length}) | sort_by(-.n) | .[] | "    \(.n)\t\(.s)"' 2>/dev/null \
     || note "jq not installed — skipping"
   note "One engine, several producer strings. Filtering on the raw value"
@@ -357,7 +361,7 @@ cmd_status() {
 }
 
 cmd_help() {
-  sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-help}" in

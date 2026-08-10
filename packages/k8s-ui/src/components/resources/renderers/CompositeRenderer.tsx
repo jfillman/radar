@@ -247,7 +247,9 @@ function ComposedRefRow({
   return (
     <div className="flex items-center gap-2 py-1 px-2 rounded hover:bg-theme-hover text-sm">
       <Box className="w-3.5 h-3.5 text-theme-text-tertiary shrink-0" />
-      <span className="text-theme-text-tertiary font-mono shrink-0 w-32 truncate">{ref_.kind}</span>
+      {/* Kind is content-sized (capped) so the resource name — the field that
+          distinguishes rows — keeps the width instead of truncating. */}
+      <span className="text-theme-text-tertiary font-mono shrink-0 max-w-[8rem] truncate">{ref_.kind}</span>
       <span className="flex-1 min-w-0 truncate">
         <ResourceLink
           name={ref_.name}
@@ -258,7 +260,7 @@ function ComposedRefRow({
         />
       </span>
       {ref_.namespace && (
-        <span className="text-xs text-theme-text-tertiary truncate w-32 text-right">{ref_.namespace}</span>
+        <span className="text-xs text-theme-text-tertiary truncate max-w-[8rem] shrink-0 text-right">{ref_.namespace}</span>
       )}
       <StatusCellInline statusEntry={statusEntry} />
       <ChevronRight className="w-3.5 h-3.5 text-theme-text-tertiary shrink-0" />

@@ -3,15 +3,22 @@
 Bootstraps a `kind` cluster with Crossplane installed (core + provider-kubernetes +
 function-patch-and-transform) and a curated set of Crossplane fixtures covering the
 resource kinds Radar's Crossplane UI needs to render. Use it for visual-testing
-changes to the Crossplane surfaces (resource list, MR/XR/Composition/XRD/Function
-renderers, audit `crossplaneStuck` check) without needing a real cluster running a
-cloud provider.
+changes to the Crossplane surfaces (resource list, MR/XR/Claim/Composition/XRD/Function
+renderers, composed-resources panel, audit `crossplaneStuck` check) without needing a
+real cluster running a cloud provider.
+
+Both Crossplane API models are exercised on the one cluster:
+
+- **v1 Claim → bound XR → composed resources** (the v1 claim/XR/MR flow).
+- **v2 namespaced XR → composed resources** (the v2 `scope: Namespaced` flow).
+
+Both reconcile **healthy**.
 
 ## Quick start
 
 ```bash
 # Prerequisites: kind, kubectl, helm
-./scripts/crossplane-demo.sh up        # ~3-5 minutes on first run
+./scripts/crossplane-demo.sh up        # ~4-6 minutes on first run
 ./scripts/crossplane-demo.sh status    # inventory what's installed
 
 # Run Radar against it
@@ -38,93 +45,65 @@ make crossplane-demo-down       # = ./scripts/crossplane-demo.sh down
 | `provider-kubernetes` | `Provider` (pkg.crossplane.io/v1) | Provider list view + provider detail renderer + Healthy=True condition + revision tracking |
 | `function-patch-and-transform` | `Function` (pkg.crossplane.io/v1) | Function list view + function detail renderer (used inside Composition Pipeline) |
 | `default` | `ProviderConfig` (kubernetes.crossplane.io/v1alpha1) | ProviderConfig renderer + InjectedIdentity credential source path |
-| `appbundles.demo.example.io` | `CompositeResourceDefinition` (apiextensions.crossplane.io/v2) | XRD renderer + cluster-scoped XRD path + Established condition + offered/served version display |
-| `appbundles.demo.example.io` | `Composition` (apiextensions.crossplane.io/v1) | Composition renderer + Pipeline mode + function reference + composed resources list |
-| `appbundles.demo.example.io-<hash>` | `CompositionRevision` | CompositionRevision renderer + revision number + spec hash + auto-generated history |
-| `standalone-configmap`, `standalone-namespace` | `Object` (kubernetes.crossplane.io/v1alpha1) | **Standalone MR renderer** — Managed Resources created directly (no XR), wrapping a ConfigMap and a Namespace. Drives the Synced=True/Ready=True healthy MR path. |
-| `hello-world`, `greeter` | `AppBundle` (demo.example.io/v1alpha1, XR) | **Composite (XR) renderer** — XR instances referencing the Composition. Drive the Synced=False unhealthy path + `crossplaneStuck` audit check (see limitation below). |
+| `v2-app/default` | `ProviderConfig` (kubernetes.m.crossplane.io/v1alpha1) | Namespaced ProviderConfig — used by the v2 namespaced XR's composed Objects |
+| `xdatabases.demo.example.io` | `CompositeResourceDefinition` (apiextensions.crossplane.io/v1) | XRD renderer + v1 XRD-with-`claimNames` path + Established/Offered conditions |
+| `appstacks.demo.example.io` | `CompositeResourceDefinition` (apiextensions.crossplane.io/v2) | XRD renderer + v2 `scope: Namespaced` path |
+| `xdatabases.demo.example.io`, `appstacks.demo.example.io` | `Composition` (apiextensions.crossplane.io/v1) | Composition renderer + Pipeline mode + function reference + composed resources list |
+| `standalone-configmap`, `standalone-namespace` | `Object` (kubernetes.crossplane.io) | **Standalone MR renderer** — Managed Resources created directly (no XR), wrapping a ConfigMap and a Namespace. Synced=True/Ready=True healthy MR path. |
+| `demo-app/example-database` | `DatabaseClaim` (demo.example.io/v1alpha1, **v1 Claim**) | **Claim renderer + composed-resources-via-bound-XR path.** Claim's singular `spec.resourceRef` -> bound `XDatabase` XR -> the XR's `spec.resourceRefs` (3 composed Objects). |
+| `example-database-*` | `XDatabase` (demo.example.io/v1alpha1, **v1 XR**) | **Composite (XR) renderer** — cluster-scoped XR bound to the claim, healthy, 3 composed cluster-scoped Objects. |
+| `v2-app/web-stack` | `AppStack` (demo.example.io/v1alpha1, **v2 namespaced XR**) | **Composite (XR) renderer** — namespaced XR, healthy, 2 composed namespaced Objects (`kubernetes.m.crossplane.io`). Composed refs live at `spec.crossplane.resourceRefs` (v2 path). |
 
 ### Resource kind coverage
-
-The fixtures collectively cover the Crossplane resource kinds Radar renders:
 
 - ✅ Core Crossplane controller (Deployment in `crossplane-system`)
 - ✅ Provider (Healthy=True, with a Revision)
 - ✅ Function (Healthy=True, referenced from a Composition Pipeline)
-- ✅ ProviderConfig (kubernetes.crossplane.io, InjectedIdentity)
-- ✅ CompositeResourceDefinition (XRD, v2, cluster-scoped)
+- ✅ ProviderConfig — cluster-scoped (`kubernetes.crossplane.io`) + namespaced (`kubernetes.m.crossplane.io`)
+- ✅ CompositeResourceDefinition — v1 (with `claimNames`) + v2 (`scope: Namespaced`)
 - ✅ Composition (Pipeline mode + function-patch-and-transform input)
-- ✅ CompositionRevision (auto-generated from Composition)
 - ✅ Standalone Managed Resource — Synced=True, Ready=True (healthy MR path)
-- ✅ Composite (XR) — Synced=False (intentionally unhealthy, see below)
-- ✅ Audit `crossplaneStuck` finding (the two broken XRs trip the check)
+- ✅ **v1 Claim → bound XR → composed resources** (healthy; the composed-resources-via-bound-XR panel path)
+- ✅ **v2 namespaced XR → composed resources** (healthy)
+- ✅ Managed Resources — cluster-scoped and namespaced variants
 
-## Known limitation: Crossplane v2 cluster-scoped XR composition is broken
+## Version constraints (important)
 
-The two `AppBundle` XR instances (`hello-world`, `greeter`) are **expected to stay
-`Synced=False`**. They will not produce composed `Object` resources, and you'll see
-`Synced=False` on `kubectl get appbundles`.
+- **Crossplane chart `2.3.4`.** v2 introduced the `scope` field on XRDs (`Namespaced` / `Cluster`).
+- **provider-kubernetes `v1.0.0`.** This is the first release to ship the **namespaced** `Object`
+  (`kubernetes.m.crossplane.io`). A v2 `scope: Namespaced` XR **cannot compose cluster-scoped
+  resources**, so the namespaced XR fixture composes the namespaced `Object`. Older provider
+  versions (v0.18–v0.20) only ship the cluster-scoped `Object` and will not reconcile the v2 fixture.
+- **function-patch-and-transform `v0.9.0`.**
 
-Why: in Crossplane 2.2.x, a cluster-scoped XR (`scope: Cluster` on a v2 XRD)
-cannot compose `provider-kubernetes` `Object` resources via
-`function-patch-and-transform`. The composite reconciler refuses to create the
-composed objects because of a scope mismatch in v2's namespacing rules — XR is
-cluster-scoped but the composed MRs are also cluster-scoped, and the v2 reconciler
-doesn't currently handle that combination cleanly. The fix is upstream; tracking
-it isn't this fixture's job.
+Pinned at the top of `scripts/crossplane-demo.sh`; override via the matching env vars.
 
-**We keep these broken XRs in the fixture set on purpose** — they are *useful* test
-material:
+### How Claims work on Crossplane 2.x
 
-- They exercise Radar's **unhealthy XR rendering path** (Synced=False badge,
-  condition message surfacing, last-reconcile timestamp).
-- They feed the **`crossplaneStuck` audit check** — the check looks for Managed
-  Resources, Composites, and Composite Resource Claims that have been
-  `Synced=False` or `Ready=False` for an extended period, and the broken XRs are
-  exactly that shape.
-- They exercise the **Composite renderer** with realistic spec/status, not just
-  an "all green" happy-path render that hides edge cases.
-
-If you specifically need a healthy XR-with-composed-resources fixture, the
-workaround is to use a namespace-scoped XR (`scope: Namespaced` on the XRD) — but
-that's a different rendering path and a separate fixture concern.
-
-The standalone MRs (`standalone-configmap`, `standalone-namespace`) are healthy
-and reconcile normally, so the MR renderer's healthy path is covered.
+v2 XRDs (`apiextensions.crossplane.io/v2`) do **not** offer Claims. To keep the v1 Claim flow,
+the claim fixture uses the **`apiextensions.crossplane.io/v1` XRD API with `claimNames`** — deprecated
+on 2.x but still served, and the only way to get a Claim. `scope: LegacyCluster` does **not** exist in
+2.3.4 (only `Namespaced` / `Cluster`).
 
 ## Scenarios NOT covered (intentional gaps)
 
-- **Healthy cluster-scoped XR with composed resources** — blocked on the
-  upstream Crossplane v2 bug above. A namespace-scoped XRD variant would
-  unblock this but adds complexity; skipped for now.
-- **Cloud providers (AWS / GCP / Azure)** — using a cloud provider in the demo
-  cluster would require real credentials and create real cloud infrastructure.
-  `provider-kubernetes` is the right choice for an offline-friendly demo.
-- **Composite Resource Claims** — v2 XRDs no longer offer claims; the v2-native
-  flow is XR-direct. If we need to render Claims (v1 XRD path), add a v1 XRD
-  fixture later.
-- **Provider revision conflicts / pinned revisions** — provider rev-history UI
-  isn't a planned surface; add a fixture if/when it is.
+- **Cloud providers (AWS / GCP / Azure)** — would require real credentials and create real cloud
+  infrastructure. `provider-kubernetes` is the right choice for an offline-friendly demo.
+- **Nested XRs (an XR composing another XR)** — the fixtures are one level deep.
+- **`Usage` / `ClusterUsage`, provider revision conflicts** — add a fixture if/when those become
+  rendered surfaces.
 
 ## Implementation notes
 
-- **Crossplane Helm chart pinned to `1.17.3`**, **provider-kubernetes pinned to
-  `v0.18.0`**, **function-patch-and-transform pinned to `v0.9.0`**. Bump in
-  `scripts/crossplane-demo.sh` (top of file) when the demo should track a newer
-  release.
-- The script grants the provider's auto-generated ServiceAccount `cluster-admin`
-  via a `ClusterRoleBinding`. provider-kubernetes generates the SA name with a
-  revision-hash suffix (`provider-kubernetes-d7f6a...`), so the script discovers
-  the SA name dynamically rather than hard-coding it. This binding is what lets
-  the provider's `Object` MRs manage arbitrary in-cluster resources.
-- The `ProviderConfig` uses `source: InjectedIdentity` so the provider uses its
-  own SA token to talk to the apiserver — no external kubeconfig needed, no
-  secrets to manage.
-- The Composition uses **Pipeline mode** with `function-patch-and-transform`
-  (the v2-native composition shape). Patches use `type: FromCompositeFieldPath`
-  with `string.type: Format` transforms — that exact shape is what the function
-  expects; using shorthand patches (no `type:` field) or string transforms
-  without `string.type: Format` will silently no-op.
-- The XR composites are intentionally broken (see limitation above) and that's
-  *desired* — re-running the script does not "fix" them; reset the cluster if
-  you need clean state.
+- The script grants the provider's auto-generated ServiceAccount `cluster-admin` via a
+  `ClusterRoleBinding`. provider-kubernetes generates the SA name with a revision-hash suffix, so
+  the script discovers the SA name dynamically rather than hard-coding it.
+- ProviderConfigs use `source: InjectedIdentity` so the provider uses its own SA token — no external
+  kubeconfig, no secrets to manage.
+- Compositions use **Pipeline mode** with `function-patch-and-transform`. Patches use
+  `type: FromCompositeFieldPath` with `string.type: Format` transforms — that exact shape is what the
+  function expects; shorthand patches (no `type:`) or string transforms without `string.type: Format`
+  silently no-op.
+- The namespaced `Object` (`kubernetes.m.crossplane.io`) requires `spec.providerConfigRef.kind`
+  (to disambiguate namespaced `ProviderConfig` from `ClusterProviderConfig`), and the wrapped
+  manifest must carry a namespace — otherwise the provider fails to observe it.

@@ -220,3 +220,38 @@ func TestTerminatingProblemIssueTiming(t *testing.T) {
 			createdThenDeleted.IssueTiming, createdThenDeleted.IssueTimingBasis, ok)
 	}
 }
+
+// The classification must depend only on how long the resource was healthy, not
+// on how long ago that was. Comparing the healthy window against the resource's
+// current age decays as the resource ages, so one unchanged pair of timestamps
+// answered "no verdict" early in a resource's life and "started at resource
+// creation" later, with nothing about the evidence having changed.
+func TestIssueTimingIsStableAsTheResourceAges(t *testing.T) {
+	const healthyFor = 4 * time.Minute
+
+	// A cluster that came up, served for four minutes, then broke — asked at
+	// five minutes old, at an hour old, and at a week old.
+	for _, age := range []time.Duration{5 * time.Minute, time.Hour, 24 * time.Hour, 7 * 24 * time.Hour} {
+		now := time.Now()
+		created := now.Add(-age)
+		got := IssueTimingFromConditionLTT(created.Add(healthyFor), created, "condition")
+		if got.IssueTiming == "started_at_resource_creation" {
+			t.Errorf("age %v: claimed the issue started at creation, but the resource was healthy for %v first", age, healthyFor)
+		}
+	}
+}
+
+// The same property for a window short enough to classify: it must classify at
+// every age, not only once the resource is old enough.
+func TestIssueTimingClassifiesTheDeployWindowImmediately(t *testing.T) {
+	const healthyFor = 90 * time.Second
+
+	for _, age := range []time.Duration{2 * time.Minute, 10 * time.Minute, 48 * time.Hour} {
+		now := time.Now()
+		created := now.Add(-age)
+		got := IssueTimingFromConditionLTT(created.Add(healthyFor), created, "condition")
+		if got.IssueTiming != "started_at_resource_creation" {
+			t.Errorf("age %v: IssueTiming = %q, want started_at_resource_creation", age, got.IssueTiming)
+		}
+	}
+}

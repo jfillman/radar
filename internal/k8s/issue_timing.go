@@ -19,13 +19,22 @@ type IssueTimingResult struct {
 //   - zero value the gap is in the gray zone, or timestamps are missing.
 //     Caller must omit issue_timing; do not infer timing from age alone.
 //
-// Two started-at-resource-creation rules:
+// Two started-at-resource-creation rules, both keyed only on how long the
+// resource was healthy. That quantity is fixed once the condition transitions,
+// so the same pair of timestamps yields the same answer at every point in the
+// resource's life:
 //  1. Absolute slop (30s): conditions take a moment to be written after creation.
-//  2. Ratio rule: healthyFor < 5min AND resource was failing for ≥75% of its
-//     lifetime. Catches misconfigured workloads that crash within ~1-2 min of
-//     deploy — the Kubernetes controller reconciliation loop means Available=False
-//     is set 60-120s after the first crash, which exceeds the 30s slop but is
-//     still clearly a deploy-time misconfiguration.
+//  2. Deploy window (3min): catches misconfigured workloads that crash within
+//     ~1-2 min of deploy — the Kubernetes controller reconciliation loop means
+//     Available=False is set 60-120s after the first crash, which exceeds the
+//     30s slop but is still clearly a deploy-time misconfiguration. Bounded just
+//     above that lag, because past it a healthy window is a real one.
+//
+// Anything that compares the healthy window against the resource's current age
+// decays as the resource gets older, so an unchanged pair of timestamps starts
+// out unclassified and silently becomes "started at resource creation" later.
+// Callers surface this in MCP output and in the UI as "since creation", so the
+// answer has to be stable.
 func IssueTimingFromConditionLTT(failingSince, resourceCreated time.Time, basis string) IssueTimingResult {
 	if failingSince.IsZero() || resourceCreated.IsZero() {
 		return IssueTimingResult{}
@@ -46,16 +55,11 @@ func IssueTimingFromConditionLTT(failingSince, resourceCreated time.Time, basis 
 	if healthyFor < 30*time.Second {
 		return IssueTimingResult{IssueTiming: "started_at_resource_creation", Basis: basis}
 	}
-	// Rule 2: ratio — if the resource was healthy for < 25% of its lifetime and
-	// that window is under 5 minutes, the healthy period is noise not a clean bill
-	// of health. Handles the common case of a misconfigured workload that crashes
-	// within 1-2 minutes of first deploy (controller reconciliation lag keeps
-	// healthyFor above the 30s slop even though the failure is deploy-time).
-	if healthyFor < 5*time.Minute && resourceAge > 0 {
-		ratio := float64(healthyFor) / float64(resourceAge)
-		if ratio < 0.25 {
-			return IssueTimingResult{IssueTiming: "started_at_resource_creation", Basis: basis}
-		}
+	// Rule 2: deploy window — a healthy period this short is reconciliation lag,
+	// not a clean bill of health. Handles the common case of a misconfigured
+	// workload that crashes within 1-2 minutes of first deploy.
+	if healthyFor <= 3*time.Minute {
+		return IssueTimingResult{IssueTiming: "started_at_resource_creation", Basis: basis}
 	}
 	// Rule 3: confirmed healthy — at least 10 minutes of healthy operation.
 	if healthyFor > 10*time.Minute {

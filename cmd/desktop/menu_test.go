@@ -106,6 +106,48 @@ func TestPasteAcceleratorDroppedOnlyOnWindows(t *testing.T) {
 	}
 }
 
+func TestClipboardAcceleratorDroppedOnlyOnLinux(t *testing.T) {
+	for _, key := range []string{"c", "x"} {
+		cases := []struct {
+			goos string
+			want *keys.Accelerator
+		}{
+			{"linux", nil},
+			{"darwin", keys.CmdOrCtrl(key)},
+			{"windows", keys.CmdOrCtrl(key)},
+		}
+		for _, tc := range cases {
+			t.Run(tc.goos+"/"+key, func(t *testing.T) {
+				got := clipboardAccelerator(tc.goos, key)
+				if !reflect.DeepEqual(got, tc.want) {
+					t.Fatalf("clipboardAccelerator(%q, %q) = %+v, want %+v", tc.goos, key, got, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// TestCreateMenuCutCopyAcceleratorMatchesPlatform guards the Linux terminal
+// contract: on Linux the Cut/Copy accelerators must be unbound so Ctrl+C reaches
+// xterm as SIGINT rather than firing a menu Copy, while the items keep their
+// click callbacks (covered by TestCreateMenuCutCopyAreClickableOffMac).
+func TestCreateMenuCutCopyAcceleratorMatchesPlatform(t *testing.T) {
+	editMenu := findSubmenu(t, createMenu(&DesktopApp{}, "test"), "Edit")
+
+	for _, tc := range []struct{ label, key string }{{"Cut", "x"}, {"Copy", "c"}} {
+		t.Run(tc.label, func(t *testing.T) {
+			item := findMenuItem(t, editMenu, tc.label)
+			want := clipboardAccelerator(goruntime.GOOS, tc.key)
+			if !reflect.DeepEqual(item.Accelerator, want) {
+				t.Fatalf("%s accelerator = %+v, want %+v", tc.label, item.Accelerator, want)
+			}
+			if goruntime.GOOS == "linux" && item.Accelerator != nil {
+				t.Fatalf("%s is bound to %+v on linux — GTK would swallow Ctrl+C before the terminal sees it", tc.label, item.Accelerator)
+			}
+		})
+	}
+}
+
 // TestCreateMenuPasteKeepsCallbackWithoutDoubleBinding pins both halves of the
 // paste contract: the callback must stay (a nil one leaves the item inert on
 // Windows), and on Windows no accelerator may be bound alongside it because

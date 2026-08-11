@@ -37,6 +37,22 @@ func pasteAccelerator(goos string) *keys.Accelerator {
 	return keys.CmdOrCtrl("v")
 }
 
+// clipboardAccelerator drops Ctrl+C/Ctrl+X on Linux only. GTK menubar
+// accelerators fire before the key reaches the focused webview, so binding
+// Cut/Copy there swallows Ctrl+C inside the pod terminal (xterm): it triggers a
+// menu Copy instead of sending SIGINT to the running process. Without the
+// accelerator the key reaches the webview — xterm gets its interrupt, and
+// Monaco copy/cut still works through the keydown handler in main.tsx. Cut/Copy
+// stay clickable via clipboardDelegate. macOS uses Cmd (terminals use Ctrl, no
+// collision) and Windows' winc forwards the key to the webview anyway, so both
+// keep the accelerator and its menu-item hint.
+func clipboardAccelerator(goos, key string) *keys.Accelerator {
+	if goos == "linux" {
+		return nil
+	}
+	return keys.CmdOrCtrl(key)
+}
+
 // clipboardDelegate returns nil on macOS, where Cut/Copy rely on the native
 // responder chain. Off macOS a nil callback binds no handler at all, so the menu
 // entries do nothing when clicked; routing through execCommand reaches the
@@ -72,7 +88,9 @@ func createMenu(desktopApp *DesktopApp, version string) *menu.Menu {
 	// Instead, the JS keydown handler in main.tsx intercepts Cmd+C/X before macOS
 	// consumes the event, reads the selection (including Monaco virtual selection),
 	// and writes to the clipboard via navigator.clipboard.writeText(). Elsewhere
-	// there is no responder chain to fall back on — see clipboardDelegate.
+	// there is no responder chain to fall back on — see clipboardDelegate. The
+	// keyboard accelerator is dropped on Linux so Ctrl+C reaches the terminal —
+	// see clipboardAccelerator.
 	//
 	// Paste: Must use explicit WindowExecJS because WKWebView's native paste:
 	// doesn't work for complex editors like Monaco. We read from the clipboard
@@ -88,8 +106,8 @@ func createMenu(desktopApp *DesktopApp, version string) *menu.Menu {
 		runtime.WindowExecJS(desktopApp.ctx, "document.execCommand('redo')")
 	})
 	editMenu.AddSeparator()
-	editMenu.AddText("Cut", keys.CmdOrCtrl("x"), clipboardDelegate(goruntime.GOOS, desktopApp, "cut"))
-	editMenu.AddText("Copy", keys.CmdOrCtrl("c"), clipboardDelegate(goruntime.GOOS, desktopApp, "copy"))
+	editMenu.AddText("Cut", clipboardAccelerator(goruntime.GOOS, "x"), clipboardDelegate(goruntime.GOOS, desktopApp, "cut"))
+	editMenu.AddText("Copy", clipboardAccelerator(goruntime.GOOS, "c"), clipboardDelegate(goruntime.GOOS, desktopApp, "copy"))
 	editMenu.AddText("Paste", pasteAccelerator(goruntime.GOOS), func(_ *menu.CallbackData) {
 		runtime.WindowExecJS(desktopApp.ctx, `
 			navigator.clipboard.readText().then(function(text) {

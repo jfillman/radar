@@ -474,11 +474,38 @@ func (c *CarettaSource) discoverServiceLocked(ctx context.Context) []*metricsSer
 // cluster's general Prometheus, which holds no Caretta metrics.
 // Caller must hold lock.
 func (c *CarettaSource) findCarettaStoreLocked(ctx context.Context) *metricsServiceInfo {
-	ns := c.detectedNamespace
-	if ns == "" {
-		ns = carettaNamespace
+	// Connect can run before anything has called Detect, leaving the namespace
+	// unknown. Look where Detect would have looked rather than assuming the
+	// default namespace name, or Caretta's own store is invisible on exactly the
+	// installs this lookup exists to handle.
+	if c.detectedNamespace != "" {
+		return c.carettaStoreInLocked(ctx, c.detectedNamespace)
 	}
 
+	for _, ns := range []string{carettaNamespace, "default", "kube-system"} {
+		if info := c.carettaStoreInLocked(ctx, ns); info != nil {
+			return info
+		}
+	}
+
+	// Still nothing: the install may be in a namespace nobody has named yet. One
+	// cluster-wide list finds a store carrying the name the chart pins.
+	svcs, err := c.k8sClient.CoreV1().Services("").List(ctx, metav1.ListOptions{LabelSelector: carettaStoreLabel})
+	if err != nil {
+		return nil
+	}
+	sort.Slice(svcs.Items, func(i, j int) bool { return svcs.Items[i].Name < svcs.Items[j].Name })
+	for _, svc := range svcs.Items {
+		if svc.Name == carettaStoreService {
+			return carettaStoreInfo(svc, true)
+		}
+	}
+	return nil
+}
+
+// carettaStoreInLocked looks for Caretta's metrics store in one namespace.
+// Caller must hold lock.
+func (c *CarettaSource) carettaStoreInLocked(ctx context.Context, ns string) *metricsServiceInfo {
 	svcs, err := c.k8sClient.CoreV1().Services(ns).List(ctx, metav1.ListOptions{LabelSelector: carettaStoreLabel})
 	if err == nil && len(svcs.Items) > 0 {
 		sort.Slice(svcs.Items, func(i, j int) bool { return svcs.Items[i].Name < svcs.Items[j].Name })
@@ -979,7 +1006,10 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 	portforward.Stop(portforward.OwnerTraffic)
 	errMsg := noBackendWarning(noData, unreachable)
 	if len(noData) == 0 && len(unreachable) == 0 && lastErr != "" {
-		errMsg = lastErr
+		// Keep the underlying error, but say what was being attempted. On its own
+		// something like a port-forward RBAC denial reads as an unrelated
+		// permissions problem rather than "Caretta's metrics store wasn't found".
+		errMsg = fmt.Sprintf("No metrics backend holding Caretta data could be reached. %s", lastErr)
 	}
 	c.backendWarning = errMsg
 	c.backendVerified = false

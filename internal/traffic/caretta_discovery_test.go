@@ -629,3 +629,34 @@ func TestDetectStillReportsStoppedPodsWhenNothingRuns(t *testing.T) {
 		t.Errorf("message = %q, want it to say no pods are running", result.Message)
 	}
 }
+
+// Connect does not run detection, so the store lookup cannot assume Detect has
+// already recorded a namespace. When it hasn't, Caretta's own store must still be
+// found — otherwise connecting before listing sources binds the wrong backend.
+func TestStoreFoundWithoutPriorDetection(t *testing.T) {
+	c := sourceWithServices(t, "", append(kubePrometheusStackSvcs(), carettaStoreSvc("default", "caretta-vm"))...)
+
+	got := discover(t, c)
+	if len(got) == 0 {
+		t.Fatal("no candidates discovered")
+	}
+	if got[0].namespace != "default" || got[0].name != "caretta-vm" {
+		t.Errorf("top candidate = %s/%s, want default/caretta-vm", got[0].namespace, got[0].name)
+	}
+	if !got[0].isCarettaStore {
+		t.Error("store found without prior detection not trusted as Caretta's own")
+	}
+}
+
+// Same, for an install in a namespace none of the fixed names cover.
+func TestStoreFoundWithoutPriorDetectionInAnyNamespace(t *testing.T) {
+	c := sourceWithServices(t, "", append(kubePrometheusStackSvcs(), carettaStoreSvc("observability", "caretta-vm"))...)
+
+	got := discover(t, c)
+	if len(got) == 0 {
+		t.Fatal("no candidates discovered")
+	}
+	if got[0].namespace != "observability" || got[0].name != "caretta-vm" {
+		t.Errorf("top candidate = %s/%s, want observability/caretta-vm", got[0].namespace, got[0].name)
+	}
+}

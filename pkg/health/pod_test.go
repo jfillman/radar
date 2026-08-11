@@ -454,22 +454,65 @@ func TestPodProblemReasonStillReportsAnAllSucceededPod(t *testing.T) {
 // failed readiness.
 func TestPodProblemReasonSucceededInitDoesNotShadowReadinessFailure(t *testing.T) {
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	// Every clause podHasReadinessProbeFailure requires must hold, or this
+	// passes through the phase fallback and proves nothing about precedence:
+	// a declared readiness probe, Running phase, and Ready=False for over 5min.
 	pod := &corev1.Pod{
-		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:           "app",
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz"}}},
+		}}},
 		Status: corev1.PodStatus{
-			Phase:      corev1.PodRunning,
-			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}},
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{
+				Type: corev1.PodReady, Status: corev1.ConditionFalse,
+				LastTransitionTime: metav1.NewTime(now.Add(-20 * time.Minute)),
+			}},
 			InitContainerStatuses: []corev1.ContainerStatus{
 				{Name: "setup", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0}}},
 			},
 			ContainerStatuses: []corev1.ContainerStatus{
-				{Name: "app", Ready: false, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-10 * time.Minute))}}},
+				{Name: "app", Ready: false, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-20 * time.Minute))}}},
 			},
 		},
 	}
 
-	if got := PodProblemReason(pod, now); got == "Completed" {
-		t.Errorf("PodProblemReason = %q — a completed init container shadowed the readiness failure", got)
+	if got := PodProblemReason(pod, now); got != reasonReadinessProbeFail {
+		t.Errorf("PodProblemReason = %q, want %q — a completed init container shadowed the readiness failure", got, reasonReadinessProbeFail)
+	}
+}
+
+// The message must be gated the same way the reason is. A still-running pod
+// takes its reason from readiness or from the phase, and used to take its
+// message from a container that had merely finished.
+func TestPodProblemMessageDoesNotBorrowOnAStillRunningPod(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:           "app",
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz"}}},
+		}}},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{
+				Type: corev1.PodReady, Status: corev1.ConditionFalse,
+				LastTransitionTime: metav1.NewTime(now.Add(-20 * time.Minute)),
+			}},
+			InitContainerStatuses: []corev1.ContainerStatus{
+				{Name: "setup", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					Reason: "Completed", ExitCode: 0, Message: "setup wrote 4 files"}}},
+			},
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Name: "app", Ready: false, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-20 * time.Minute))}}},
+			},
+		},
+	}
+
+	if got := PodProblemReason(pod, now); got != reasonReadinessProbeFail {
+		t.Fatalf("PodProblemReason = %q, want %q", got, reasonReadinessProbeFail)
+	}
+	if got := PodProblemMessage(pod); got != "" {
+		t.Errorf("PodProblemMessage = %q — borrowed from a container that merely finished", got)
 	}
 }
 

@@ -288,8 +288,15 @@ func PodProblemMessage(pod *corev1.Pod) string {
 	if cs := problemContainer(pod, true); cs != nil {
 		return containerStateMessage(cs)
 	}
-	if cs := problemContainer(pod, false); cs != nil {
-		return containerStateMessage(cs)
+	// Gated exactly as podProblemReasonRaw gates its own fallback. Without the
+	// phase check a still-running pod took its reason from readiness or from the
+	// phase — later normalized to CrashLoopBackOff / OOMKilled — while the
+	// message came from a container that had merely finished, which is the
+	// cross-container pairing this walk exists to prevent.
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		if cs := problemContainer(pod, false); cs != nil {
+			return containerStateMessage(cs)
+		}
 	}
 	return ""
 }

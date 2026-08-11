@@ -4,6 +4,7 @@ import {
   getCNPGClusterStatus,
   getCNPGBackupStatus,
   getCNPGPoolerStatus,
+  isCNPGPoolerPaused,
   getCNPGClusterInstancesReportedState,
   getCNPGClusterBackupConfig,
   getCNPGClusterBarmanPlugin,
@@ -597,5 +598,35 @@ describe('an absent count is unknown, never zero', () => {
       .toMatchObject({ text: 'Not Scheduled', level: 'unhealthy' })
     expect(getCNPGPoolerStatus({ spec: { instances: 2 }, status: { instances: 2 } }))
       .toMatchObject({ text: 'Scheduled', level: 'healthy' })
+  })
+})
+
+describe('paused Pooler', () => {
+  // PgBouncer PAUSE holds client connections instead of serving them, while
+  // every pod stays scheduled and Ready. Reading only the pod counts rendered
+  // a pooler that serves nothing in healthy green.
+  const paused = { spec: { instances: 2, pgbouncer: { paused: true } }, status: { instances: 2 } }
+
+  it('does not read as healthy', () => {
+    expect(getCNPGPoolerStatus(paused)).toMatchObject({ text: 'Paused', level: 'degraded' })
+  })
+
+  it('treats pausing as intent, not a fault', () => {
+    // Same tier as a paused Velero Schedule: amber, not red.
+    expect(getCNPGPoolerStatus(paused).level).not.toBe('unhealthy')
+  })
+
+  it('lets a real fault outrank the pause', () => {
+    const pausedAndDown = { spec: { instances: 2, pgbouncer: { paused: true } }, status: { instances: 0 } }
+    expect(getCNPGPoolerStatus(pausedAndDown)).toMatchObject({ text: 'Not Scheduled', level: 'unhealthy' })
+  })
+
+  it('only an explicit true pauses', () => {
+    expect(getCNPGPoolerStatus({ spec: { instances: 2, pgbouncer: {} }, status: { instances: 2 } }))
+      .toMatchObject({ text: 'Scheduled', level: 'healthy' })
+    expect(getCNPGPoolerStatus({ spec: { instances: 2, pgbouncer: { paused: false } }, status: { instances: 2 } }))
+      .toMatchObject({ text: 'Scheduled', level: 'healthy' })
+    expect(isCNPGPoolerPaused({ spec: { pgbouncer: { paused: true } } })).toBe(true)
+    expect(isCNPGPoolerPaused({ spec: {} })).toBe(false)
   })
 })

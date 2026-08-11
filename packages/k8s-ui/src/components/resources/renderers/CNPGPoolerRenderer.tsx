@@ -8,6 +8,7 @@ import {
   getCNPGPoolerParameters,
   getCNPGPoolerAuthQuery,
   getCNPGPoolerAuthQuerySecret,
+  isCNPGPoolerPaused,
 } from '../resource-utils-cnpg'
 
 interface CNPGPoolerRendererProps {
@@ -23,6 +24,7 @@ export function CNPGPoolerRenderer({ data, onNavigate }: CNPGPoolerRendererProps
   // CR never establishes.
   const scheduled = data.status?.instances ?? 0
   const isDegraded = desired > 0 && scheduled < desired
+  const isPaused = isCNPGPoolerPaused(data)
   const clusterName = getCNPGPoolerCluster(data)
   const parameters = getCNPGPoolerParameters(data)
   const authQuery = getCNPGPoolerAuthQuery(data)
@@ -39,12 +41,21 @@ export function CNPGPoolerRenderer({ data, onNavigate }: CNPGPoolerRendererProps
         />
       )}
 
+      {isPaused && (
+        <AlertBanner
+          variant="warning"
+          title="Pooler Paused"
+          message="PgBouncer is paused, so client connections are held rather than served. The pods stay scheduled and Ready throughout, so nothing else about this Pooler will look wrong."
+        />
+      )}
+
       {/* Pooler Configuration */}
       <Section title="Pooler Configuration" icon={Users} defaultExpanded>
         <PropertyList>
           <Property label="Type" value={getCNPGPoolerType(data)} />
           <Property label="Pool Mode" value={getCNPGPoolerMode(data)} />
           <Property label="Instances Scheduled" value={getCNPGPoolerInstances(data)} />
+          {isPaused && <Property label="PgBouncer" value="Paused" />}
         </PropertyList>
       </Section>
 

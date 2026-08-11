@@ -666,11 +666,27 @@ export function getCNPGPoolerStatus(resource: any): StatusBadge {
     return { text: 'Degraded', color: healthColors.degraded, level: 'degraded' }
   }
 
+  // Faults outrank intent: a Pooler that is both paused and unscheduled has a
+  // problem worth fixing before the pause is worth mentioning.
+  if (isCNPGPoolerPaused(resource)) {
+    return { text: 'Paused', color: healthColors.degraded, level: 'degraded' }
+  }
+
   if (desired > 0 && scheduled >= desired) {
     return { text: 'Scheduled', color: healthColors.healthy, level: 'healthy' }
   }
 
   return { text: 'Unknown', color: healthColors.unknown, level: 'unknown' }
+}
+
+/**
+ * PgBouncer holds client connections instead of serving them while paused, and
+ * every pod stays scheduled and Ready throughout - the one Pooler state that
+ * pod counts cannot express. CRD-defaulted to false, so only an explicit true
+ * pauses.
+ */
+export function isCNPGPoolerPaused(resource: any): boolean {
+  return resource.spec?.pgbouncer?.paused === true
 }
 
 /** Name of the Deployment CNPG generates for this Pooler — where real readiness lives. */

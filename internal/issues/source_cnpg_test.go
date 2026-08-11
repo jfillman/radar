@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/skyhook-io/radar/pkg/issuesapi"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -484,5 +485,61 @@ func TestCNPGZeroReadyIsNeverExcusedByPhase(t *testing.T) {
 				t.Errorf("phase %q: partial shortfall should stay suppressed", phase)
 			}
 		}
+	}
+}
+
+// A lost recovery point is a backup problem, and the Problems surface says so
+// by category. Filing it under the generic controller category rendered it as
+// "Controller reports a problem" and left it out of any backup-shaped filter,
+// while Velero's identical failures were categorised correctly.
+func TestCNPGBackupSignalsUseTheBackupCategory(t *testing.T) {
+	walFailing := cnpgCluster(
+		map[string]any{"instances": int64(2)},
+		map[string]any{
+			"phase":          "Cluster in healthy state",
+			"readyInstances": int64(2),
+			"conditions": []any{
+				cnpgCondition("ContinuousArchiving", "False", "ContinuousArchivingFailing", "unreachable"),
+				cnpgCondition("LastBackupSucceeded", "False", "BackupFailed", "upload rejected"),
+			},
+		})
+
+	got := detectCNPGIssues(cnpgClusterGVR, "Cluster", walFailing)
+	for _, reason := range []string{"CNPGWALArchivingFailing", "CNPGLastBackupFailed"} {
+		if c := findIssue(t, got, reason).Category; c != issuesapi.CategoryBackupFailed {
+			t.Errorf("%s category = %q, want %q", reason, c, issuesapi.CategoryBackupFailed)
+		}
+	}
+
+	backup := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "postgresql.cnpg.io/v1",
+		"kind":       "Backup",
+		"metadata":   map[string]any{"name": "b1", "namespace": "pg"},
+		"status":     map[string]any{"phase": "failed", "error": "boom"},
+	}}
+	if c := findIssue(t, detectCNPGIssues(cnpgBackupGVR, "Backup", backup), "CNPGBackupFailed").Category; c != issuesapi.CategoryBackupFailed {
+		t.Errorf("CNPGBackupFailed category = %q, want %q", c, issuesapi.CategoryBackupFailed)
+	}
+}
+
+// The cluster's own health is not a backup problem. Without this the backup
+// filter would collect every unrelated CNPG fault and stop meaning anything.
+func TestCNPGClusterHealthKeepsTheControllerCategory(t *testing.T) {
+	unrecoverable := cnpgCluster(
+		map[string]any{"instances": int64(2)},
+		map[string]any{"phase": cnpgPhaseUnrecoverable, "readyInstances": int64(2)})
+
+	got := findIssue(t, detectCNPGIssues(cnpgClusterGVR, "Cluster", unrecoverable), "CNPGClusterUnrecoverable")
+	if got.Category != issuesapi.CategoryOperatorConditionFail {
+		t.Errorf("category = %q, want %q", got.Category, issuesapi.CategoryOperatorConditionFail)
+	}
+}
+
+// A future CNPG minor can name a Backup failure anything it likes; the object
+// it happened to is what makes it backup-shaped.
+func TestCNPGBackupKindIsBackupShapedWhateverTheReason(t *testing.T) {
+	in := classifyInput{Source: SourceCondition, APIGroup: "postgresql.cnpg.io", Kind: "Backup", Reason: "SomethingCNPGInventsLater"}
+	if got := Classify(in); got != issuesapi.CategoryBackupFailed {
+		t.Errorf("category = %q, want %q", got, issuesapi.CategoryBackupFailed)
 	}
 }

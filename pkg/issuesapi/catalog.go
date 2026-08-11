@@ -128,7 +128,7 @@ var categoryDescription = map[Category]string{
 	CategoryPVCResizeFailed:          "A volume expansion didn't complete — the requested resize failed or is stuck.",
 	CategoryVolumeMountFailed:        "A pod can't mount a volume — attach/mount failed (wrong node, missing CSI driver, or permissions).",
 	CategoryVolumeAccessModeConflict: "A volume's access mode conflicts with how it's mounted (e.g. an RWO volume claimed by pods on different nodes).",
-	CategoryBackupFailed:             "A backup or restore run failed, partially failed, or was rejected in validation — the recovery point you'd expect to have may not exist.",
+	CategoryBackupFailed:             "A backup or restore run failed, partially failed, or was rejected in validation, or a database's continuous archiving has stopped — the recovery point you'd expect to have may not exist.",
 	CategoryBackupTargetUnavailable:  "The backup destination itself is unhealthy — an object-store location or backup repository the backup tool can't reach or validate.",
 	// Scaling
 	CategoryRolloutStalled:     "A workload rollout is stuck — the new revision isn't progressing (progressDeadlineExceeded).",

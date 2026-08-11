@@ -122,6 +122,27 @@ func Classify(in classifyInput) issuesapi.Category {
 				return issuesapi.CategoryBackupTargetUnavailable
 			}
 			return issuesapi.CategoryBackupFailed
+		case g == "postgresql.cnpg.io":
+			// Only the durability signals are backups. A cluster that is
+			// unrecoverable, failing over or degraded is a control-plane
+			// problem, and filing it under backups would make the backup
+			// filter answer a different question than it claims to.
+			//
+			// Archiving failure stays here rather than under
+			// backup_target_unavailable: ContinuousArchiving proves the last
+			// archive attempt failed, not that the destination is unreachable,
+			// and the two have different fixes.
+			switch in.Kind {
+			case "Backup", "ScheduledBackup":
+				// Anything wrong with a backup object is backup-shaped
+				// whatever reason a future CNPG minor gives it.
+				return issuesapi.CategoryBackupFailed
+			}
+			switch in.Reason {
+			case "CNPGWALArchivingFailing", "CNPGLastBackupFailed", "CNPGBackupFailed":
+				return issuesapi.CategoryBackupFailed
+			}
+			return issuesapi.CategoryOperatorConditionFail
 		case g == "external-secrets.io":
 			return issuesapi.CategorySecretSyncFailed
 		case g == "keda.sh":

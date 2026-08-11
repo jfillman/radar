@@ -30,8 +30,9 @@ const (
 	// caretta-vm and to the subchart's own name label, but the namespace follows
 	// the Helm release — so the store is located by (detected namespace, label),
 	// with the name as the fallback for a store that lost the label.
-	carettaStoreLabel   = "app.kubernetes.io/name=victoria-metrics-single"
-	carettaStoreService = "caretta-vm"
+	carettaStoreLabel    = "app.kubernetes.io/name=victoria-metrics-single"
+	carettaStoreService  = "caretta-vm"
+	carettaInstanceLabel = "app.kubernetes.io/instance"
 
 	// maxMetricsCandidates bounds how many backends Connect will port-forward to
 	// and probe before giving up. Each rejected candidate costs a forward setup.
@@ -74,21 +75,23 @@ var metricsServiceLocations = []struct {
 
 // CarettaSource implements TrafficSource for Caretta
 type CarettaSource struct {
-	k8sClient         kubernetes.Interface
-	httpClient        *http.Client
-	prometheusAddr    string
-	metricsBasePath   string // sub-path for Prometheus API (e.g. "/select/0/prometheus" for vmselect)
-	metricsNamespace  string // namespace where metrics service was found
-	metricsService    string // service name for port-forward
-	metricsPort       int    // port for port-forward
-	metricsURL        string // manual override URL from --prometheus-url flag
-	headers           map[string]string
-	isConnected       bool
-	currentContext    string // current K8s context name
-	detectedNamespace string // namespace Caretta itself was detected in
-	backendVerified   bool   // bound backend proved it holds Caretta metrics
-	backendWarning    string // why no backend could be bound, surfaced to the UI
-	mu                sync.RWMutex
+	k8sClient           kubernetes.Interface
+	httpClient          *http.Client
+	prometheusAddr      string
+	metricsBasePath     string // sub-path for Prometheus API (e.g. "/select/0/prometheus" for vmselect)
+	metricsNamespace    string // namespace where metrics service was found
+	metricsService      string // service name for port-forward
+	metricsPort         int    // port for port-forward
+	metricsURL          string // manual override URL from --prometheus-url flag
+	headers             map[string]string
+	isConnected         bool
+	currentContext      string // current K8s context name
+	detectedNamespace   string // namespace Caretta itself was detected in
+	detectedInstance    string // Helm release Caretta was installed as, for store ownership
+	backendVerified     bool   // bound backend proved it holds Caretta metrics
+	boundIsCarettaStore bool   // bound backend is Caretta's own store, trusted on identity
+	backendWarning      string // why no backend could be bound, surfaced to the UI
+	mu                  sync.RWMutex
 }
 
 // applyHeaders attaches the configured custom headers to a Prometheus
@@ -143,37 +146,16 @@ func (c *CarettaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 		}
 
 		if len(pods.Items) > 0 {
-			runningPods := 0
-			for _, pod := range pods.Items {
-				if pod.Status.Phase == "Running" {
-					runningPods++
-				}
-			}
-
-			c.mu.Lock()
-			c.detectedNamespace = ns
-			if runningPods > 0 {
-				c.isConnected = true
-			}
-			c.mu.Unlock()
-
-			if runningPods > 0 {
-				result.Available = true
-				result.Message = fmt.Sprintf("Caretta detected with %d running pod(s) in namespace %s", runningPods, ns)
-
-				// Try to get version from pod labels
-				if len(pods.Items) > 0 {
-					if ver, ok := pods.Items[0].Labels["app.kubernetes.io/version"]; ok {
-						result.Version = ver
-					}
-				}
-
-				return result, nil
-			}
-
-			result.Message = fmt.Sprintf("Caretta pods found in %s but none are running (%d total)", ns, len(pods.Items))
-			return result, nil
+			return c.resultFromPods(pods.Items, result), nil
 		}
+	}
+
+	// The chart's namespace follows the Helm release, so an install that landed
+	// outside the three names above is still a real Caretta. One labelled
+	// cluster-wide list finds it; where that list is denied we fall through to
+	// "not detected", which is the behavior without this lookup.
+	if pods, err := c.k8sClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{LabelSelector: carettaAppLabel}); err == nil && len(pods.Items) > 0 {
+		return c.resultFromPods(pods.Items, result), nil
 	}
 
 	// Also check for DaemonSet
@@ -182,6 +164,7 @@ func (c *CarettaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 		if err == nil {
 			c.mu.Lock()
 			c.detectedNamespace = ns
+			c.detectedInstance = ds.Labels[carettaInstanceLabel]
 			if ds.Status.NumberReady > 0 {
 				c.isConnected = true
 			}
@@ -201,6 +184,52 @@ func (c *CarettaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 
 	result.Message = "Caretta not detected. Install Caretta for eBPF-based traffic visibility."
 	return result, nil
+}
+
+// resultFromPods records where Caretta was found and fills in the detection
+// result. Pods are sorted so a multi-namespace match resolves the same way every
+// call — the recorded namespace decides where the metrics store is looked up.
+func (c *CarettaSource) resultFromPods(pods []corev1.Pod, result *DetectionResult) *DetectionResult {
+	sort.Slice(pods, func(i, j int) bool {
+		if pods[i].Namespace != pods[j].Namespace {
+			return pods[i].Namespace < pods[j].Namespace
+		}
+		return pods[i].Name < pods[j].Name
+	})
+
+	// A running pod represents the install better than a crashlooping one, and
+	// namespace and release must come from the same pod — they together decide
+	// where the metrics store is looked up and which store is trusted as its own.
+	running := 0
+	chosen := &pods[0]
+	for i := range pods {
+		if pods[i].Status.Phase == "Running" {
+			if running == 0 {
+				chosen = &pods[i]
+			}
+			running++
+		}
+	}
+
+	c.mu.Lock()
+	c.detectedNamespace = chosen.Namespace
+	c.detectedInstance = chosen.Labels[carettaInstanceLabel]
+	if running > 0 {
+		c.isConnected = true
+	}
+	c.mu.Unlock()
+
+	if running == 0 {
+		result.Message = fmt.Sprintf("Caretta pods found in %s but none are running (%d total)", chosen.Namespace, len(pods))
+		return result
+	}
+
+	result.Available = true
+	result.Message = fmt.Sprintf("Caretta detected with %d running pod(s) in namespace %s", running, chosen.Namespace)
+	if ver, ok := chosen.Labels["app.kubernetes.io/version"]; ok {
+		result.Version = ver
+	}
+	return result
 }
 
 // GetFlows retrieves flows from Caretta via Prometheus metrics
@@ -299,7 +328,7 @@ func (c *CarettaSource) discoverPrometheus(ctx context.Context) string {
 	// If we have a cached address, verify it's still valid
 	if c.prometheusAddr != "" {
 		testAddr := c.prometheusAddr + c.metricsBasePath
-		if c.tryMetricsEndpointLocked(ctx, testAddr) {
+		if c.revalidateBoundLocked(ctx, testAddr) {
 			return c.prometheusAddr
 		}
 		// Clear stale address
@@ -314,6 +343,7 @@ func (c *CarettaSource) discoverPrometheus(ctx context.Context) string {
 			log.Printf("[caretta] Using manual metrics URL: %s", addr)
 			c.prometheusAddr = addr
 			c.metricsBasePath = ""
+			c.boundIsCarettaStore = false
 			c.backendVerified = c.carettaMetricsPresentLocked(ctx, addr)
 			c.backendWarning = ""
 			return addr
@@ -403,7 +433,13 @@ func (c *CarettaSource) discoverServiceLocked(ctx context.Context) []*metricsSer
 		add(c.discoverMetricsServiceDynamic(ctx))
 	}
 
+	// The cap bounds how long a Connect can take — every candidate past the first
+	// costs a probe and possibly a port-forward. Log what it drops: a silent
+	// truncation reads as "nothing else was available".
 	if len(candidates) > maxMetricsCandidates {
+		for _, dropped := range candidates[maxMetricsCandidates:] {
+			log.Printf("[caretta] Not trying %s/%s: candidate limit of %d reached", dropped.namespace, dropped.name, maxMetricsCandidates)
+		}
 		candidates = candidates[:maxMetricsCandidates]
 	}
 	return candidates
@@ -424,7 +460,15 @@ func (c *CarettaSource) findCarettaStoreLocked(ctx context.Context) *metricsServ
 	svcs, err := c.k8sClient.CoreV1().Services(ns).List(ctx, metav1.ListOptions{LabelSelector: carettaStoreLabel})
 	if err == nil && len(svcs.Items) > 0 {
 		sort.Slice(svcs.Items, func(i, j int) bool { return svcs.Items[i].Name < svcs.Items[j].Name })
-		return carettaStoreInfo(svcs.Items[0])
+		for _, svc := range svcs.Items {
+			if c.ownsStore(svc) {
+				return carettaStoreInfo(svc, true)
+			}
+		}
+		// A VictoriaMetrics that merely shares Caretta's namespace proves nothing —
+		// `default` and `monitoring` host plenty of unrelated ones. Offer it, but make
+		// it earn admission on content like any other third-party backend.
+		return carettaStoreInfo(svcs.Items[0], false)
 	}
 
 	// The List can fail on get-but-not-list RBAC, and a store whose labels were
@@ -433,19 +477,34 @@ func (c *CarettaSource) findCarettaStoreLocked(ctx context.Context) *metricsServ
 	if err != nil {
 		return nil
 	}
-	return carettaStoreInfo(*svc)
+	return carettaStoreInfo(*svc, true)
 }
 
-func carettaStoreInfo(svc corev1.Service) *metricsServiceInfo {
+// ownsStore reports whether a metrics service demonstrably belongs to the Caretta
+// install that was detected: either the name the chart pins, or the same Helm
+// release as Caretta's own pods. Only then is the store trusted without a content
+// probe.
+func (c *CarettaSource) ownsStore(svc corev1.Service) bool {
+	if svc.Name == carettaStoreService {
+		return true
+	}
+	return c.detectedInstance != "" && svc.Labels[carettaInstanceLabel] == c.detectedInstance
+}
+
+func carettaStoreInfo(svc corev1.Service, owned bool) *metricsServiceInfo {
 	port := resolveServicePort(svc, 0)
-	log.Printf("[caretta] Found Caretta metrics store: %s/%s:%d", svc.Namespace, svc.Name, port)
+	if owned {
+		log.Printf("[caretta] Found Caretta metrics store: %s/%s:%d", svc.Namespace, svc.Name, port)
+	} else {
+		log.Printf("[caretta] Found unattributed metrics service %s/%s:%d in Caretta's namespace, will verify contents", svc.Namespace, svc.Name, port)
+	}
 	return &metricsServiceInfo{
 		namespace:      svc.Namespace,
 		name:           svc.Name,
 		port:           port,
 		targetPort:     resolveTargetPort(svc, port),
 		clusterAddr:    buildClusterAddr(svc.Name, svc.Namespace, svc.Spec.ClusterIP, port),
-		isCarettaStore: true,
+		isCarettaStore: owned,
 	}
 }
 
@@ -535,7 +594,35 @@ func (c *CarettaSource) bindLocked(addr string, info *metricsServiceInfo) {
 		c.metricsNamespace = info.namespace
 		c.metricsService = info.name
 		c.metricsPort = info.port
+		c.boundIsCarettaStore = info.isCarettaStore
 		c.backendVerified = true
+	}
+}
+
+// revalidateBoundLocked re-checks a cached address. Reachability alone is enough
+// for Caretta's own store, but a third-party backend was admitted because it held
+// Caretta data at bind time and can stop scraping Caretta later — leaving
+// backendVerified stale would suppress the zero-flow warning and put the silence
+// back. Caller must hold lock.
+func (c *CarettaSource) revalidateBoundLocked(ctx context.Context, addr string) bool {
+	if !c.tryMetricsEndpointLocked(ctx, addr) {
+		return false
+	}
+	if !c.boundIsCarettaStore {
+		c.backendVerified = c.carettaMetricsPresentLocked(ctx, addr)
+	}
+	return true
+}
+
+// stopStaleTrafficForward drops the traffic-owned forward when it points at a
+// service other than the one being bound. A candidate refused mid-walk can leave
+// its forward running, which would make the reported connection name a different
+// service than the one being queried.
+func stopStaleTrafficForward(namespace, name string) {
+	pf := portforward.GetConnectionInfo(portforward.OwnerTraffic)
+	if pf.Connected && (pf.Namespace != namespace || pf.ServiceName != name) {
+		log.Printf("[caretta] Dropping refused port-forward to %s/%s", pf.Namespace, pf.ServiceName)
+		portforward.Stop(portforward.OwnerTraffic)
 	}
 }
 
@@ -717,6 +804,8 @@ func (c *CarettaSource) Close() error {
 	c.metricsBasePath = ""
 	c.currentContext = ""
 	c.detectedNamespace = ""
+	c.detectedInstance = ""
+	c.boundIsCarettaStore = false
 	c.backendVerified = false
 	c.backendWarning = ""
 	return nil
@@ -731,7 +820,7 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 	// If already connected to the same context, check if still valid
 	if c.prometheusAddr != "" && c.currentContext == contextName {
 		testAddr := c.prometheusAddr + c.metricsBasePath
-		if c.tryMetricsEndpointLocked(ctx, testAddr) {
+		if c.revalidateBoundLocked(ctx, testAddr) {
 			return &portforward.ConnectionInfo{
 				Connected:   true,
 				Address:     c.prometheusAddr,
@@ -759,6 +848,7 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 			log.Printf("[caretta] Connected using manual metrics URL: %s", addr)
 			c.prometheusAddr = addr
 			c.metricsBasePath = ""
+			c.boundIsCarettaStore = false
 			c.backendVerified = c.carettaMetricsPresentLocked(ctx, addr)
 			c.backendWarning = ""
 			return &portforward.ConnectionInfo{
@@ -824,6 +914,7 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 			switch c.acceptBackendLocked(ctx, info, pfAddr+info.basePath) {
 			case backendAccepted:
 				log.Printf("[caretta] Using existing port-forward at %s", pfAddr)
+				stopStaleTrafficForward(info.namespace, info.name)
 				c.bindLocked(pfAddr, info)
 				return &portforward.ConnectionInfo{
 					Connected:   true,

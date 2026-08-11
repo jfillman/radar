@@ -413,3 +413,178 @@ func TestCandidateListIsCapped(t *testing.T) {
 		t.Errorf("got %d candidates, want at most %d", len(got), maxMetricsCandidates)
 	}
 }
+
+func carettaPod(ns, name, instance string, running bool) *corev1.Pod {
+	phase := corev1.PodPending
+	if running {
+		phase = corev1.PodRunning
+	}
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      name,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":     "caretta",
+				"app.kubernetes.io/instance": instance,
+			},
+		},
+		Status: corev1.PodStatus{Phase: phase},
+	}
+}
+
+func sourceWithObjects(t *testing.T, pods []*corev1.Pod, svcs ...*corev1.Service) *CarettaSource {
+	t.Helper()
+	cs := fake.NewSimpleClientset()
+	for _, p := range pods {
+		if _, err := cs.CoreV1().Pods(p.Namespace).Create(context.Background(), p, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seeding pod %s/%s: %v", p.Namespace, p.Name, err)
+		}
+	}
+	for _, s := range svcs {
+		if _, err := cs.CoreV1().Services(s.Namespace).Create(context.Background(), s, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seeding service %s/%s: %v", s.Namespace, s.Name, err)
+		}
+	}
+	return &CarettaSource{k8sClient: cs, httpClient: &http.Client{Timeout: 500 * time.Millisecond}}
+}
+
+// Caretta's namespace follows its Helm release, so an install outside the three
+// hardcoded names is still real. Without this it isn't detected at all, and the
+// namespace-aware store lookup never runs.
+func TestDetectFindsCarettaInAnyNamespace(t *testing.T) {
+	c := sourceWithObjects(t, []*corev1.Pod{carettaPod("observability", "caretta-abc", "caretta", true)})
+
+	result, err := c.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if !result.Available {
+		t.Fatalf("Caretta not detected: %s", result.Message)
+	}
+
+	c.mu.RLock()
+	ns, instance := c.detectedNamespace, c.detectedInstance
+	c.mu.RUnlock()
+	if ns != "observability" {
+		t.Errorf("detectedNamespace = %q, want observability", ns)
+	}
+	if instance != "caretta" {
+		t.Errorf("detectedInstance = %q, want caretta", instance)
+	}
+}
+
+// Namespace and release must be read off the same pod: they jointly decide where
+// the store is looked up and which store is trusted without a content probe.
+func TestDetectPrefersRunningPodForIdentity(t *testing.T) {
+	c := sourceWithObjects(t, []*corev1.Pod{
+		carettaPod("aaa-dead", "caretta-old", "stale-release", false),
+		carettaPod("zzz-live", "caretta-new", "live-release", true),
+	})
+
+	if _, err := c.Detect(context.Background()); err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	c.mu.RLock()
+	ns, instance := c.detectedNamespace, c.detectedInstance
+	c.mu.RUnlock()
+	if ns != "zzz-live" || instance != "live-release" {
+		t.Errorf("identity = %s/%s, want zzz-live/live-release", ns, instance)
+	}
+}
+
+// Sharing a namespace with Caretta is not proof of belonging to it. `default` and
+// `monitoring` host unrelated VictoriaMetrics; trusting one on identity would skip
+// the content check and put the silent zero-flow failure right back.
+func TestUnrelatedVictoriaMetricsMustEarnAdmission(t *testing.T) {
+	unrelated := metricsSvc("default", "billing-metrics", 8428, "10.0.0.7", map[string]string{
+		"app.kubernetes.io/name":     "victoria-metrics-single",
+		"app.kubernetes.io/instance": "billing",
+	})
+	c := sourceWithServices(t, "default", unrelated)
+	c.detectedInstance = "caretta"
+
+	got := discover(t, c)
+	if len(got) == 0 {
+		t.Fatal("no candidates discovered")
+	}
+	if got[0].isCarettaStore {
+		t.Error("an unrelated VictoriaMetrics was trusted as Caretta's own store")
+	}
+}
+
+// A store belonging to the same Helm release as Caretta is its own, whatever the
+// release was named.
+func TestStoreOfSameReleaseIsTrusted(t *testing.T) {
+	store := metricsSvc("default", "traffic-vm", 8428, "None", map[string]string{
+		"app.kubernetes.io/name":     "victoria-metrics-single",
+		"app.kubernetes.io/instance": "traffic",
+	})
+	c := sourceWithServices(t, "default", store)
+	c.detectedInstance = "traffic"
+
+	got := discover(t, c)
+	if len(got) == 0 {
+		t.Fatal("no candidates discovered")
+	}
+	if !got[0].isCarettaStore {
+		t.Error("store from Caretta's own release not trusted")
+	}
+}
+
+// A third-party backend was admitted because it held Caretta data at bind time.
+// It can stop scraping Caretta later; if the cached-address check only asks `up`,
+// backendVerified stays true and the zero-flow warning is suppressed again.
+func TestCachedGenericBackendIsRevalidated(t *testing.T) {
+	scraping := promStub(t, promBackend{links: true})
+
+	c := &CarettaSource{
+		httpClient:          &http.Client{Timeout: 2 * time.Second},
+		prometheusAddr:      scraping.URL,
+		backendVerified:     true,
+		boundIsCarettaStore: false,
+	}
+
+	c.mu.Lock()
+	stillUp := c.revalidateBoundLocked(context.Background(), scraping.URL)
+	verified := c.backendVerified
+	c.mu.Unlock()
+	if !stillUp || !verified {
+		t.Fatalf("backend still holds Caretta data: reachable=%v verified=%v", stillUp, verified)
+	}
+
+	// Same backend, no longer scraping Caretta.
+	stopped := promStub(t, promBackend{})
+	c.mu.Lock()
+	c.prometheusAddr = stopped.URL
+	stillUp = c.revalidateBoundLocked(context.Background(), stopped.URL)
+	verified = c.backendVerified
+	c.mu.Unlock()
+	if !stillUp {
+		t.Fatal("backend is reachable, revalidation said otherwise")
+	}
+	if verified {
+		t.Error("backend that stopped holding Caretta data is still marked verified")
+	}
+}
+
+// Caretta's own store is trusted on identity, so an idle one must not be
+// downgraded on revalidation and start warning about a healthy install.
+func TestCachedOwnStoreStaysVerifiedWhenIdle(t *testing.T) {
+	idle := promStub(t, promBackend{})
+
+	c := &CarettaSource{
+		httpClient:          &http.Client{Timeout: 2 * time.Second},
+		prometheusAddr:      idle.URL,
+		backendVerified:     true,
+		boundIsCarettaStore: true,
+	}
+
+	c.mu.Lock()
+	ok := c.revalidateBoundLocked(context.Background(), idle.URL)
+	verified := c.backendVerified
+	c.mu.Unlock()
+	if !ok || !verified {
+		t.Errorf("idle own store downgraded: reachable=%v verified=%v", ok, verified)
+	}
+}

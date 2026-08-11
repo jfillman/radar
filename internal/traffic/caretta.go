@@ -25,6 +25,17 @@ import (
 const (
 	carettaNamespace = "caretta"
 	carettaAppLabel  = "app.kubernetes.io/name=caretta"
+
+	// Caretta's chart pins its bundled VictoriaMetrics to the service name
+	// caretta-vm and to the subchart's own name label, but the namespace follows
+	// the Helm release — so the store is located by (detected namespace, label),
+	// with the name as the fallback for a store that lost the label.
+	carettaStoreLabel   = "app.kubernetes.io/name=victoria-metrics-single"
+	carettaStoreService = "caretta-vm"
+
+	// maxMetricsCandidates bounds how many backends Connect will port-forward to
+	// and probe before giving up. Each rejected candidate costs a forward setup.
+	maxMetricsCandidates = 4
 )
 
 // Known Prometheus/VictoriaMetrics service locations to check.
@@ -63,18 +74,21 @@ var metricsServiceLocations = []struct {
 
 // CarettaSource implements TrafficSource for Caretta
 type CarettaSource struct {
-	k8sClient        kubernetes.Interface
-	httpClient       *http.Client
-	prometheusAddr   string
-	metricsBasePath  string // sub-path for Prometheus API (e.g. "/select/0/prometheus" for vmselect)
-	metricsNamespace string // namespace where metrics service was found
-	metricsService   string // service name for port-forward
-	metricsPort      int    // port for port-forward
-	metricsURL       string // manual override URL from --prometheus-url flag
-	headers          map[string]string
-	isConnected      bool
-	currentContext   string // current K8s context name
-	mu               sync.RWMutex
+	k8sClient         kubernetes.Interface
+	httpClient        *http.Client
+	prometheusAddr    string
+	metricsBasePath   string // sub-path for Prometheus API (e.g. "/select/0/prometheus" for vmselect)
+	metricsNamespace  string // namespace where metrics service was found
+	metricsService    string // service name for port-forward
+	metricsPort       int    // port for port-forward
+	metricsURL        string // manual override URL from --prometheus-url flag
+	headers           map[string]string
+	isConnected       bool
+	currentContext    string // current K8s context name
+	detectedNamespace string // namespace Caretta itself was detected in
+	backendVerified   bool   // bound backend proved it holds Caretta metrics
+	backendWarning    string // why no backend could be bound, surfaced to the UI
+	mu                sync.RWMutex
 }
 
 // applyHeaders attaches the configured custom headers to a Prometheus
@@ -136,11 +150,14 @@ func (c *CarettaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 				}
 			}
 
+			c.mu.Lock()
+			c.detectedNamespace = ns
 			if runningPods > 0 {
-				c.mu.Lock()
 				c.isConnected = true
-				c.mu.Unlock()
+			}
+			c.mu.Unlock()
 
+			if runningPods > 0 {
 				result.Available = true
 				result.Message = fmt.Sprintf("Caretta detected with %d running pod(s) in namespace %s", runningPods, ns)
 
@@ -163,12 +180,15 @@ func (c *CarettaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 	for _, ns := range namespacesToCheck {
 		ds, err := c.k8sClient.AppsV1().DaemonSets(ns).Get(ctx, "caretta", metav1.GetOptions{})
 		if err == nil {
+			c.mu.Lock()
+			c.detectedNamespace = ns
+			if ds.Status.NumberReady > 0 {
+				c.isConnected = true
+			}
+			c.mu.Unlock()
+
 			// DaemonSet exists, check its status
 			if ds.Status.NumberReady > 0 {
-				c.mu.Lock()
-				c.isConnected = true
-				c.mu.Unlock()
-
 				result.Available = true
 				result.Message = fmt.Sprintf("Caretta DaemonSet detected with %d ready pods in namespace %s", ds.Status.NumberReady, ns)
 				return result, nil
@@ -214,11 +234,17 @@ func (c *CarettaSource) GetFlows(ctx context.Context, opts FlowOptions) (*FlowsR
 
 	if promAddr == "" {
 		log.Printf("[caretta] Prometheus not found, returning empty flows")
+		c.mu.RLock()
+		warning := c.backendWarning
+		c.mu.RUnlock()
+		if warning == "" {
+			warning = noBackendWarning(nil, nil)
+		}
 		return &FlowsResponse{
 			Source:    "caretta",
 			Timestamp: time.Now(),
 			Flows:     []Flow{},
-			Warning:   "Prometheus/VictoriaMetrics service not found. Ensure Caretta's metrics backend is deployed.",
+			Warning:   warning,
 		}, nil
 	}
 
@@ -234,11 +260,31 @@ func (c *CarettaSource) GetFlows(ctx context.Context, opts FlowOptions) (*FlowsR
 		}, nil
 	}
 
-	return &FlowsResponse{
+	response := &FlowsResponse{
 		Source:    "caretta",
 		Timestamp: time.Now(),
 		Flows:     flows,
-	}, nil
+	}
+
+	// An unverified backend that returns nothing is indistinguishable from a quiet
+	// cluster in the UI. Say which backend answered so the user can tell "no
+	// traffic" apart from "reading the wrong database".
+	if len(flows) == 0 {
+		c.mu.RLock()
+		verified, ns, svc := c.backendVerified, c.metricsNamespace, c.metricsService
+		c.mu.RUnlock()
+		if !verified {
+			target := "the configured metrics URL"
+			if ns != "" && svc != "" {
+				target = fmt.Sprintf("%s/%s", ns, svc)
+			}
+			response.Warning = fmt.Sprintf("Connected to %s, which holds no Caretta metrics. "+
+				"Point Radar at Caretta's own metrics store (caretta-vm) with --prometheus-url, "+
+				"or reinstall Caretta with its bundled VictoriaMetrics.", target)
+		}
+	}
+
+	return response, nil
 }
 
 // discoverPrometheus finds and connects to the metrics service.
@@ -268,6 +314,8 @@ func (c *CarettaSource) discoverPrometheus(ctx context.Context) string {
 			log.Printf("[caretta] Using manual metrics URL: %s", addr)
 			c.prometheusAddr = addr
 			c.metricsBasePath = ""
+			c.backendVerified = c.carettaMetricsPresentLocked(ctx, addr)
+			c.backendWarning = ""
 			return addr
 		}
 		log.Printf("[caretta] Manual metrics URL %s not reachable", addr)
@@ -275,64 +323,232 @@ func (c *CarettaSource) discoverPrometheus(ctx context.Context) string {
 	}
 
 	// Layer 2+3: Well-known locations, then dynamic discovery
-	info := c.discoverServiceLocked(ctx)
-	if info == nil {
+	candidates := c.discoverServiceLocked(ctx)
+	if len(candidates) == 0 {
 		log.Printf("[caretta] No Prometheus/VictoriaMetrics service found via any discovery method")
+		c.backendWarning = noBackendWarning(nil, nil)
 		return ""
 	}
 
-	// Reuse an existing managed port-forward only if it targets the SAME service
-	// we just discovered. A generic reachability probe can't tell caretta-vm apart
-	// from the cluster's general Prometheus (both answer /api/v1/query), so match
-	// on (namespace, service) — otherwise we'd adopt the general-metrics forward
-	// and query it for caretta_links_observed, which returns 0 flows silently.
-	if pfAddr := portforward.GetAddressForService(portforward.OwnerTraffic, c.currentContext, info.namespace, info.name); pfAddr != "" {
-		testAddr := pfAddr + info.basePath
-		if c.tryMetricsEndpointLocked(ctx, testAddr) {
-			log.Printf("[caretta] Using managed port-forward at %s for %s/%s", pfAddr, info.namespace, info.name)
-			c.prometheusAddr = pfAddr
-			c.metricsBasePath = info.basePath
-			return pfAddr
+	var noData []string
+	for _, info := range candidates {
+		wrongData := false
+
+		// Reuse an existing managed port-forward only if it targets the SAME service
+		// we just discovered. A generic reachability probe can't tell caretta-vm apart
+		// from the cluster's general Prometheus (both answer /api/v1/query), so match
+		// on (namespace, service) — otherwise we'd adopt the general-metrics forward
+		// and query it for caretta_links_observed, which returns 0 flows silently.
+		if pfAddr := portforward.GetAddressForService(portforward.OwnerTraffic, c.currentContext, info.namespace, info.name); pfAddr != "" {
+			switch c.acceptBackendLocked(ctx, info, pfAddr+info.basePath) {
+			case backendAccepted:
+				log.Printf("[caretta] Using managed port-forward at %s for %s/%s", pfAddr, info.namespace, info.name)
+				c.bindLocked(pfAddr, info)
+				return pfAddr
+			case backendNoCarettaData:
+				wrongData = true
+			}
+		}
+
+		// Try cluster address (works when running in-cluster)
+		switch c.acceptBackendLocked(ctx, info, info.clusterAddr+info.basePath) {
+		case backendAccepted:
+			log.Printf("[caretta] Found metrics service at %s (basePath=%q)", info.clusterAddr, info.basePath)
+			c.bindLocked(info.clusterAddr, info)
+			return info.clusterAddr
+		case backendNoCarettaData:
+			wrongData = true
+		}
+
+		if wrongData {
+			noData = append(noData, fmt.Sprintf("%s/%s", info.namespace, info.name))
 		}
 	}
 
-	// Try cluster address (works when running in-cluster)
-	if c.tryClusterAddrLocked(ctx, info) {
-		log.Printf("[caretta] Found metrics service at %s (basePath=%q)", info.clusterAddr, info.basePath)
-		return info.clusterAddr
-	}
-
-	// Service exists but not reachable in-cluster - will need port-forward
-	log.Printf("[caretta] Metrics service %s/%s found but not reachable in-cluster. Call Connect() for port-forward.",
-		info.namespace, info.name)
+	// Nothing bound. Either the candidates aren't reachable in-cluster (the local
+	// case — Connect() port-forwards to them) or none of them holds Caretta data.
+	// Only the latter is a diagnosis; unreachable here is the normal local case.
+	log.Printf("[caretta] No Caretta-backed metrics service reachable in-cluster. Call Connect() for port-forward.")
+	c.backendWarning = noBackendWarning(noData, nil)
 	return ""
 }
 
-// discoverServiceLocked finds a metrics service via Layer 2 (well-known) then Layer 3 (dynamic).
-// Sets metricsNamespace, metricsService, metricsPort on success. Caller must hold lock.
-func (c *CarettaSource) discoverServiceLocked(ctx context.Context) *metricsServiceInfo {
-	info := c.findMetricsServiceLocked(ctx)
-	if info == nil {
-		info = c.discoverMetricsServiceDynamic(ctx)
+// discoverServiceLocked returns candidate metrics backends in Caretta priority
+// order: Caretta's own store (Layer 1), then a well-known Prometheus (Layer 2),
+// then dynamic discovery (Layer 3) when the earlier layers found nothing.
+//
+// It returns a list rather than a single service because existence is not proof:
+// a cluster's general Prometheus answers PromQL just as well as Caretta's store
+// but holds no caretta_links_observed, so the caller probes down the list.
+// Caller must hold lock.
+func (c *CarettaSource) discoverServiceLocked(ctx context.Context) []*metricsServiceInfo {
+	var candidates []*metricsServiceInfo
+	seen := map[string]bool{}
+	add := func(info *metricsServiceInfo) {
+		if info == nil || seen[info.namespace+"/"+info.name] {
+			return
+		}
+		seen[info.namespace+"/"+info.name] = true
+		candidates = append(candidates, info)
 	}
+
+	add(c.findCarettaStoreLocked(ctx))
+	add(c.findMetricsServiceLocked(ctx))
+	if len(candidates) == 0 {
+		add(c.discoverMetricsServiceDynamic(ctx))
+	}
+
+	if len(candidates) > maxMetricsCandidates {
+		candidates = candidates[:maxMetricsCandidates]
+	}
+	return candidates
+}
+
+// findCarettaStoreLocked looks for Caretta's own metrics store in the namespace
+// Caretta was detected in. The chart pins the service name but its namespace
+// follows the Helm release, so a hardcoded namespace/name pair misses every
+// install that didn't land in "caretta" — and discovery then walks on to the
+// cluster's general Prometheus, which holds no Caretta metrics.
+// Caller must hold lock.
+func (c *CarettaSource) findCarettaStoreLocked(ctx context.Context) *metricsServiceInfo {
+	ns := c.detectedNamespace
+	if ns == "" {
+		ns = carettaNamespace
+	}
+
+	svcs, err := c.k8sClient.CoreV1().Services(ns).List(ctx, metav1.ListOptions{LabelSelector: carettaStoreLabel})
+	if err == nil && len(svcs.Items) > 0 {
+		sort.Slice(svcs.Items, func(i, j int) bool { return svcs.Items[i].Name < svcs.Items[j].Name })
+		return carettaStoreInfo(svcs.Items[0])
+	}
+
+	// The List can fail on get-but-not-list RBAC, and a store whose labels were
+	// overridden won't match the selector — fall back to the pinned name.
+	svc, err := c.k8sClient.CoreV1().Services(ns).Get(ctx, carettaStoreService, metav1.GetOptions{})
+	if err != nil {
+		return nil
+	}
+	return carettaStoreInfo(*svc)
+}
+
+func carettaStoreInfo(svc corev1.Service) *metricsServiceInfo {
+	port := resolveServicePort(svc, 0)
+	log.Printf("[caretta] Found Caretta metrics store: %s/%s:%d", svc.Namespace, svc.Name, port)
+	return &metricsServiceInfo{
+		namespace:      svc.Namespace,
+		name:           svc.Name,
+		port:           port,
+		targetPort:     resolveTargetPort(svc, port),
+		clusterAddr:    buildClusterAddr(svc.Name, svc.Namespace, svc.Spec.ClusterIP, port),
+		isCarettaStore: true,
+	}
+}
+
+// backendVerdict is why a candidate backend was accepted or turned down. The two
+// rejections are different problems for the user — one is a broken connection,
+// the other is a healthy connection to the wrong database — so they are reported
+// separately rather than collapsed into "not available".
+type backendVerdict int
+
+const (
+	backendAccepted backendVerdict = iota
+	backendUnreachable
+	backendNoCarettaData
+)
+
+// acceptBackendLocked decides whether an endpoint is the right backend for
+// Caretta. Caretta's own store is accepted on identity — a freshly installed
+// Caretta legitimately holds no series yet. Anything else has to prove it carries
+// Caretta data, because the generic reachability probe cannot tell the cluster's
+// general Prometheus apart from Caretta's store and binding to the former yields
+// successful, permanently empty queries.
+// Caller must hold lock.
+func (c *CarettaSource) acceptBackendLocked(ctx context.Context, info *metricsServiceInfo, addr string) backendVerdict {
+	if !c.tryMetricsEndpointLocked(ctx, addr) {
+		return backendUnreachable
+	}
+	if info != nil && info.isCarettaStore {
+		return backendAccepted
+	}
+	if c.carettaMetricsPresentLocked(ctx, addr) {
+		return backendAccepted
+	}
+	log.Printf("[caretta] Backend %s answers PromQL but holds no Caretta metrics, skipping", addr)
+	return backendNoCarettaData
+}
+
+// carettaMetricsPresentLocked reports whether the backend at addr holds Caretta
+// data. Observed links are the direct signal; the scrape target being up covers
+// both a fresh install that hasn't seen a connection yet and the deployment where
+// the cluster's Prometheus scrapes Caretta itself and is the correct backend.
+// Caller must hold lock.
+func (c *CarettaSource) carettaMetricsPresentLocked(ctx context.Context, addr string) bool {
+	for _, query := range []string{`count(caretta_links_observed)`, `count(up{job=~".*caretta.*"})`} {
+		if c.hasSeriesLocked(ctx, addr, query) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasSeriesLocked runs query against addr and reports whether it returned any
+// sample. Caller must hold lock.
+func (c *CarettaSource) hasSeriesLocked(ctx context.Context, addr, query string) bool {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(queryCtx, "GET", fmt.Sprintf("%s/api/v1/query?query=%s", addr, url.QueryEscape(query)), nil)
+	if err != nil {
+		return false
+	}
+	c.applyHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	var promResp prometheusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&promResp); err != nil {
+		return false
+	}
+	return promResp.Status == "success" && len(promResp.Data.Result) > 0
+}
+
+// bindLocked records the backend the source will query from now on.
+// Caller must hold lock.
+func (c *CarettaSource) bindLocked(addr string, info *metricsServiceInfo) {
+	c.prometheusAddr = addr
+	c.backendWarning = ""
 	if info != nil {
+		c.metricsBasePath = info.basePath
 		c.metricsNamespace = info.namespace
 		c.metricsService = info.name
 		c.metricsPort = info.port
+		c.backendVerified = true
 	}
-	return info
 }
 
-// tryClusterAddrLocked tries the cluster address with basePath and stores the result on success.
-// Caller must hold lock.
-func (c *CarettaSource) tryClusterAddrLocked(ctx context.Context, info *metricsServiceInfo) bool {
-	testAddr := info.clusterAddr + info.basePath
-	if c.tryMetricsEndpointLocked(ctx, testAddr) {
-		c.prometheusAddr = info.clusterAddr
-		c.metricsBasePath = info.basePath
-		return true
+// noBackendWarning explains why no backend was bound, so the UI can say why Live
+// Traffic is empty instead of showing an indistinguishable "no traffic yet".
+// Reached-but-wrong and never-reached are separate problems and read as such.
+func noBackendWarning(noData, unreachable []string) string {
+	switch {
+	case len(noData) > 0:
+		return fmt.Sprintf("Connected to %s, which holds no Caretta metrics. Caretta's own metrics store (caretta-vm) was not found — "+
+			"reinstall Caretta with its bundled VictoriaMetrics, or point Radar at the backend holding Caretta data with --prometheus-url.",
+			strings.Join(noData, ", "))
+	case len(unreachable) > 0:
+		return fmt.Sprintf("Found %s but could not reach it. Check that the service is running and its pods are ready.",
+			strings.Join(unreachable, ", "))
+	default:
+		return "Prometheus/VictoriaMetrics service not found. Ensure Caretta's metrics backend is deployed."
 	}
-	return false
 }
 
 // queryPrometheusForFlows queries Prometheus for caretta_links_observed metrics
@@ -495,6 +711,9 @@ func (c *CarettaSource) Close() error {
 	c.prometheusAddr = ""
 	c.metricsBasePath = ""
 	c.currentContext = ""
+	c.detectedNamespace = ""
+	c.backendVerified = false
+	c.backendWarning = ""
 	return nil
 }
 
@@ -535,6 +754,8 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 			log.Printf("[caretta] Connected using manual metrics URL: %s", addr)
 			c.prometheusAddr = addr
 			c.metricsBasePath = ""
+			c.backendVerified = c.carettaMetricsPresentLocked(ctx, addr)
+			c.backendWarning = ""
 			return &portforward.ConnectionInfo{
 				Connected:   true,
 				Address:     addr,
@@ -548,75 +769,101 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 	}
 
 	// Layer 2+3: Well-known locations, then dynamic discovery
-	metricsInfo := c.discoverServiceLocked(ctx)
-	if metricsInfo == nil {
+	candidates := c.discoverServiceLocked(ctx)
+	if len(candidates) == 0 {
 		return &portforward.ConnectionInfo{
 			Connected: false,
 			Error:     "No Prometheus/VictoriaMetrics service found. Use --prometheus-url to specify manually.",
 		}, nil
 	}
 
-	// Try cluster-internal address first (works when running in-cluster)
-	if c.tryClusterAddrLocked(ctx, metricsInfo) {
-		log.Printf("[caretta] Connected to metrics service at %s (basePath=%q)", metricsInfo.clusterAddr, metricsInfo.basePath)
-		return &portforward.ConnectionInfo{
-			Connected:   true,
-			Address:     metricsInfo.clusterAddr,
-			Namespace:   metricsInfo.namespace,
-			ServiceName: metricsInfo.name,
-			ContextName: contextName,
-		}, nil
-	}
-
-	// Check if there's already a valid managed port-forward for this context that
-	// targets the SAME service we discovered. Matching on (namespace, service)
-	// stops the traffic source from adopting the general-metrics forward (owner=
-	// prometheus, e.g. prometheus-operated:9090): it answers the generic probe but
-	// holds no caretta_links_observed, so flows would come back empty. On no match
-	// we fall through and start the dedicated forward to caretta-vm below.
-	if pfAddr := portforward.GetAddressForService(portforward.OwnerTraffic, contextName, metricsInfo.namespace, metricsInfo.name); pfAddr != "" {
-		pfTestAddr := pfAddr + metricsInfo.basePath
-		if c.tryMetricsEndpointLocked(ctx, pfTestAddr) {
-			log.Printf("[caretta] Using existing port-forward at %s", pfAddr)
-			c.prometheusAddr = pfAddr
-			c.metricsBasePath = metricsInfo.basePath
+	// Walk the candidates in Caretta priority order. Existence is not proof: the
+	// cluster's general Prometheus answers PromQL but holds no Caretta series, so
+	// each candidate has to be accepted by acceptBackendLocked before it is bound.
+	var noData, unreachable []string
+	var lastErr string
+	for _, info := range candidates {
+		// Try cluster-internal address first (works when running in-cluster)
+		if c.acceptBackendLocked(ctx, info, info.clusterAddr+info.basePath) == backendAccepted {
+			log.Printf("[caretta] Connected to metrics service at %s (basePath=%q)", info.clusterAddr, info.basePath)
+			c.bindLocked(info.clusterAddr, info)
 			return &portforward.ConnectionInfo{
 				Connected:   true,
-				Address:     pfAddr,
-				Namespace:   metricsInfo.namespace,
-				ServiceName: metricsInfo.name,
+				Address:     info.clusterAddr,
+				Namespace:   info.namespace,
+				ServiceName: info.name,
 				ContextName: contextName,
 			}, nil
 		}
+
+		// Check if there's already a valid managed port-forward for this context that
+		// targets the SAME service we discovered. Matching on (namespace, service)
+		// stops the traffic source from adopting the general-metrics forward (owner=
+		// prometheus, e.g. prometheus-operated:9090): it answers the generic probe but
+		// holds no caretta_links_observed, so flows would come back empty. On no match
+		// we fall through and start the dedicated forward below.
+		if pfAddr := portforward.GetAddressForService(portforward.OwnerTraffic, contextName, info.namespace, info.name); pfAddr != "" {
+			if c.acceptBackendLocked(ctx, info, pfAddr+info.basePath) == backendAccepted {
+				log.Printf("[caretta] Using existing port-forward at %s", pfAddr)
+				c.bindLocked(pfAddr, info)
+				return &portforward.ConnectionInfo{
+					Connected:   true,
+					Address:     pfAddr,
+					Namespace:   info.namespace,
+					ServiceName: info.name,
+					ContextName: contextName,
+				}, nil
+			}
+		}
+
+		// Start a new managed port-forward
+		log.Printf("[caretta] Starting port-forward to %s/%s:%d (targetPort=%d)", info.namespace, info.name, info.port, info.targetPort)
+		connInfo, err := portforward.Start(portforward.OwnerTraffic, ctx, info.namespace, info.name, info.targetPort, contextName)
+		if err != nil {
+			lastErr = fmt.Sprintf("Failed to start port-forward to %s/%s: %v", info.namespace, info.name, err)
+			log.Printf("[caretta] %s", lastErr)
+			continue
+		}
+
+		target := fmt.Sprintf("%s/%s", info.namespace, info.name)
+		switch c.acceptBackendLocked(ctx, info, connInfo.Address+info.basePath) {
+		case backendAccepted:
+			c.bindLocked(connInfo.Address, info)
+			log.Printf("[caretta] Connected via port-forward at %s (basePath=%q)", connInfo.Address, info.basePath)
+			return connInfo, nil
+		case backendNoCarettaData:
+			noData = append(noData, target)
+		case backendUnreachable:
+			unreachable = append(unreachable, target)
+		}
 	}
 
-	// Start a new managed port-forward
-	log.Printf("[caretta] Starting port-forward to %s/%s:%d (targetPort=%d)", metricsInfo.namespace, metricsInfo.name, metricsInfo.port, metricsInfo.targetPort)
-	connInfo, err := portforward.Start(portforward.OwnerTraffic, ctx, metricsInfo.namespace, metricsInfo.name, metricsInfo.targetPort, contextName)
-	if err != nil {
-		return &portforward.ConnectionInfo{
-			Connected:   false,
-			Namespace:   metricsInfo.namespace,
-			ServiceName: metricsInfo.name,
-			Error:       fmt.Sprintf("Failed to start port-forward: %v", err),
-		}, nil
+	// Every candidate was rejected. Leaving the last forward up would point the
+	// traffic module at a backend it just refused, so drop it and fail closed with
+	// a message naming what was tried — silently returning zero flows is what made
+	// this class of bug invisible.
+	portforward.Stop(portforward.OwnerTraffic)
+	errMsg := noBackendWarning(noData, unreachable)
+	if len(noData) == 0 && len(unreachable) == 0 && lastErr != "" {
+		errMsg = lastErr
 	}
-
-	c.prometheusAddr = connInfo.Address
-	c.metricsBasePath = metricsInfo.basePath
-	log.Printf("[caretta] Connected via port-forward at %s (basePath=%q)", connInfo.Address, metricsInfo.basePath)
-
-	return connInfo, nil
+	c.backendWarning = errMsg
+	c.backendVerified = false
+	return &portforward.ConnectionInfo{
+		Connected: false,
+		Error:     errMsg,
+	}, nil
 }
 
 // metricsServiceInfo holds info about a discovered metrics service
 type metricsServiceInfo struct {
-	namespace   string
-	name        string
-	port        int // service port (for cluster-internal address)
-	targetPort  int // container port (for port-forwarding to pod)
-	clusterAddr string
-	basePath    string // sub-path for Prometheus API (e.g. "/select/0/prometheus" for vmselect)
+	namespace      string
+	name           string
+	port           int // service port (for cluster-internal address)
+	targetPort     int // container port (for port-forwarding to pod)
+	clusterAddr    string
+	basePath       string // sub-path for Prometheus API (e.g. "/select/0/prometheus" for vmselect)
+	isCarettaStore bool   // Caretta's own metrics store, accepted without a content probe
 }
 
 // resolveServicePort determines the port to use for a service
@@ -665,6 +912,11 @@ func (c *CarettaSource) findMetricsServiceLocked(ctx context.Context) *metricsSe
 			targetPort:  tp,
 			clusterAddr: clusterAddr,
 			basePath:    loc.basePath,
+			// The well-known list still carries caretta-vm, for the split install
+			// whose store sits outside the namespace Caretta itself runs in. Mark it
+			// so it is accepted on identity here too, or a store with no links yet
+			// would be admitted by one discovery path and rejected by the other.
+			isCarettaStore: svc.Name == carettaStoreService,
 		}
 	}
 

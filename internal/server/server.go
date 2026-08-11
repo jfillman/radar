@@ -4775,6 +4775,12 @@ func (s *Server) handleApplyPrometheusURL(w http.ResponseWriter, r *http.Request
 // individual resources (kind/namespace/name) — filter those to what the caller
 // may read so this diagnostic endpoint isn't a side channel around the timeline
 // RBAC gate.
+//
+// Note on stale counters right after a context switch: unlike RecentDrops, the
+// counters are not cluster-scoped, so they can briefly show a few old-cluster
+// ticks after a switch (a straggler informer draining post-reset re-increments
+// them). This is an accepted, documented residue — see the counter caveat on
+// timeline.ResetMetricsForContextSwitch.
 func (s *Server) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
 	response := timeline.GetDebugEventsResponse()
 	// Compose both protections: scope to the active cluster (a straggler drop from

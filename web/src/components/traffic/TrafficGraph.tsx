@@ -20,7 +20,7 @@ import type { AggregatedFlow } from '../../types'
 import { clsx } from 'clsx'
 import { X, ArrowRight, Globe, Server, Activity, Puzzle } from 'lucide-react'
 import { isClusterAddon, type AddonMode } from './TrafficView'
-import { SEVERITY_BADGE, SEVERITY_TEXT } from '@skyhook-io/k8s-ui/utils/badge-colors'
+import { SEVERITY_BADGE, SEVERITY_DOT, SEVERITY_TEXT } from '@skyhook-io/k8s-ui/utils/badge-colors'
 import { getNamespaceColor } from '../../utils/traffic-colors'
 import { Tooltip } from '../ui/Tooltip'
 
@@ -87,10 +87,10 @@ function latencyColor(ms: number): string {
 }
 
 const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
-  '2xx': { bg: 'bg-emerald-500', text: SEVERITY_TEXT.success },
-  '3xx': { bg: 'bg-amber-500', text: SEVERITY_TEXT.neutral },
-  '4xx': { bg: 'bg-amber-500', text: SEVERITY_TEXT.warning },
-  '5xx': { bg: 'bg-red-500', text: SEVERITY_TEXT.error },
+  '2xx': { bg: SEVERITY_DOT.success, text: SEVERITY_TEXT.success },
+  '3xx': { bg: SEVERITY_DOT.info, text: SEVERITY_TEXT.info },
+  '4xx': { bg: SEVERITY_DOT.warning, text: SEVERITY_TEXT.warning },
+  '5xx': { bg: SEVERITY_DOT.error, text: SEVERITY_TEXT.error },
 }
 
 const VERDICT_BADGE: Record<string, string> = {

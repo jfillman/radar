@@ -373,7 +373,7 @@ export const TrafficFilterSidebar = memo(function TrafficFilterSidebar({
                   <div className="flex flex-wrap gap-1">
                     {([
                       { label: '2xx', active: SEVERITY_BADGE.success },
-                      { label: '3xx', active: SEVERITY_BADGE.neutral },
+                      { label: '3xx', active: SEVERITY_BADGE.info },
                       { label: '4xx', active: SEVERITY_BADGE.warning },
                       { label: '5xx', active: SEVERITY_BADGE.error },
                     ] as const).map(({ label, active }) => (

@@ -660,3 +660,23 @@ func TestStoreFoundWithoutPriorDetectionInAnyNamespace(t *testing.T) {
 		t.Errorf("top candidate = %s/%s, want observability/caretta-vm", got[0].namespace, got[0].name)
 	}
 }
+
+// A headless Service publishes A records for its ready pods under its own name.
+// Addressing it as {service}-0.{service} assumes the StatefulSet is named after
+// the Service — true for caretta-vm, false for kube-prometheus-stack's
+// prometheus-operated — and made a reachable backend look unreachable in-cluster.
+func TestClusterAddrUsesPlainServiceDNS(t *testing.T) {
+	tests := []struct {
+		name, namespace string
+		port            int
+		want            string
+	}{
+		{"caretta-vm", "default", 8428, "http://caretta-vm.default.svc.cluster.local:8428"},
+		{"prometheus-operated", "monitoring", 9090, "http://prometheus-operated.monitoring.svc.cluster.local:9090"},
+	}
+	for _, tc := range tests {
+		if got := buildClusterAddr(tc.name, tc.namespace, tc.port); got != tc.want {
+			t.Errorf("buildClusterAddr(%s/%s) = %q, want %q", tc.namespace, tc.name, got, tc.want)
+		}
+	}
+}

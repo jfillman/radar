@@ -552,7 +552,7 @@ func carettaStoreInfo(svc corev1.Service, owned bool) *metricsServiceInfo {
 		name:           svc.Name,
 		port:           port,
 		targetPort:     resolveTargetPort(svc, port),
-		clusterAddr:    buildClusterAddr(svc.Name, svc.Namespace, svc.Spec.ClusterIP, port),
+		clusterAddr:    buildClusterAddr(svc.Name, svc.Namespace, port),
 		isCarettaStore: owned,
 	}
 }
@@ -1071,7 +1071,7 @@ func (c *CarettaSource) findMetricsServicesLocked(ctx context.Context) []*metric
 		}
 
 		port := resolveServicePort(*svc, loc.port)
-		clusterAddr := buildClusterAddr(svc.Name, svc.Namespace, svc.Spec.ClusterIP, port)
+		clusterAddr := buildClusterAddr(svc.Name, svc.Namespace, port)
 		tp := resolveTargetPort(*svc, port)
 
 		log.Printf("[caretta] Found metrics service: %s/%s:%d (targetPort=%d)", svc.Namespace, svc.Name, port, tp)
@@ -1231,7 +1231,7 @@ func (c *CarettaSource) discoverMetricsServiceDynamic(ctx context.Context) *metr
 				name:        svc.Name,
 				port:        port,
 				targetPort:  resolveTargetPort(svc, port),
-				clusterAddr: buildClusterAddr(svc.Name, svc.Namespace, svc.Spec.ClusterIP, port),
+				clusterAddr: buildClusterAddr(svc.Name, svc.Namespace, port),
 				basePath:    bp,
 			},
 			score: score,
@@ -1288,10 +1288,13 @@ func (c *CarettaSource) discoverMetricsServiceDynamic(ctx context.Context) *metr
 }
 
 // buildClusterAddr builds a cluster-internal address for a service
-func buildClusterAddr(name, namespace, clusterIP string, port int) string {
-	if clusterIP == "None" {
-		return fmt.Sprintf("http://%s-0.%s.%s.svc.cluster.local:%d", name, name, namespace, port)
-	}
+// A headless Service publishes A records for its ready pods under its own name,
+// so the plain service address works for both kinds. Addressing a headless one as
+// {service}-0.{service} assumes the StatefulSet is named after the Service: true
+// for caretta-vm, false for kube-prometheus-stack's prometheus-operated, whose
+// pod is prometheus-{release}-kube-prometheus-stack-prometheus-0. That guess made
+// a reachable backend look unreachable in-cluster.
+func buildClusterAddr(name, namespace string, port int) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", name, namespace, port)
 }
 

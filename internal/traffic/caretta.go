@@ -137,25 +137,38 @@ func (c *CarettaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 	// Check for Caretta pods in caretta namespace or kube-system
 	namespacesToCheck := []string{carettaNamespace, "default", "kube-system"}
 
+	// Pods left behind by a dead install, kept only as a last resort: returning on
+	// them would hide a healthy Caretta running in another namespace and pin store
+	// discovery to the wrong release.
+	var stopped []corev1.Pod
+
 	for _, ns := range namespacesToCheck {
 		pods, err := c.k8sClient.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
 			LabelSelector: carettaAppLabel,
 		})
-		if err != nil {
+		if err != nil || len(pods.Items) == 0 {
 			continue
 		}
 
-		if len(pods.Items) > 0 {
+		if anyRunning(pods.Items) {
 			return c.resultFromPods(pods.Items, result), nil
+		}
+		if stopped == nil {
+			stopped = pods.Items
 		}
 	}
 
 	// The chart's namespace follows the Helm release, so an install that landed
 	// outside the three names above is still a real Caretta. One labelled
-	// cluster-wide list finds it; where that list is denied we fall through to
-	// "not detected", which is the behavior without this lookup.
+	// cluster-wide list finds it, and covers the namespaces above too, so its
+	// result supersedes anything held back. Where that list is denied we fall back
+	// to what the fixed names turned up, which is the behavior without this lookup.
 	if pods, err := c.k8sClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{LabelSelector: carettaAppLabel}); err == nil && len(pods.Items) > 0 {
 		return c.resultFromPods(pods.Items, result), nil
+	}
+
+	if stopped != nil {
+		return c.resultFromPods(stopped, result), nil
 	}
 
 	// Also check for DaemonSet
@@ -184,6 +197,15 @@ func (c *CarettaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 
 	result.Message = "Caretta not detected. Install Caretta for eBPF-based traffic visibility."
 	return result, nil
+}
+
+func anyRunning(pods []corev1.Pod) bool {
+	for i := range pods {
+		if pods[i].Status.Phase == corev1.PodRunning {
+			return true
+		}
+	}
+	return false
 }
 
 // resultFromPods records where Caretta was found and fills in the detection

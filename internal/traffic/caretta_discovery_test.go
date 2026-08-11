@@ -588,3 +588,44 @@ func TestCachedOwnStoreStaysVerifiedWhenIdle(t *testing.T) {
 		t.Errorf("idle own store downgraded: reachable=%v verified=%v", ok, verified)
 	}
 }
+
+// A dead install leaves pods behind. Returning on them hides a healthy Caretta in
+// another namespace and pins store discovery to the wrong release.
+func TestDetectSkipsPastStoppedPodsToRunningInstall(t *testing.T) {
+	c := sourceWithObjects(t, []*corev1.Pod{
+		carettaPod("default", "caretta-dead", "old-release", false),
+		carettaPod("observability", "caretta-live", "new-release", true),
+	})
+
+	result, err := c.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if !result.Available {
+		t.Fatalf("healthy Caretta not detected: %s", result.Message)
+	}
+
+	c.mu.RLock()
+	ns, instance := c.detectedNamespace, c.detectedInstance
+	c.mu.RUnlock()
+	if ns != "observability" || instance != "new-release" {
+		t.Errorf("identity = %s/%s, want observability/new-release", ns, instance)
+	}
+}
+
+// With nothing running anywhere, the stopped pods are still reported — that is
+// the diagnosis the user needs, and it must not become "not detected".
+func TestDetectStillReportsStoppedPodsWhenNothingRuns(t *testing.T) {
+	c := sourceWithObjects(t, []*corev1.Pod{carettaPod("default", "caretta-dead", "old-release", false)})
+
+	result, err := c.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if result.Available {
+		t.Error("no pod is running, Caretta reported available")
+	}
+	if !strings.Contains(result.Message, "none are running") {
+		t.Errorf("message = %q, want it to say no pods are running", result.Message)
+	}
+}

@@ -393,7 +393,12 @@ func (c *CarettaSource) discoverServiceLocked(ctx context.Context) []*metricsSer
 	}
 
 	add(c.findCarettaStoreLocked(ctx))
-	add(c.findMetricsServiceLocked(ctx))
+	for _, info := range c.findMetricsServicesLocked(ctx) {
+		add(info)
+	}
+	// Dynamic discovery is the last resort: it costs a cluster-wide Service list
+	// plus a scoring pass, and the well-known list already covers the mainstream
+	// installs. Run it only when nothing else turned anything up.
 	if len(candidates) == 0 {
 		add(c.discoverMetricsServiceDynamic(ctx))
 	}
@@ -783,8 +788,11 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 	var noData, unreachable []string
 	var lastErr string
 	for _, info := range candidates {
+		target := fmt.Sprintf("%s/%s", info.namespace, info.name)
+
 		// Try cluster-internal address first (works when running in-cluster)
-		if c.acceptBackendLocked(ctx, info, info.clusterAddr+info.basePath) == backendAccepted {
+		switch c.acceptBackendLocked(ctx, info, info.clusterAddr+info.basePath) {
+		case backendAccepted:
 			log.Printf("[caretta] Connected to metrics service at %s (basePath=%q)", info.clusterAddr, info.basePath)
 			c.bindLocked(info.clusterAddr, info)
 			return &portforward.ConnectionInfo{
@@ -794,6 +802,11 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 				ServiceName: info.name,
 				ContextName: contextName,
 			}, nil
+		case backendNoCarettaData:
+			// Already reached it and it holds no Caretta data — a port-forward to the
+			// same service would only reach the same database.
+			noData = append(noData, target)
+			continue
 		}
 
 		// Check if there's already a valid managed port-forward for this context that
@@ -803,7 +816,8 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 		// holds no caretta_links_observed, so flows would come back empty. On no match
 		// we fall through and start the dedicated forward below.
 		if pfAddr := portforward.GetAddressForService(portforward.OwnerTraffic, contextName, info.namespace, info.name); pfAddr != "" {
-			if c.acceptBackendLocked(ctx, info, pfAddr+info.basePath) == backendAccepted {
+			switch c.acceptBackendLocked(ctx, info, pfAddr+info.basePath) {
+			case backendAccepted:
 				log.Printf("[caretta] Using existing port-forward at %s", pfAddr)
 				c.bindLocked(pfAddr, info)
 				return &portforward.ConnectionInfo{
@@ -813,6 +827,9 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 					ServiceName: info.name,
 					ContextName: contextName,
 				}, nil
+			case backendNoCarettaData:
+				noData = append(noData, target)
+				continue
 			}
 		}
 
@@ -825,7 +842,6 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 			continue
 		}
 
-		target := fmt.Sprintf("%s/%s", info.namespace, info.name)
 		switch c.acceptBackendLocked(ctx, info, connInfo.Address+info.basePath) {
 		case backendAccepted:
 			c.bindLocked(connInfo.Address, info)
@@ -892,8 +908,14 @@ func resolveTargetPort(svc corev1.Service, servicePort int) int {
 	return servicePort
 }
 
-// findMetricsServiceLocked finds a metrics service from well-known locations (caller must hold lock)
-func (c *CarettaSource) findMetricsServiceLocked(ctx context.Context) *metricsServiceInfo {
+// findMetricsServicesLocked returns every well-known location that exists, in
+// declared order. All of them, not just the first: on a cluster running both
+// VictoriaMetrics and kube-prometheus-stack, the earlier match may hold no
+// Caretta data while a later one scrapes Caretta and is the right backend.
+// Stopping at the first hit would fail closed there.
+// Caller must hold lock.
+func (c *CarettaSource) findMetricsServicesLocked(ctx context.Context) []*metricsServiceInfo {
+	var found []*metricsServiceInfo
 	for _, loc := range metricsServiceLocations {
 		svc, err := c.k8sClient.CoreV1().Services(loc.namespace).Get(ctx, loc.name, metav1.GetOptions{})
 		if err != nil {
@@ -905,7 +927,7 @@ func (c *CarettaSource) findMetricsServiceLocked(ctx context.Context) *metricsSe
 		tp := resolveTargetPort(*svc, port)
 
 		log.Printf("[caretta] Found metrics service: %s/%s:%d (targetPort=%d)", svc.Namespace, svc.Name, port, tp)
-		return &metricsServiceInfo{
+		found = append(found, &metricsServiceInfo{
 			namespace:   svc.Namespace,
 			name:        svc.Name,
 			port:        port,
@@ -917,10 +939,10 @@ func (c *CarettaSource) findMetricsServiceLocked(ctx context.Context) *metricsSe
 			// so it is accepted on identity here too, or a store with no links yet
 			// would be admitted by one discovery path and rejected by the other.
 			isCarettaStore: svc.Name == carettaStoreService,
-		}
+		})
 	}
 
-	return nil
+	return found
 }
 
 // Namespaces to skip during dynamic discovery - never contain metrics services

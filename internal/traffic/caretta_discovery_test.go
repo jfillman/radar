@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -362,5 +363,53 @@ func TestWellKnownCarettaStoreIsMarkedAsOwnStore(t *testing.T) {
 	}
 	if !got[0].isCarettaStore {
 		t.Error("well-known caretta-vm not marked as Caretta's own store")
+	}
+}
+
+// A cluster can run more than one Prometheus-family backend. If the well-known
+// walk stops at the first hit, a cluster whose earlier backend holds no Caretta
+// data never reaches the later one that scrapes Caretta, and Live Traffic fails
+// closed on a cluster that has the data.
+func TestWellKnownLayerOffersEveryMatch(t *testing.T) {
+	vm := metricsSvc("monitoring", "victoria-metrics-single-server", 8428, "10.0.0.9", map[string]string{
+		"app.kubernetes.io/name": "victoria-metrics-single",
+	})
+	c := sourceWithServices(t, "caretta", append(kubePrometheusStackSvcs(), vm)...)
+
+	got := discover(t, c)
+	if len(got) < 2 {
+		t.Fatalf("got %d candidate(s), want every well-known match", len(got))
+	}
+
+	names := make([]string, 0, len(got))
+	for _, info := range got {
+		names = append(names, info.namespace+"/"+info.name)
+	}
+	want := []string{"monitoring/victoria-metrics-single-server", "monitoring/prometheus-operated"}
+	for _, w := range want {
+		if !slices.Contains(names, w) {
+			t.Errorf("candidate %s missing from %v", w, names)
+		}
+	}
+
+	// Declared order decides: the VictoriaMetrics entry precedes prometheus-operated.
+	if slices.Index(names, want[0]) > slices.Index(names, want[1]) {
+		t.Errorf("candidates out of declared order: %v", names)
+	}
+}
+
+// The candidate list is walked with a port-forward per attempt, so it stays bounded.
+func TestCandidateListIsCapped(t *testing.T) {
+	svcs := kubePrometheusStackSvcs()
+	svcs = append(svcs,
+		metricsSvc("monitoring", "victoria-metrics-single-server", 8428, "10.0.0.9", nil),
+		metricsSvc("monitoring", "vmsingle", 8428, "10.0.0.10", nil),
+		metricsSvc("monitoring", "prometheus-server", 9090, "10.0.0.11", nil),
+		metricsSvc("prometheus", "prometheus-server", 9090, "10.0.0.12", nil),
+	)
+	c := sourceWithServices(t, "caretta", svcs...)
+
+	if got := discover(t, c); len(got) > maxMetricsCandidates {
+		t.Errorf("got %d candidates, want at most %d", len(got), maxMetricsCandidates)
 	}
 }

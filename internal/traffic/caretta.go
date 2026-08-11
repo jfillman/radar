@@ -794,6 +794,11 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 		switch c.acceptBackendLocked(ctx, info, info.clusterAddr+info.basePath) {
 		case backendAccepted:
 			log.Printf("[caretta] Connected to metrics service at %s (basePath=%q)", info.clusterAddr, info.basePath)
+			// Queries go to the cluster address from here, so the traffic module needs
+			// no forward of its own. An earlier candidate in this same walk may have
+			// left one up after being refused — keeping it would make the reported
+			// connection name a different service than the one being queried.
+			portforward.Stop(portforward.OwnerTraffic)
 			c.bindLocked(info.clusterAddr, info)
 			return &portforward.ConnectionInfo{
 				Connected:   true,

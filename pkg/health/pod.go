@@ -202,27 +202,77 @@ func PodProblemReason(pod *corev1.Pod, now time.Time) string {
 // podProblemReasonRaw is the phase/state walk: init containers first (they block
 // the pod Pending before main ContainerStatuses populate), then main containers,
 // falling back to the bare phase string.
+//
+// Containers that exited 0 are skipped on the first pass. A completed init
+// container did its job, and naming its "Completed" as the pod's problem reason
+// reports a success as the fault, hides the container that actually failed
+// below it, and classifies to the catch-all category — leaving a critical row
+// with nothing to act on. The second pass restores the plain walk so a pod whose
+// containers all succeeded still reports what it did.
 func podProblemReasonRaw(pod *corev1.Pod, now time.Time) string {
-	for _, cs := range pod.Status.InitContainerStatuses {
-		if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
-			return cs.State.Waiting.Reason
-		}
-		if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" {
-			return cs.State.Terminated.Reason
-		}
+	if cs := problemContainer(pod, true); cs != nil {
+		return containerStateReason(cs)
 	}
-	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
-			return cs.State.Waiting.Reason
-		}
-		if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" {
-			return cs.State.Terminated.Reason
-		}
-	}
+	// Derived pod-level signals outrank a container that merely finished, so a
+	// completed init container cannot shadow a readiness failure below it.
 	if podHasReadinessProbeFailure(pod, now) {
 		return reasonReadinessProbeFail
 	}
+	// Only a pod that has itself finished is described by a container that
+	// completed. While it is still running, the phase is the honest answer —
+	// and it is a phase-like reason, so the crashloop / OOM / thrash
+	// normalizations in PodProblemReason can still replace it. "Completed" is
+	// in neither of their predicate sets, so returning it here would silence
+	// every one of them.
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		if cs := problemContainer(pod, false); cs != nil {
+			return containerStateReason(cs)
+		}
+	}
 	return string(pod.Status.Phase)
+}
+
+// problemContainer picks the one container status that explains the pod, so the
+// reason and the message always describe the same container rather than being
+// gathered from two. Init containers first (they block the pod Pending before
+// main ContainerStatuses populate). When skipSucceeded is set, a container
+// terminated with exit code 0 is passed over.
+func problemContainer(pod *corev1.Pod, skipSucceeded bool) *corev1.ContainerStatus {
+	for _, statuses := range [][]corev1.ContainerStatus{pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses} {
+		for i := range statuses {
+			cs := &statuses[i]
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
+				return cs
+			}
+			if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" {
+				if skipSucceeded && cs.State.Terminated.ExitCode == 0 {
+					continue
+				}
+				return cs
+			}
+		}
+	}
+	return nil
+}
+
+func containerStateReason(cs *corev1.ContainerStatus) string {
+	if cs.State.Waiting != nil {
+		return cs.State.Waiting.Reason
+	}
+	if cs.State.Terminated != nil {
+		return cs.State.Terminated.Reason
+	}
+	return ""
+}
+
+func containerStateMessage(cs *corev1.ContainerStatus) string {
+	if cs.State.Waiting != nil {
+		return cs.State.Waiting.Message
+	}
+	if cs.State.Terminated != nil {
+		return cs.State.Terminated.Message
+	}
+	return ""
 }
 
 // PodProblemMessage returns the kubelet's waiting/terminated message for the
@@ -230,22 +280,16 @@ func podProblemReasonRaw(pod *corev1.Pod, now time.Time) string {
 // podProblemReasonRaw's walk). This is the actionable detail behind an otherwise
 // bare reason — ImagePullBackOff's "Failed to pull image X: …not found",
 // CreateContainerConfigError's "couldn't find key Y in Secret Z".
+// It selects the same container the reason came from, so a chatty container
+// that merely finished cannot supply the explanation for a different
+// container's failure. A failing container with no message stays empty rather
+// than borrowing one.
 func PodProblemMessage(pod *corev1.Pod) string {
-	for _, cs := range pod.Status.InitContainerStatuses {
-		if cs.State.Waiting != nil && cs.State.Waiting.Message != "" {
-			return cs.State.Waiting.Message
-		}
-		if cs.State.Terminated != nil && cs.State.Terminated.Message != "" {
-			return cs.State.Terminated.Message
-		}
+	if cs := problemContainer(pod, true); cs != nil {
+		return containerStateMessage(cs)
 	}
-	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.State.Waiting != nil && cs.State.Waiting.Message != "" {
-			return cs.State.Waiting.Message
-		}
-		if cs.State.Terminated != nil && cs.State.Terminated.Message != "" {
-			return cs.State.Terminated.Message
-		}
+	if cs := problemContainer(pod, false); cs != nil {
+		return containerStateMessage(cs)
 	}
 	return ""
 }

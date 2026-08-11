@@ -287,8 +287,13 @@ func TestDetectProblems_OOMLimitDiscrepancy(t *testing.T) {
 			},
 		},
 		{
-			name: "benchmark-completed-reason", specLimit: "16Mi", statusLimit: "16Mi", templateLimit: "256Mi",
-			wantDetection: true, wantCause: true, wantReason: "Completed",
+			// A successful init container must not name the pod's problem. This
+			// pod is OOM-crashlooping; it previously reported "Completed" from
+			// the init container that finished cleanly, so the row carried an
+			// OOM cause and remediation under a reason that said nothing had
+			// gone wrong.
+			name: "succeeded-init-does-not-mask-crashloop", specLimit: "16Mi", statusLimit: "16Mi", templateLimit: "256Mi",
+			wantDetection: true, wantCause: true, wantReason: "CrashLoopBackOff",
 			mutate: func(pod *corev1.Pod, _ *appsv1.ReplicaSet) []runtime.Object {
 				pod.Spec.InitContainers = []corev1.Container{{Name: "setup"}}
 				pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: "setup", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0}}}}

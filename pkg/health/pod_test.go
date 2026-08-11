@@ -361,3 +361,161 @@ func TestPodCrashLoopDiagnosis(t *testing.T) {
 		t.Fatalf("action = %q, want command/args guidance", action)
 	}
 }
+
+// An init container that exited 0 did its job. Reporting its "Completed" as the
+// pod's problem reason names a success as the fault, buries the real failure in
+// the container below it, and classifies to the catch-all category — so the row
+// reads "critical" with nothing to act on. CNPG's bootstrap pods hit this
+// (successful init, failed join), but any pod with init containers can.
+func TestPodProblemReasonSkipsSuccessfulInitContainers(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	pod := &corev1.Pod{Status: corev1.PodStatus{
+		Phase: corev1.PodFailed,
+		InitContainerStatuses: []corev1.ContainerStatus{
+			{Name: "bootstrap", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0}}},
+		},
+		ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "app", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, Message: "join failed"}}},
+		},
+	}}
+
+	if got := PodProblemReason(pod, now); got != "Error" {
+		t.Errorf("PodProblemReason = %q, want %q — the failed container is the problem, not the init container that succeeded", got, "Error")
+	}
+	if got := PodProblemMessage(pod); got != "join failed" {
+		t.Errorf("PodProblemMessage = %q, want %q", got, "join failed")
+	}
+}
+
+// A failed init container is still the pod's problem — it blocks everything
+// after it, and the main containers never start.
+func TestPodProblemReasonKeepsFailedInitContainers(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	pod := &corev1.Pod{Status: corev1.PodStatus{
+		Phase: corev1.PodPending,
+		InitContainerStatuses: []corev1.ContainerStatus{
+			{Name: "ok", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0}}},
+			{Name: "broken", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 2, Message: "migration failed"}}},
+		},
+	}}
+
+	if got := PodProblemReason(pod, now); got != "Error" {
+		t.Errorf("PodProblemReason = %q, want %q", got, "Error")
+	}
+	if got := PodProblemMessage(pod); got != "migration failed" {
+		t.Errorf("PodProblemMessage = %q, want %q", got, "migration failed")
+	}
+}
+
+// The reason and the message must describe the same container. A chatty init
+// container that succeeded used to supply the message while the failed one
+// supplied the reason, pairing a failure with an unrelated explanation.
+func TestPodProblemMessageMatchesTheReasonsContainer(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	pod := &corev1.Pod{Status: corev1.PodStatus{
+		Phase: corev1.PodFailed,
+		InitContainerStatuses: []corev1.ContainerStatus{
+			{Name: "bootstrap", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				Reason: "Completed", ExitCode: 0, Message: "bootstrap finished cleanly"}}},
+		},
+		ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "app", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				Reason: "Error", ExitCode: 1, Message: "could not reach primary"}}},
+		},
+	}}
+
+	if got := PodProblemReason(pod, now); got != "Error" {
+		t.Errorf("PodProblemReason = %q, want %q", got, "Error")
+	}
+	if got := PodProblemMessage(pod); got != "could not reach primary" {
+		t.Errorf("PodProblemMessage = %q, want the failed container's message", got)
+	}
+}
+
+// A pod whose containers all succeeded still reports what it did, rather than
+// falling through to a bare phase.
+func TestPodProblemReasonStillReportsAnAllSucceededPod(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	pod := &corev1.Pod{Status: corev1.PodStatus{
+		Phase: corev1.PodSucceeded,
+		ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "job", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0}}},
+		},
+	}}
+
+	if got := PodProblemReason(pod, now); got != "Completed" {
+		t.Errorf("PodProblemReason = %q, want %q", got, "Completed")
+	}
+}
+
+// A completed init container must not shadow a derived pod-level failure. The
+// readiness check used to sit behind the plain container walk, so a pod whose
+// init container finished cleanly reported "Completed" while its main container
+// failed readiness.
+func TestPodProblemReasonSucceededInitDoesNotShadowReadinessFailure(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}},
+			InitContainerStatuses: []corev1.ContainerStatus{
+				{Name: "setup", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0}}},
+			},
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Name: "app", Ready: false, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-10 * time.Minute))}}},
+			},
+		},
+	}
+
+	if got := PodProblemReason(pod, now); got == "Completed" {
+		t.Errorf("PodProblemReason = %q — a completed init container shadowed the readiness failure", got)
+	}
+}
+
+// "Completed" is in neither override predicate set, so returning it from a
+// still-running pod silences the crashloop, OOM and thrash normalizations that
+// exist to name exactly this state. A running pod is described by its phase.
+func TestPodProblemReasonDoesNotReportCompletedOnARunningPod(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	pod := &corev1.Pod{Status: corev1.PodStatus{
+		Phase: corev1.PodRunning,
+		InitContainerStatuses: []corev1.ContainerStatus{
+			{Name: "setup", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0}}},
+		},
+		ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "app", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-time.Minute))}}},
+		},
+	}}
+
+	if got := PodProblemReason(pod, now); got != "Running" {
+		t.Errorf("PodProblemReason = %q, want %q", got, "Running")
+	}
+}
+
+// The message must come from the container the reason came from, even when that
+// container has no message of its own. Borrowing a later container's message
+// pairs a failure with an unrelated explanation.
+func TestPodProblemMessageDoesNotBorrowFromAnotherContainer(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	pod := &corev1.Pod{Status: corev1.PodStatus{
+		Phase: corev1.PodFailed,
+		InitContainerStatuses: []corev1.ContainerStatus{
+			{Name: "setup", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				Reason: "Completed", ExitCode: 0, Message: "setup wrote 4 files"}}},
+		},
+		ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "app", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				Reason: "Error", ExitCode: 1}}},
+			{Name: "sidecar", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				Reason: "Completed", ExitCode: 0, Message: "sidecar shut down cleanly"}}},
+		},
+	}}
+
+	if got := PodProblemReason(pod, now); got != "Error" {
+		t.Errorf("PodProblemReason = %q, want %q", got, "Error")
+	}
+	if got := PodProblemMessage(pod); got != "" {
+		t.Errorf("PodProblemMessage = %q — the failing container has no message, so this was borrowed from another container", got)
+	}
+}

@@ -2,6 +2,7 @@ import { WorkloadRenderer as BaseWorkloadRenderer } from '@skyhook-io/k8s-ui/com
 import { useNavigate } from 'react-router-dom'
 import { useScaleWorkload, fetchJSON } from '../../../api/client'
 import { useRBACSubject } from '../../../api/rbac'
+import { usePolicyResource } from '../../../api/policy'
 import { useQueries, useQueryClient } from '@tanstack/react-query'
 import { kindToPlural } from '@skyhook-io/k8s-ui/utils/navigation'
 import type { Relationships, ResourceRef, ResourceWithRelationships } from '../../../types'
@@ -42,6 +43,11 @@ export function WorkloadRenderer({ kind, data, onNavigate, scaleBlockedBy }: Wor
   const { data: rbacData, isLoading: rbacLoading, error: rbacError } = useRBACSubject(
     'ServiceAccount', namespace, saName, !!namespace,
   )
+  // Plural form: the endpoint resolves URL plurals to kinds the same way the
+  // audit drill-down does, so "deployments" and "Deployment" both work.
+  const { data: policyData, isLoading: policyLoading, error: policyError } = usePolicyResource(
+    kindToPlural(kind), namespace, metadata.name || '', !!namespace && !!metadata.name,
+  )
   const hpaRefs = (scaleBlockedBy ?? []).filter(ref => {
     const refKind = ref.kind.toLowerCase()
     return refKind === 'horizontalpodautoscaler' || refKind === 'hpa'
@@ -80,6 +86,9 @@ export function WorkloadRenderer({ kind, data, onNavigate, scaleBlockedBy }: Wor
       rbacData={rbacData ?? null}
       rbacLoading={rbacLoading}
       rbacError={rbacError as Error | null}
+      policyData={policyData ?? null}
+      policyLoading={policyLoading}
+      policyError={policyError as Error | null}
       scaleBlockedBy={scaleBlockedBy}
       scalerDiagnostics={scalerDiagnostics}
       onScale={async (replicas) => {

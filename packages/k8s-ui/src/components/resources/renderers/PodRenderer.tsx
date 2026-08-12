@@ -1,6 +1,8 @@
 import { useState, type ReactNode, type JSX } from 'react'
 import { Server, HardDrive, Terminal as TerminalIcon, FileText, Activity, CirclePlay, FolderOpen, List, Eye, EyeOff, Shield } from 'lucide-react'
 import { clsx } from 'clsx'
+import { PolicySection } from './PolicySection'
+import type { PolicyResourceResponse } from '../../../types/policy'
 import { Section, PropertyList, Property, ConditionsSection, CopyHandler, AlertBanner, ResourceLink, useOperationalIssuesShown } from '../../ui/drawer-components'
 import { formatResources, formatDuration, getPodProblems, getPodPhaseDisplay, healthColors, SEVERITY_DOT_COLOR, getDefaultContainerName } from '../resource-utils'
 import { getResourceStatusColor, SEVERITY_BADGE_BORDERED } from '../../../utils/badge-colors'
@@ -108,6 +110,10 @@ interface PodRendererProps {
   rbacData?: RBACSubjectResponse | null
   rbacLoading?: boolean
   rbacError?: Error | null
+  /** Undefined means the host didn't wire the fetch; the section is omitted. */
+  policyData?: PolicyResourceResponse | null
+  policyLoading?: boolean
+  policyError?: Error | null
 }
 
 // ── Env vars section — extracted to use hooks (useState for reveal) ──────────
@@ -287,6 +293,9 @@ export function PodRenderer({
   rbacData,
   rbacLoading,
   rbacError,
+  policyData,
+  policyLoading,
+  policyError,
 }: PodRendererProps) {
   const containerStatuses = data.status?.containerStatuses || []
   const containers = data.spec?.containers || []
@@ -582,6 +591,10 @@ export function PodRenderer({
       )}
 
       {/* Container Status */}
+      {policyData !== undefined && (
+        <PolicySection data={policyData} loading={policyLoading} error={policyError} />
+      )}
+
       <Section title="Containers" icon={HardDrive} defaultExpanded>
         <div className="space-y-3">
           {containers.map((container: any) => {

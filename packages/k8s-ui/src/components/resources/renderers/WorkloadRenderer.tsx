@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Server, ExternalLink, Scale, Minus, Plus, Loader2, Shield } from 'lucide-react'
 import { clsx } from 'clsx'
+import { PolicySection } from './PolicySection'
+import type { PolicyResourceResponse } from '../../../types/policy'
 import { Section, PropertyList, Property, ConditionsSection, PodTemplateSection, AlertBanner, ResourceLink, ResourceRefBadge, useOperationalIssuesShown } from '../../ui/drawer-components'
 import { DialogPortal } from '../../ui/DialogPortal'
 import { Tooltip } from '../../ui/Tooltip'
@@ -40,6 +42,14 @@ interface WorkloadRendererProps {
   rbacData?: RBACSubjectResponse | null
   rbacLoading?: boolean
   rbacError?: Error | null
+  /**
+   * Policy findings for this workload. Undefined means the host didn't wire the
+   * fetch, so the section is omitted entirely — consumers that skip it get the
+   * original sections and nothing breaks.
+   */
+  policyData?: PolicyResourceResponse | null
+  policyLoading?: boolean
+  policyError?: Error | null
 }
 
 // Check if the workload is actively progressing (scaling, rolling update)
@@ -140,7 +150,7 @@ function compactHPASummary(diagnosis: HPADiagnosis): string {
   return diagnosis.summary
 }
 
-export function WorkloadRenderer({ kind, data, onNavigate, onViewPods, onScale, isScalePending, scaleBlockedBy, scalerDiagnostics, onRequestRefresh, rbacData, rbacLoading, rbacError }: WorkloadRendererProps) {
+export function WorkloadRenderer({ kind, data, onNavigate, onViewPods, onScale, isScalePending, scaleBlockedBy, scalerDiagnostics, onRequestRefresh, rbacData, rbacLoading, rbacError, policyData, policyLoading, policyError }: WorkloadRendererProps) {
   const status = data.status || {}
   const spec = data.spec || {}
   const metadata = data.metadata || {}
@@ -371,6 +381,10 @@ export function WorkloadRenderer({ kind, data, onNavigate, onViewPods, onScale, 
           </button>
         </div>
       </DialogPortal>
+
+      {policyData !== undefined && (
+        <PolicySection data={policyData} loading={policyLoading} error={policyError} />
+      )}
 
       <Section title="Strategy">
         <PropertyList>

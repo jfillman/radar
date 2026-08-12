@@ -6,6 +6,7 @@ import { useOpenTerminal, useOpenLogs } from '../../dock'
 import { useCapabilitiesContext, useNamespacedCapabilities, useIsLocalDeployment } from '../../../contexts/CapabilitiesContext'
 import { getVisibleLiveMetrics, isLiveMetricsUnavailable, shouldFetchLiveMetrics, usePodEnvironment, usePodMetrics, usePodMetricsHistory, usePrometheusResourceMetrics, usePrometheusStatus, useRevealPodEnvironment } from '../../../api/client'
 import { useRBACSubject } from '../../../api/rbac'
+import { usePolicyResource } from '../../../api/policy'
 import { podAwaitsScheduling } from '../../capacity/podDemandGate'
 import { PortForwardInlineButton } from '../../portforward/PortForwardButton'
 import { ImageFilesystemModal } from '../ImageFilesystemModal'
@@ -74,6 +75,10 @@ export function PodRenderer({ data, onCopy, copied, onNavigate, onOpenLogs, reso
     'ServiceAccount', namespace ?? '', saName, !!namespace,
   )
 
+  const { data: policyData, isLoading: policyLoading, error: policyError } = usePolicyResource(
+    'pods', namespace ?? '', podName, !!namespace && !!podName,
+  )
+
   return (
     <BasePodRenderer
       data={data}
@@ -102,6 +107,9 @@ export function PodRenderer({ data, onCopy, copied, onNavigate, onOpenLogs, reso
       rbacData={rbacData ?? null}
       rbacLoading={rbacLoading}
       rbacError={rbacError as Error | null}
+      policyData={policyData ?? null}
+      policyLoading={policyLoading}
+      policyError={policyError as Error | null}
       canExec={canExec}
       canViewLogs={canViewLogs}
       canPortForward={showPortForward}

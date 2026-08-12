@@ -550,6 +550,11 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			// Cluster audit
 			r.Get("/audit", s.handleAudit)
 			r.Get("/audit/resource/{kind}/{namespace}/{name}", s.handleAuditResource)
+
+			// Policy findings for one resource. Separate from /audit so it can
+			// carry its own coverage state: an empty list here means one of four
+			// things and the response says which.
+			r.Get("/policy/resource/{kind}/{namespace}/{name}", s.handlePolicyResource)
 			r.Get("/upgrade-readiness", s.handleUpgradeReadiness)
 
 			// Network path trace - path-shaped diagnosis for Service /

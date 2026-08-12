@@ -17,7 +17,10 @@ export function HelmRepositoryRenderer({ data }: HelmRepositoryRendererProps) {
   const artifact = status.artifact || {}
 
   // Convert to unified GitOps status
-  const gitOpsStatus = fluxConditionsToGitOpsStatus(conditions, spec.suspend === true)
+  const gitOpsStatus = fluxConditionsToGitOpsStatus(conditions, spec.suspend === true, {
+    generation: data.metadata?.generation,
+    observedGeneration: status.observedGeneration,
+  })
 
   // Determine repository type
   const isOCI = spec.type === 'oci'

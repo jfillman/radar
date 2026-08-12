@@ -96,45 +96,8 @@ func rootStatus(root *unstructured.Unstructured, tool Tool) gitOpsStatus {
 		health, _, _ := unstructured.NestedString(root.Object, "status", "health", "status")
 		return gitOpsStatus{Sync: normalizeSync(sync), Health: normalizeHealth(health)}
 	}
-	conditions, _, _ := unstructured.NestedSlice(root.Object, "status", "conditions")
-	ready := ""
-	reconciling := false
-	stalled := false
-	for _, item := range conditions {
-		m, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		t := gitops.StringValue(m["type"])
-		s := gitops.StringValue(m["status"])
-		if t == "Ready" {
-			ready = s
-		}
-		if t == "Reconciling" && s == "True" {
-			reconciling = true
-		}
-		if t == "Stalled" && s == "True" {
-			stalled = true
-		}
-	}
-	if root.Object["spec"] != nil {
-		if suspended, _, _ := unstructured.NestedBool(root.Object, "spec", "suspend"); suspended {
-			return gitOpsStatus{Sync: "Unknown", Health: "Suspended"}
-		}
-	}
-	if reconciling {
-		return gitOpsStatus{Sync: "Reconciling", Health: "Progressing"}
-	}
-	if stalled {
-		return gitOpsStatus{Sync: "OutOfSync", Health: "Degraded"}
-	}
-	if ready == "True" {
-		return gitOpsStatus{Sync: "Synced", Health: "Healthy"}
-	}
-	if ready == "False" {
-		return gitOpsStatus{Sync: "OutOfSync", Health: "Degraded"}
-	}
-	return gitOpsStatus{Sync: "Unknown", Health: "Unknown"}
+	st := gitops.FluxStatus(root)
+	return gitOpsStatus{Sync: st.Sync, Health: st.Health}
 }
 
 func normalizeSync(status string) string {

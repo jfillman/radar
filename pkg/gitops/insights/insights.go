@@ -1227,36 +1227,8 @@ type fluxState struct {
 }
 
 func fluxStatus(root *unstructured.Unstructured) fluxState {
-	if suspended, _, _ := unstructured.NestedBool(root.Object, "spec", "suspend"); suspended {
-		return fluxState{sync: "Unknown", health: "Suspended"}
-	}
-	ready := ""
-	reconciling := false
-	stalled := false
-	for _, c := range conditions(root) {
-		if c.typ == "Ready" {
-			ready = c.status
-		}
-		if c.typ == "Reconciling" && c.status == "True" {
-			reconciling = true
-		}
-		if c.typ == "Stalled" && c.status == "True" {
-			stalled = true
-		}
-	}
-	if reconciling {
-		return fluxState{sync: "Reconciling", health: "Progressing"}
-	}
-	if stalled {
-		return fluxState{sync: "OutOfSync", health: "Degraded"}
-	}
-	if ready == "True" {
-		return fluxState{sync: "Synced", health: "Healthy"}
-	}
-	if ready == "False" {
-		return fluxState{sync: "OutOfSync", health: "Degraded"}
-	}
-	return fluxState{sync: "Unknown", health: "Unknown"}
+	st := gitops.FluxStatus(root)
+	return fluxState{sync: st.Sync, health: st.Health}
 }
 
 func nestedRef(root *unstructured.Unstructured, fields ...string) (Ref, bool) {

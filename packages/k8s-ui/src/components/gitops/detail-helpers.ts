@@ -100,7 +100,10 @@ export function getGitOpsResourceStatus(kind: string, resource: any): GitOpsStat
     return argoStatusToGitOpsStatus(resource?.status ?? {})
   }
   const conditions = (resource?.status?.conditions ?? []) as FluxCondition[]
-  return fluxConditionsToGitOpsStatus(conditions, resource?.spec?.suspend === true)
+  return fluxConditionsToGitOpsStatus(conditions, resource?.spec?.suspend === true, {
+    generation: resource?.metadata?.generation,
+    observedGeneration: resource?.status?.observedGeneration,
+  })
 }
 
 // getGitOpsTool routes a kind+group to 'argo' or 'flux'. Same shape used

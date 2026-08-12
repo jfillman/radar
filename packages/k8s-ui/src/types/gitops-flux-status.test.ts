@@ -76,7 +76,29 @@ describe('fluxConditionsToGitOpsStatus truth table', () => {
       fluxConditionsToGitOpsStatus([c('Ready', 'True')], true, { generation: 2, observedGeneration: 1 }).sync,
     ).toBe('Unknown')
   })
+
+  it('treats a retrying Ready=False as progressing, not degraded', () => {
+    // Mirrors pkg/gitops/fluxstatus_test.go. Flux composes reasons like
+    // ProgressingWithRetry; a retry in flight is out of sync but not settled.
+    const got = fluxConditionsToGitOpsStatus(
+      [c('Ready', 'False', { reason: 'ProgressingWithRetry' })],
+      false,
+      { generation: 1, observedGeneration: 1 },
+    )
+    expect(got.sync).toBe('OutOfSync')
+    expect(got.health).toBe('Progressing')
+  })
+
+  it('treats a settled Ready=False as degraded', () => {
+    const got = fluxConditionsToGitOpsStatus([c('Ready', 'False', { reason: 'BuildFailed' })], false, {
+      generation: 1,
+      observedGeneration: 1,
+    })
+    expect(got.sync).toBe('OutOfSync')
+    expect(got.health).toBe('Degraded')
+  })
 })
+
 
 describe('reconciling activity', () => {
   it('survives even when it no longer drives the status', () => {

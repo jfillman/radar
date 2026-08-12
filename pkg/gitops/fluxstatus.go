@@ -1,6 +1,10 @@
 package gitops
 
-import "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+import (
+	"strings"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+)
 
 // FluxState is the sync/health pair derived from a Flux object's conditions.
 type FluxState struct {
@@ -31,13 +35,14 @@ type FluxState struct {
 // Shared by the insights and tree packages, which previously carried
 // near-duplicate copies that had already drifted apart on suspend handling.
 func FluxStatus(root *unstructured.Unstructured) FluxState {
-	var ready, healthy string
+	var ready, readyReason, healthy string
 	var reconciling, stalled bool
 
 	for _, c := range fluxConditions(root) {
 		switch c.typ {
 		case "Ready":
 			ready = c.status
+			readyReason = c.reason
 		case "Healthy":
 			healthy = c.status
 		case "Reconciling":
@@ -85,7 +90,14 @@ func FluxStatus(root *unstructured.Unstructured) FluxState {
 	}
 
 	if ready == "False" {
-		return FluxState{Sync: "OutOfSync", Health: "Degraded", Reconciling: reconciling}
+		// Flux distinguishes a retry or remediation in flight (ProgressingWithRetry,
+		// and the Wait/Retry reasons) from a settled failure. Both are out of sync,
+		// but calling a retry Degraded overstates it.
+		health := "Degraded"
+		if isTransientFluxReason(readyReason) {
+			health = "Progressing"
+		}
+		return FluxState{Sync: "OutOfSync", Health: health, Reconciling: reconciling}
 	}
 
 	return FluxState{Sync: "Unknown", Health: "Unknown", Reconciling: reconciling}
@@ -107,9 +119,23 @@ func fluxGenerationDrift(root *unstructured.Unstructured) bool {
 	return gen != obs
 }
 
+// isTransientFluxReason mirrors the frontend mapper's substring test so the two
+// implementations agree on this row. Substring rather than an enumeration
+// because Flux composes reasons (ProgressingWithRetry, HealthCheckFailed after
+// a wait) and the set is not stable across controller versions.
+func isTransientFluxReason(reason string) bool {
+	for _, marker := range []string{"Progress", "Retry", "Wait"} {
+		if strings.Contains(reason, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 type fluxCondition struct {
 	typ    string
 	status string
+	reason string
 }
 
 func fluxConditions(root *unstructured.Unstructured) []fluxCondition {
@@ -123,7 +149,11 @@ func fluxConditions(root *unstructured.Unstructured) []fluxCondition {
 		if !ok {
 			continue
 		}
-		out = append(out, fluxCondition{typ: StringValue(m["type"]), status: StringValue(m["status"])})
+		out = append(out, fluxCondition{
+			typ:    StringValue(m["type"]),
+			status: StringValue(m["status"]),
+			reason: StringValue(m["reason"]),
+		})
 	}
 	return out
 }

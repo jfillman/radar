@@ -35,6 +35,10 @@ func cond(typ, status string) map[string]any {
 	return map[string]any{"type": typ, "status": status}
 }
 
+func condReason(typ, status, reason string) map[string]any {
+	return map[string]any{"type": typ, "status": status, "reason": reason}
+}
+
 func TestFluxStatusTruthTable(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -116,6 +120,19 @@ func TestFluxStatusTruthTable(t *testing.T) {
 			name:     "suspended with drift is not Synced",
 			obj:      fluxObj(true, int64(2), int64(1), cond("Ready", "True")),
 			wantSync: "Unknown", wantHealth: "Suspended",
+		},
+		{
+			// A retry or remediation in flight is out of sync but not settled
+			// failure. Mirrors the frontend mapper, which has always drawn this
+			// distinction — the two must agree.
+			name:     "a retrying Ready=False is progressing, not degraded",
+			obj:      fluxObj(false, int64(1), int64(1), condReason("Ready", "False", "ProgressingWithRetry")),
+			wantSync: "OutOfSync", wantHealth: "Progressing",
+		},
+		{
+			name:     "a settled Ready=False is degraded",
+			obj:      fluxObj(false, int64(1), int64(1), condReason("Ready", "False", "BuildFailed")),
+			wantSync: "OutOfSync", wantHealth: "Degraded",
 		},
 		{
 			name:     "no conditions at all",

@@ -9,14 +9,29 @@ import (
 	"github.com/skyhook-io/radar/pkg/resourceid"
 )
 
-// The report family authorization is checked against. Both wgpolicyk8s.io and
-// openreports.io carry the same resource name, and a caller who can read one
-// family in a namespace can in practice read the other, so a single check is
-// enough to answer "may this identity see policy results here".
-const (
-	policyReportGroup    = "wgpolicyk8s.io"
-	policyReportResource = "policyreports"
-)
+// The two report families Radar indexes. They do NOT share a resource name —
+// wgpolicyk8s.io serves `policyreports`, openreports.io serves `reports` — and
+// a cluster may serve either, both (mid-migration), or only the newer one,
+// which is where Kyverno 1.15+ writes. Authorizing against one name alone asks
+// about a resource that may not exist on the cluster in front of us, and the
+// answer to that question is not the answer we wanted.
+var policyReportFamilies = []struct{ group, resource string }{
+	{group: "wgpolicyk8s.io", resource: "policyreports"},
+	{group: "openreports.io", resource: "reports"},
+}
+
+// canReadPolicyReports reports whether this identity may read policy results in
+// the namespace. Permission on EITHER family is enough: the findings are merged
+// from whichever families are served, so being able to read the one that
+// actually carries data is what matters.
+func (s *Server) canReadPolicyReports(r *http.Request, namespace string) bool {
+	for _, f := range policyReportFamilies {
+		if s.canRead(r, f.group, f.resource, namespace, "list") {
+			return true
+		}
+	}
+	return false
+}
 
 // PolicyResourceFinding is one rule outcome for one resource, as rendered.
 type PolicyResourceFinding struct {
@@ -86,7 +101,7 @@ func (s *Server) handlePolicyResource(w http.ResponseWriter, r *http.Request) {
 	//
 	// A denial is a 403 rather than an empty list on purpose: an empty list
 	// reads as "nothing is violated", which is a claim we have not earned.
-	if !s.canRead(r, policyReportGroup, policyReportResource, namespace, "list") {
+	if !s.canReadPolicyReports(r, namespace) {
 		s.writeError(w, http.StatusForbidden, "no access to policy reports in this namespace")
 		return
 	}

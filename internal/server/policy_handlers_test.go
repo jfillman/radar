@@ -47,3 +47,23 @@ func TestPolicyCountsIncludePassesThatAreNotListed(t *testing.T) {
 		t.Error("pass detection is wrong")
 	}
 }
+
+// The two families do not share a resource name. Authorizing against only
+// wgpolicyk8s.io's `policyreports` asks about a resource that is not served on
+// an openreports-only cluster — which is where Kyverno 1.15+ writes — so the
+// answer says nothing about whether the caller can see their policy results.
+func TestPolicyReportFamiliesCarryTheirOwnResourceNames(t *testing.T) {
+	byGroup := map[string]string{}
+	for _, f := range policyReportFamilies {
+		byGroup[f.group] = f.resource
+	}
+	if got := byGroup["wgpolicyk8s.io"]; got != "policyreports" {
+		t.Errorf("wgpolicyk8s.io resource = %q, want policyreports", got)
+	}
+	if got := byGroup["openreports.io"]; got != "reports" {
+		t.Errorf("openreports.io resource = %q, want reports — it is NOT policyreports", got)
+	}
+	if len(policyReportFamilies) != 2 {
+		t.Errorf("expected both families to be authorized against, got %d", len(policyReportFamilies))
+	}
+}

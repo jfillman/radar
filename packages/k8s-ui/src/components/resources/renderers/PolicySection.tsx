@@ -63,7 +63,7 @@ export function PolicySection({ data, loading, error }: PolicySectionProps) {
     }
     return (
       <Section title={TITLE} icon={ShieldAlert}>
-        <div className="text-sm text-red-400">Could not load policy results: {error.message}</div>
+        <div className="text-sm text-red-400">{`Could not load policy results: ${error.message}`}</div>
       </Section>
     )
   }
@@ -77,10 +77,10 @@ export function PolicySection({ data, loading, error }: PolicySectionProps) {
     return (
       <Section title={TITLE} icon={ShieldQuestion}>
         <div className="text-sm text-theme-text-tertiary">
-          {data.status === 'warmup'
+          {(data.status === 'warmup'
             ? 'Policy results are still loading from the cluster.'
-            : 'Policy results are unavailable, so this resource has not been checked.'}
-          {data.reasonCode ? ` (${data.reasonCode})` : ''}
+            : 'Policy results are unavailable, so this resource has not been checked.') +
+            (data.reasonCode ? ` (${data.reasonCode})` : '')}
         </div>
       </Section>
     )
@@ -112,7 +112,7 @@ export function PolicySection({ data, loading, error }: PolicySectionProps) {
     >
       {failing === 0 ? (
         <div className="text-sm text-theme-text-secondary">
-          All {counts.pass} {counts.pass === 1 ? 'check' : 'checks'} passing.
+          {`All ${counts.pass} ${counts.pass === 1 ? 'check' : 'checks'} passing.`}
         </div>
       ) : (
         <div className="space-y-2">
@@ -121,7 +121,7 @@ export function PolicySection({ data, loading, error }: PolicySectionProps) {
           ))}
           {counts.pass > 0 && (
             <div className="text-xs text-theme-text-tertiary pt-1">
-              {counts.pass} other {counts.pass === 1 ? 'check' : 'checks'} passing
+              {`${counts.pass} other ${counts.pass === 1 ? 'check' : 'checks'} passing`}
             </div>
           )}
         </div>
@@ -162,10 +162,7 @@ function PartialCoverageNote({ data }: { data: PolicyResourceResponse }) {
   return (
     <div className="mt-2 pt-2 border-t border-theme-border text-xs text-theme-text-tertiary">
       {denied.length > 0 && (
-        <div>
-          Some policy results could not be read ({denied.join(', ')}), so this list may be
-          incomplete.
-        </div>
+        <div>{`Some policy results could not be read (${denied.join(', ')}), so this list may be incomplete.`}</div>
       )}
       {!data.liveUpdates && <div>These results are not updating live.</div>}
     </div>

@@ -1,11 +1,13 @@
 name: Publish @skyhook-io/radar-app
 
-# Radar's source imports deep paths from @skyhook-io/k8s-ui
-# (./types/*, ./utils/*, ./components/gitops/*, ./components/timeline/*,
-# ./components/resources/renderers/*, ./components/checks/*, and the shared
-# Input primitive and YAML editor APIs shipped through k8s-ui v1.8.15). Publish
-# k8s-ui FIRST before tagging a radar-app release — peer dep resolves to '>=1.8.15',
-# so the imported k8s-ui source exports must already be on the registry.
+# This package ships source, not a build, so every @skyhook-io/k8s-ui export that
+# web/src imports must already be on the registry when a consumer installs it.
+# Publish k8s-ui FIRST, then tag radar-app.
+#
+# The floor is the k8s-ui peer range in web/package.json. Any PR that imports a
+# newly added k8s-ui export must raise it in the same change — otherwise this
+# package advertises compatibility with a k8s-ui that cannot compile it, and
+# consumers fail at build time with "has no exported member".
 
 on:
   push:

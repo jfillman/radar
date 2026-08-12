@@ -2,6 +2,8 @@ import { clsx } from 'clsx'
 import { CheckCircle2, AlertCircle, Loader2, Pause, HelpCircle, XCircle } from 'lucide-react'
 import type { GitOpsStatus, SyncStatus, GitOpsHealthStatus } from '../../types/gitops'
 import { SEVERITY_BADGE_BORDERED, SEVERITY_BADGE } from '../../utils/badge-colors'
+import { formatCompactAge } from '../../utils/format'
+import { Tooltip } from '../ui/Tooltip'
 
 interface GitOpsStatusBadgeProps {
   status: GitOpsStatus
@@ -174,5 +176,30 @@ export function HealthStatusBadge({ health }: { health: GitOpsHealthStatus }) {
       <Icon className={clsx('w-3 h-3', health === 'Progressing' && 'animate-spin')} />
       {label}
     </span>
+  )
+}
+
+
+/**
+ * ReconcilingIndicator rides alongside the sync badge rather than replacing it,
+ * the same primary-plus-secondary shape the Velero schedule cell uses for a
+ * paused-and-rejected schedule.
+ *
+ * A pass being in flight says nothing about whether the declared state is
+ * applied, so it must not touch the sync word — but a pass that never finishes
+ * is the one fault nothing else in the product notices, and on a healthy object
+ * a real pass completes in milliseconds. In practice this only becomes visible
+ * when a controller is wedged, which is exactly when it should be.
+ */
+export function ReconcilingIndicator({ reconciling, since }: { reconciling?: boolean; since?: string }) {
+  if (!reconciling) return null
+  const age = formatCompactAge(since)
+  const tip = age
+    ? `A reconcile pass has been in flight for ${age}. On a healthy resource a pass finishes in milliseconds, so a long-running one usually means the controller is stuck.`
+    : 'A reconcile pass is in flight.'
+  return (
+    <Tooltip content={tip}>
+      <Loader2 className="w-3 h-3 shrink-0 animate-spin text-theme-text-tertiary" aria-label="Reconcile pass in flight" />
+    </Tooltip>
   )
 }

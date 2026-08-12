@@ -24,7 +24,7 @@ import {
   Zap,
 } from 'lucide-react'
 
-import { HealthStatusBadge, SyncStatusBadge } from './GitOpsStatusBadge'
+import { HealthStatusBadge, ReconcilingIndicator, SyncStatusBadge } from './GitOpsStatusBadge'
 import { Tooltip } from '../ui/Tooltip'
 import { Input } from '../ui/Input'
 import { PageHeader } from '../ui/PageHeader'
@@ -150,6 +150,14 @@ export interface GitOpsRow {
   sync: string
   health: string
   suspended: boolean
+  /**
+   * A reconcile pass is executing. Deliberately separate from sync: a pass
+   * being in flight says nothing about whether the declared state is applied,
+   * but a pass that never finishes is the one fault nothing else in the
+   * product notices.
+   */
+  reconciling?: boolean
+  reconcilingSince?: string
   repository: string
   targetRevision: string
   path: string
@@ -1300,7 +1308,12 @@ function GitOpsTable({
               <TableCell>
                 {row.terminating
                   ? <span className="text-[11px] text-theme-text-tertiary">—</span>
-                  : <SyncStatusBadge sync={row.sync as any} suspended={row.suspended} />}
+                  : (
+                    <span className="inline-flex items-center gap-1 min-w-0">
+                      <SyncStatusBadge sync={row.sync as any} suspended={row.suspended} />
+                      <ReconcilingIndicator reconciling={row.reconciling} since={row.reconcilingSince} />
+                    </span>
+                  )}
               </TableCell>
               <TableCell>
                 {row.terminating
@@ -1529,6 +1542,7 @@ function GitOpsTile({
           ) : (
             <>
               <SyncStatusBadge sync={row.sync as any} suspended={row.suspended} />
+              <ReconcilingIndicator reconciling={row.reconciling} since={row.reconcilingSince} />
               <HealthStatusBadge health={row.health as any} />
             </>
           )}
@@ -1896,6 +1910,8 @@ export function normalizeArgoApplication(resource: any): GitOpsRow {
     labels: (resource.metadata?.labels ?? {}) as Record<string, string>,
     sync: status?.sync ?? 'Unknown',
     health: status?.health ?? 'Unknown',
+    reconciling: status?.reconciling,
+    reconcilingSince: status?.reconcilingSince,
     suspended: (status?.suspended ?? false) || isArgoSuspendedByRadar(resource),
     repository: resource.spec?.source?.repoURL ?? '',
     targetRevision: resource.spec?.source?.targetRevision ?? '',
@@ -1932,6 +1948,8 @@ export function normalizeFluxKustomization(resource: any, fluxSourceUrls?: Map<s
     labels: (resource.metadata?.labels ?? {}) as Record<string, string>,
     sync: status?.sync ?? 'Unknown',
     health: status?.health ?? 'Unknown',
+    reconciling: status?.reconciling,
+    reconcilingSince: status?.reconcilingSince,
     suspended: status?.suspended ?? resource.spec?.suspend === true,
     repository,
     targetRevision: resource.status?.lastAppliedRevision ?? resource.status?.lastAttemptedRevision ?? '',
@@ -1969,6 +1987,8 @@ export function normalizeFluxHelmRelease(resource: any, fluxSourceUrls?: Map<str
     labels: (resource.metadata?.labels ?? {}) as Record<string, string>,
     sync: status?.sync ?? 'Unknown',
     health: status?.health ?? 'Unknown',
+    reconciling: status?.reconciling,
+    reconcilingSince: status?.reconcilingSince,
     suspended: status?.suspended ?? resource.spec?.suspend === true,
     repository,
     targetRevision: chartSpec.version ?? resource.status?.lastAttemptedRevision ?? '',

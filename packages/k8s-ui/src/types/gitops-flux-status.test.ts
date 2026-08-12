@@ -136,3 +136,28 @@ describe('non-Kustomization Flux kinds', () => {
     expect(got.health).toBe('Healthy')
   })
 })
+
+// The wedged-controller case end to end: a fully-applied object whose reconcile
+// pass never finished must read Synced (it IS applied) AND still carry the
+// in-flight fact, or a stuck controller becomes invisible. Before the sync fix
+// this state showed a permanent "Syncing", which was the wrong word but the
+// only thing in the product that noticed.
+describe('a wedged controller stays visible', () => {
+  it('reports Synced and keeps the in-flight fact with its start time', () => {
+    const got = fluxConditionsToGitOpsStatus(
+      [
+        c('Ready', 'True', { lastTransitionTime: '2026-08-11T06:00:00Z' }),
+        c('Healthy', 'True'),
+        c('Reconciling', 'True', { lastTransitionTime: '2026-08-11T06:05:00Z' }),
+      ],
+      false,
+      { generation: 1, observedGeneration: 1 },
+    )
+    expect(got.sync).toBe('Synced')
+    expect(got.health).toBe('Healthy')
+    // Both are required: without these the indicator has nothing to render and
+    // the operator gets a confident all-clear over a stuck controller.
+    expect(got.reconciling).toBe(true)
+    expect(got.reconcilingSince).toBe('2026-08-11T06:05:00Z')
+  })
+})

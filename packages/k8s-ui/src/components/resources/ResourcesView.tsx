@@ -1944,13 +1944,21 @@ function getColumnsForKind(kind: string, group?: string): Column[] {
 // the current kind doesn't have would sort by an absent value and leave no
 // header arrow to undo it from, so the preference yields to the kind's
 // built-in order there.
+//
+// `extraColumnKeys` carries the sortable columns that aren't in KNOWN_COLUMNS —
+// user-defined label/annotation columns and host-injected leading columns.
+// Omitting them would make sorting by one a no-op: the header click would
+// resolve straight back to "unknown column" and clear itself.
 export function resolveDefaultSort(
   defaultSort: { column: string; direction: 'asc' | 'desc' } | null | undefined,
   kind: string,
   group?: string,
+  extraColumnKeys: readonly string[] = [],
 ): { column: string | null; direction: SortDirection } {
   if (!defaultSort?.column) return { column: null, direction: null }
-  const known = getColumnsForKind(kind, group).some(c => c.key === defaultSort.column)
+  const known =
+    extraColumnKeys.includes(defaultSort.column) ||
+    getColumnsForKind(kind, group).some(c => c.key === defaultSort.column)
   if (!known) return { column: null, direction: null }
   return { column: defaultSort.column, direction: defaultSort.direction }
 }
@@ -2573,6 +2581,15 @@ export function ResourcesView({
     builtCustomColumns.forEach(c => m.set(c.key, c))
     return m
   }, [extraLeadingColumns, builtCustomColumns])
+
+  // Sortable columns outside KNOWN_COLUMNS, as a value-stable key list. Keyed
+  // on the joined keys rather than the map itself: a host that rebuilds
+  // extraLeadingColumns on every render would otherwise re-run the sort-apply
+  // effect every render and wipe whatever the user just sorted by.
+  const extraSortableKeys = useMemo(
+    () => [...extraColumnsByKey.keys()].sort().join('\n'),
+    [extraColumnsByKey],
+  )
 
   // Guards the save effect from persisting on the initial load of each kind
   // (set false by the load effect, flipped true on its first skipped save).
@@ -3711,10 +3728,15 @@ export function ResourcesView({
   // three are the same operation, so one effect owns them; without the
   // preference this is the old "reset sort on kind change".
   const applyDefaultSort = useCallback(() => {
-    const { column, direction } = resolveDefaultSort(defaultSort, selectedKind.name, selectedKind.group)
+    const { column, direction } = resolveDefaultSort(
+      defaultSort,
+      selectedKind.name,
+      selectedKind.group,
+      extraSortableKeys ? extraSortableKeys.split('\n') : [],
+    )
     setSortColumn(column)
     setSortDirection(direction)
-  }, [defaultSort, selectedKind.name, selectedKind.group])
+  }, [defaultSort, selectedKind.name, selectedKind.group, extraSortableKeys])
   useEffect(() => {
     applyDefaultSort()
   }, [applyDefaultSort])

@@ -77,6 +77,9 @@ export function useDefaultSort() {
     fetch(apiUrl('/settings'), { credentials: getCredentialsMode(), headers: getAuthHeaders() })
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
+        // Re-check: the user can set or clear the preference while this GET is
+        // in flight, and the server's copy is the older one by then.
+        if (readStored() !== null) return
         const sort = data?.defaultSort
         if (sort?.column && (sort.direction === 'asc' || sort.direction === 'desc')) {
           try {

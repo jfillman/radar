@@ -55,3 +55,26 @@ describe('resolveDefaultSort', () => {
     })
   })
 })
+
+describe('resolveDefaultSort with columns outside KNOWN_COLUMNS', () => {
+  it('applies a user-defined label column', () => {
+    expect(resolveDefaultSort({ column: 'label:app', direction: 'asc' }, 'pods', '', ['label:app'])).toEqual({
+      column: 'label:app',
+      direction: 'asc',
+    })
+  })
+
+  it('applies a host-injected leading column', () => {
+    expect(resolveDefaultSort({ column: 'cluster', direction: 'desc' }, 'pods', '', ['cluster'])).toEqual({
+      column: 'cluster',
+      direction: 'desc',
+    })
+  })
+
+  it('still falls back for a kind that does not carry that extra column', () => {
+    expect(resolveDefaultSort({ column: 'label:app', direction: 'asc' }, 'pods', '', [])).toEqual({
+      column: null,
+      direction: null,
+    })
+  })
+})

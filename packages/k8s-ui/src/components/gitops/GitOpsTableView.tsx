@@ -1311,7 +1311,7 @@ function GitOpsTable({
                   : (
                     <span className="inline-flex items-center gap-1 min-w-0">
                       <SyncStatusBadge sync={row.sync as any} suspended={row.suspended} />
-                      <ReconcilingIndicator reconciling={row.reconciling} since={row.reconcilingSince} />
+                      <ReconcilingIndicator reconciling={row.reconciling} since={row.reconcilingSince} sync={row.sync as any} />
                     </span>
                   )}
               </TableCell>
@@ -1542,7 +1542,7 @@ function GitOpsTile({
           ) : (
             <>
               <SyncStatusBadge sync={row.sync as any} suspended={row.suspended} />
-              <ReconcilingIndicator reconciling={row.reconciling} since={row.reconcilingSince} />
+              <ReconcilingIndicator reconciling={row.reconciling} since={row.reconcilingSince} sync={row.sync as any} />
               <HealthStatusBadge health={row.health as any} />
             </>
           )}

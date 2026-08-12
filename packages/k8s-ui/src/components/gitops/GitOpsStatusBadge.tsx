@@ -191,8 +191,21 @@ export function HealthStatusBadge({ health }: { health: GitOpsHealthStatus }) {
  * a real pass completes in milliseconds. In practice this only becomes visible
  * when a controller is wedged, which is exactly when it should be.
  */
-export function ReconcilingIndicator({ reconciling, since }: { reconciling?: boolean; since?: string }) {
-  if (!reconciling) return null
+export function ReconcilingIndicator({
+  reconciling,
+  since,
+  sync,
+}: {
+  reconciling?: boolean
+  since?: string
+  /** The sync word shown beside this. Omitted when there is no badge alongside. */
+  sync?: SyncStatus
+}) {
+  // Suppressed when the sync badge already says Reconciling — it carries the
+  // same fact and spins for it. Showing both puts two spinners on one row for
+  // one thing. The secondary exists for the case the primary CANNOT express:
+  // an applied object whose reconcile pass never finished.
+  if (!reconciling || sync === 'Reconciling') return null
   const age = formatCompactAge(since)
   const tip = age
     ? `A reconcile pass has been in flight for ${age}. On a healthy resource a pass finishes in milliseconds, so a long-running one usually means the controller is stuck.`

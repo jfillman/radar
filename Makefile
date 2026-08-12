@@ -215,6 +215,21 @@ PODS ?= 50000
 loadtest: frontend embed
 	go run ./cmd/testserver -port $(LOADTEST_PORT) -pods $(PODS)
 
+# Bootstrap a kind cluster pre-loaded with curated Velero fixtures (all 13
+# Backup phases, the supersession series, a paused+invalid Schedule, an
+# unavailable BSL, a restic repository, and the rancher plural collision).
+# The Velero controller is deliberately scaled to 0 — the failure phases
+# cannot be produced without real object storage, so status is written
+# directly. See scripts/velero-demo/README.md for the coverage matrix.
+velero-demo:
+	./scripts/velero-demo.sh up
+
+velero-demo-down:
+	./scripts/velero-demo.sh down
+
+velero-demo-status:
+	./scripts/velero-demo.sh status
+
 # Bootstrap a kind cluster pre-loaded with curated CloudNativePG fixtures
 # (four clusters all 2/2 Ready with four different badges, a real WAL-archiving
 # failure, Pooler/ScheduledBackup/Backups, plus Velero + KubeBlocks CRs for the

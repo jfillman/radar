@@ -291,6 +291,20 @@ cmd_modern_only() {
     --no-hooks >/dev/null
 
   printf "\n"
+  # Helm returns as soon as the API server accepts the deletion; the CRDs then
+  # go through finalizers and garbage collection of their CRs. Asserting the
+  # count immediately reports "still present" on a machine where that takes
+  # more than a moment, and the command fails while the state it is creating is
+  # in fact arriving. Wait for the state, then assert it.
+  local waited=0
+  while [ "${waited}" -lt 60 ]; do
+    if [ "$({ k get crd clusterpolicies.kyverno.io policies.kyverno.io --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')" = "0" ]; then
+      break
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+
   local legacy modern reports
   legacy=$({ k get crd clusterpolicies.kyverno.io policies.kyverno.io --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
   modern=$(k get crd -o jsonpath='{range .items[?(@.spec.group=="policies.kyverno.io")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | wc -l | tr -d ' ')

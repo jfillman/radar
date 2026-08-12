@@ -137,6 +137,17 @@ apply_fixtures() {
     esac
     note "applying $(basename "$f")"
     k apply -f "$f" >/dev/null
+    # A CRD is accepted before it is served. 08-collision-instances.yaml creates
+    # CRs of the two kinds 02-collision-crds.yaml defines, so without this the
+    # instance apply can fail with "no matches for kind" on a slow API server —
+    # and set -e turns that into a failed bootstrap. The Velero fixture waits on
+    # its own collision CRD for the same reason.
+    case "$(basename "$f")" in
+      02-collision-crds.yaml)
+        k wait --for=condition=Established crd/clusters.apps.kubeblocks.io --timeout=60s >/dev/null
+        k wait --for=condition=Established crd/backups.velero.io --timeout=60s >/dev/null
+        ;;
+    esac
   done < <(find "${FIXTURES_DIR}" -maxdepth 1 -type f -name '*.yaml' | sort)
   ok "Fixtures applied"
 }

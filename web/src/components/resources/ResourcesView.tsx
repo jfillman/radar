@@ -9,6 +9,7 @@ import { useAPIResources } from '../../api/apiResources'
 import { useConnection } from '../../context/ConnectionContext'
 import { initNavigationMap } from '@skyhook-io/k8s-ui'
 import { usePinnedKinds } from '../../hooks/useFavorites'
+import { useDefaultSort } from '../../hooks/useDefaultSort'
 import { useOpenLogs, useOpenWorkloadLogs } from '../dock'
 import {
   canBulkRestartKind,
@@ -281,6 +282,9 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   // Pinned kinds
   const { pinned, togglePin, isPinned } = usePinnedKinds()
 
+  // Default sort preference
+  const { defaultSort, setDefaultSort } = useDefaultSort()
+
   // Dock actions
   const openLogs = useOpenLogs()
   const openWorkloadLogs = useOpenWorkloadLogs()
@@ -375,6 +379,9 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       isBulkRestarting={canBulkRestartSelectedKind && bulkRestartMutation.isPending}
       onBulkScale={canBulkScaleSelectedKind ? (items, replicas, options) => bulkScaleMutation.mutate({ items, replicas }, { onSuccess: options?.onSuccess }) : undefined}
       isBulkScaling={canBulkScaleSelectedKind && bulkScaleMutation.isPending}
+      // Default sort preference
+      defaultSort={defaultSort}
+      onSortChange={setDefaultSort}
     />
     <CreateResourceDialog
       open={createDialogOpen}

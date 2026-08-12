@@ -85,7 +85,11 @@ User preferences for the UI. Managed via the Settings dialog or `PUT /api/settin
   "theme": "system",
   "pinnedKinds": [
     { "name": "Deployments", "kind": "Deployment", "group": "" }
-  ]
+  ],
+  "defaultSort": {
+    "column": "age",
+    "direction": "desc"
+  }
 }
 ```
 
@@ -93,6 +97,7 @@ User preferences for the UI. Managed via the Settings dialog or `PUT /api/settin
 |-------|--------|-------------|
 | `theme` | `light`, `dark`, `system` | UI theme preference |
 | `pinnedKinds` | Array of `{name, kind, group}` | Resource kinds pinned to the sidebar |
+| `defaultSort` | `{column, direction}` or `null` | Sort applied to the resource table on load and on every kind switch. `column` is a table column key (`name`, `namespace`, `status`, `age`, and kind-specific ones like `restarts` or `cpu`); `direction` is `asc` or `desc`. Both are required — a PUT with an empty column or any other direction is rejected. A kind that has no such column keeps its built-in order. Sorting a table from its column header writes this field, and the Settings dialog exposes the kind-agnostic columns. Send `null` (or omit the field on first write) for no preference. |
 
 ## Cluster Connection Precedence
 

@@ -562,3 +562,68 @@ func TestPodProblemMessageDoesNotBorrowFromAnotherContainer(t *testing.T) {
 		t.Errorf("PodProblemMessage = %q — the failing container has no message, so this was borrowed from another container", got)
 	}
 }
+
+// An evicted pod has no failing container: the kubelet stops its containers
+// cleanly on the way out, so every one of them terminates with exit 0. Reading
+// the reason off a container reported the pod as "Completed" while its verdict
+// said unhealthy, and dropped the pod-level message that says WHY it was
+// evicted — the only actionable text there is.
+func TestPodProblemReasonUsesPodLevelReasonOnAFailedPod(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	pod := &corev1.Pod{Status: corev1.PodStatus{
+		Phase:   corev1.PodFailed,
+		Reason:  "Evicted",
+		Message: "The node was low on resource: ephemeral-storage.",
+		ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "app", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0}}},
+		},
+	}}
+
+	if got := PodProblemReason(pod, now); got != "Evicted" {
+		t.Errorf("PodProblemReason = %q, want %q", got, "Evicted")
+	}
+	if got := PodProblemMessage(pod); got != "The node was low on resource: ephemeral-storage." {
+		t.Errorf("PodProblemMessage = %q, want the pod-level eviction message", got)
+	}
+
+	// The verdict and the reason must agree: unhealthy must never read as a success.
+	v := Pod(pod, now)
+	if v.Level != LevelUnhealthy || v.Reason == "Completed" {
+		t.Errorf("Pod() = %v/%q — an unhealthy pod reported a successful reason", v.Level, v.Reason)
+	}
+}
+
+// A failed pod with no pod-level reason falls back to the phase, not to a
+// container that exited cleanly.
+func TestPodProblemReasonFailedPodWithoutPodLevelReason(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	pod := &corev1.Pod{Status: corev1.PodStatus{
+		Phase: corev1.PodFailed,
+		ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "app", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0}}},
+		},
+	}}
+	if got := PodProblemReason(pod, now); got != "Failed" {
+		t.Errorf("PodProblemReason = %q, want %q", got, "Failed")
+	}
+}
+
+// A genuinely failed container still wins over the pod-level reason: it is the
+// more specific explanation.
+func TestPodProblemReasonPrefersAFailedContainerOverThePodReason(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	pod := &corev1.Pod{Status: corev1.PodStatus{
+		Phase:  corev1.PodFailed,
+		Reason: "Evicted",
+		ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "app", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				Reason: "OOMKilled", ExitCode: 137, Message: "container was OOM killed"}}},
+		},
+	}}
+	if got := PodProblemReason(pod, now); got != "OOMKilled" {
+		t.Errorf("PodProblemReason = %q, want %q", got, "OOMKilled")
+	}
+	if got := PodProblemMessage(pod); got != "container was OOM killed" {
+		t.Errorf("PodProblemMessage = %q, want the container's message", got)
+	}
+}

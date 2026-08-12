@@ -218,17 +218,29 @@ func podProblemReasonRaw(pod *corev1.Pod, now time.Time) string {
 	if podHasReadinessProbeFailure(pod, now) {
 		return reasonReadinessProbeFail
 	}
-	// Only a pod that has itself finished is described by a container that
-	// completed. While it is still running, the phase is the honest answer —
-	// and it is a phase-like reason, so the crashloop / OOM / thrash
-	// normalizations in PodProblemReason can still replace it. "Completed" is
-	// in neither of their predicate sets, so returning it here would silence
-	// every one of them.
-	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+	// A failed pod is never described by a container that succeeded. The kubelet
+	// puts the cause on the pod itself for the failures that have no failing
+	// container at all — Evicted, DeadlineExceeded, Shutdown, NodeAffinity — and
+	// without this an evicted pod reported "Completed" from the container the
+	// kubelet stopped cleanly on its way out.
+	if pod.Status.Phase == corev1.PodFailed {
+		if pod.Status.Reason != "" {
+			return pod.Status.Reason
+		}
+		return string(corev1.PodFailed)
+	}
+
+	// A succeeded pod, though, IS described by its completed containers.
+	if pod.Status.Phase == corev1.PodSucceeded {
 		if cs := problemContainer(pod, false); cs != nil {
 			return containerStateReason(cs)
 		}
 	}
+
+	// Still running: the phase is the honest answer, and it is a phase-like
+	// reason, so the crashloop / OOM / thrash normalizations in
+	// PodProblemReason can still replace it. "Completed" is in neither of their
+	// predicate sets, so returning it here would silence every one of them.
 	return string(pod.Status.Phase)
 }
 
@@ -293,7 +305,13 @@ func PodProblemMessage(pod *corev1.Pod) string {
 	// phase — later normalized to CrashLoopBackOff / OOMKilled — while the
 	// message came from a container that had merely finished, which is the
 	// cross-container pairing this walk exists to prevent.
-	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+	// Mirrors podProblemReasonRaw: the pod-level message is what explains an
+	// eviction or a deadline, and it belongs to the same object rather than to
+	// some other container.
+	if pod.Status.Phase == corev1.PodFailed {
+		return pod.Status.Message
+	}
+	if pod.Status.Phase == corev1.PodSucceeded {
 		if cs := problemContainer(pod, false); cs != nil {
 			return containerStateMessage(cs)
 		}

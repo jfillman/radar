@@ -62,7 +62,7 @@ func IssueTimingFromConditionLTT(failingSince, resourceCreated time.Time, basis 
 		return IssueTimingResult{IssueTiming: "started_at_resource_creation", Basis: basis}
 	}
 	// Rule 3: confirmed healthy — at least 10 minutes of healthy operation.
-	if healthyFor > 10*time.Minute {
+	if healthyFor >= 10*time.Minute {
 		return IssueTimingResult{IssueTiming: "started_after_resource_was_healthy", Basis: basis}
 	}
 	return IssueTimingResult{} // gray zone: omit

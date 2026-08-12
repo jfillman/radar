@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveDefaultSort } from './ResourcesView'
+import { isSortableColumn, resolveDefaultSort } from './ResourcesView'
 
 describe('resolveDefaultSort', () => {
   it('returns no sort when there is no preference', () => {
@@ -76,5 +76,31 @@ describe('resolveDefaultSort with columns outside KNOWN_COLUMNS', () => {
       column: null,
       direction: null,
     })
+  })
+})
+
+describe('sortability, not just existence', () => {
+  it('rejects a column that exists on the kind but cannot be sorted', () => {
+    // Pods render podIP and node; getSortValue has no ordering for either, and
+    // their headers show no sort affordance — so the preference must not apply.
+    expect(isSortableColumn('podIP', 'pods')).toBe(false)
+    expect(resolveDefaultSort({ column: 'podIP', direction: 'asc' }, 'pods')).toEqual({
+      column: null,
+      direction: null,
+    })
+  })
+
+  it('rejects a host extra column that ships no getSortValue', () => {
+    expect(isSortableColumn('cluster', 'pods', '', [])).toBe(false)
+  })
+
+  it('accepts sortable built-ins present on the kind', () => {
+    expect(isSortableColumn('restarts', 'pods')).toBe(true)
+    expect(isSortableColumn('age', 'configmaps')).toBe(true)
+  })
+
+  it('rejects a sortable built-in that the kind does not render', () => {
+    expect(isSortableColumn('restarts', 'configmaps')).toBe(false)
+    expect(isSortableColumn('namespace', 'nodes')).toBe(false)
   })
 })

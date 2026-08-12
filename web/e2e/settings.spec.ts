@@ -162,7 +162,7 @@ test.describe('Settings dialog — preferences', () => {
     const columnSelect = page.locator('#default-sort-column')
     await expect(columnSelect).toBeVisible()
     await columnSelect.selectOption('age')
-    await page.getByRole('button', { name: 'Descending' }).click()
+    await page.getByRole('button', { name: 'Newest first' }).click()
 
     await expect
       .poll(async () => (await (await request.get('/api/settings')).json()).defaultSort)

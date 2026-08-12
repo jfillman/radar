@@ -1939,27 +1939,49 @@ function getColumnsForKind(kind: string, group?: string): Column[] {
   return DEFAULT_COLUMNS
 }
 
+// Built-in column keys that getSortValue knows how to order. Most columns are
+// display-only — of the ~230 keys across KNOWN_COLUMNS these are the sortable
+// ones, so "the column exists" is not the same question as "it can be sorted".
+const SORTABLE_COLUMN_KEYS: readonly string[] = [
+  'name', 'namespace', 'age', 'status', 'ready', 'restarts', 'type', 'version',
+  'desired', 'available', 'upToDate', 'lastSeen', 'count', 'reason', 'object',
+  'cpu', 'memory', 'containers',
+]
+
+// Whether this table can actually sort by `column` right now. The header, the
+// sort handler, and the saved preference all have to agree: a column that
+// renders no sort affordance but still drives the order is a state the user
+// can see the effect of and has no way to clear.
+//
+// `extraSortableKeys` carries the sortable columns outside KNOWN_COLUMNS —
+// user-defined label/annotation columns and host-injected leading ones, minus
+// any that ship no getSortValue.
+export function isSortableColumn(
+  column: string,
+  kind: string,
+  group?: string,
+  extraSortableKeys: readonly string[] = [],
+): boolean {
+  if (extraSortableKeys.includes(column)) return true
+  if (!SORTABLE_COLUMN_KEYS.includes(column)) return false
+  return getColumnsForKind(kind, group).some(c => c.key === column)
+}
+
 // The user's sort preference names a single column, but each kind has its own
 // column set — Age exists everywhere, Restarts only on Pods. Applying a column
-// the current kind doesn't have would sort by an absent value and leave no
-// header arrow to undo it from, so the preference yields to the kind's
+// the current kind can't sort by would order rows by an absent value and leave
+// no header arrow to undo it from, so the preference yields to the kind's
 // built-in order there.
-//
-// `extraColumnKeys` carries the sortable columns that aren't in KNOWN_COLUMNS —
-// user-defined label/annotation columns and host-injected leading columns.
-// Omitting them would make sorting by one a no-op: the header click would
-// resolve straight back to "unknown column" and clear itself.
 export function resolveDefaultSort(
   defaultSort: { column: string; direction: 'asc' | 'desc' } | null | undefined,
   kind: string,
   group?: string,
-  extraColumnKeys: readonly string[] = [],
+  extraSortableKeys: readonly string[] = [],
 ): { column: string | null; direction: SortDirection } {
   if (!defaultSort?.column) return { column: null, direction: null }
-  const known =
-    extraColumnKeys.includes(defaultSort.column) ||
-    getColumnsForKind(kind, group).some(c => c.key === defaultSort.column)
-  if (!known) return { column: null, direction: null }
+  if (!isSortableColumn(defaultSort.column, kind, group, extraSortableKeys)) {
+    return { column: null, direction: null }
+  }
   return { column: defaultSort.column, direction: defaultSort.direction }
 }
 
@@ -2587,8 +2609,19 @@ export function ResourcesView({
   // extraLeadingColumns on every render would otherwise re-run the sort-apply
   // effect every render and wipe whatever the user just sorted by.
   const extraSortableKeys = useMemo(
-    () => [...extraColumnsByKey.keys()].sort().join('\n'),
+    () => [...extraColumnsByKey.values()].filter(c => c.getSortValue).map(c => c.key).sort().join('\n'),
     [extraColumnsByKey],
+  )
+
+  const canSortBy = useCallback(
+    (column: string) =>
+      isSortableColumn(
+        column,
+        selectedKind.name,
+        selectedKind.group,
+        extraSortableKeys ? extraSortableKeys.split('\n') : [],
+      ),
+    [selectedKind.name, selectedKind.group, extraSortableKeys],
   )
 
   // Guards the save effect from persisting on the initial load of each kind
@@ -3743,6 +3776,10 @@ export function ResourcesView({
 
   // Toggle sort for a column
   const handleSort = useCallback((column: string) => {
+    // The N/A/S shortcuts fire on every kind, including ones with no such
+    // column. Sorting is a no-op there, but the write-back below would still
+    // save it as the preference for every other kind.
+    if (!canSortBy(column)) return
     let newColumn: string | null
     let newDirection: SortDirection
 
@@ -3766,7 +3803,7 @@ export function ResourcesView({
     setSortColumn(newColumn)
     setSortDirection(newDirection)
     onSortChange?.(newColumn && newDirection ? { column: newColumn, direction: newDirection } : null)
-  }, [sortColumn, sortDirection, onSortChange])
+  }, [sortColumn, sortDirection, onSortChange, canSortBy])
 
   // Get sortable value from a resource for a given column
   const getSortValue = useCallback((resource: any, column: string, kind?: string): string | number => {
@@ -5099,9 +5136,7 @@ export function ResourcesView({
                     </th>
                   )}
                   {columns.map((col, colIdx) => {
-                    // Built-in sortable keys, plus any extra/custom column that carries its own getSortValue.
-                    const isSortable = ['name', 'namespace', 'age', 'status', 'ready', 'restarts', 'type', 'version', 'desired', 'available', 'upToDate', 'lastSeen', 'count', 'reason', 'object', 'cpu', 'memory', 'containers'].includes(col.key)
-                      || !!extraColumnsByKey.get(col.key)?.getSortValue
+                    const isSortable = canSortBy(col.key)
                     const isSorted = sortColumn === col.key
                     const isLastCol = colIdx === columns.length - 1
                     const filterCol = filterableColumnMap.get(col.key)

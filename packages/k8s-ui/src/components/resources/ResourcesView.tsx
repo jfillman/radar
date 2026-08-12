@@ -707,6 +707,7 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
   policyreports: [
     { key: 'name', label: 'Name' },
     { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'scope', label: 'Subject', width: 'w-56' },
     { key: 'status', label: 'Status', width: 'w-32' },
     { key: 'pass', label: 'Pass', width: 'w-16' },
     { key: 'fail', label: 'Fail', width: 'w-16' },
@@ -717,6 +718,7 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
   ],
   clusterpolicyreports: [
     { key: 'name', label: 'Name' },
+    { key: 'scope', label: 'Subject', width: 'w-56' },
     { key: 'status', label: 'Status', width: 'w-32' },
     { key: 'pass', label: 'Pass', width: 'w-16' },
     { key: 'fail', label: 'Fail', width: 'w-16' },

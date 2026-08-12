@@ -2,6 +2,7 @@
 
 import { clsx } from 'clsx'
 import {
+  getPolicyReportScope,
   getPolicyReportStatus,
   getPolicyReportSummary,
   getKyvernoPolicyStatus,
@@ -18,6 +19,14 @@ export function PolicyReportCell({ resource, column }: { resource: any; column: 
           {status.text}
         </span>
       )
+    }
+    // Kyverno names a per-resource report after the subject's UID, so the Name
+    // column reads as a bare UUID. Without the subject the whole table is
+    // unidentifiable rows with counts beside them — you cannot tell which of
+    // your workloads a failing report belongs to without opening every one.
+    case 'scope': {
+      const scope = getPolicyReportScope(resource)
+      return <span className="truncate text-theme-text-primary" title={scope}>{scope}</span>
     }
     case 'pass': {
       const summary = getPolicyReportSummary(resource)

@@ -723,3 +723,47 @@ export function getCNPGPoolerAuthQuerySecret(resource: any): { name: string } | 
   if (!secret?.name) return undefined
   return { name: secret.name }
 }
+
+/**
+ * Volume health for a CNPG cluster, read from the arrays the operator publishes
+ * on status. Radar previously showed only the REQUESTED size and storage class,
+ * which are spec-side intentions — a cluster whose volumes had failed rendered
+ * a cheerful "20Gi" with nothing to suggest otherwise.
+ *
+ * `unusablePVC` is the sharp one. Upstream defines it as a volume that cannot be
+ * used because a paired volume is missing, which is why a database instance can
+ * be permanently unable to start while every other field looks ordinary.
+ *
+ * Returns null when the operator has published nothing, so the section can stay
+ * silent rather than claim zero problems it never checked for.
+ */
+export interface CNPGVolumeHealth {
+  total?: number
+  healthy: string[]
+  unusable: string[]
+  dangling: string[]
+  resizing: string[]
+  initializing: string[]
+}
+
+export function getCNPGVolumeHealth(resource: any): CNPGVolumeHealth | null {
+  const s = resource?.status
+  if (!s) return null
+  const list = (v: any): string[] => (Array.isArray(v) ? v.filter((x: any) => typeof x === 'string') : [])
+  const health: CNPGVolumeHealth = {
+    total: typeof s.pvcCount === 'number' ? s.pvcCount : undefined,
+    healthy: list(s.healthyPVC),
+    unusable: list(s.unusablePVC),
+    dangling: list(s.danglingPVC),
+    resizing: list(s.resizingPVC),
+    initializing: list(s.initializingPVC),
+  }
+  const reportedAnything =
+    health.total !== undefined ||
+    health.healthy.length > 0 ||
+    health.unusable.length > 0 ||
+    health.dangling.length > 0 ||
+    health.resizing.length > 0 ||
+    health.initializing.length > 0
+  return reportedAnything ? health : null
+}

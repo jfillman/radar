@@ -5,6 +5,7 @@ import {
   getCNPGBackupStatus,
   getCNPGPoolerStatus,
   isCNPGPoolerPaused,
+  getCNPGVolumeHealth,
   getCNPGClusterInstancesReportedState,
   getCNPGClusterBackupConfig,
   getCNPGClusterBarmanPlugin,
@@ -628,5 +629,36 @@ describe('paused Pooler', () => {
       .toMatchObject({ text: 'Scheduled', level: 'healthy' })
     expect(isCNPGPoolerPaused({ spec: { pgbouncer: { paused: true } } })).toBe(true)
     expect(isCNPGPoolerPaused({ spec: {} })).toBe(false)
+  })
+})
+
+describe('volume health', () => {
+  // Field names and shape verified against a live CloudNativePG 1.27 CRD and a
+  // running cluster: pvcCount is a number, the rest are arrays of PVC names.
+  const healthy = {
+    status: { pvcCount: 2, healthyPVC: ['pg-healthy-1', 'pg-healthy-2'] },
+  }
+
+  it('reads what the operator reports about volumes that exist', () => {
+    const h = getCNPGVolumeHealth(healthy)
+    expect(h).toMatchObject({ total: 2, healthy: ['pg-healthy-1', 'pg-healthy-2'], unusable: [] })
+  })
+
+  it('surfaces an unusable volume, which is why an instance cannot start', () => {
+    // Upstream: unusable means a paired volume is missing.
+    const h = getCNPGVolumeHealth({ status: { pvcCount: 3, healthyPVC: ['a'], unusablePVC: ['pg-main-3'] } })
+    expect(h?.unusable).toEqual(['pg-main-3'])
+  })
+
+  it('stays silent when the operator has reported nothing', () => {
+    // Absence must not render as "0 problems" — the section is hidden instead,
+    // so it never claims a check it did not perform.
+    expect(getCNPGVolumeHealth({ status: {} })).toBeNull()
+    expect(getCNPGVolumeHealth({})).toBeNull()
+  })
+
+  it('ignores malformed entries rather than rendering them', () => {
+    const h = getCNPGVolumeHealth({ status: { pvcCount: 1, healthyPVC: ['ok', 42, null] } })
+    expect(h?.healthy).toEqual(['ok'])
   })
 })

@@ -7,6 +7,7 @@ import {
   getCNPGClusterImage,
   getCNPGClusterStorage,
   getCNPGClusterStorageClass,
+  getCNPGVolumeHealth,
   getCNPGClusterWALStorage,
   getCNPGClusterBootstrapMethod,
   getCNPGClusterUpdateStrategy,
@@ -43,6 +44,7 @@ export function CNPGClusterRenderer({ data, onNavigate }: CNPGClusterRendererPro
   const monitoring = getCNPGClusterMonitoring(data)
   const isReplica = getCNPGClusterIsReplica(data)
   const walStorage = getCNPGClusterWALStorage(data)
+  const volumeHealth = getCNPGVolumeHealth(data)
   const postgresParams = getCNPGClusterPostgresParams(data)
   const instanceNames = getCNPGClusterInstanceNames(data)
   const bootstrapMethod = getCNPGClusterBootstrapMethod(data)
@@ -210,6 +212,14 @@ export function CNPGClusterRenderer({ data, onNavigate }: CNPGClusterRendererPro
         />
       )}
 
+      {volumeHealth && volumeHealth.unusable.length > 0 && (
+        <AlertBanner
+          variant="error"
+          title="Unusable storage volume"
+          message={`${volumeHealth.unusable.join(', ')} cannot be used because a paired volume is missing. An instance backed by it will not start, and the cluster cannot return to full size until the volume is restored or removed.`}
+        />
+      )}
+
       {/* Cluster Overview */}
       <Section title="Cluster Overview" icon={Database} defaultExpanded>
         <PropertyList>
@@ -290,6 +300,20 @@ export function CNPGClusterRenderer({ data, onNavigate }: CNPGClusterRendererPro
         <PropertyList>
           <Property label="Data Size" value={getCNPGClusterStorage(data)} />
           <Property label="Storage Class" value={getCNPGClusterStorageClass(data)} />
+          {/* Requested size and class are spec-side intentions. These are what the
+              operator reports about the volumes that actually exist. */}
+          {volumeHealth?.total !== undefined && (
+            <Property label="Volumes" value={`${volumeHealth.healthy.length}/${volumeHealth.total} healthy`} />
+          )}
+          {volumeHealth && volumeHealth.unusable.length > 0 && (
+            <Property label="Unusable" value={volumeHealth.unusable.join(', ')} />
+          )}
+          {volumeHealth && volumeHealth.resizing.length > 0 && (
+            <Property label="Resizing" value={volumeHealth.resizing.join(', ')} />
+          )}
+          {volumeHealth && volumeHealth.dangling.length > 0 && (
+            <Property label="Detached" value={volumeHealth.dangling.join(', ')} />
+          )}
         </PropertyList>
         {walStorage && (
           <div className="mt-2 pt-2 border-t border-theme-border">

@@ -161,3 +161,13 @@ export * from './nvidia-cells'
 export * from './NvidiaClusterPolicyRenderer'
 export * from './NvidiaDriverRenderer'
 export { PolicySection } from './PolicySection'
+export { PolicyCoverageSection } from './PolicyCoverageSection'
+export { KyvernoGlobalContextRenderer, getKyvernoContextRefresh, getKyvernoGlobalContextStatus } from './KyvernoGlobalContextRenderer'
+export { KyvernoUpdateRequestRenderer, KyvernoEphemeralReportRenderer } from './KyvernoQueueRenderers'
+export { CNPGObjectStoreRenderer } from './CNPGObjectStoreRenderer'
+export {
+  CNPGDatabaseRenderer,
+  CNPGPublicationRenderer,
+  CNPGSubscriptionRenderer,
+  CNPGImageCatalogRenderer,
+} from './CNPGDeclarativeRenderer'

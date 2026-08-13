@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import type { PolicyResourceResponse } from '@skyhook-io/k8s-ui'
+import type { PolicyResourceResponse, PolicyCoverageResponse } from '@skyhook-io/k8s-ui'
 import { fetchJSON } from './client'
 
 // /api/policy/resource/{kind}/{namespace}/{name}
@@ -18,6 +18,37 @@ export function usePolicyResource(kind: string, namespace: string, name: string,
     staleTime: 15000,
     // A 403 is a settled answer about this identity, not a blip — retrying
     // would just repeat the denial on every drawer open.
+    retry: false,
+  })
+}
+
+// /api/policy/policies/{policy}
+//
+// The inverse lookup: every resource one policy recorded an outcome for. A
+// namespaced Kyverno Policy reports as "namespace/name", so the namespace is
+// passed through and the server tries both shapes.
+// `limit` raises the per-rule subject bound. It is part of the query key so
+// asking for more is a separate fetch rather than a mutation of the cached one,
+// and the default response stays cached for every other drawer open.
+export function usePolicyCoverage(
+  policy: string,
+  namespace?: string,
+  enabled = true,
+  limit?: number,
+) {
+  return useQuery<PolicyCoverageResponse>({
+    queryKey: ['policy', 'coverage', policy, namespace ?? '', limit ?? 0],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (namespace) params.set('namespace', namespace)
+      if (limit) params.set('limit', String(limit))
+      const qs = params.toString()
+      return fetchJSON<PolicyCoverageResponse>(
+        `/policy/policies/${encodeURIComponent(policy)}${qs ? `?${qs}` : ''}`,
+      )
+    },
+    enabled: enabled && !!policy,
+    staleTime: 15000,
     retry: false,
   })
 }

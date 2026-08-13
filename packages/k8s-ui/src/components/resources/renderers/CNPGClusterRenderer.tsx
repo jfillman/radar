@@ -1,3 +1,4 @@
+import type React from 'react'
 import { Database, HardDrive, Activity, Clock, Shield, KeyRound } from 'lucide-react'
 import { Section, PropertyList, Property, ConditionsSection, AlertBanner, ResourceLink } from '../../ui/drawer-components'
 import { pluralize } from '../../../utils/pluralize'
@@ -26,11 +27,14 @@ import {
 import { formatAge } from '../resource-utils'
 
 interface CNPGClusterRendererProps {
+  /** Filled by the host with the Databases, Publications and Subscriptions
+   *  declared against this cluster — a reverse lookup the package cannot do. */
+  declared?: React.ReactNode
   data: any
   onNavigate?: (ref: { kind: string; namespace: string; name: string }) => void
 }
 
-export function CNPGClusterRenderer({ data, onNavigate }: CNPGClusterRendererProps) {
+export function CNPGClusterRenderer({ data, onNavigate, declared}: CNPGClusterRendererProps) {
   const conditions = data.status?.conditions || []
   const instances = data.spec?.instances ?? 0
   // Presence matters — see getCNPGClusterStatus. A cluster whose status has no
@@ -230,6 +234,40 @@ export function CNPGClusterRenderer({ data, onNavigate }: CNPGClusterRendererPro
             <Property label="Target Primary" value={targetPrimary} />
           )}
           <Property label="Image" value={getCNPGClusterImage(data)} />
+          {/* When the image comes from a catalog rather than a literal tag, the
+              catalog is where an "incomplete or invalid image catalog" phase is
+              diagnosed — so it is named and reachable rather than implied. */}
+          {data?.spec?.imageCatalogRef?.name && (
+            <Property
+              label="Image Catalog"
+              value={
+                <span className="inline-flex items-baseline gap-1.5 min-w-0">
+                  <ResourceLink
+                    name={data.spec.imageCatalogRef.name}
+                    kind={
+                      data.spec.imageCatalogRef.kind === 'ClusterImageCatalog'
+                        ? 'clusterimagecatalogs'
+                        : 'imagecatalogs'
+                    }
+                    namespace={
+                      data.spec.imageCatalogRef.kind === 'ClusterImageCatalog'
+                        ? ''
+                        : (data.metadata?.namespace ?? '')
+                    }
+                    group="postgresql.cnpg.io"
+                    onNavigate={onNavigate}
+                  />
+                  {/* A catalog holds one image per major, so the name alone does
+                      not say which entry this cluster resolves to. */}
+                  {data.spec.imageCatalogRef.major != null && (
+                    <span className="text-xs text-theme-text-tertiary">
+                      {`PostgreSQL ${data.spec.imageCatalogRef.major}`}
+                    </span>
+                  )}
+                </span>
+              }
+            />
+          )}
           <Property label="Update Strategy" value={getCNPGClusterUpdateStrategy(data)} />
           {data.status?.writeService && (
             <Property label="Write Service" value={
@@ -384,6 +422,8 @@ export function CNPGClusterRenderer({ data, onNavigate }: CNPGClusterRendererPro
           )}
         </Section>
       )}
+
+      {declared}
 
       {/* Certificates */}
       {certExpirations.length > 0 && (

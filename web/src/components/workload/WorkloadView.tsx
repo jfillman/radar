@@ -109,6 +109,16 @@ import { RoleBindingRenderer } from '../resources/renderers/RoleBindingRenderer'
 import { NamespaceRenderer } from '../resources/renderers/NamespaceRenderer'
 import { HPARenderer } from '../resources/renderers/HPARenderer'
 import { PVCRenderer } from '../resources/renderers/PVCRenderer'
+import { KyvernoPolicyCoverage } from '../resources/renderers/KyvernoPolicyCoverage'
+import { KyvernoPolicyQueued } from '../resources/renderers/KyvernoPolicyQueued'
+import { CNPGObjectStoreRenderer } from '../resources/renderers/CNPGObjectStoreRenderer'
+import { CNPGClusterRenderer } from '../resources/renderers/CNPGClusterRenderer'
+import { CNPGImageCatalogRenderer } from '../resources/renderers/CNPGImageCatalogRenderer'
+import {
+  CNPGDatabaseRenderer,
+  CNPGPublicationRenderer,
+  CNPGSubscriptionRenderer,
+} from '../resources/renderers/CNPGDeclarativeRenderer'
 import { CreateResourceDialog } from '../shared/CreateResourceDialog'
 import { cleanYamlForDuplicate } from '../../utils/skeleton-yaml'
 import { useDesktopDownload } from '../../hooks/useDesktopDownload'
@@ -141,6 +151,14 @@ const rendererOverrides: RendererOverrides = {
   NamespaceRenderer,
   HPARenderer,
   PVCRenderer,
+  KyvernoPolicyCoverage,
+  KyvernoPolicyQueued,
+  CNPGObjectStoreRenderer,
+  CNPGClusterRenderer,
+  CNPGDatabaseRenderer,
+  CNPGPublicationRenderer,
+  CNPGSubscriptionRenderer,
+  CNPGImageCatalogRenderer,
 }
 
 // ============================================================================

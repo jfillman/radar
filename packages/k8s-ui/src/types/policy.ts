@@ -26,6 +26,69 @@ export interface PolicyResourceCounts {
   skip: number
 }
 
+/** One resource a policy recorded an outcome for, from
+ *  GET /api/policy/policies/{policy}. */
+export interface PolicyCoverageSubject {
+  group?: string
+  kind: string
+  namespace?: string
+  name: string
+  result: PolicyResult
+  message?: string
+  /** Matched through a rule Kyverno synthesised from an authored Pod rule,
+   *  not through a rule the user wrote. */
+  autogen?: boolean
+}
+
+export interface PolicyCoverageRule {
+  /** Empty for the modern CEL families, which have no named rules. */
+  rule: string
+  counts: PolicyResourceCounts
+  subjects: PolicyCoverageSubject[]
+  total: number
+  truncated?: boolean
+  /** How many of `total` the namespace view filter held back. `counts` still
+   *  describe every outcome, so the two must be read together. */
+  hiddenByFilter?: number
+}
+
+/** What one policy decided about the cluster — the inverse of
+ *  PolicyResourceResponse.
+ *
+ *  Carries one partiality the per-resource view never needed: a resource may be
+ *  missing because the caller cannot read its namespace, so an absent subject is
+ *  not evidence of absence. `withheldNamespaces` is how the UI says so. */
+export interface PolicyCoverageResponse {
+  evaluated: boolean
+  status: string
+  reasonCode?: string
+  deniedGroups?: string[]
+  liveUpdates: boolean
+  /** The report-side name that matched — namespaced policies report as
+   *  "namespace/name". */
+  policy: string
+  counts: PolicyResourceCounts
+  scopeNamespaces: number
+  withheldNamespaces: number
+  clusterScoped?: boolean
+  /** Separate from withheldNamespaces — a cluster-scoped subject has no
+   *  namespace to name. */
+  withheldClusterScoped?: boolean
+  /** Outcomes dropped because they came only from a report family this caller
+   *  cannot read. The server drops them; without this the note could only say
+   *  results "may" have come from there, which is no longer what happens. */
+  withheldByFamily?: number
+  /** Report families the CALLER cannot read. Distinct from deniedGroups, which
+   *  are the ones radar's own probe could not read. */
+  unreadableFamilies?: string[]
+  /** How many outcomes back these counts. */
+  examined: number
+  /** How many subjects the namespace view filter held back, across all rules. */
+  hiddenByFilter?: number
+  engines?: string[]
+  rules: PolicyCoverageRule[]
+}
+
 export interface PolicyResourceResponse {
   /** False whenever the answer is "we could not check". Never treat an empty
    *  findings array as "clean" without consulting this first. */

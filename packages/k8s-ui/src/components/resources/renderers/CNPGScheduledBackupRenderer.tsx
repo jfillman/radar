@@ -8,6 +8,7 @@ import {
   getCNPGScheduledBackupNextSchedule,
   getCNPGScheduledBackupIsSuspended,
   getCNPGScheduledBackupIsImmediate,
+  getCNPGBackupPlugin,
   getCNPGScheduledBackupOwnerRef,
 } from '../resource-utils-cnpg'
 
@@ -19,6 +20,7 @@ interface CNPGScheduledBackupRendererProps {
 export function CNPGScheduledBackupRenderer({ data, onNavigate }: CNPGScheduledBackupRendererProps) {
   const isSuspended = getCNPGScheduledBackupIsSuspended(data)
   const clusterName = getCNPGScheduledBackupCluster(data)
+  const schedulePlugin = getCNPGBackupPlugin(data)
 
   return (
     <>
@@ -60,6 +62,23 @@ export function CNPGScheduledBackupRenderer({ data, onNavigate }: CNPGScheduledB
             return clusterName
           })()} />
           <Property label="Method" value={getCNPGScheduledBackupMethod(data)} />
+          {/* Under the plugin method the destination lives on an ObjectStore in
+              another API group, so naming it is the only route from here to
+              where these backups will actually land. */}
+          {schedulePlugin && <Property label="Plugin" value={schedulePlugin.name} />}
+          {schedulePlugin?.parameters?.barmanObjectName && (
+            <Property
+              label="Object Store"
+              value={
+                <ResourceLink
+                  name={schedulePlugin.parameters.barmanObjectName}
+                  kind="objectstores"
+                  namespace={data.metadata?.namespace || ''}
+                  onNavigate={onNavigate}
+                />
+              }
+            />
+          )}
           <Property label="Owner Reference" value={getCNPGScheduledBackupOwnerRef(data)} />
         </PropertyList>
       </Section>

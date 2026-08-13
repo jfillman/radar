@@ -1,3 +1,4 @@
+import type React from 'react'
 // Renderers for Kyverno's modern CEL policy family (policies.kyverno.io),
 // stabilized in Kyverno 1.17/1.18 and the family that survives the removal of
 // kyverno.io Policy/ClusterPolicy planned for 1.20.
@@ -70,10 +71,11 @@ function ValidationsSection({ validations }: { validations: KyvernoCELValidation
   )
 }
 
-export function KyvernoValidatingPolicyRenderer({ data }: { data: any }) {
+export function KyvernoValidatingPolicyRenderer({ data, coverage }: { data: any; coverage?: React.ReactNode }) {
   return (
     <div className="space-y-4">
       <KyvernoPostureHeader data={data} family="validating" />
+      {coverage}
       <ValidationsSection validations={getKyvernoValidations(data)} />
       <KyvernoMatchScopeSection data={data} />
       <KyvernoVariablesSection data={data} />
@@ -83,7 +85,7 @@ export function KyvernoValidatingPolicyRenderer({ data }: { data: any }) {
   )
 }
 
-export function KyvernoImageValidatingPolicyRenderer({ data }: { data: any }) {
+export function KyvernoImageValidatingPolicyRenderer({ data, coverage }: { data: any; coverage?: React.ReactNode }) {
   const attestors = getKyvernoAttestors(data)
   const attestations = getKyvernoAttestations(data)
   const imageRefs = getKyvernoImageReferences(data)
@@ -92,6 +94,7 @@ export function KyvernoImageValidatingPolicyRenderer({ data }: { data: any }) {
   return (
     <div className="space-y-4">
       <KyvernoPostureHeader data={data} family="imageValidating" />
+      {coverage}
 
       {imageRefs.length > 0 && (
         <Section title={`Image References (${imageRefs.length})`} icon={ScrollText}>
@@ -163,13 +166,14 @@ export function KyvernoImageValidatingPolicyRenderer({ data }: { data: any }) {
   )
 }
 
-export function KyvernoMutatingPolicyRenderer({ data }: { data: any }) {
+export function KyvernoMutatingPolicyRenderer({ data, coverage }: { data: any; coverage?: React.ReactNode }) {
   const mutations = getKyvernoMutations(data)
   const reinvocation = getKyvernoReinvocationPolicy(data)
 
   return (
     <div className="space-y-4">
       <KyvernoPostureHeader data={data} family="mutating" />
+      {coverage}
 
       {mutations.length > 0 && (
         <Section title={`Mutations (${mutations.length})`} icon={Wand2}>
@@ -218,13 +222,14 @@ export function KyvernoMutatingPolicyRenderer({ data }: { data: any }) {
   )
 }
 
-export function KyvernoGeneratingPolicyRenderer({ data }: { data: any }) {
+export function KyvernoGeneratingPolicyRenderer({ data, coverage }: { data: any; coverage?: React.ReactNode }) {
   const generations = getKyvernoGenerations(data)
   const settings = getKyvernoGenerationSettings(data)
 
   return (
     <div className="space-y-4">
       <KyvernoPostureHeader data={data} family="generating" />
+      {coverage}
 
       {generations.length > 0 && (
         <Section title={`Generates (${generations.length})`} icon={Sparkles}>
@@ -274,7 +279,7 @@ export function KyvernoGeneratingPolicyRenderer({ data }: { data: any }) {
   )
 }
 
-export function KyvernoDeletingPolicyRenderer({ data }: { data: any }) {
+export function KyvernoDeletingPolicyRenderer({ data, coverage }: { data: any; coverage?: React.ReactNode }) {
   const schedule = getKyvernoSchedule(data)
   const conditions = getKyvernoDeletionConditions(data)
   const propagation = getKyvernoDeletionPropagationPolicy(data)
@@ -282,6 +287,7 @@ export function KyvernoDeletingPolicyRenderer({ data }: { data: any }) {
   return (
     <div className="space-y-4">
       <KyvernoPostureHeader data={data} family="deleting" />
+      {coverage}
 
       <Section title="Schedule" icon={Clock}>
         <PropertyList>

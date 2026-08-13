@@ -1,3 +1,4 @@
+import type React from 'react'
 import { Shield, ShieldCheck, ShieldAlert, FileWarning, ListChecks, ChevronDown, ChevronRight } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useState } from 'react'
@@ -225,6 +226,13 @@ export function PolicyReportRenderer({ data }: PolicyReportRendererProps) {
 
 interface KyvernoPolicyRendererProps {
   data: any
+  /** Filled by the host with the policy's coverage section — what this policy
+   *  actually decided about the cluster. */
+  coverage?: React.ReactNode
+  /** Filled by the host with the work this policy has queued and not finished.
+   *  The failure worth catching here is a pile-up, not one request, so it
+   *  belongs beside the policy rather than only on its own page. */
+  queued?: React.ReactNode
 }
 
 const ruleTypeColorMap: Record<string, string> = {
@@ -234,7 +242,7 @@ const ruleTypeColorMap: Record<string, string> = {
   verifyImages: 'bg-orange-500/20 text-orange-400',
 }
 
-export function KyvernoPolicyRenderer({ data }: KyvernoPolicyRendererProps) {
+export function KyvernoPolicyRenderer({ data, coverage, queued }: KyvernoPolicyRendererProps) {
   const spec = data.spec || {}
   const status = data.status || {}
   const conditions = status.conditions || []
@@ -249,6 +257,8 @@ export function KyvernoPolicyRenderer({ data }: KyvernoPolicyRendererProps) {
 
   return (
     <>
+      {coverage}
+      {queued}
       {/* Configuration */}
       <Section title="Configuration" icon={Shield}>
         <PropertyList>

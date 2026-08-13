@@ -555,6 +555,8 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			// carry its own coverage state: an empty list here means one of four
 			// things and the response says which.
 			r.Get("/policy/resource/{kind}/{namespace}/{name}", s.handlePolicyResource)
+			// The inverse: every resource one policy recorded an outcome for.
+			r.Get("/policy/policies/{policy}", s.handlePolicyCoverage)
 			r.Get("/upgrade-readiness", s.handleUpgradeReadiness)
 
 			// Network path trace - path-shaped diagnosis for Service /

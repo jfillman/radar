@@ -55,7 +55,7 @@ func TestPolicyCountsIncludePassesThatAreNotListed(t *testing.T) {
 func TestPolicyReportFamiliesCarryTheirOwnResourceNames(t *testing.T) {
 	byGroup := map[string]string{}
 	for _, f := range policyReportFamilies {
-		byGroup[f.group] = f.resource
+		byGroup[f.group] = f.namespaced
 	}
 	if got := byGroup["wgpolicyk8s.io"]; got != "policyreports" {
 		t.Errorf("wgpolicyk8s.io resource = %q, want policyreports", got)
@@ -65,5 +65,24 @@ func TestPolicyReportFamiliesCarryTheirOwnResourceNames(t *testing.T) {
 	}
 	if len(policyReportFamilies) != 2 {
 		t.Errorf("expected both families to be authorized against, got %d", len(policyReportFamilies))
+	}
+}
+
+// A cluster-scoped finding was read from a cluster-scoped report, and permission
+// on the namespaced resource says nothing about it: `list policyreports`
+// cluster-wide is a different grant from `list clusterpolicyreports`. Asking the
+// namespaced question about a cluster-scoped subject can only answer the wrong
+// one — in either direction.
+func TestPolicyReportResourceFollowsSubjectScope(t *testing.T) {
+	for _, f := range policyReportFamilies {
+		if got := policyReportResource(f, "kube-system"); got != f.namespaced {
+			t.Errorf("%s namespaced resource = %q, want %q", f.group, got, f.namespaced)
+		}
+		if got := policyReportResource(f, ""); got != f.clusterScoped {
+			t.Errorf("%s cluster-scoped resource = %q, want %q", f.group, got, f.clusterScoped)
+		}
+		if f.namespaced == f.clusterScoped {
+			t.Errorf("%s uses one resource name for both scopes", f.group)
+		}
 	}
 }

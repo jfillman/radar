@@ -322,12 +322,15 @@ type Trace struct {
 	// Truncated is set when fan-out (e.g. Gateway attached routes) exceeded
 	// the cap, so the UI can surface "showing N of M".
 	Truncated bool `json:"truncated,omitempty"`
-	// RunVantage names WHERE Radar itself ran the inline probes from: "in-cluster"
-	// (Radar is a pod - its direct probes are real pod-to-pod, the in-cluster data
-	// path is already covered, and it CANNOT test an external ingress front door) or
-	// "local" (a laptop - the direct probes are the external client's view, and the
-	// in-cluster data path needs the manual in-cluster Job). The UI labels columns,
-	// gates the in-cluster button, and words the verdict honestly per architecture.
+	// RunVantage names WHERE Radar itself runs, and so where its inline probes are
+	// sent from: "in-cluster" (Radar is a pod - its direct probes are real
+	// pod-to-pod, the in-cluster data path is already covered, and it CANNOT test
+	// an external ingress front door) or "local" (a laptop - the direct probes are
+	// the external client's view, and the in-cluster data path needs the manual
+	// in-cluster Job). Set on every trace, probed or not: it is a deployment fact,
+	// and the UI needs it to decide which vantages are offerable at all. The UI
+	// labels columns, gates the in-cluster button, and words the verdict honestly
+	// per architecture.
 	RunVantage string `json:"runVantage,omitempty"`
 
 	// Coverage-honest projection of the trace, computed server-side alongside
@@ -425,6 +428,7 @@ func BuildTraceWithOptions(ctx context.Context, deps Deps, kind, namespace, name
 	if !cacheReady(deps) {
 		return &Trace{
 			Subject:      subject,
+			RunVantage:   string(detectVantage()),
 			Downstream:   []Hop{},
 			Upstreams:    []Hop{},
 			Verdict:      VerdictUnknown,
@@ -444,7 +448,11 @@ func BuildTraceWithOptions(ctx context.Context, deps Deps, kind, namespace, name
 	ctx, cancel := context.WithTimeout(ctx, totalBudget)
 	defer cancel()
 
-	t := &Trace{Subject: subject, BrokenAt: -1}
+	// Stamped before any probe runs. Where Radar sits is a deployment fact, not a
+	// result, and the UI needs it on the static trace too: it decides which
+	// vantages are even offerable, and a trace with no probes would otherwise
+	// advertise a workstation vantage that a Radar running as a Pod can never use.
+	t := &Trace{Subject: subject, BrokenAt: -1, RunVantage: string(detectVantage())}
 
 	switch normalizeKind(kind) {
 	case "Service":

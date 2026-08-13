@@ -357,7 +357,17 @@ export function buildOrigins(trace: Trace | undefined, ctx: OriginContext = {}):
   // same ground. Listing it as "never tested" would pad the coverage caveat with
   // a deployment detail, next to genuine holes like "as your application".
   const radarIsAbsent = radarProbes.length === 0 && trace?.runVantage !== 'in-cluster'
-  return ORIGIN_STRENGTH.filter((id) => !(id === 'radar-incluster' && radarIsAbsent)).map((id) => all[id])
+  // The mirror image, and the same reasoning. When Radar runs as a Pod - hosted,
+  // or self-hosted in-cluster - there is no Radar on the operator's machine to
+  // dial from, so this vantage is not one that can be run and then isn't. The
+  // browser being on a laptop is irrelevant: the request is sent by the Radar
+  // process. What a machine outside the cluster would see is still declared, by
+  // the external origin, which is a real gap and stays. Guarded on having no
+  // probes so a mislabelled result can never hide evidence that exists.
+  const laptopIsAbsent = localProbes.length === 0 && trace?.runVantage === 'in-cluster'
+  return ORIGIN_STRENGTH.filter(
+    (id) => !(id === 'radar-incluster' && radarIsAbsent) && !(id === 'local' && laptopIsAbsent),
+  ).map((id) => all[id])
 }
 
 /**

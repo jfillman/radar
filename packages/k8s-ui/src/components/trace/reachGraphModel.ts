@@ -1425,10 +1425,17 @@ export function buildGraph({ trace, route, origin, origins, stale, running }: Bu
     const y1 = Math.max(...list.map((n) => n.y + n.h)) + LANE_PAD.bottom
     return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, label, help, color, dashed }
   }
+  // The two-mechanism wording only holds while the workstation vantage is drawn.
+  // With Radar running as a Pod there is no dial from a machine outside, and
+  // contrasting it with the relay described a lane with one member as if it had
+  // two.
+  const laptopDrawn = nodes.some((n) => n.id === 'origin:local')
   const laneControl = boxFor(
     nodes.filter((n) => n.lane === 'control'),
     'NOT FROM INSIDE THE CLUSTER',
-    'Neither request originates inside the cluster’s dataplane, but they differ: a dial from your machine sends real traffic from outside - through a real entry it exercises the path from the entry inward (routing, NetworkPolicy, mesh included). A relayed request is carried by the Kubernetes control plane and bypasses the traffic path entirely.',
+    laptopDrawn
+      ? 'Neither request originates inside the cluster’s dataplane, but they differ: a dial from your machine sends real traffic from outside - through a real entry it exercises the path from the entry inward (routing, NetworkPolicy, mesh included). A relayed request is carried by the Kubernetes control plane and bypasses the traffic path entirely.'
+      : 'This request is carried by the Kubernetes control plane rather than sent along the traffic path: the API server relays it to the target, so routing, NetworkPolicy and the mesh are all bypassed.',
     'var(--color-info)',
     true,
   )

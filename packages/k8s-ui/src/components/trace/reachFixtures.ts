@@ -12,7 +12,7 @@ import type { Trace, PodStatus, ProbeResult } from './types'
  * so two disagreeing origins cannot both be retained. Faking it here would
  * imply a capability the model does not have.
  */
-export type DevState = 'mixed' | 'break' | 'front' | 'synth' | 'scale' | 'fanout' | 'none' | 'running' | 'stale' | 'rbac'
+export type DevState = 'mixed' | 'break' | 'front' | 'synth' | 'scale' | 'fanout' | 'none' | 'running' | 'stale' | 'rbac' | 'hosted'
 
 export const DEV_STATES: { id: DevState; label: string }[] = [
   { id: 'mixed', label: '1 · Mixed vantages' },
@@ -25,6 +25,7 @@ export const DEV_STATES: { id: DevState; label: string }[] = [
   { id: 'running', label: 'Probe running' },
   { id: 'stale', label: 'Stale + changed' },
   { id: 'rbac', label: 'Probe not permitted' },
+  { id: 'hosted', label: 'Radar runs in-cluster' },
 ]
 
 const NS = 'payments'
@@ -230,6 +231,30 @@ export function devTrace(state: DevState): Trace {
       ],
       routes: [{ route: 'GET / · :80 → 8080', target: ':80 → 8080', outcome: 'verified', confidence: 'indirect', evidence: 'HTTP 200 through the apiserver proxy' }],
       notTested: [{ route: 'gRPC :9090 → 9090', reason: 'probe creation denied by RBAC', reasonClass: 'vantage' }],
+    }
+  }
+
+  // Radar deployed as a Pod - the hosted and self-hosted-in-cluster shape. The
+  // only way to see the vantage rail as those users see it without running a
+  // cluster-side Radar: no workstation vantage exists there, and Radar's own
+  // process is a first-class origin rather than the throwaway Job.
+  if (state === 'hosted') {
+    return {
+      ...t,
+      runVantage: 'in-cluster',
+      headline: 'Reachable in-cluster on :80 — the front door is still unproven',
+      coverage: { tested: 3, passed: 3, failed: 0, skipped: 1 },
+      downstream: [
+        serviceHop(),
+        podsHop(PODS, [
+          ...okProbes.map((p) => ({ ...p, source: 'radar' as const })),
+          probe({ path: 'apiserver', target: 'checkout-api port 80', detail: 'HTTP 200 via proxy', latencyNs: 12_000_000 }),
+        ]),
+      ],
+      routes: [
+        { route: 'GET / · :80 → 8080', target: ':80 → 8080', outcome: 'verified', confidence: 'real', evidence: 'DNS 2 ms · TCP 1 ms · HTTP 200 · 11 ms' },
+      ],
+      notTested: [{ route: 'front door · primary-gateway', reason: 'no request has entered through the Gateway', reasonClass: 'coverage' }],
     }
   }
 

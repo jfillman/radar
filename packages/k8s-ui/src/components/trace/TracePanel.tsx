@@ -384,7 +384,7 @@ function ProbeOptionsMenu({ probePath, onApplyProbePath }: { probePath?: string;
 // test" (proxy/laptop vantage) plus, once allowed, the secondary "Test inside the
 // cluster" (real pod-to-pod) - one grouped control instead of two split corners.
 // Uses the design-system button classes (.btn-brand / .btn-brand-muted).
-export function ReachActions({ onRunProbes, probeRequested, probed, onRunInCluster, inClusterRunning, inClusterAllowed, inClusterRunnable, inClusterTested, probePath, onApplyProbePath, supportsHTTPPath = true }: {
+export function ReachActions({ onRunProbes, probeRequested, probed, onRunInCluster, inClusterRunning, inClusterAllowed, inClusterRunnable, inClusterTested, probePath, onApplyProbePath, supportsHTTPPath = true, runVantage }: {
   onRunProbes?: () => void
   probeRequested?: boolean
   // probed/inClusterTested: each test has already produced a result, so its
@@ -403,6 +403,10 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
   probePath?: string
   onApplyProbePath?: (p: string) => void
   supportsHTTPPath?: boolean
+  /** Where Radar itself runs. The primary test is sent by the Radar PROCESS, so
+   *  "from your machine" is only true when Radar is on one - a hosted or
+   *  in-cluster Radar dials from its own Pod. */
+  runVantage?: 'in-cluster' | 'local'
 }) {
   // The in-cluster test stays available whenever the cluster allows it - NEVER
   // gated on the verdict. Hiding it after it succeeds (when the verdict turns
@@ -437,7 +441,13 @@ export function ReachActions({ onRunProbes, probeRequested, probed, onRunInClust
       {/* Primary: the reachability test. The refresh icon signals it's
           re-runnable (it auto-ran on load), so re-running reads as a refresh. */}
       {onRunProbes && (
-        <Tooltip content="Tests reachability from your machine and through the API server. Covers EVERY path on this resource, not only the one selected above.">
+        <Tooltip
+          content={
+            runVantage === 'in-cluster'
+              ? 'Tests reachability from Radar’s own Pod and through the API server. Covers EVERY path on this resource, not only the one selected above.'
+              : 'Tests reachability from your machine and through the API server. Covers EVERY path on this resource, not only the one selected above.'
+          }
+        >
           <button
             type="button"
             onClick={onRunProbes}

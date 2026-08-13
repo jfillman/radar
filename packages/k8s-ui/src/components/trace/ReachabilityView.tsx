@@ -270,6 +270,7 @@ function ReachabilityBoard(props: BoardProps) {
         actions={
           <ReachActions
             {...props}
+            runVantage={trace.runVantage}
             inClusterRunnable={traceInClusterRunnable(trace)}
             inClusterTested={origins.some((o) => o.id === 'incluster' && o.mark !== 'untested')}
             supportsHTTPPath={(trace.routes ?? []).some((r) => {

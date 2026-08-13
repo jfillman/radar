@@ -218,6 +218,37 @@ describe('Radar-as-a-Pod is not the throwaway probe Job', () => {
     expect(radar?.unsupported).toBeFalsy()
   })
 
+  // The mirror rule. A Radar that runs as a Pod has no process on the operator's
+  // machine, so a workstation vantage there is not a test anyone can run - it is
+  // a control that would never do anything, standing where a real gap should be.
+  it('omits the workstation vantage entirely when Radar runs in the cluster', () => {
+    const t = traceWith([p({ vantage: 'in-cluster', path: 'data', source: 'radar', ok: true })])
+    t.runVantage = 'in-cluster'
+    const os = buildOrigins(t)
+    expect(os.find((o) => o.id === 'local')).toBeUndefined()
+    expect(os.map((o) => o.id)).toEqual(['caller', 'external', 'incluster', 'radar-incluster', 'apiserver'])
+  })
+
+  it('keeps the external gap declared there — it is what nothing can prove', () => {
+    const t = traceWith([p({ vantage: 'in-cluster', path: 'data', source: 'radar', ok: true })])
+    t.runVantage = 'in-cluster'
+    expect(buildOrigins(t).find((o) => o.id === 'external')?.unsupported).toBe(true)
+  })
+
+  // Hiding a vantage must never hide evidence. If a laptop-side result somehow
+  // arrives on an in-cluster trace, the row it belongs to has to stay.
+  it('keeps the workstation vantage when it actually produced a result', () => {
+    const t = traceWith([p({ vantage: 'local', path: 'data', ok: true })])
+    t.runVantage = 'in-cluster'
+    expect(buildOrigins(t).find((o) => o.id === 'local')).toBeDefined()
+  })
+
+  it('keeps it on a laptop trace that has not been probed yet', () => {
+    const t = traceWith([])
+    t.runVantage = 'local'
+    expect(buildOrigins(t).find((o) => o.id === 'local')).toBeDefined()
+  })
+
   it('describes Radar-in-cluster with Radar\'s own identity, not the Job\'s', () => {
     const t = traceWith([p({ vantage: 'in-cluster', path: 'data', source: 'radar', ok: true })])
     t.runVantage = 'in-cluster'

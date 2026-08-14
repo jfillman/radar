@@ -6,6 +6,21 @@ import { getKyvernoRequestState } from '@skyhook-io/k8s-ui/components/resources/
 import { useResources } from '../../../api/client'
 
 /**
+ * Whether a queued request belongs to this policy.
+ *
+ * Exactly one form matches, never both. A namespaced Policy is recorded as
+ * `namespace/name` and a cluster-scoped one bare, and Kyverno permits the two
+ * to share a name — so accepting the bare form as a fallback hands a namespaced
+ * policy the backlog of a ClusterPolicy it has nothing to do with. The coverage
+ * lookup refuses the same fallback for the same reason.
+ */
+export function requestBelongsTo(request: any, name: string, namespace: string): boolean {
+  const policy = request?.spec?.policy
+  if (!policy || !name) return false
+  return policy === (namespace ? `${namespace}/${name}` : name)
+}
+
+/**
  * What this policy has queued and not finished.
  *
  * A generate or mutate-existing rule does its work through queued requests, and
@@ -26,11 +41,7 @@ export function KyvernoPolicyQueued({ data }: { data: any }) {
     enabled: !!name,
   })
 
-  // A namespaced policy is recorded qualified; a cluster-scoped one bare.
-  const qualified = namespace ? `${namespace}/${name}` : name
-  const mine = (requests ?? []).filter(
-    (u: any) => u?.spec?.policy === qualified || u?.spec?.policy === name,
-  )
+  const mine = (requests ?? []).filter((u: any) => requestBelongsTo(u, name, namespace))
   if (mine.length === 0) return null
 
   const byState = mine.reduce<Record<string, number>>((acc, u: any) => {

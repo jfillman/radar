@@ -50,5 +50,10 @@ export function usePolicyCoverage(
     enabled: enabled && !!policy,
     staleTime: 15000,
     retry: false,
+    // Raising the limit is a new query key, and without this the section would
+    // fall back to its full loading state — asking to see MORE resources would
+    // briefly remove the ones already on screen. The house pattern for a
+    // refetch that replaces a visible list.
+    placeholderData: (prev) => prev,
   })
 }

@@ -106,8 +106,10 @@ export interface PolicyResourceResponse {
   evaluated: boolean
   status: string
   reasonCode?: string
-  /** Report families the caller could not read. Present even when evaluated:
-   *  the answer is real but incomplete. */
+  /** Report families RADAR's own probe could not read, so nobody's answer
+   *  carries them — not the same as `withheldByFamily`, which is what THIS
+   *  caller may not see. Present even when evaluated: the answer is real but
+   *  incomplete. */
   deniedGroups?: string[]
   /** False when the index is frozen at its initial contents. */
   liveUpdates: boolean

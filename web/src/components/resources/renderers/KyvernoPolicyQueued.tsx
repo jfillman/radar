@@ -41,7 +41,15 @@ export function KyvernoPolicyQueued({ data }: { data: any }) {
   const name = data?.metadata?.name ?? ''
   const namespace = data?.metadata?.namespace ?? ''
   // Requests live in the engine's own namespace whatever the policy's is, so
-  // this is an unscoped lookup filtered by the policy they name.
+  // this asks for every namespace and filters by the policy they name.
+  //
+  // KNOWN LIMIT: passing no namespace does not mean cluster-wide here. The
+  // resources endpoint falls back to the caller's namespace view filter, so a
+  // reader who has narrowed the header to their own namespace gets none of
+  // Kyverno's and this section stays silent — the one case where its silence is
+  // not "nothing is queued". Reaching past the filter needs the endpoint to opt
+  // out of it, the way the capacity surfaces deliberately do; until then the
+  // warning is unavailable to a filtered reader rather than wrong.
   const {
     data: requests,
     error,

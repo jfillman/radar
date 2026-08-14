@@ -40,6 +40,16 @@ var lookupErrorBaseline = map[string]string{
 		"which is its documented fallback; the list beside it carries its own error note",
 }
 
+// commentPattern matches the comment forms these files use. A `.error` written
+// in prose — including the comments this guard's own fixes leave behind —
+// satisfied the check without a line of code reading the error.
+var commentPattern = regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*`)
+
+// stripComments removes them so only real uses count.
+func stripComments(s string) string {
+	return commentPattern.ReplaceAllString(s, " ")
+}
+
 // normalizeBinding collapses whitespace so the baseline key is stable across
 // formatting, while still naming the exact binding it forgives.
 func normalizeBinding(s string) string {
@@ -75,7 +85,7 @@ func TestReverseLookupsSurfaceTheirFailures(t *testing.T) {
 		if readErr != nil {
 			t.Fatalf("read %s: %v", name, readErr)
 		}
-		text := string(src)
+		text := stripComments(string(src))
 		for _, m := range lookupDestructure.FindAllStringSubmatch(text, -1) {
 			if !strings.Contains(m[1], "error") {
 				offenders = append(offenders, name+" :: "+normalizeBinding(m[1]))

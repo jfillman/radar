@@ -94,8 +94,10 @@ type PolicyResourceResponse struct {
 	Evaluated  bool   `json:"evaluated"`
 	Status     string `json:"status"`
 	ReasonCode string `json:"reasonCode,omitempty"`
-	// DeniedGroups are report families the caller's identity could not read.
-	// Present even on a `ready` status: the index is real but incomplete.
+	// DeniedGroups are report families RADAR's own probe could not read, so the
+	// index never carried them for anyone. Distinct from WithheldByFamily, which
+	// is what THIS caller may not see. Present even on a `ready` status: the
+	// index is real but incomplete.
 	DeniedGroups []string `json:"deniedGroups,omitempty"`
 	// LiveUpdates is false when the index is frozen at its initial contents.
 	LiveUpdates bool                    `json:"liveUpdates"`

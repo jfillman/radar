@@ -50,7 +50,18 @@ export function CNPGObjectStoreRenderer({
 
   return (
     <>
-      <BaseCNPGObjectStoreRenderer data={data} onNavigate={onNavigate} />
+      <BaseCNPGObjectStoreRenderer
+        data={data}
+        onNavigate={onNavigate}
+        // Every Cluster in the namespace, not just the ones using this store:
+        // a server key naming a cluster on the older in-tree path is still a
+        // real cluster worth opening, it simply cannot appear in the list below.
+        clusterNames={
+          clusters.isLoading || clusters.error
+            ? undefined
+            : new Set((clusters.data ?? []).map((c: any) => c?.metadata?.name).filter(Boolean))
+        }
+      />
       <Section title="Used By" icon={Database} defaultExpanded>
         {clusters.isLoading ? (
           <div className="text-sm text-theme-text-tertiary">Looking for clusters…</div>

@@ -43,9 +43,13 @@ function RecoveryTime({ at }: { at: string }) {
 
 export function CNPGObjectStoreRenderer({
   data,
+  clusterNames,
   onNavigate,
 }: {
   data: any
+  /** Cluster names that exist in this namespace, so a server key is only linked
+   *  when there is something behind it. See RecoveryWindowRow. */
+  clusterNames?: Set<string>
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }) {
   const windows = getCNPGObjectStoreRecoveryWindows(data)
@@ -76,6 +80,7 @@ export function CNPGObjectStoreRenderer({
           <div className="space-y-2">
             {windows.map((w) => (
               <RecoveryWindowRow
+                clusterNames={clusterNames}
                 key={w.server}
                 window={w}
                 retention={retention}
@@ -148,28 +153,41 @@ function RecoveryWindowRow({
   window: w,
   retention,
   namespace,
+  clusterNames,
   onNavigate,
 }: {
   window: CNPGObjectStoreRecoveryWindow
   retention?: string
   namespace: string
+  /** Cluster names that exist in this namespace. The server key usually IS the
+   *  cluster name, but the barman-cloud plugin's `serverName` parameter can be
+   *  set to anything, and two clusters may share a store under distinct keys —
+   *  so a key is only a route when something is actually there. Hosts that
+   *  cannot resolve it omit this and the name renders as text, which is still
+   *  the truth. */
+  clusterNames?: Set<string>
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }) {
   const tone = w.failingSinceLastSuccess ? 'degraded' : w.lastSuccessfulBackupTime ? 'healthy' : 'unknown'
   return (
     <div className="card-inner">
       <div className="flex items-center gap-2 mb-1">
-        {/* The server key is the Cluster this window belongs to. Naming it
-            without a route leaves the reader knowing a cluster is in trouble and
-            unable to open it. */}
+        {/* The server key is usually the Cluster this window belongs to, and
+            naming it without a route leaves the reader knowing a cluster is in
+            trouble and unable to open it. Only usually, though — see
+            `clusterNames`. */}
         <span className="text-sm font-medium text-theme-text-primary">
-          <ResourceLink
-            name={w.server}
-            kind="clusters"
-            namespace={namespace}
-            group="postgresql.cnpg.io"
-            onNavigate={onNavigate}
-          />
+          {clusterNames && !clusterNames.has(w.server) ? (
+            w.server
+          ) : (
+            <ResourceLink
+              name={w.server}
+              kind="clusters"
+              namespace={namespace}
+              group="postgresql.cnpg.io"
+              onNavigate={onNavigate}
+            />
+          )}
         </span>
         <span className={clsx('badge', HEALTH_BADGE_COLORS[tone as keyof typeof HEALTH_BADGE_COLORS])}>
           {w.failingSinceLastSuccess ? 'Backups failing' : w.lastSuccessfulBackupTime ? 'Recoverable' : 'No backups yet'}

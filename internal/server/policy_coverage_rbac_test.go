@@ -320,3 +320,33 @@ func TestPolicyCoverage_FailingResourceCountExcludesPassingOnes(t *testing.T) {
 		t.Errorf("SubjectsFailing = %d, want 1 — only one of the two resources failed", got.SubjectsFailing)
 	}
 }
+
+// "Failing" and "did not pass" are different sets. The count feeds a sentence
+// that says the next update to these resources will be REJECTED, and a rule
+// that errored or was skipped rejects nothing — it reached no verdict at all.
+func TestPolicyCoverage_OnlyRealFailuresCountAsFailingResources(t *testing.T) {
+	env := newAuthTestServer(t)
+	reports := []*unstructured.Unstructured{}
+	for i, result := range []string{"error", "skip", "warn"} {
+		u := report("wgpolicyk8s.io", "app", "no-verdict", podSubject("subject-"+result), result)
+		u.Object["metadata"] = map[string]any{"name": "rep-" + result, "namespace": "app"}
+		u.SetNamespace("app")
+		_ = i
+		reports = append(reports, u)
+	}
+	publishIndex(t, reports...)
+
+	perms := &auth.UserPermissions{AllowedNamespaces: []string{"app"}}
+	allow(perms, "wgpolicyk8s.io", "policyreports", "app", true)
+	allow(perms, "openreports.io", "reports", "app", false)
+	env.srv.permCache.Set("alice", perms)
+
+	got := coverageFor(t, env, "alice", "no-verdict")
+
+	if got.Subjects != 3 {
+		t.Errorf("Subjects = %d, want 3", got.Subjects)
+	}
+	if got.SubjectsFailing != 0 {
+		t.Errorf("SubjectsFailing = %d, want 0 — an error, a skip and a warning are not failures, and the consequence sentence promises rejection", got.SubjectsFailing)
+	}
+}

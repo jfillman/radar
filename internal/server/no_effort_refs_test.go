@@ -52,8 +52,10 @@ func TestNoEffortNotesReferencedFromSource(t *testing.T) {
 			}
 			return nil
 		}
+		// Markdown counts. A README or a demo-cluster guide is as published as
+		// the code beside it, and a path pasted into one leaks exactly the same.
 		switch filepath.Ext(path) {
-		case ".go", ".ts", ".tsx", ".sh", ".yaml", ".yml":
+		case ".go", ".ts", ".tsx", ".sh", ".yaml", ".yml", ".md":
 		default:
 			return nil
 		}

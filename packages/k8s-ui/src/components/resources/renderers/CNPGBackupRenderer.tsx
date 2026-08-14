@@ -12,6 +12,7 @@ import {
   getCNPGBackupServerName,
   getCNPGBackupError,
   getCNPGBackupTarget,
+  CNPG_BARMAN_OBJECTSTORE_GROUP,
 } from '../resource-utils-cnpg'
 
 interface CNPGBackupRendererProps {
@@ -61,6 +62,7 @@ export function CNPGBackupRenderer({ data, onNavigate }: CNPGBackupRendererProps
                 <ResourceLink
                   name={backupPlugin.parameters.barmanObjectName}
                   kind="objectstores"
+                  group={CNPG_BARMAN_OBJECTSTORE_GROUP}
                   namespace={data.metadata?.namespace || ''}
                   onNavigate={onNavigate}
                 />

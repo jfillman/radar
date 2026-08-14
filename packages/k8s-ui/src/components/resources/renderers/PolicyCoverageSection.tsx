@@ -709,6 +709,8 @@ function RuleBlock({
             total={passing}
             words={words}
             onSelectSubject={onSelectSubject}
+            onLoadMore={onLoadMore}
+            loadingMore={loadingMore}
           />
         )
       ) : (
@@ -737,6 +739,8 @@ function RuleBlock({
               total={passing}
               words={words}
               onSelectSubject={onSelectSubject}
+              onLoadMore={onLoadMore}
+              loadingMore={loadingMore}
             />
           )}
         </div>
@@ -838,6 +842,8 @@ function PassingGroup({
   total,
   words,
   onSelectSubject,
+  onLoadMore,
+  loadingMore,
 }: {
   label: string
   /** Passing subjects that arrived. May be shorter than `total` if the server capped. */
@@ -847,6 +853,8 @@ function PassingGroup({
   total: number
   words: OutcomeWords
   onSelectSubject?: (subject: PolicyCoverageSubject) => void
+  onLoadMore?: () => void
+  loadingMore?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [showAll, setShowAll] = useState(false)
@@ -891,8 +899,24 @@ function PassingGroup({
             </button>
           )}
           {capped && !folded && (
-            <div className="text-xs text-theme-text-tertiary">
-              {`only the first ${subjects.length} are available here`}
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="text-xs text-theme-text-tertiary">
+                {`only the first ${subjects.length} are available here`}
+              </span>
+              {/* The same offer the failing list gets. A rule where everything
+                  passes is capped just as readily, and without this the count
+                  names resources the reader has no way to reach — which is the
+                  dead end the whole section exists to close, on its quiet half. */}
+              {onLoadMore && (
+                <button
+                  type="button"
+                  disabled={loadingMore}
+                  onClick={onLoadMore}
+                  className="px-2 py-0.5 text-xs rounded border border-theme-border text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated transition-colors disabled:opacity-60"
+                >
+                  {loadingMore ? 'Loading…' : 'Load the rest'}
+                </button>
+              )}
             </div>
           )}
         </div>

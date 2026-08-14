@@ -23,6 +23,7 @@ import {
   getCNPGWALArchivingFailure,
   getCNPGLastBackupFailure,
   classifyCNPGClusterPhase,
+  CNPG_BARMAN_OBJECTSTORE_GROUP,
 } from '../resource-utils-cnpg'
 import { formatAge } from '../resource-utils'
 
@@ -385,6 +386,7 @@ export function CNPGClusterRenderer({ data, onNavigate, declared}: CNPGClusterRe
                 <ResourceLink
                   name={backupConfig.plugin.barmanObjectName}
                   kind="objectstores"
+                  group={CNPG_BARMAN_OBJECTSTORE_GROUP}
                   namespace={data.metadata?.namespace || ''}
                   onNavigate={onNavigate}
                 />

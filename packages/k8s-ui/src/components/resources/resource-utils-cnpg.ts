@@ -300,6 +300,12 @@ export function getCNPGClusterUpdateStrategy(resource: any): string {
 
 export const CNPG_BARMAN_PLUGIN_NAME = 'barman-cloud.cloudnative-pg.io'
 
+/** The API group ObjectStore is served under. `objectstores` is a generic
+ *  plural several operators ship, so every link to one has to be qualified —
+ *  an unqualified link resolves by plural alone and can land on a foreign CRD's
+ *  object of the same name. */
+export const CNPG_BARMAN_OBJECTSTORE_GROUP = 'barmancloud.cnpg.io'
+
 export interface CNPGBarmanPlugin {
   name: string
   /** ObjectStore CR (barmancloud.cnpg.io/v1) holding the real destination + recovery window. */

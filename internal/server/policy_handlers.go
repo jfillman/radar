@@ -320,7 +320,9 @@ type PolicyCoverageResponse struct {
 	// must not claim it all belongs to Kyverno.
 	Engines []string `json:"engines,omitempty"`
 	// Subjects is how many distinct resources these outcomes describe, and
-	// SubjectsFailing how many of those have at least one non-passing outcome.
+	// SubjectsFailing how many of those actually FAILED a rule — not merely
+	// failed to pass, which also covers warnings, skips, and rules that never
+	// reached a verdict.
 	//
 	// Not derivable from Examined, and not derivable on the client either: one
 	// resource matched by two rules produces two outcomes, and the per-rule
@@ -486,7 +488,11 @@ func (s *Server) handlePolicyCoverage(w http.ResponseWriter, r *http.Request) {
 		// rules.
 		subjectKey := o.Subject.Group + "/" + o.Subject.Kind + "/" + o.Subject.Namespace + "/" + o.Subject.Name
 		seenSubjects[subjectKey] = true
-		if !isPolicyPassResult(o.Finding.Result) {
+		// Strictly `fail`. Not-passing is a wider set — warn, skip, and the
+		// engine error that means no verdict was reached at all — and the
+		// sentence this feeds says the next update to these will be REJECTED.
+		// A rule that could not evaluate rejects nothing on the strength of it.
+		if normalizePolicyResult(o.Finding.Result) == "fail" {
 			failingSubjects[subjectKey] = true
 		}
 

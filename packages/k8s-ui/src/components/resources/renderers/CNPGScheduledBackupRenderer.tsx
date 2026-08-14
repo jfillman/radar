@@ -10,6 +10,7 @@ import {
   getCNPGScheduledBackupIsImmediate,
   getCNPGBackupPlugin,
   getCNPGScheduledBackupOwnerRef,
+  CNPG_BARMAN_OBJECTSTORE_GROUP,
 } from '../resource-utils-cnpg'
 
 interface CNPGScheduledBackupRendererProps {
@@ -73,6 +74,7 @@ export function CNPGScheduledBackupRenderer({ data, onNavigate }: CNPGScheduledB
                 <ResourceLink
                   name={schedulePlugin.parameters.barmanObjectName}
                   kind="objectstores"
+                  group={CNPG_BARMAN_OBJECTSTORE_GROUP}
                   namespace={data.metadata?.namespace || ''}
                   onNavigate={onNavigate}
                 />

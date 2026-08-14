@@ -526,11 +526,6 @@ function capWorthMentioning(
   return notableListed + notableHidden < notableTotal
 }
 
-/**
- * `counts` describe the cluster, lists describe the view, so the cluster-wide
- * count cannot label a list. Only non-passing subjects are listed, so everything
- * withheld that was not notable was a pass — exact, not inferred.
- */
 /** Outcomes and resources are different counts: one resource matched by two
  *  rules records two outcomes. Named apart only when they differ. */
 function examinedSummary(examined: number, subjects: number): string {
@@ -555,6 +550,11 @@ function foldLabel(listed: number, total: number, capped: boolean): string {
   return capped ? `Show ${listed} of ${total}` : `Show all ${listed}`
 }
 
+/**
+ * `counts` describe the cluster, lists describe the view, so the cluster-wide
+ * count cannot label a list. Only non-passing subjects are listed, so everything
+ * withheld that was not notable was a pass — exact, not inferred.
+ */
 function passingInView(passTotal: number, hiddenByFilter: number, hiddenNotable: number): number {
   return Math.max(0, passTotal - Math.max(0, hiddenByFilter - hiddenNotable))
 }

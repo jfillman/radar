@@ -516,3 +516,26 @@ describe('naming what was examined', () => {
     expect(headline(5, 2)).toBe('5 checks on 2 resources')
   })
 })
+
+/**
+ * The engine-error sentence is rendered from a count, and a count of one is the
+ * common case on a small policy — "1 could not be evaluated and are being
+ * allowed through" reads as machine output on the screen that is supposed to
+ * explain what the machine did.
+ */
+describe('engine-error sentence agrees in number', () => {
+  const line = (n: number, failClosed: boolean) =>
+    failClosed
+      ? `${n} could not be evaluated. This policy fails closed, so ${n === 1 ? 'that admission is' : 'those admissions are'} rejected for an engine error rather than a violation.`
+      : `${n} could not be evaluated and ${n === 1 ? 'is' : 'are'} being allowed through unchecked.`
+
+  it('uses the singular for one', () => {
+    expect(line(1, false)).toContain('1 could not be evaluated and is being allowed')
+    expect(line(1, true)).toContain('that admission is rejected')
+  })
+
+  it('uses the plural for more', () => {
+    expect(line(4, false)).toContain('4 could not be evaluated and are being allowed')
+    expect(line(4, true)).toContain('those admissions are rejected')
+  })
+})

@@ -555,10 +555,12 @@ function Consequence({
 
   if (data.counts.error > 0) {
     const failClosed = getKyvernoFailurePolicy(resource) === 'Fail'
+    const n = data.counts.error
+    const one = n === 1
     lines.push(
       failClosed
-        ? `${data.counts.error} could not be evaluated. This policy fails closed, so those admissions are rejected for an engine error rather than a violation.`
-        : `${data.counts.error} could not be evaluated and are being allowed through unchecked.`,
+        ? `${n} could not be evaluated. This policy fails closed, so ${one ? 'that admission is' : 'those admissions are'} rejected for an engine error rather than a violation.`
+        : `${n} could not be evaluated and ${one ? 'is' : 'are'} being allowed through unchecked.`,
     )
   }
 

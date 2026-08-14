@@ -162,9 +162,11 @@ function RecoveryWindowRow({
   /** Cluster names that exist in this namespace. The server key usually IS the
    *  cluster name, but the barman-cloud plugin's `serverName` parameter can be
    *  set to anything, and two clusters may share a store under distinct keys —
-   *  so a key is only a route when something is actually there. Hosts that
-   *  cannot resolve it omit this and the name renders as text, which is still
-   *  the truth. */
+   *  so a key is only a route when something is actually there.
+   *
+   *  Absent means unresolved, not "assume it resolves": the list may still be
+   *  loading, the lookup may have failed, or the host may not be able to ask.
+   *  All three render the name as text, which is the part that is always true. */
   clusterNames?: Set<string>
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }) {
@@ -177,9 +179,7 @@ function RecoveryWindowRow({
             trouble and unable to open it. Only usually, though — see
             `clusterNames`. */}
         <span className="text-sm font-medium text-theme-text-primary">
-          {clusterNames && !clusterNames.has(w.server) ? (
-            w.server
-          ) : (
+          {clusterNames?.has(w.server) ? (
             <ResourceLink
               name={w.server}
               kind="clusters"
@@ -187,6 +187,8 @@ function RecoveryWindowRow({
               group="postgresql.cnpg.io"
               onNavigate={onNavigate}
             />
+          ) : (
+            w.server
           )}
         </span>
         <span className={clsx('badge', HEALTH_BADGE_COLORS[tone as keyof typeof HEALTH_BADGE_COLORS])}>

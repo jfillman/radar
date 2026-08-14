@@ -14,7 +14,7 @@ import {
   useCloudRole, useVersionCheck, useClusterInfo, usePrometheusStatus, useArgoStatus,
 } from '../../api/client'
 import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
-import { Input } from '@skyhook-io/k8s-ui'
+import { Input, sortColumnLabel, CROSS_KIND_SORT_COLUMNS } from '@skyhook-io/k8s-ui'
 import { Tooltip } from '../ui/Tooltip'
 import { AISettingsSection, type AIDraft } from '../diagnose/AISettings'
 import { MyPermissionsContent } from './MyPermissionsDialog'
@@ -703,12 +703,10 @@ export function SettingsDialog({
 
 // Kind-agnostic columns only: this preference applies to every resource table,
 // and a kind that lacks the chosen column falls back to its built-in order.
+// Names come from the table's own column definitions so the two can't drift.
 const SORT_COLUMNS = [
   { value: '', label: 'Each table’s own default' },
-  { value: 'name', label: 'Name' },
-  { value: 'namespace', label: 'Namespace' },
-  { value: 'status', label: 'Status' },
-  { value: 'age', label: 'Age' },
+  ...CROSS_KIND_SORT_COLUMNS.map((c) => ({ value: c.key, label: c.label })),
 ]
 
 // "Ascending" reads backwards on Age: the table sorts on creationTimestamp, so
@@ -728,6 +726,8 @@ const GENERIC_DIRECTION_LABELS = { asc: 'Ascending', desc: 'Descending' }
 // ones (Restarts) and user-defined label columns — none of which are in the
 // dropdown. Showing the raw key beats showing "no preference" over an active one.
 function describeSortColumn(key: string): string {
+  const known = sortColumnLabel(key)
+  if (known) return known
   if (key.startsWith('label:')) return `Label: ${key.slice('label:'.length)}`
   if (key.startsWith('annotation:')) return `Annotation: ${key.slice('annotation:'.length)}`
   const spaced = key.replace(/([A-Z])/g, ' $1')

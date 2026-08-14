@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isSortableColumn, resolveDefaultSort } from './ResourcesView'
+import { CROSS_KIND_SORT_COLUMNS, isSortableColumn, resolveDefaultSort, sortColumnLabel } from './ResourcesView'
 
 describe('resolveDefaultSort', () => {
   it('returns no sort when there is no preference', () => {
@@ -102,5 +102,33 @@ describe('sortability, not just existence', () => {
   it('rejects a sortable built-in that the kind does not render', () => {
     expect(isSortableColumn('restarts', 'configmaps')).toBe(false)
     expect(isSortableColumn('namespace', 'nodes')).toBe(false)
+  })
+})
+
+describe('sort column labels', () => {
+  it('matches the header for keys that de-camel-casing gets wrong', () => {
+    // The table header renders "CPU" and "Up-to-date"; deriving the label from
+    // the key would show "Cpu" and "Up To Date" in Settings for the same column.
+    expect(sortColumnLabel('cpu')).toBe('CPU')
+    expect(sortColumnLabel('upToDate')).toBe('Up-to-date')
+  })
+
+  it('names every sortable built-in', () => {
+    for (const key of ['name', 'namespace', 'age', 'status', 'restarts', 'memory', 'lastSeen']) {
+      expect(sortColumnLabel(key)).toBeTruthy()
+    }
+  })
+
+  it('returns undefined for columns it cannot name, so callers can fall back', () => {
+    expect(sortColumnLabel('label:app')).toBeUndefined()
+    expect(sortColumnLabel('cluster')).toBeUndefined()
+  })
+
+  it('offers only kind-agnostic columns for the cross-kind setting, all sortable', () => {
+    expect(CROSS_KIND_SORT_COLUMNS.map((c) => c.key)).toEqual(['name', 'namespace', 'status', 'age'])
+    for (const c of CROSS_KIND_SORT_COLUMNS) {
+      expect(c.label).toBeTruthy()
+      expect(isSortableColumn(c.key, 'pods')).toBe(true)
+    }
   })
 })

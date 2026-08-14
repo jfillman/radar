@@ -1939,14 +1939,35 @@ function getColumnsForKind(kind: string, group?: string): Column[] {
   return DEFAULT_COLUMNS
 }
 
-// Built-in column keys that getSortValue knows how to order. Most columns are
-// display-only — of the ~230 keys across KNOWN_COLUMNS these are the sortable
-// ones, so "the column exists" is not the same question as "it can be sorted".
-const SORTABLE_COLUMN_KEYS: readonly string[] = [
-  'name', 'namespace', 'age', 'status', 'ready', 'restarts', 'type', 'version',
-  'desired', 'available', 'upToDate', 'lastSeen', 'count', 'reason', 'object',
-  'cpu', 'memory', 'containers',
-]
+// Built-in column keys that getSortValue knows how to order, with the label to
+// show outside the table. Most columns are display-only — of the ~230 keys
+// across KNOWN_COLUMNS these are the sortable ones, so "the column exists" is
+// not the same question as "it can be sorted".
+//
+// The labels are here rather than derived from KNOWN_COLUMNS because that map
+// has no single answer: `status` alone renders as Status, Phase, Ready, Synced,
+// Enforcement or Exempts depending on the kind. A cross-kind setting needs one
+// canonical name. Deriving them by de-camel-casing the key instead gets "Cpu"
+// and "Up To Date", which is not what the header says.
+const SORTABLE_COLUMN_LABELS: Record<string, string> = {
+  name: 'Name', namespace: 'Namespace', age: 'Age', status: 'Status',
+  ready: 'Ready', restarts: 'Restarts', type: 'Type', version: 'Version',
+  desired: 'Desired', available: 'Available', upToDate: 'Up-to-date',
+  lastSeen: 'Last Seen', count: 'Count', reason: 'Reason', object: 'Object',
+  cpu: 'CPU', memory: 'Memory', containers: 'Containers',
+}
+
+// Display name for a sort column outside the resource table (the Settings
+// dialog). Falls back for host-injected and user-defined columns, which carry
+// their own labels the table renders but this map does not know.
+export function sortColumnLabel(key: string): string | undefined {
+  return SORTABLE_COLUMN_LABELS[key]
+}
+
+// Kind-agnostic sortable columns, in the order the Settings dialog offers them.
+export const CROSS_KIND_SORT_COLUMNS: readonly { key: string; label: string }[] = [
+  'name', 'namespace', 'status', 'age',
+].map((key) => ({ key, label: SORTABLE_COLUMN_LABELS[key] }))
 
 // Whether this table can actually sort by `column` right now. The header, the
 // sort handler, and the saved preference all have to agree: a column that
@@ -1963,7 +1984,7 @@ export function isSortableColumn(
   extraSortableKeys: readonly string[] = [],
 ): boolean {
   if (extraSortableKeys.includes(column)) return true
-  if (!SORTABLE_COLUMN_KEYS.includes(column)) return false
+  if (!(column in SORTABLE_COLUMN_LABELS)) return false
   return getColumnsForKind(kind, group).some(c => c.key === column)
 }
 
@@ -3758,8 +3779,8 @@ export function ResourcesView({
 
   // Sort falls back to the preference on kind change, when the preference is
   // edited in Settings, and when it arrives from the server after mount. All
-  // three are the same operation, so one effect owns them; without the
-  // preference this is the old "reset sort on kind change".
+  // three are the same operation, so one effect owns them; with no preference
+  // set, that operation is a plain reset on kind change.
   const applyDefaultSort = useCallback(() => {
     const { column, direction } = resolveDefaultSort(
       defaultSort,

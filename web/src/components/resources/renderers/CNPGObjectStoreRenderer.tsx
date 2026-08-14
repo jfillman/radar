@@ -1,6 +1,7 @@
 import { Database } from 'lucide-react'
 import { CNPGObjectStoreRenderer as BaseCNPGObjectStoreRenderer } from '@skyhook-io/k8s-ui/components/resources/renderers/CNPGObjectStoreRenderer'
 import { Section, RelationshipGroup, CNPG_BARMAN_PLUGIN_NAME } from '@skyhook-io/k8s-ui'
+import { LookupFailureNote } from '@skyhook-io/k8s-ui/components/resources/renderers/LookupFailureNote'
 import type { ResourceRef } from '@skyhook-io/k8s-ui'
 import { useResources } from '../../../api/client'
 
@@ -56,11 +57,16 @@ export function CNPGObjectStoreRenderer({
         ) : users.length === 0 ? (
           // Not the same as "nothing uses it" — the caller may not be able to
           // list Clusters here, and a store with no users is worth noticing.
-          <div className="text-sm text-theme-text-tertiary">
-            {clusters.error
-              ? 'Could not check which clusters use this store.'
-              : 'No cluster in this namespace backs up to this store.'}
-          </div>
+          clusters.error ? (
+            <LookupFailureNote
+              errors={[clusters.error]}
+              what="which clusters use this store"
+            />
+          ) : (
+            <div className="text-sm text-theme-text-tertiary">
+              No cluster in this namespace backs up to this store.
+            </div>
+          )
         ) : (
           // The house pattern for "these other resources relate to this one":
           // labelled group with a count, ref badges, truncate-then-expand.

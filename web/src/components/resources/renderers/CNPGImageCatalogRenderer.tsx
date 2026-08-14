@@ -1,6 +1,7 @@
 import { Boxes } from 'lucide-react'
 import { CNPGImageCatalogRenderer as BaseImageCatalog } from '@skyhook-io/k8s-ui/components/resources/renderers/CNPGDeclarativeRenderer'
 import { Section, RelationshipGroup } from '@skyhook-io/k8s-ui'
+import { LookupFailureNote } from '@skyhook-io/k8s-ui/components/resources/renderers/LookupFailureNote'
 import { getCNPGImageCatalogEntries } from '../resource-utils-cnpg'
 import type { ResourceRef } from '@skyhook-io/k8s-ui'
 import { useResources } from '../../../api/client'
@@ -62,11 +63,16 @@ export function CNPGImageCatalogRenderer({
           {clusters.isLoading ? (
             <div className="text-sm text-theme-text-tertiary">Looking for clusters…</div>
           ) : users.length === 0 ? (
-            <div className="text-sm text-theme-text-tertiary">
-              {clusters.error
-                ? 'Could not check which clusters use this catalog.'
-                : 'No cluster is pinned to this catalog. Changing it affects nothing today.'}
-            </div>
+            clusters.error ? (
+              <LookupFailureNote
+                errors={[clusters.error]}
+                what="which clusters use this catalog"
+              />
+            ) : (
+              <div className="text-sm text-theme-text-tertiary">
+                No cluster is pinned to this catalog. Changing it affects nothing today.
+              </div>
+            )
           ) : (
             <div className="space-y-3">
               {met.length > 0 && (

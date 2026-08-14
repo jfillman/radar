@@ -64,15 +64,6 @@ type sourcedFinding struct {
 	Groups []string
 }
 
-func (sf sourcedFinding) inAnyGroup(groups map[string]bool) bool {
-	for _, g := range sf.Groups {
-		if groups[g] {
-			return true
-		}
-	}
-	return false
-}
-
 type Index struct {
 	mu        sync.RWMutex
 	bySubject map[string][]sourcedFinding

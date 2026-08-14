@@ -1,6 +1,7 @@
 import { Database } from 'lucide-react'
 import { CNPGClusterRenderer as BaseCNPGClusterRenderer } from '@skyhook-io/k8s-ui/components/resources/renderers/CNPGClusterRenderer'
 import { Section, RelationshipGroup, getCNPGDeclarativeStatus } from '@skyhook-io/k8s-ui'
+import { LookupFailureNote } from '@skyhook-io/k8s-ui/components/resources/renderers/LookupFailureNote'
 import type { ResourceRef } from '@skyhook-io/k8s-ui'
 import { useResources } from '../../../api/client'
 
@@ -38,7 +39,11 @@ export function CNPGClusterRenderer({
   const total = dbs.length + pubs.length + subs.length
 
   const loading = databases.isLoading || publications.isLoading || subscriptions.isLoading
-  const failed = databases.error || publications.error || subscriptions.error
+  // Three independent lookups, so "it failed" is not all-or-nothing: two can
+  // return rows while the third does not, and every count below is then drawn
+  // from a population smaller than the real one.
+  const lookupErrors = [databases.error, publications.error, subscriptions.error]
+  const failed = lookupErrors.some(Boolean)
 
   // Not applied is the state worth surfacing here: the manifest exists and
   // PostgreSQL does not have the object. Counting it on the cluster is how an
@@ -67,11 +72,16 @@ export function CNPGClusterRenderer({
             ) : total === 0 ? (
               // "None declared" and "could not check" are different answers, and
               // only one of them means the cluster has no declarative objects.
-              <div className="text-sm text-theme-text-tertiary">
-                {failed
-                  ? 'Could not check which databases are declared against this cluster.'
-                  : 'No Database, Publication or Subscription is declared against this cluster.'}
-              </div>
+              failed ? (
+                <LookupFailureNote
+                  errors={lookupErrors}
+                  what="which objects are declared against this cluster"
+                />
+              ) : (
+                <div className="text-sm text-theme-text-tertiary">
+                  No Database, Publication or Subscription is declared against this cluster.
+                </div>
+              )
             ) : (
               <div className="space-y-3">
                 {notApplied > 0 && (
@@ -79,6 +89,14 @@ export function CNPGClusterRenderer({
                     {`${notApplied} of ${total} could not be applied to PostgreSQL — the manifest exists, the object does not.`}
                   </div>
                 )}
+                {/* Rows arrived, so the failure is not "nothing found" — it is
+                    that both counts above are drawn from less than the cluster
+                    has, which is the reading they would otherwise invite. */}
+                <LookupFailureNote
+                  errors={lookupErrors}
+                  what="which objects are declared against this cluster"
+                  incomplete
+                />
                 {dbs.length > 0 && (
                   <RelationshipGroup label="Databases" refs={refs(dbs, 'Database')} onNavigate={onNavigate} />
                 )}

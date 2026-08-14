@@ -1,13 +1,14 @@
 import { Workflow } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Section, PropertyList, Property, AlertBanner } from '@skyhook-io/k8s-ui'
+import { LookupFailureNote } from '@skyhook-io/k8s-ui/components/resources/renderers/LookupFailureNote'
 import { HEALTH_BADGE_COLORS } from '@skyhook-io/k8s-ui/utils/badge-colors'
 import {
   getKyvernoRequestState,
   getKyvernoRequestMessage,
 } from '@skyhook-io/k8s-ui/components/resources/resource-utils-kyverno-queue'
 import { formatAge } from '@skyhook-io/k8s-ui/components/resources/resource-utils'
-import { useResources } from '../../../api/client'
+import { useResources, isForbiddenError } from '../../../api/client'
 
 /**
  * Whether a queued request belongs to this policy.
@@ -41,12 +42,28 @@ export function KyvernoPolicyQueued({ data }: { data: any }) {
   const namespace = data?.metadata?.namespace ?? ''
   // Requests live in the engine's own namespace whatever the policy's is, so
   // this is an unscoped lookup filtered by the policy they name.
-  const { data: requests } = useResources<any>('updaterequests', undefined, 'kyverno.io', {
+  const {
+    data: requests,
+    error,
+  } = useResources<any>('updaterequests', undefined, 'kyverno.io', {
     enabled: !!name,
   })
 
   const mine = (requests ?? []).filter((u: any) => requestBelongsTo(u, name, namespace))
-  if (mine.length === 0) return null
+  if (mine.length === 0) {
+    // An empty list and an unreadable one are not the same answer, but they do
+    // not deserve the same treatment either. Being denied `updaterequests` is
+    // cluster-static and would put an identical note on every policy page,
+    // including the majority that only validate and never queue anything — the
+    // house rule for a bonus surface is to hide the expected state and keep the
+    // genuine fault, which is neither permanent nor beyond acting on.
+    if (!error || isForbiddenError(error)) return null
+    return (
+      <Section title="Queued Work" icon={Workflow}>
+        <LookupFailureNote errors={[error]} what="what this policy has queued" />
+      </Section>
+    )
+  }
 
   const byState = mine.reduce<Record<string, number>>((acc, u: any) => {
     const s = getKyvernoRequestState(u)

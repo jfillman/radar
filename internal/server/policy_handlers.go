@@ -301,10 +301,9 @@ type PolicyCoverageResponse struct {
 	// subject has no namespace to name.
 	WithheldClusterScoped bool `json:"withheldClusterScoped,omitempty"`
 	// UnreadableFamilies are report families the CALLER cannot read, distinct from
-	// DeniedGroups, which are the ones radar's own probe could not read. Results
-	// merged from a family the caller lacks access to are still returned — see
-	// must-finish-later.md — so saying which families those are is the honest
-	// minimum.
+	// DeniedGroups, which are the ones radar's own probe could not read. Their
+	// results are dropped rather than merged, so naming the families is what
+	// turns a smaller number into an explained one.
 	UnreadableFamilies []string `json:"unreadableFamilies,omitempty"`
 	// Examined is how many outcomes back these counts, so the numbers read as a
 	// bounded subset rather than an implied cluster total.

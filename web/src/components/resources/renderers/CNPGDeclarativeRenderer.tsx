@@ -5,6 +5,7 @@ import {
   CNPGSubscriptionRenderer as BaseSubscription,
 } from '@skyhook-io/k8s-ui/components/resources/renderers/CNPGDeclarativeRenderer'
 import { ResourceLink, Section, RelationshipGroup } from '@skyhook-io/k8s-ui'
+import { LookupFailureNote } from '@skyhook-io/k8s-ui/components/resources/renderers/LookupFailureNote'
 import type { ResourceRef } from '@skyhook-io/k8s-ui'
 import { useResources } from '../../../api/client'
 import { splitCNPGDeclarativeByApplied } from '../resource-utils-cnpg'
@@ -107,7 +108,10 @@ export function CNPGDatabaseRenderer({
   const pending = [...tagged(p.pending, 'Publication'), ...tagged(sub.pending, 'Subscription')]
 
   const loading = publications.isLoading || subscriptions.isLoading
-  const failed = publications.error || subscriptions.error
+  // Two independent lookups: one can return rows while the other does not, and
+  // the groups below would then describe half the replication as all of it.
+  const lookupErrors = [publications.error, subscriptions.error]
+  const failed = lookupErrors.some(Boolean)
 
   return (
     <BaseDatabase
@@ -118,13 +122,25 @@ export function CNPGDatabaseRenderer({
           {loading ? (
             <div className="text-sm text-theme-text-tertiary">Looking for publications…</div>
           ) : pubs.length === 0 && subs.length === 0 ? (
-            <div className="text-sm text-theme-text-tertiary">
-              {failed
-                ? 'Could not check what replicates out of this database.'
-                : 'Nothing publishes from or subscribes to this database.'}
-            </div>
+            failed ? (
+              <LookupFailureNote
+                errors={lookupErrors}
+                what="what replicates out of this database"
+              />
+            ) : (
+              <div className="text-sm text-theme-text-tertiary">
+                Nothing publishes from or subscribes to this database.
+              </div>
+            )
           ) : (
             <div className="space-y-3">
+              {/* Rows are showing, so the failure means this list is short —
+                  not that nothing replicates. */}
+              <LookupFailureNote
+                errors={lookupErrors}
+                what="what replicates out of this database"
+                incomplete
+              />
               {livePubs.length > 0 && (
                 <RelationshipGroup
                   label="Publishes from here"

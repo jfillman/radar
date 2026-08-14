@@ -27,6 +27,22 @@ export function usePolicyResource(kind: string, namespace: string, name: string,
 // The inverse lookup: every resource one policy recorded an outcome for. A
 // namespaced Kyverno Policy reports as "namespace/name", so the namespace is
 // passed through and the server tries both shapes.
+/**
+ * Whether a cached coverage result describes the same thing the caller is asking
+ * about now — same policy, namespace and view — so only a changed `limit`
+ * separates them. Exported for tests: the alternative is showing one policy's
+ * findings on another policy's page.
+ */
+export function isSameCoverageSubject(
+  prevKey: readonly unknown[] | undefined,
+  policy: string,
+  namespace: string,
+  viewFilter: string,
+): boolean {
+  if (!prevKey || prevKey.length < 6) return false
+  return prevKey[2] === policy && prevKey[3] === namespace && prevKey[5] === viewFilter
+}
+
 // `limit` raises the per-rule subject bound. It is part of the query key so
 // asking for more is a separate fetch rather than a mutation of the cached one,
 // and the default response stays cached for every other drawer open.
@@ -59,8 +75,15 @@ export function usePolicyCoverage(
     retry: false,
     // Raising the limit is a new query key, and without this the section would
     // fall back to its full loading state — asking to see MORE resources would
-    // briefly remove the ones already on screen. The house pattern for a
-    // refetch that replaces a visible list.
-    placeholderData: (prev) => prev,
+    // briefly remove the ones already on screen.
+    //
+    // Only across a limit change, though. The drawer reuses this observer when
+    // it opens a different policy, so reusing unconditionally renders one
+    // policy's resources and counts under another's name, with no loading state
+    // to suggest they are not its own.
+    placeholderData: (prev, prevQuery) =>
+      isSameCoverageSubject(prevQuery?.queryKey, policy, namespace ?? '', viewFilter)
+        ? prev
+        : undefined,
   })
 }

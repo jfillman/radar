@@ -82,7 +82,11 @@ export function CNPGObjectStoreRenderer({
             breaks if I rotate these credentials" — the list would silently omit
             every legacy-path cluster, which mid-migration is most of a fleet.
             The recovery window is the other half of the answer. */}
-        {unlisted.length > 0 && (
+        {/* Only once the plugin lookup has actually answered. Derived while the
+            list is still loading — or after it failed — every server in the
+            window looks like an in-tree cluster, which is a claim about their
+            configuration made from having no data. */}
+        {!clusters.isLoading && !clusters.error && unlisted.length > 0 && (
           <div className="mt-2 pt-2 border-t border-theme-border text-xs text-theme-text-secondary">
             {`${unlisted.join(', ')} ${unlisted.length === 1 ? 'has' : 'have'} data here but ${
               unlisted.length === 1 ? 'is' : 'are'

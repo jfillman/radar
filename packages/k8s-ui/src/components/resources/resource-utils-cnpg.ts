@@ -948,3 +948,32 @@ export function getCNPGVolumeHealth(resource: any): CNPGVolumeHealth | null {
     health.initializing.length > 0
   return reportedAnything ? health : null
 }
+
+/**
+ * Splits declarative objects by what the operator has actually said about them.
+ *
+ * Three buckets, not two. `applied: true` is live. `applied: false` is a failure
+ * the operator can explain. ABSENT is not yet reconciled — and folding that in
+ * with the failures tells the reader an object "exists in Kubernetes and not in
+ * PostgreSQL" during the seconds before anything has looked at it.
+ */
+export function splitCNPGDeclarativeByApplied<T>(objects: T[]): {
+  applied: T[]
+  notApplied: T[]
+  pending: T[]
+} {
+  const out = { applied: [] as T[], notApplied: [] as T[], pending: [] as T[] }
+  for (const o of objects) {
+    switch (getCNPGDeclarativeStatus(o).level) {
+      case 'healthy':
+        out.applied.push(o)
+        break
+      case 'unhealthy':
+        out.notApplied.push(o)
+        break
+      default:
+        out.pending.push(o)
+    }
+  }
+  return out
+}

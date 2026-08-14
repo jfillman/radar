@@ -184,7 +184,10 @@ export function getKyvernoPolicyRuleCountByType(resource: any): {
       validate: statusCount.validate ?? 0,
       mutate: statusCount.mutate ?? 0,
       generate: statusCount.generate ?? 0,
-      verifyImages: statusCount.verifyImages ?? 0,
+      // Kyverno writes this key all-lowercase (`verifyimages`), verified on
+      // 1.18.2. Reading the camelCase spelling alone returns 0 for every
+      // image-verification policy in existence.
+      verifyImages: statusCount.verifyImages ?? statusCount.verifyimages ?? 0,
     }
   }
 

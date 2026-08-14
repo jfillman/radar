@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  splitCNPGDeclarativeByApplied,
   getCNPGDeclarativeStatus,
   getCNPGDeclarativeMessage,
   getCNPGReclaimPolicy,
@@ -76,5 +77,28 @@ describe('image catalog entries', () => {
   it('returns nothing for a catalog with no images', () => {
     expect(getCNPGImageCatalogEntries({ spec: {} })).toEqual([])
     expect(getCNPGImageCatalogEntries({})).toEqual([])
+  })
+})
+
+/**
+ * The Database page renders these three buckets with three different claims, so
+ * collapsing pending into failed puts "this exists in Kubernetes and not in
+ * PostgreSQL" under an object nothing has looked at yet.
+ */
+describe('splitCNPGDeclarativeByApplied', () => {
+  it('keeps pending out of the failures', () => {
+    const live = { status: { applied: true } }
+    const broken = { status: { applied: false, message: 'boom' } }
+    const fresh = {}
+    const alsoFresh = { status: {} }
+
+    const out = splitCNPGDeclarativeByApplied([live, broken, fresh, alsoFresh])
+    expect(out.applied).toEqual([live])
+    expect(out.notApplied).toEqual([broken])
+    expect(out.pending).toEqual([fresh, alsoFresh])
+  })
+
+  it('returns three empty buckets for nothing', () => {
+    expect(splitCNPGDeclarativeByApplied([])).toEqual({ applied: [], notApplied: [], pending: [] })
   })
 })

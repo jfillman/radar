@@ -7,7 +7,7 @@ import {
 import { ResourceLink, Section, RelationshipGroup } from '@skyhook-io/k8s-ui'
 import type { ResourceRef } from '@skyhook-io/k8s-ui'
 import { useResources } from '../../../api/client'
-import { getCNPGDeclarativeStatus } from '../resource-utils-cnpg'
+import { splitCNPGDeclarativeByApplied } from '../resource-utils-cnpg'
 
 const CNPG_GROUP = 'postgresql.cnpg.io'
 
@@ -92,17 +92,19 @@ export function CNPGDatabaseRenderer({
     group: CNPG_GROUP,
   })
 
-  // Applied and not-applied are different claims and cannot share a group. A
-  // subscription the operator could not apply describes replication that is NOT
-  // happening; rendered beside a working publication in identical chips, this
-  // section asserts that data flows where it does not.
-  const applied = (o: any) => getCNPGDeclarativeStatus(o).level === 'healthy'
-  const livePubs = pubs.filter(applied)
-  const liveSubs = subs.filter(applied)
-  const declaredOnly = [
-    ...pubs.filter((o: any) => !applied(o)).map((o: any) => ({ o, kind: 'Publication' as const })),
-    ...subs.filter((o: any) => !applied(o)).map((o: any) => ({ o, kind: 'Subscription' as const })),
-  ]
+  // Three states, not two — the same distinction the status badge and the issue
+  // detector make. Applied is replicating. `applied: false` is a failed apply
+  // the operator can explain. ABSENT is not yet reconciled, and calling that
+  // "exists in Kubernetes and not in PostgreSQL" condemns every object in its
+  // first seconds.
+  const p = splitCNPGDeclarativeByApplied(pubs)
+  const sub = splitCNPGDeclarativeByApplied(subs)
+  const tagged = (list: any[], kind: 'Publication' | 'Subscription') =>
+    list.map((o: any) => ({ o, kind }))
+  const livePubs = p.applied
+  const liveSubs = sub.applied
+  const notApplied = [...tagged(p.notApplied, 'Publication'), ...tagged(sub.notApplied, 'Subscription')]
+  const pending = [...tagged(p.pending, 'Publication'), ...tagged(sub.pending, 'Subscription')]
 
   const loading = publications.isLoading || subscriptions.isLoading
   const failed = publications.error || subscriptions.error
@@ -137,17 +139,29 @@ export function CNPGDatabaseRenderer({
                   onNavigate={onNavigate}
                 />
               )}
-              {declaredOnly.length > 0 && (
+              {notApplied.length > 0 && (
                 <div className="space-y-1.5">
                   <RelationshipGroup
                     label="Declared, but not replicating"
-                    refs={declaredOnly.map(({ o, kind }) => toRef(kind)(o))}
+                    refs={notApplied.map(({ o, kind }) => toRef(kind)(o))}
                     onNavigate={onNavigate}
                   />
                   <div className="text-xs text-warning-text">
-                    {declaredOnly.length === 1
+                    {notApplied.length === 1
                       ? 'This exists in Kubernetes and not in PostgreSQL, so no data moves through it. Open it for the operator’s reason.'
                       : 'These exist in Kubernetes and not in PostgreSQL, so no data moves through them. Open one for the operator’s reason.'}
+                  </div>
+                </div>
+              )}
+              {pending.length > 0 && (
+                <div className="space-y-1.5">
+                  <RelationshipGroup
+                    label="Not reconciled yet"
+                    refs={pending.map(({ o, kind }) => toRef(kind)(o))}
+                    onNavigate={onNavigate}
+                  />
+                  <div className="text-xs text-theme-text-secondary">
+                    The operator has not reported on these yet. They have not failed.
                   </div>
                 </div>
               )}

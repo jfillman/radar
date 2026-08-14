@@ -43,13 +43,13 @@ function RecoveryTime({ at }: { at: string }) {
 
 export function CNPGObjectStoreRenderer({
   data,
-  clusterNames,
+  clusterForServer,
   onNavigate,
 }: {
   data: any
-  /** Cluster names that exist in this namespace, so a server key is only linked
-   *  when there is something behind it. See RecoveryWindowRow. */
-  clusterNames?: Set<string>
+  /** Server key -> the Cluster archiving under it, so a key is only linked when
+   *  something is behind it. See RecoveryWindowRow. */
+  clusterForServer?: Map<string, string>
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }) {
   const windows = getCNPGObjectStoreRecoveryWindows(data)
@@ -80,7 +80,7 @@ export function CNPGObjectStoreRenderer({
           <div className="space-y-2">
             {windows.map((w) => (
               <RecoveryWindowRow
-                clusterNames={clusterNames}
+                clusterForServer={clusterForServer}
                 key={w.server}
                 window={w}
                 retention={retention}
@@ -153,21 +153,21 @@ function RecoveryWindowRow({
   window: w,
   retention,
   namespace,
-  clusterNames,
+  clusterForServer,
   onNavigate,
 }: {
   window: CNPGObjectStoreRecoveryWindow
   retention?: string
   namespace: string
-  /** Cluster names that exist in this namespace. The server key usually IS the
-   *  cluster name, but the barman-cloud plugin's `serverName` parameter can be
-   *  set to anything, and two clusters may share a store under distinct keys —
-   *  so a key is only a route when something is actually there.
+  /** Server key -> the Cluster archiving under it. The key defaults to the
+   *  cluster's name but the plugin's `serverName` parameter overrides it, so the
+   *  two are not interchangeable and the mapping has to come from the plugin
+   *  parameters rather than from string equality.
    *
-   *  Absent means unresolved, not "assume it resolves": the list may still be
-   *  loading, the lookup may have failed, or the host may not be able to ask.
-   *  All three render the name as text, which is the part that is always true. */
-  clusterNames?: Set<string>
+   *  Absent means unresolved, not "assume it resolves": the lookup may still be
+   *  loading, it may have failed, or the host may not be able to ask. All three
+   *  render the key as text, which is the part that is always true. */
+  clusterForServer?: Map<string, string>
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }) {
   const tone = w.failingSinceLastSuccess ? 'degraded' : w.lastSuccessfulBackupTime ? 'healthy' : 'unknown'
@@ -179,9 +179,10 @@ function RecoveryWindowRow({
             trouble and unable to open it. Only usually, though — see
             `clusterNames`. */}
         <span className="text-sm font-medium text-theme-text-primary">
-          {clusterNames?.has(w.server) ? (
+          {clusterForServer?.get(w.server) ? (
             <ResourceLink
-              name={w.server}
+              name={clusterForServer.get(w.server) as string}
+              label={w.server}
               kind="clusters"
               namespace={namespace}
               group="postgresql.cnpg.io"

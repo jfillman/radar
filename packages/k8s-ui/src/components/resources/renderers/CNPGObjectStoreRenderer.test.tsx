@@ -3,11 +3,11 @@ import { renderToString } from 'react-dom/server'
 import { CNPGObjectStoreRenderer } from './CNPGObjectStoreRenderer'
 
 /**
- * A recovery window is keyed by server name, and the plugin's `serverName`
- * parameter defaults to the cluster name but can be set to anything — two
- * clusters can even share a store under distinct keys. Linking the key to a
- * Cluster page is therefore a guess, and a link is an assertion that something
- * is on the other end.
+ * A recovery window is keyed by the archive's server name. It defaults to the
+ * cluster's name, but the plugin's `serverName` parameter overrides it — the
+ * ObjectStore refuses the field outright and points at the Cluster — so the key
+ * and the cluster name are not interchangeable. A link is an assertion that
+ * something is on the other end of it.
  */
 const store = {
   apiVersion: 'barmancloud.cnpg.io/v1',
@@ -24,17 +24,18 @@ const store = {
 const nav = () => {}
 
 describe('ObjectStore recovery-window server key', () => {
-  it('links the key when a cluster of that name exists', () => {
+  it('links the key to the cluster archiving under it', () => {
     const html = renderToString(
-      <CNPGObjectStoreRenderer data={store} clusterNames={new Set(['pg-main'])} onNavigate={nav} />,
+      <CNPGObjectStoreRenderer data={store} clusterForServer={new Map([['pg-main', 'pg-main']])} onNavigate={nav} />,
     )
     expect(html).toContain('>pg-main</button>')
   })
 
-  // A custom serverName, or a store shared under a key that is nobody's cluster.
-  it('renders the key as text when no such cluster exists', () => {
+  // A key belonging to no cluster we found — an in-tree cluster, or one whose
+  // archive nothing here accounts for.
+  it('renders the key as text when nothing archives under it', () => {
     const html = renderToString(
-      <CNPGObjectStoreRenderer data={store} clusterNames={new Set(['something-else'])} onNavigate={nav} />,
+      <CNPGObjectStoreRenderer data={store} clusterForServer={new Map([['other-server', 'other-cluster']])} onNavigate={nav} />,
     )
     expect(html).toContain('pg-main')
     expect(html).not.toContain('>pg-main</button>')
@@ -46,5 +47,19 @@ describe('ObjectStore recovery-window server key', () => {
     const html = renderToString(<CNPGObjectStoreRenderer data={store} onNavigate={nav} />)
     expect(html).toContain('pg-main')
     expect(html).not.toContain('>pg-main</button>')
+  })
+
+  // The whole reason the mapping exists: the key is the archive's name, and a
+  // cluster that renamed its archive must still be reachable from it.
+  it('links a renamed archive to the cluster behind it, showing the archive name', () => {
+    const html = renderToString(
+      <CNPGObjectStoreRenderer
+        data={store}
+        clusterForServer={new Map([['pg-main', 'pg-primary']])}
+        onNavigate={nav}
+      />,
+    )
+    expect(html).toContain('>pg-main</button>')
+    expect(html).not.toContain('>pg-primary</button>')
   })
 })

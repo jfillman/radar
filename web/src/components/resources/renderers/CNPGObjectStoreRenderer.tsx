@@ -44,23 +44,34 @@ export function CNPGObjectStoreRenderer({
     )
   })
 
-  // Named in the window, absent from the plugin list — the gap the note explains.
-  const listed = new Set(users.map((c: any) => c?.metadata?.name))
-  const unlisted = servers.filter((s) => !listed.has(s))
+  // A recovery window is keyed by the archive's server name, which defaults to
+  // the cluster's name and is overridden by the plugin's own `serverName`
+  // parameter — the ObjectStore rejects the field outright ("use the
+  // 'serverName' plugin parameter in the Cluster resource"), so the Cluster is
+  // the only place it can come from. Matching keys against cluster names alone
+  // reports a cluster that renamed its archive as a stranger.
+  const clusterForServer = new Map<string, string>()
+  for (const c of users) {
+    const plugin = (c?.spec?.plugins ?? []).find(
+      (p: any) => p?.name === CNPG_BARMAN_PLUGIN_NAME && p?.parameters?.barmanObjectName === storeName,
+    )
+    const server = plugin?.parameters?.serverName || c?.metadata?.name
+    if (server && c?.metadata?.name) clusterForServer.set(server, c.metadata.name)
+  }
+
+  // Named in the window, traceable to none of the clusters above — the gap the
+  // note explains.
+  const unlisted = servers.filter((s) => !clusterForServer.has(s))
 
   return (
     <>
       <BaseCNPGObjectStoreRenderer
         data={data}
         onNavigate={onNavigate}
-        // Every Cluster in the namespace, not just the ones using this store:
-        // a server key naming a cluster on the older in-tree path is still a
-        // real cluster worth opening, it simply cannot appear in the list below.
-        clusterNames={
-          clusters.isLoading || clusters.error
-            ? undefined
-            : new Set((clusters.data ?? []).map((c: any) => c?.metadata?.name).filter(Boolean))
-        }
+        // Server key -> the Cluster that archives under it. Built from the
+        // plugin parameters rather than by name, so a cluster that renamed its
+        // archive still resolves. Undefined while the lookup is unresolved.
+        clusterForServer={clusters.isLoading || clusters.error ? undefined : clusterForServer}
       />
       <Section title="Used By" icon={Database} defaultExpanded>
         {clusters.isLoading ? (
@@ -105,9 +116,14 @@ export function CNPGObjectStoreRenderer({
             configuration made from having no data. */}
         {!clusters.isLoading && !clusters.error && unlisted.length > 0 && (
           <div className="mt-2 pt-2 border-t border-theme-border text-xs text-theme-text-secondary">
+            {/* Two causes reach this note and the screen cannot tell them
+                apart, so it names both rather than asserting the one that is
+                usually true: a cluster on the older in-tree settings never
+                references this record, and a cluster that renamed its archive
+                leaves the data it already wrote under the previous name. */}
             {`${unlisted.join(', ')} ${unlisted.length === 1 ? 'has' : 'have'} data here but ${
               unlisted.length === 1 ? 'is' : 'are'
-            } not listed above: this only finds clusters using the barman-cloud plugin, and a cluster on the older in-tree backup settings never names this record.`}
+            } not listed above. This finds clusters through the barman-cloud plugin, so an archive written by a cluster on the older in-tree backup settings — or under a server name it has since changed — is not traced back to one.`}
           </div>
         )}
       </Section>

@@ -70,7 +70,17 @@ export function CNPGImageCatalogRenderer({
               />
             ) : (
               <div className="text-sm text-theme-text-tertiary">
-                No cluster is pinned to this catalog. Changing it affects nothing today.
+                {/* "Changing it affects nothing" is a claim about the cluster,
+                    and this search does not cover one. A ClusterImageCatalog is
+                    referenced from any namespace, but the lookup that answers
+                    this falls back to the reader's namespace view filter, so a
+                    filtered reader is told an edit is safe on the strength of
+                    the namespaces they happen to be looking at. The namespaced
+                    ImageCatalog has no such gap — its users can only be in its
+                    own namespace, which is exactly what was searched. */}
+                {scoped
+                  ? 'No cluster in this namespace is pinned to this catalog. Changing it affects nothing here today.'
+                  : 'No cluster in view is pinned to this catalog. Clusters in namespaces you are not currently showing are not covered by this check.'}
               </div>
             )
           ) : (

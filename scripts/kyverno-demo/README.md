@@ -76,6 +76,28 @@ kubectl create configmap probe --from-literal=a=b -n policy-demo
 # admission webhook "vpol.validate.kyverno.svc-fail" denied the request
 ```
 
+The legacy family has the same problem in its own vocabulary, and
+`spec.validationFailureAction` is not the answer to it. Three policies in
+`policy-posture` isolate the ways that field misleads, all matching the one
+labelled ConfigMap in that namespace:
+
+| Resource | Renders | Why it matters |
+|---|---|---|
+| `posture-mixed-actions` | `Audit` | **Declares `Enforce` and rejects nothing.** Its validating rule overrides the action down to Audit and its only other rule mutates — a mutation failure is not a rejection, so the policy-wide `Enforce` governs nothing at all. |
+| `posture-rules-disagree` | `Enforce`, with **no** consequence sentence | Two validating rules, opposite actions. The sentence is one claim about one failing count and cannot say which rule a failure came from, so it is withheld rather than guessed: `posture-subject` fails only the auditing rule and is in no danger. |
+| `posture-unresolvable-context` | `Audit`, section open, **red** shield | Every result is `error` — a context entry names a ConfigMap that does not exist, so the rule never reaches a verdict. Nothing is checked and nothing is blocked, which is the state most easily mistaken for compliance. |
+
+```bash
+# Overridden to Audit by its own rule → NOT blocked, despite Enforce on the spec
+kubectl create configmap probe -n policy-posture --from-literal=a=b \
+  --dry-run=client -o yaml | kubectl label -f - --local -o yaml posture=subject a=present | kubectl apply -f -
+
+# The rule that really does reject, in the policy next to it
+kubectl create configmap probe2 -n policy-posture --from-literal=a=b \
+  --dry-run=client -o yaml | kubectl label -f - --local -o yaml posture=subject | kubectl apply -f -
+# admission webhook "validate.kyverno.svc-fail" denied the request
+```
+
 ### The rest of the modern family
 
 | Resource | Kind | What it exercises |

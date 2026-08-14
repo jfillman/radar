@@ -625,6 +625,21 @@ function passingInView(passTotal: number, hiddenByFilter: number, hiddenNotable:
   return Math.max(0, passTotal - Math.max(0, hiddenByFilter - hiddenNotable))
 }
 
+/**
+ * How to name a rule's passing subjects.
+ *
+ * "All" is a claim about the rule, and it holds only when the rule has nothing
+ * outside the view. Next to a footer reporting subjects held back, it invites
+ * the count to be read as the total, so a filtered rule says how many are in
+ * view and leaves the total to the headline.
+ */
+function passingLabel(count: number, hiddenByFilter: number, words: OutcomeWords): string {
+  const noun = count === 1 ? 'resource' : 'resources'
+  return hiddenByFilter > 0
+    ? `${count} ${noun} ${words.good} in view`
+    : `All ${count} ${noun} ${words.good}`
+}
+
 function RuleBlock({
   rule,
   heading,
@@ -664,22 +679,14 @@ function RuleBlock({
         <div className="text-xs font-medium text-theme-text-tertiary mb-1">{heading}</div>
       )}
       {notable.length === 0 ? (
-        /* "All N passing" is a claim about the rule, and it is false when the
-           view filter withheld every subject that was not passing — the rule
-           has failures, they are simply out of view. The footer names them. */
-        (rule.hiddenNotable ?? 0) > 0 ? (
-          passing > 0 && (
-            <PassingGroup
-              label={`${passing} ${passing === 1 ? 'resource' : 'resources'} ${words.good} in view`}
-              subjects={passingSubjects}
-              total={passing}
-              words={words}
-              onSelectSubject={onSelectSubject}
-            />
-          )
-        ) : (
+        /* Two claims to get wrong at once. "All" is only true when the rule
+           has nothing outside the view — with subjects held back it invites
+           the count to be read as the total. And a count of zero is not a
+           statement worth making: "All 0 resources passing" appears exactly
+           when the filter withheld everything, which the footer says properly. */
+        passing > 0 && (
           <PassingGroup
-            label={`All ${passing} ${passing === 1 ? 'resource' : 'resources'} ${words.good}`}
+            label={passingLabel(passing, rule.hiddenByFilter ?? 0, words)}
             subjects={passingSubjects}
             total={passing}
             words={words}
@@ -978,6 +985,7 @@ export const __testing = {
   blocksAdmission,
   capWorthMentioning,
   passingInView,
+  passingLabel,
   problemCount,
   ruleHeading,
   legacyMatchesUpdates,

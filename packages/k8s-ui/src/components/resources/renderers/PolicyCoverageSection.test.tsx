@@ -460,3 +460,30 @@ describe('telling an empty policy from an incomplete answer', () => {
     expect(__testing.anythingWithheld(resp({ deniedGroups: ['openreports.io'] }))).toBe(true)
   })
 })
+
+/**
+ * The passing label sits next to a footer that reports what the filter held
+ * back, so it has two ways to mislead: claiming "all" of a number that is not
+ * the total, and stating a count of zero as though it were a finding.
+ */
+describe('naming the passing subjects', () => {
+  const words = outcomeWords('validating')
+
+  it('claims all only when the rule has nothing outside the view', () => {
+    expect(__testing.passingLabel(34, 0, words)).toBe('All 34 resources passing')
+  })
+
+  it('scopes the count to the view once anything is held back', () => {
+    expect(__testing.passingLabel(7, 27, words)).toBe('7 resources passing in view')
+    expect(__testing.passingLabel(7, 27, words)).not.toContain('All')
+  })
+
+  it('agrees in number', () => {
+    expect(__testing.passingLabel(1, 0, words)).toBe('All 1 resource passing')
+    expect(__testing.passingLabel(1, 3, words)).toBe('1 resource passing in view')
+  })
+
+  it('follows the family vocabulary', () => {
+    expect(__testing.passingLabel(2, 0, outcomeWords('mutating'))).toBe('All 2 resources mutated')
+  })
+})

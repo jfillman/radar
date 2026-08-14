@@ -7,6 +7,7 @@ import {
 import { ResourceLink, Section, RelationshipGroup } from '@skyhook-io/k8s-ui'
 import type { ResourceRef } from '@skyhook-io/k8s-ui'
 import { useResources } from '../../../api/client'
+import { getCNPGDeclarativeStatus } from '../resource-utils-cnpg'
 
 const CNPG_GROUP = 'postgresql.cnpg.io'
 
@@ -91,6 +92,18 @@ export function CNPGDatabaseRenderer({
     group: CNPG_GROUP,
   })
 
+  // Applied and not-applied are different claims and cannot share a group. A
+  // subscription the operator could not apply describes replication that is NOT
+  // happening; rendered beside a working publication in identical chips, this
+  // section asserts that data flows where it does not.
+  const applied = (o: any) => getCNPGDeclarativeStatus(o).level === 'healthy'
+  const livePubs = pubs.filter(applied)
+  const liveSubs = subs.filter(applied)
+  const declaredOnly = [
+    ...pubs.filter((o: any) => !applied(o)).map((o: any) => ({ o, kind: 'Publication' as const })),
+    ...subs.filter((o: any) => !applied(o)).map((o: any) => ({ o, kind: 'Subscription' as const })),
+  ]
+
   const loading = publications.isLoading || subscriptions.isLoading
   const failed = publications.error || subscriptions.error
 
@@ -110,19 +123,33 @@ export function CNPGDatabaseRenderer({
             </div>
           ) : (
             <div className="space-y-3">
-              {pubs.length > 0 && (
+              {livePubs.length > 0 && (
                 <RelationshipGroup
                   label="Publishes from here"
-                  refs={pubs.map(toRef('Publication'))}
+                  refs={livePubs.map(toRef('Publication'))}
                   onNavigate={onNavigate}
                 />
               )}
-              {subs.length > 0 && (
+              {liveSubs.length > 0 && (
                 <RelationshipGroup
                   label="Subscribes into here"
-                  refs={subs.map(toRef('Subscription'))}
+                  refs={liveSubs.map(toRef('Subscription'))}
                   onNavigate={onNavigate}
                 />
+              )}
+              {declaredOnly.length > 0 && (
+                <div className="space-y-1.5">
+                  <RelationshipGroup
+                    label="Declared, but not replicating"
+                    refs={declaredOnly.map(({ o, kind }) => toRef(kind)(o))}
+                    onNavigate={onNavigate}
+                  />
+                  <div className="text-xs text-warning-text">
+                    {declaredOnly.length === 1
+                      ? 'This exists in Kubernetes and not in PostgreSQL, so no data moves through it. Open it for the operator’s reason.'
+                      : 'These exist in Kubernetes and not in PostgreSQL, so no data moves through them. Open one for the operator’s reason.'}
+                  </div>
+                </div>
               )}
             </div>
           )}

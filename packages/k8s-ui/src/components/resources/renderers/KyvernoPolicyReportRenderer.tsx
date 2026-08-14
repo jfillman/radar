@@ -262,6 +262,12 @@ export function KyvernoPolicyRenderer({ data, coverage, queued }: KyvernoPolicyR
       {/* Configuration */}
       <Section title="Configuration" icon={Shield}>
         <PropertyList>
+          {/* Audit / Enforce governs VALIDATION only. A policy whose rules all
+              generate or mutate carries the field inertly, and showing it as
+              the policy's mode reads as "this one only reports" about a policy
+              that is actively writing to the cluster. status.rulecount is
+              Kyverno's own count, so this is checkable rather than guessed. */}
+          {ruleCountByType.validate > 0 && (
           <Property label="Failure Action" value={
             <span className={clsx(
               'badge',
@@ -270,6 +276,7 @@ export function KyvernoPolicyRenderer({ data, coverage, queued }: KyvernoPolicyR
               {action}
             </span>
           } />
+          )}
           <Property label="Background" value={background ? 'Enabled' : 'Disabled'} />
           {spec.webhookTimeoutSeconds && (
             <Property label="Webhook Timeout" value={`${spec.webhookTimeoutSeconds}s`} />

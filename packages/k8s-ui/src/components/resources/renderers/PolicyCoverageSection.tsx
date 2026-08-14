@@ -73,7 +73,18 @@ export function outcomeWords(family: KyvernoPolicyFamily | undefined): OutcomeWo
     case 'mutating':
       return { bad: 'not mutated', good: 'mutated', badBadge: 'Not mutated', goodBadge: 'Mutated' }
     case 'generating':
-      return { bad: 'not generated', good: 'generated', badBadge: 'Not generated', goodBadge: 'Generated' }
+      // The subject of a generate result is the TRIGGER, not the object the
+      // rule produced — Kyverno records the resource that caused generation and
+      // never names the target here. "Generated" on that row states the exact
+      // opposite of what happened: it reads as "this ConfigMap was generated"
+      // about the ConfigMap that caused a NetworkPolicy to be generated. The
+      // wording has to keep the subject in its real role.
+      return {
+        bad: 'failed to generate',
+        good: 'triggered generation',
+        badBadge: 'Generate failed',
+        goodBadge: 'Triggered',
+      }
     default:
       return { bad: 'failing', good: 'passing', badBadge: 'Fail', goodBadge: 'Pass' }
   }
@@ -158,6 +169,35 @@ function legacyRuleUpdateMatches(resource: any): boolean[] {
 function legacyOperationsAgree(resource: any): boolean {
   const answers = legacyRuleUpdateMatches(resource)
   return answers.every((a) => a === answers[0])
+}
+
+/**
+ * What to call a bucket of results.
+ *
+ * Kyverno does not only put authored rule names in `results[].rule`. The CEL
+ * family writes an EMPTY rule for ordinary results, and writes the literal
+ * `evaluation` when the engine itself failed — verified against 1.18.2, which
+ * emits `rule: 'evaluation'` with `result: error` for a broken expression.
+ * Rendering that string in the same slot as `validate-image-tag` presents a
+ * rule the policy does not contain, and sends the reader looking for it.
+ *
+ * So a name is only shown when the policy actually declares it. Otherwise the
+ * bucket is described by what it holds.
+ */
+function ruleHeading(resource: any, rule: PolicyCoverageRule): string | undefined {
+  const name = rule.rule
+  if (!name) return undefined
+  const declared: string[] = (resource?.spec?.rules ?? [])
+    .map((r: any) => r?.name)
+    .filter(Boolean)
+  if (declared.includes(name)) return name
+  // Not a rule of this policy. If everything in it is an engine error, say so;
+  // anything else keeps the raw name rather than inventing a description.
+  const c = rule.counts
+  if (c.error > 0 && c.fail === 0 && c.pass === 0 && c.warn === 0 && c.skip === 0) {
+    return 'Engine errors'
+  }
+  return name
 }
 
 /** A legacy kyverno.io Policy / ClusterPolicy, as opposed to the modern CEL family. */
@@ -359,7 +399,7 @@ export function PolicyCoverageSection({
           <RuleBlock
             key={rule.rule || `unnamed-${i}`}
             rule={rule}
-            showRuleName={data.rules.length > 1 || !!rule.rule}
+            heading={ruleHeading(resource, rule)}
             onLoadMore={onLoadMore}
             loadingMore={loadingMore}
             // Per rule, because one legacy policy can validate, mutate and
@@ -481,14 +521,15 @@ function Consequence({
 
 function RuleBlock({
   rule,
-  showRuleName,
+  heading,
   words,
   onSelectSubject,
   onLoadMore,
   loadingMore,
 }: {
   rule: PolicyCoverageRule
-  showRuleName: boolean
+  /** Undefined when this bucket has no name worth showing. */
+  heading?: string
   words: OutcomeWords
   onSelectSubject?: (subject: PolicyCoverageSubject) => void
   onLoadMore?: () => void
@@ -517,8 +558,8 @@ function RuleBlock({
 
   return (
     <div>
-      {showRuleName && rule.rule && (
-        <div className="text-xs font-medium text-theme-text-tertiary mb-1">{rule.rule}</div>
+      {heading && (
+        <div className="text-xs font-medium text-theme-text-tertiary mb-1">{heading}</div>
       )}
       {notable.length === 0 ? (
         <PassingGroup
@@ -805,6 +846,7 @@ function ScopeNote({ data }: { data: PolicyCoverageResponse }) {
  *  field), so it is pinned directly rather than through the DOM. */
 export const __testing = {
   blocksAdmission,
+  ruleHeading,
   legacyMatchesUpdates,
   legacyOperationsAgree,
   canStateConsequence,

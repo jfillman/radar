@@ -28,6 +28,10 @@ export function CNPGObjectStoreRenderer({
     enabled: !!storeName && !!namespace,
   })
 
+  // Servers the store holds data for, from its own status. Deliberately a
+  // separate question from the one below.
+  const servers: string[] = Object.keys(data?.status?.serverRecoveryWindow ?? {})
+
   const users = (clusters.data ?? []).filter((c: any) => {
     const plugins = c?.spec?.plugins
     if (!Array.isArray(plugins)) return false
@@ -38,6 +42,10 @@ export function CNPGObjectStoreRenderer({
         p?.parameters?.barmanObjectName === storeName,
     )
   })
+
+  // Named in the window, absent from the plugin list — the gap the note explains.
+  const listed = new Set(users.map((c: any) => c?.metadata?.name))
+  const unlisted = servers.filter((s) => !listed.has(s))
 
   return (
     <>
@@ -57,7 +65,7 @@ export function CNPGObjectStoreRenderer({
           // The house pattern for "these other resources relate to this one":
           // labelled group with a count, ref badges, truncate-then-expand.
           <RelationshipGroup
-            label="Clusters"
+            label="Archiving here through the plugin"
             refs={users.map((c: any) => ({
               kind: 'Cluster',
               namespace: c.metadata?.namespace ?? '',
@@ -66,6 +74,20 @@ export function CNPGObjectStoreRenderer({
             }))}
             onNavigate={onNavigate}
           />
+        )}
+        {/* This lookup can only see `spec.plugins`. A cluster still on the
+            deprecated in-tree `spec.backup.barmanObjectStore` names a
+            destination path and never references this CR, so it CANNOT appear
+            above however much data it has here. Read as blast radius — "who
+            breaks if I rotate these credentials" — the list would silently omit
+            every legacy-path cluster, which mid-migration is most of a fleet.
+            The recovery window is the other half of the answer. */}
+        {unlisted.length > 0 && (
+          <div className="mt-2 pt-2 border-t border-theme-border text-xs text-theme-text-secondary">
+            {`${unlisted.join(', ')} ${unlisted.length === 1 ? 'has' : 'have'} data here but ${
+              unlisted.length === 1 ? 'is' : 'are'
+            } not listed above: this only finds clusters using the barman-cloud plugin, and a cluster on the older in-tree backup settings never names this record.`}
+          </div>
         )}
       </Section>
     </>

@@ -35,9 +35,16 @@ export function usePolicyCoverage(
   namespace?: string,
   enabled = true,
   limit?: number,
+  /**
+   * Whatever identifies the caller's current namespace view. The server applies
+   * that filter from session state, so it changes the response body without
+   * changing the URL — it has to be in the key or the cache serves the previous
+   * scope's answer under the new scope's heading.
+   */
+  viewFilter = '',
 ) {
   return useQuery<PolicyCoverageResponse>({
-    queryKey: ['policy', 'coverage', policy, namespace ?? '', limit ?? 0],
+    queryKey: ['policy', 'coverage', policy, namespace ?? '', limit ?? 0, viewFilter],
     queryFn: () => {
       const params = new URLSearchParams()
       if (namespace) params.set('namespace', namespace)

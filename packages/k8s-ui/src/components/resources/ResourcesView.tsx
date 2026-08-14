@@ -303,6 +303,26 @@ function getColumnMinWidth(col: Column): number {
 }
 
 // Default columns for unknown resource types (CRDs)
+/**
+ * Why a list of this kind being empty is not the answer it looks like.
+ *
+ * Kyverno's two working records are garbage-collected within seconds of
+ * finishing, so "none" is the resting state of a healthy cluster — and for
+ * UpdateRequest it is ALSO what you see when a generate rule never fired at
+ * all. Those are opposite conclusions and a bare "No X found" renders them
+ * identically.
+ */
+function emptyKindNote(kind: string, group?: string): string | undefined {
+  const g = group ?? ''
+  if (kind.toLowerCase() === 'updaterequest' && g === 'kyverno.io') {
+    return 'These are deleted seconds after the work completes, so none is the normal resting state. It also looks like this if a generate or mutate-existing rule never ran — check the policy itself to tell the two apart.'
+  }
+  if ((kind.toLowerCase() === 'ephemeralreport' || kind.toLowerCase() === 'clusterephemeralreport') && g === 'reports.kyverno.io') {
+    return 'These exist only between a background scan and the PolicyReport it becomes, so none means the scan has finished rather than that nothing was checked.'
+  }
+  return undefined
+}
+
 const DEFAULT_COLUMNS: Column[] = [
   { key: 'name', label: 'Name' },
   { key: 'namespace', label: 'Namespace', width: 'w-48' },
@@ -5036,6 +5056,11 @@ export function ResourcesView({
           ) : filteredResources.length === 0 ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-theme-text-tertiary">
               <p>No {selectedKind.kind} found</p>
+              {emptyKindNote(selectedKind.kind, selectedKind.group) && (
+                <p className="text-xs mt-2 max-w-md text-center text-theme-text-disabled">
+                  {emptyKindNote(selectedKind.kind, selectedKind.group)}
+                </p>
+              )}
               {searchTerm && (
                 <button
                   onClick={() => {

@@ -2,7 +2,11 @@ import { Workflow } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Section, PropertyList, Property, AlertBanner } from '@skyhook-io/k8s-ui'
 import { HEALTH_BADGE_COLORS } from '@skyhook-io/k8s-ui/utils/badge-colors'
-import { getKyvernoRequestState } from '@skyhook-io/k8s-ui/components/resources/resource-utils-kyverno-queue'
+import {
+  getKyvernoRequestState,
+  getKyvernoRequestMessage,
+} from '@skyhook-io/k8s-ui/components/resources/resource-utils-kyverno-queue'
+import { formatAge } from '@skyhook-io/k8s-ui/components/resources/resource-utils'
 import { useResources } from '../../../api/client'
 
 /**
@@ -52,13 +56,37 @@ export function KyvernoPolicyQueued({ data }: { data: any }) {
   const pending = byState['Pending'] ?? 0
   const failed = byState['Failed'] ?? 0
 
+  // The count alone cannot tell healthy churn from a stopped controller: two
+  // Pending three seconds old and two Pending forty minutes old render
+  // identically. Age of the OLDEST pending request is the number that separates
+  // them, and it is the one Kyverno's own troubleshooting guide sends you to
+  // look for.
+  const messages = Array.from(
+    new Set(mine.map((u: any) => getKyvernoRequestMessage(u)).filter(Boolean) as string[]),
+  )
+  const oldestPending = mine
+    .filter((u: any) => getKyvernoRequestState(u).text === 'Pending')
+    .map((u: any) => u?.metadata?.creationTimestamp)
+    .filter(Boolean)
+    .sort()[0]
+  const stalledMinutes = oldestPending
+    ? Math.floor((Date.now() - new Date(oldestPending).getTime()) / 60000)
+    : 0
+  // A request that has sat for minutes is not mid-flight. Kyverno retries these
+  // on every reconcile, so a backlog grows rather than drains.
+  const stalled = stalledMinutes >= 5
+
   return (
     <>
       {/* The pile-up is the failure. A handful mid-flight is normal. */}
-      {pending >= 25 && (
+      {(stalled || pending >= 25) && (
         <AlertBanner
           variant="warning"
-          title={`${pending} requests are queued and not being processed`}
+          title={
+            stalled
+              ? `Queued work has not moved for ${formatAge(oldestPending)}`
+              : `${pending} requests are queued and not being processed`
+          }
           message="Requests build up when the background controller cannot keep up or cannot reach what it needs. They are retried on every reconcile, so a backlog grows rather than drains."
         />
       )}
@@ -89,7 +117,21 @@ export function KyvernoPolicyQueued({ data }: { data: any }) {
               }
             />
           ))}
+          {oldestPending && (
+            <Property label="Oldest Pending" value={`${formatAge(oldestPending)} ago`} />
+          )}
         </PropertyList>
+        {messages.length > 0 && (
+          <div className="mt-2 pt-2 border-t border-theme-border space-y-1">
+            {/* Kyverno writes why it could not complete a request into
+                status.message, and it is the only diagnosis this object
+                carries. A count without it says something is wrong and leaves
+                you to go and find out what. */}
+            {messages.map((m, i) => (
+              <div key={i} className="text-xs text-warning-text">{m}</div>
+            ))}
+          </div>
+        )}
         <div className="mt-2 pt-2 border-t border-theme-border text-xs text-theme-text-secondary">
           These are deleted seconds after they complete, so this counts what is in flight right now
           rather than everything this policy has ever done.

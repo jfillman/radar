@@ -79,14 +79,26 @@ export function CNPGImageCatalogRenderer({
                     refs={unmet.map(toRef)}
                     onNavigate={onNavigate}
                   />
+                  {unmet.some((c: any) => c?.status?.image) && (
+                    <div className="text-xs text-theme-text-secondary">
+                      {`Running now: ${unmet
+                        .filter((c: any) => c?.status?.image)
+                        .map((c: any) => `${c.metadata?.name} on ${c.status.image}`)
+                        .join(', ')}`}
+                    </div>
+                  )}
                   <div className="text-xs text-warning-text">
-                    {/* The named form only when there is a major to name — a
-                        reference missing one lands here too, and "asks for
-                        PostgreSQL undefined" would be worse than the general
-                        sentence. */}
+                    {/* What the catalog can prove, and no further. A cluster
+                        that already resolved an image keeps running on it, so
+                        "will not start" sends a responder hunting for
+                        crash-looping pods that are not there — the failure is
+                        the NEXT time an image has to be resolved. The named
+                        form only when there is a major to name: a reference
+                        missing one lands here too, and "asks for PostgreSQL
+                        undefined" would be worse than the general sentence. */}
                     {unmet.length === 1 && typeof unmet[0]?.spec?.imageCatalogRef?.major === 'number'
-                      ? `${unmet[0]?.metadata?.name} asks for PostgreSQL ${unmet[0].spec.imageCatalogRef.major}, which is not in the list above. It cannot resolve an image and will not start.`
-                      : 'A major version these clusters ask for is not in the list above, so they cannot resolve an image and will not start.'}
+                      ? `${unmet[0]?.metadata?.name} asks for PostgreSQL ${unmet[0].spec.imageCatalogRef.major}, which this catalog does not list. Whatever image it is running now, the next time it has to resolve one it will fail.`
+                      : 'These clusters ask for a major version this catalog does not list. Whatever image they are running now, the next time they have to resolve one they will fail.'}
                   </div>
                 </div>
               )}

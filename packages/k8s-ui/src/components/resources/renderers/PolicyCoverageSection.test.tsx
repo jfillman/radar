@@ -79,7 +79,11 @@ describe('outcomeWords', () => {
   })
 
   it('does not call an ungenerated resource a failure', () => {
-    expect(outcomeWords('generating').badBadge).toBe('Not generated')
+    expect(outcomeWords('generating').badBadge).toBe('Generate failed')
+    // The subject is the trigger, never the generated object. "Generated" here
+    // asserted the opposite of what happened.
+    expect(outcomeWords('generating').goodBadge).toBe('Triggered')
+    expect(outcomeWords('generating').goodBadge).not.toBe('Generated')
   })
 
   // Badge and headline must not disagree — the bug was a headline reading
@@ -302,5 +306,41 @@ describe('legacyOperationsAgree', () => {
   it('withholds the consequence when the rules disagree', () => {
     expect(canStateConsequence(withRules(['CREATE'], undefined), undefined)).toBe(false)
     expect(canStateConsequence(withRules(['CREATE'], ['CREATE']), undefined)).toBe(true)
+  })
+})
+
+/**
+ * Kyverno does not only put authored rule names in `results[].rule`. Verified
+ * against 1.18.2: the CEL family writes an EMPTY rule for ordinary results and
+ * the literal `evaluation` when the engine itself failed. Rendering that in the
+ * slot that shows `validate-image-tag` invents a rule the policy has not got.
+ */
+describe('ruleHeading', () => {
+  const { ruleHeading } = __testing
+  const counts = (o: Partial<Record<string, number>> = {}) => ({
+    pass: 0, fail: 0, warn: 0, error: 0, skip: 0, ...o,
+  })
+  const policy = { spec: { rules: [{ name: 'validate-image-tag' }] } }
+
+  it('shows a name the policy actually declares', () => {
+    expect(ruleHeading(policy, { rule: 'validate-image-tag', counts: counts({ pass: 1 }), subjects: [] } as any))
+      .toBe('validate-image-tag')
+  })
+
+  it('shows nothing for the empty rule the CEL family writes', () => {
+    expect(ruleHeading({ spec: {} }, { rule: '', counts: counts({ fail: 2 }), subjects: [] } as any))
+      .toBeUndefined()
+  })
+
+  it('describes an all-error bucket instead of naming a rule that does not exist', () => {
+    expect(ruleHeading({ spec: {} }, { rule: 'evaluation', counts: counts({ error: 18 }), subjects: [] } as any))
+      .toBe('Engine errors')
+  })
+
+  // Only when it is unambiguous. A mixed bucket keeps the raw string rather
+  // than being relabelled on a guess.
+  it('keeps an unknown name when the bucket is not purely errors', () => {
+    expect(ruleHeading({ spec: {} }, { rule: 'evaluation', counts: counts({ error: 1, fail: 1 }), subjects: [] } as any))
+      .toBe('evaluation')
   })
 })

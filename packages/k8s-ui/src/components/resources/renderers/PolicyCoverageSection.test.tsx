@@ -438,23 +438,25 @@ describe('what counts as a problem', () => {
 })
 
 /**
- * Withheld results are dropped before counting, so an examined count of zero
- * means either "nothing was checked" or "nothing you can read" — opposite
- * claims, and only one of them is the policy's fault.
+ * Missing results are dropped before counting, so an examined count of zero
+ * means either "nothing was checked" or "something did not reach this
+ * response" — opposite claims, and only one of them is about the policy.
  */
-describe('telling an empty policy from an unreadable one', () => {
+describe('telling an empty policy from an incomplete answer', () => {
   const resp = (o: any) => ({
     withheldNamespaces: 0, withheldClusterScoped: false, ...o,
   }) as any
 
-  it('is silent when the caller can read everything', () => {
+  it('is silent when the whole answer arrived', () => {
     expect(__testing.anythingWithheld(resp({}))).toBe(false)
   })
 
-  it('spots each way results can be withheld', () => {
+  it('spots each way results can go missing', () => {
     expect(__testing.anythingWithheld(resp({ withheldNamespaces: 2 }))).toBe(true)
     expect(__testing.anythingWithheld(resp({ withheldClusterScoped: true }))).toBe(true)
     expect(__testing.anythingWithheld(resp({ withheldByFamily: 1 }))).toBe(true)
+    // Radar's own probe failing to index a family is not the caller's
+    // permissions, but it still means absence cannot be asserted.
     expect(__testing.anythingWithheld(resp({ deniedGroups: ['openreports.io'] }))).toBe(true)
   })
 })

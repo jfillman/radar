@@ -415,7 +415,7 @@ export function PolicyCoverageSection({
       <Section title={TITLE} icon={ShieldQuestion}>
         <div className="text-sm text-theme-text-tertiary">
           {withheld
-            ? 'No results here that you can read.'
+            ? 'No results to show here.'
             : 'Nothing has been checked against this policy yet.'}
         </div>
         <ScopeNote data={data} />
@@ -567,11 +567,18 @@ function problemCount(counts: PolicyResourceCounts): number {
 }
 
 /**
- * Whether any results exist that this caller was not allowed to see.
+ * Whether any results are missing from this response.
  *
- * Withheld results are dropped before counting, so an examined count of zero
- * has two causes that mean opposite things: the policy checked nothing, or it
- * checked things this caller may not read.
+ * Missing results are dropped before counting, so an examined count of zero has
+ * two causes that mean opposite things: the policy checked nothing, or it
+ * checked things that did not reach this response. Either way the empty state
+ * cannot assert absence.
+ *
+ * The reasons are not interchangeable — the caller may be unable to read a
+ * namespace or a report family, or radar's own probe may have failed to index
+ * one — and attributing the second to the reader's permissions blames them for
+ * radar's gap. Naming the reason is ScopeNote's job; this only decides whether
+ * absence can be claimed at all.
  */
 function anythingWithheld(data: PolicyCoverageResponse): boolean {
   return (

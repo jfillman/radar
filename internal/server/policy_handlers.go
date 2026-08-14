@@ -318,8 +318,18 @@ type PolicyCoverageResponse struct {
 	// Engines are the normalized engines that wrote these results. More than
 	// one means the policy name is ambiguous across producers and the view
 	// must not claim it all belongs to Kyverno.
-	Engines []string             `json:"engines,omitempty"`
-	Rules   []PolicyCoverageRule `json:"rules"`
+	Engines []string `json:"engines,omitempty"`
+	// Subjects is how many distinct resources these outcomes describe, and
+	// SubjectsFailing how many of those have at least one non-passing outcome.
+	//
+	// Not derivable from Examined, and not derivable on the client either: one
+	// resource matched by two rules produces two outcomes, and the per-rule
+	// subject lists are capped, so counting the rows that arrived would undercount
+	// a large policy as surely as counting outcomes overcounts a multi-rule one.
+	// Any sentence that says "resources" needs these; the counts are checks.
+	Subjects        int                  `json:"subjects"`
+	SubjectsFailing int                  `json:"subjectsFailing"`
+	Rules           []PolicyCoverageRule `json:"rules"`
 }
 
 // handlePolicyCoverage returns every resource a policy recorded an outcome for.
@@ -420,6 +430,8 @@ func (s *Server) handlePolicyCoverage(w http.ResponseWriter, r *http.Request) {
 	engines := map[string]bool{}
 
 	unreadable := map[string]bool{}
+	seenSubjects := map[string]bool{}
+	failingSubjects := map[string]bool{}
 	for _, o := range outcomes {
 		families := familiesIn(o.Subject.Namespace)
 		// No family readable at this subject's scope at all — a permission
@@ -469,6 +481,15 @@ func (s *Server) handlePolicyCoverage(w http.ResponseWriter, r *http.Request) {
 		// statement about the cluster.
 		resp.Counts.count(o.Finding.Result)
 
+		// Distinct resources, tracked alongside the outcome counts because the two
+		// answer different questions and one resource can appear under several
+		// rules.
+		subjectKey := o.Subject.Group + "/" + o.Subject.Kind + "/" + o.Subject.Namespace + "/" + o.Subject.Name
+		seenSubjects[subjectKey] = true
+		if !isPolicyPassResult(o.Finding.Result) {
+			failingSubjects[subjectKey] = true
+		}
+
 		// Cluster-scoped subjects have no namespace to filter on and are always
 		// relevant, so they are never hidden by a namespace view filter.
 		if len(viewFilter) > 0 && o.Subject.Namespace != "" && !viewFilter[o.Subject.Namespace] {
@@ -491,6 +512,8 @@ func (s *Server) handlePolicyCoverage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.Examined = resp.Counts.Pass + resp.Counts.Fail + resp.Counts.Warn + resp.Counts.Error + resp.Counts.Skip
+	resp.Subjects = len(seenSubjects)
+	resp.SubjectsFailing = len(failingSubjects)
 	resp.ScopeNamespaces = len(namespaces)
 	resp.WithheldNamespaces = len(withheld)
 	for e := range engines {

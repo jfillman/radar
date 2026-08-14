@@ -257,3 +257,66 @@ func TestPolicyCoverage_AuthorizesPerSubjectNamespaceNotPerPolicy(t *testing.T) 
 		t.Errorf("subjects = %v, want [app/mine]", names)
 	}
 }
+
+// One resource, two rules. The outcome counts say two; the resource count says
+// one. Anything worded "resources" reads the second — a headline built from the
+// first invents a resource that does not exist, and the consequence sentence
+// promises rejection for a resource that is not there.
+func TestPolicyCoverage_CountsResourcesApartFromChecks(t *testing.T) {
+	env := newAuthTestServer(t)
+	// A second rule's outcome about the SAME subject, in the same family.
+	second := report("wgpolicyk8s.io", "app", "two-rules", podSubject("only-one"), "pass")
+	second.Object["metadata"] = map[string]any{"name": "rep-second", "namespace": "app"}
+	second.Object["results"].([]any)[0].(map[string]any)["rule"] = "other-check"
+	second.SetNamespace("app")
+	publishIndex(t,
+		report("wgpolicyk8s.io", "app", "two-rules", podSubject("only-one"), "fail"),
+		second,
+	)
+
+	perms := &auth.UserPermissions{AllowedNamespaces: []string{"app"}}
+	allow(perms, "wgpolicyk8s.io", "policyreports", "app", true)
+	allow(perms, "openreports.io", "reports", "app", false)
+	env.srv.permCache.Set("alice", perms)
+
+	got := coverageFor(t, env, "alice", "two-rules")
+
+	if got.Examined != 2 {
+		t.Errorf("Examined = %d, want 2 — two checks ran", got.Examined)
+	}
+	if got.Subjects != 1 {
+		t.Errorf("Subjects = %d, want 1 — both checks are about the same resource", got.Subjects)
+	}
+	if got.SubjectsFailing != 1 {
+		t.Errorf("SubjectsFailing = %d, want 1", got.SubjectsFailing)
+	}
+}
+
+// A resource that fails nothing must not be counted among the failing ones,
+// however many rules looked at it.
+func TestPolicyCoverage_FailingResourceCountExcludesPassingOnes(t *testing.T) {
+	env := newAuthTestServer(t)
+	publishIndex(t,
+		report("wgpolicyk8s.io", "app", "mixed", podSubject("bad"), "fail"),
+		func() *unstructured.Unstructured {
+			u := report("wgpolicyk8s.io", "app", "mixed", podSubject("good"), "pass")
+			u.Object["metadata"] = map[string]any{"name": "rep-good", "namespace": "app"}
+			u.SetNamespace("app")
+			return u
+		}(),
+	)
+
+	perms := &auth.UserPermissions{AllowedNamespaces: []string{"app"}}
+	allow(perms, "wgpolicyk8s.io", "policyreports", "app", true)
+	allow(perms, "openreports.io", "reports", "app", false)
+	env.srv.permCache.Set("alice", perms)
+
+	got := coverageFor(t, env, "alice", "mixed")
+
+	if got.Subjects != 2 {
+		t.Errorf("Subjects = %d, want 2", got.Subjects)
+	}
+	if got.SubjectsFailing != 1 {
+		t.Errorf("SubjectsFailing = %d, want 1 — only one of the two resources failed", got.SubjectsFailing)
+	}
+}

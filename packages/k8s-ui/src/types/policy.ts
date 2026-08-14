@@ -85,6 +85,13 @@ export interface PolicyCoverageResponse {
   /** Report families the CALLER cannot read. Distinct from deniedGroups, which
    *  are the ones radar's own probe could not read. */
   unreadableFamilies?: string[]
+  /** How many distinct resources these outcomes describe, and how many of those
+   *  have at least one non-passing outcome. One resource matched by two rules
+   *  produces two outcomes, so any sentence saying "resources" needs these —
+   *  `counts` and `examined` are checks. Not derivable client-side: the per-rule
+   *  subject lists are capped. */
+  subjects?: number
+  subjectsFailing?: number
   /** How many outcomes back these counts. */
   examined: number
   /** How many subjects the namespace view filter held back, across all rules. */

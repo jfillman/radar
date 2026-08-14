@@ -500,10 +500,24 @@ function Headline({
 
   // Leading with the examined total bounds the claim: these counts describe what
   // the engine actually looked at, not the cluster.
+  //
+  // Outcomes and resources are not the same number. A policy with two rules
+  // matching one resource records two outcomes about it, and calling that "2
+  // resources examined" invents a resource. They coincide often enough that
+  // naming both every time would be noise, so the sentence says so only when
+  // they differ — and then leads with the resource count, which is the one a
+  // reader is trying to size.
   const examined = data.examined || 0
+  const subjects = data.subjects ?? examined
+  const examinedPhrase =
+    subjects === examined
+      ? `${examined} ${examined === 1 ? 'resource' : 'resources'} examined`
+      : `${examined} ${examined === 1 ? 'check' : 'checks'} on ${subjects} ${
+          subjects === 1 ? 'resource' : 'resources'
+        }`
   return (
     <div className="text-sm text-theme-text-secondary">
-      {scope}, {examined} {examined === 1 ? 'resource' : 'resources'} examined — {parts.join(', ')}.
+      {scope}, {examinedPhrase} — {parts.join(', ')}.
     </div>
   )
 }
@@ -527,7 +541,11 @@ function Consequence({
   family: KyvernoPolicyFamily | undefined
 }) {
   const lines: string[] = []
-  const failing = data.counts.fail
+  // This sentence counts resources — "N already exist", "the next update to any
+  // of them" — so it needs the resources, not the outcomes. One resource failing
+  // two of the policy's rules is one thing that exists and one thing that gets
+  // rejected, however many times it was checked.
+  const failing = data.subjectsFailing ?? data.counts.fail
 
   if (failing > 0 && canStateConsequence(resource, family)) {
     lines.push(

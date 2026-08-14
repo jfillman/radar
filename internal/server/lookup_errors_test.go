@@ -28,12 +28,22 @@ var lookupDestructure = regexp.MustCompile(`const\s*\{([^}]*)\}\s*=\s*` + lookup
 // captures the identifier and the check below looks for `<identifier>.error`.
 var lookupAssignment = regexp.MustCompile(`const\s+([A-Za-z_$][\w$]*)\s*=\s*` + lookupHooks + `\b`)
 
-// Ratchet: files whose lookup destructure still discards the error.
+// Ratchet: the individual lookups that still discard their error, keyed by file
+// and by the binding itself. Per call site rather than per file on purpose — a
+// filename entry would forgive every future lookup added to that file, which is
+// the file most likely to grow one.
+//
 // This set may SHRINK. It must never GROW.
 var lookupErrorBaseline = map[string]string{
-	"ServiceRenderer.tsx": "pre-existing: endpoint slices behind the Service Endpoints section",
-	"CNPGDeclarativeRenderer.tsx": "the name resolver degrades to plain text instead of a link, " +
+	"ServiceRenderer.tsx :: data: endpointSlices, isLoading: endpointSlicesLoading": "pre-existing: endpoint slices behind the Service Endpoints section",
+	"CNPGDeclarativeRenderer.tsx :: data": "the name resolver degrades to plain text instead of a link, " +
 		"which is its documented fallback; the list beside it carries its own error note",
+}
+
+// normalizeBinding collapses whitespace so the baseline key is stable across
+// formatting, while still naming the exact binding it forgives.
+func normalizeBinding(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // TestReverseLookupsSurfaceTheirFailures keeps a failed or forbidden lookup from
@@ -66,25 +76,17 @@ func TestReverseLookupsSurfaceTheirFailures(t *testing.T) {
 			t.Fatalf("read %s: %v", name, readErr)
 		}
 		text := string(src)
-		drops := false
 		for _, m := range lookupDestructure.FindAllStringSubmatch(text, -1) {
 			if !strings.Contains(m[1], "error") {
-				drops = true
-				break
+				offenders = append(offenders, name+" :: "+normalizeBinding(m[1]))
 			}
 		}
-		if !drops {
-			for _, m := range lookupAssignment.FindAllStringSubmatch(text, -1) {
-				// The query object is in hand, so the error is reachable; what
-				// matters is whether anything ever reads it.
-				if !strings.Contains(text, m[1]+".error") {
-					drops = true
-					break
-				}
+		for _, m := range lookupAssignment.FindAllStringSubmatch(text, -1) {
+			// The query object is in hand, so the error is reachable; what
+			// matters is whether anything ever reads it.
+			if !strings.Contains(text, m[1]+".error") {
+				offenders = append(offenders, name+" :: "+normalizeBinding(m[1]))
 			}
-		}
-		if drops {
-			offenders = append(offenders, name)
 		}
 	}
 	sort.Strings(offenders)

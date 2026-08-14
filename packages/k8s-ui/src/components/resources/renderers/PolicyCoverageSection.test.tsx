@@ -487,3 +487,32 @@ describe('naming the passing subjects', () => {
     expect(__testing.passingLabel(2, 0, outcomeWords('mutating'))).toBe('All 2 resources mutated')
   })
 })
+
+/**
+ * Outcomes and resources are different numbers, and the headline is worded in
+ * resources. A policy with two rules matching one resource records two outcomes
+ * about it; calling that "2 resources examined" invents a resource that is not
+ * in the cluster.
+ */
+describe('naming what was examined', () => {
+  const headline = (examined: number, subjects: number) =>
+    subjects === examined
+      ? `${examined} ${examined === 1 ? 'resource' : 'resources'} examined`
+      : `${examined} ${examined === 1 ? 'check' : 'checks'} on ${subjects} ${subjects === 1 ? 'resource' : 'resources'}`
+
+  it('says resources when each was checked once', () => {
+    expect(headline(34, 34)).toBe('34 resources examined')
+  })
+
+  // The live case: one ConfigMap, two rules, and the page used to say "2
+  // resources examined".
+  it('separates the two when a resource was checked more than once', () => {
+    expect(headline(2, 1)).toBe('2 checks on 1 resource')
+    expect(headline(2, 1)).not.toContain('2 resources')
+  })
+
+  it('agrees in number on both halves', () => {
+    expect(headline(1, 1)).toBe('1 resource examined')
+    expect(headline(5, 2)).toBe('5 checks on 2 resources')
+  })
+})

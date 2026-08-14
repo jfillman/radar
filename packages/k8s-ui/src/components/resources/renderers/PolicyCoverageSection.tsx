@@ -542,6 +542,19 @@ function capWorthMentioning(
   return notableListed + notableHidden < notableTotal
 }
 
+/**
+ * How many passing subjects are in view.
+ *
+ * `counts` describe the cluster and the lists describe the view, so the
+ * cluster-wide passing count cannot label a list: it overstates what is there,
+ * and the shortfall against the listed rows gets read as a server cap. Only
+ * non-passing subjects are ever listed, so everything the filter withheld that
+ * was not notable was a pass — this is exact, not inferred.
+ */
+function passingInView(passTotal: number, hiddenByFilter: number, hiddenNotable: number): number {
+  return Math.max(0, passTotal - Math.max(0, hiddenByFilter - hiddenNotable))
+}
+
 function RuleBlock({
   rule,
   heading,
@@ -564,7 +577,7 @@ function RuleBlock({
   // and a bare count cannot be clicked, checked, or navigated from.
   const notable = rule.subjects.filter((s) => s.result.toLowerCase() !== 'pass')
   const passingSubjects = rule.subjects.filter((s) => s.result.toLowerCase() === 'pass')
-  const passing = rule.counts.pass
+  const passing = passingInView(rule.counts.pass, rule.hiddenByFilter ?? 0, rule.hiddenNotable ?? 0)
 
   // Same shape as RelationshipGroup: fold at a readable length, then expand in
   // place. The house convention never states a count the reader cannot open.
@@ -734,7 +747,8 @@ function PassingGroup({
   label: string
   /** Passing subjects that arrived. May be shorter than `total` if the server capped. */
   subjects: PolicyCoverageSubject[]
-  /** Exact passing count, unaffected by the cap. */
+  /** Exact count of passing subjects in view, unaffected by the cap — so a
+   *  shortfall against `subjects` is the cap and nothing else. */
   total: number
   words: OutcomeWords
   onSelectSubject?: (subject: PolicyCoverageSubject) => void
@@ -892,6 +906,7 @@ function ScopeNote({ data }: { data: PolicyCoverageResponse }) {
 export const __testing = {
   blocksAdmission,
   capWorthMentioning,
+  passingInView,
   ruleHeading,
   legacyMatchesUpdates,
   legacyOperationsAgree,

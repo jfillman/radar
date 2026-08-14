@@ -176,6 +176,33 @@ describe('when the server cap is worth mentioning', () => {
   })
 })
 
+/**
+ * The passing count labels a list, so it has to describe the same population
+ * the list does. `counts.pass` is deliberately cluster-wide, and using it here
+ * both overstated the label and made the missing rows look like a server cap.
+ */
+describe('how many passed in view', () => {
+  const inView = __testing.passingInView
+
+  it('is the cluster count when nothing is filtered out', () => {
+    expect(inView(12, 0, 0)).toBe(12)
+  })
+
+  it('discounts the passing subjects the filter withheld', () => {
+    // 5 withheld, 2 of them failing, so 3 passes went with them.
+    expect(inView(12, 5, 2)).toBe(9)
+  })
+
+  it('claims nothing passes in view when every pass was withheld', () => {
+    expect(inView(3, 4, 1)).toBe(0)
+  })
+
+  it('never goes negative on inconsistent counts', () => {
+    expect(inView(1, 9, 0)).toBe(0)
+    expect(inView(5, 2, 7)).toBe(5)
+  })
+})
+
 describe('fold button wording', () => {
   const label = (notable: number, notableTotal: number) =>
     notable < notableTotal ? `Show ${notable} of ${notableTotal}` : `Show all ${notable}`

@@ -145,21 +145,34 @@ describe('legacy vs modern policy families', () => {
  */
 describe('when the server cap is worth mentioning', () => {
   // notable = non-passing subjects that arrived; notableTotal = every
-  // non-passing subject the rule flagged, exact and pre-cap.
-  const capped = (notable: number, notableTotal: number) => notable < notableTotal
+  // non-passing subject the rule flagged, exact and pre-cap; hidden = the
+  // non-passing ones the namespace view filter withheld.
+  const capped = __testing.capWorthMentioning
 
   it('is silent when the cap only removed passing subjects', () => {
     // 250 pass, 1 fails, server capped at 200: the one listable row arrived and
     // the passing count is exact, so there is no gap to report.
-    expect(capped(1, 1)).toBe(false)
+    expect(capped(1, 1, 0)).toBe(false)
   })
 
   it('speaks when listable rows were cut', () => {
-    expect(capped(200, 251)).toBe(true)
+    expect(capped(200, 251, 0)).toBe(true)
   })
 
   it('is silent on a small rule that was never capped', () => {
-    expect(capped(3, 3)).toBe(false)
+    expect(capped(3, 3, 0)).toBe(false)
+  })
+
+  // Observed live: a policy whose only failing resource sat outside the
+  // namespace filter rendered "only the first 0 are available here" over a
+  // "Load the rest" button that could never produce it.
+  it('does not blame the cap for what the namespace filter withheld', () => {
+    expect(capped(0, 1, 1)).toBe(false)
+  })
+
+  it('still speaks when the cap bit on top of the filter', () => {
+    // 10 flagged: 2 withheld by the filter, 5 arrived, 3 lost to the cap.
+    expect(capped(5, 10, 2)).toBe(true)
   })
 })
 

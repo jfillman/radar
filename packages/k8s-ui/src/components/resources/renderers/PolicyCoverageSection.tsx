@@ -519,6 +519,29 @@ function Consequence({
   )
 }
 
+/**
+ * Whether the server cap actually removed rows that would have been listed.
+ *
+ * `rule.truncated` alone is too blunt: a rule where 250 subjects pass and one
+ * fails is capped, yet everything listable arrived and the passing count is
+ * exact — a cap notice there implies a gap that does not exist.
+ *
+ * Subjects the namespace view filter held back are missing from the listed rows
+ * as well, and they are not the cap's doing. Counting them as capped puts a
+ * "Load the rest" button in front of rows no higher limit will ever return.
+ *
+ * @param notableListed non-passing subjects that arrived
+ * @param notableTotal every non-passing subject the rule flagged, pre-cap
+ * @param notableHidden non-passing subjects the view filter withheld
+ */
+function capWorthMentioning(
+  notableListed: number,
+  notableTotal: number,
+  notableHidden: number,
+): boolean {
+  return notableListed + notableHidden < notableTotal
+}
+
 function RuleBlock({
   rule,
   heading,
@@ -549,11 +572,7 @@ function RuleBlock({
   const folded = !showAll && notable.length > SUBJECT_FOLD_LIMIT
   // Everything the rule flagged, whether or not it survived the server cap.
   const notableTotal = rule.counts.fail + rule.counts.warn + rule.counts.error + rule.counts.skip
-  // The cap is only worth mentioning when it removed rows that WOULD have been
-  // listed. `rule.truncated` alone is too blunt: a rule where 250 subjects pass
-  // and one fails is capped, yet everything listable arrived and the passing
-  // count is exact — so a cap notice there implies a gap that does not exist.
-  const notableCapped = notable.length < notableTotal
+  const notableCapped = capWorthMentioning(notable.length, notableTotal, rule.hiddenNotable ?? 0)
   const visible = folded ? notable.slice(0, SUBJECT_FOLD_LIMIT) : notable
 
   return (
@@ -562,13 +581,28 @@ function RuleBlock({
         <div className="text-xs font-medium text-theme-text-tertiary mb-1">{heading}</div>
       )}
       {notable.length === 0 ? (
-        <PassingGroup
-          label={`All ${passing} ${passing === 1 ? 'resource' : 'resources'} ${words.good}`}
-          subjects={passingSubjects}
-          total={passing}
-          words={words}
-          onSelectSubject={onSelectSubject}
-        />
+        /* "All N passing" is a claim about the rule, and it is false when the
+           view filter withheld every subject that was not passing — the rule
+           has failures, they are simply out of view. The footer names them. */
+        (rule.hiddenNotable ?? 0) > 0 ? (
+          passing > 0 && (
+            <PassingGroup
+              label={`${passing} ${passing === 1 ? 'resource' : 'resources'} ${words.good} in view`}
+              subjects={passingSubjects}
+              total={passing}
+              words={words}
+              onSelectSubject={onSelectSubject}
+            />
+          )
+        ) : (
+          <PassingGroup
+            label={`All ${passing} ${passing === 1 ? 'resource' : 'resources'} ${words.good}`}
+            subjects={passingSubjects}
+            total={passing}
+            words={words}
+            onSelectSubject={onSelectSubject}
+          />
+        )
       ) : (
         <div className="space-y-1.5">
           {visible.map((s, i) => (
@@ -602,6 +636,7 @@ function RuleBlock({
       <RuleFooter
         rule={rule}
         notableCapped={notableCapped}
+        words={words}
         onLoadMore={onLoadMore}
         loadingMore={loadingMore}
       />
@@ -628,12 +663,14 @@ function RuleBlock({
 function RuleFooter({
   rule,
   notableCapped,
+  words,
   onLoadMore,
   loadingMore,
 }: {
   rule: PolicyCoverageRule
   /** True when the server cap removed subjects that would have been listed. */
   notableCapped: boolean
+  words: OutcomeWords
   onLoadMore?: () => void
   loadingMore?: boolean
 }) {
@@ -648,7 +685,15 @@ function RuleFooter({
     parts.push(`only the first ${rule.subjects.length} are available here`)
   }
   if (hidden > 0) {
-    parts.push(`${hidden} hidden by your namespace filter`)
+    // Whether any of the withheld subjects were failing is the part a reader
+    // acts on — it is the difference between a filter trimming noise and a
+    // filter covering a problem.
+    const notableHidden = rule.hiddenNotable ?? 0
+    parts.push(
+      notableHidden > 0
+        ? `${hidden} hidden by your namespace filter, ${notableHidden} of them ${words.bad}`
+        : `${hidden} hidden by your namespace filter`,
+    )
   }
   return (
     <div className="flex flex-wrap items-baseline gap-2 pt-1">
@@ -846,6 +891,7 @@ function ScopeNote({ data }: { data: PolicyCoverageResponse }) {
  *  field), so it is pinned directly rather than through the DOM. */
 export const __testing = {
   blocksAdmission,
+  capWorthMentioning,
   ruleHeading,
   legacyMatchesUpdates,
   legacyOperationsAgree,

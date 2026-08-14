@@ -115,14 +115,37 @@ export function getKyvernoPolicyStatus(resource: any): StatusBadge {
   return { text: 'Unknown', color: healthColors.unknown, level: 'unknown' }
 }
 
+/**
+ * Whether this policy can REJECT an admission request, as Audit or Enforce.
+ *
+ * Two things make the obvious reading wrong, and both fail in the same
+ * direction — claiming Audit about a policy that blocks.
+ *
+ * A rule-level failureAction OVERRIDES spec.validationFailureAction rather than
+ * deferring to it, so consulting the spec field first answers Audit for a
+ * policy whose rule enforces. And image verification carries its own
+ * failureAction on `verifyImages[]`, not under `validate`, so a signing policy
+ * blocks with nothing in either of the fields this used to read. Kyverno also
+ * defaults the spec field to Audit when it is absent, which is what made the
+ * old order look safe.
+ *
+ * Rules can disagree, and one value has to stand for the whole policy. The
+ * question worth answering is whether anything here can reject, so any Enforce
+ * wins; the Rules section below is where a mixed policy gets read rule by rule.
+ */
 export function getKyvernoPolicyAction(resource: any): string {
-  // Check spec-level validationFailureAction (deprecated but still widely used)
-  const action = resource.spec?.validationFailureAction
-  if (action) return action
-  // Fallback: check first rule's validate.failureAction
+  const specAction = resource.spec?.validationFailureAction
   const rules = resource.spec?.rules || []
+  if (rules.length === 0) return specAction || 'Audit'
   for (const rule of rules) {
-    if (rule.validate?.failureAction) return rule.validate.failureAction
+    const overrides = [
+      rule?.validate?.failureAction,
+      ...(Array.isArray(rule?.verifyImages)
+        ? rule.verifyImages.map((v: any) => v?.failureAction)
+        : []),
+    ].filter(Boolean)
+    const effective = overrides.length > 0 ? overrides : [specAction]
+    if (effective.includes('Enforce')) return 'Enforce'
   }
   return 'Audit'
 }

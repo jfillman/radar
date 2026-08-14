@@ -268,6 +268,12 @@ type PolicyCoverageRule struct {
 	// HiddenByFilter is how many of Total the namespace view filter held back.
 	// Counts still describe every outcome, so the two must be read together.
 	HiddenByFilter int `json:"hiddenByFilter,omitempty"`
+	// HiddenNotable is the non-passing part of HiddenByFilter. Subjects are
+	// listed only when they are non-passing, so without this split the client
+	// cannot tell a row the server cap removed from one the view filter held
+	// back — and blames the cap, offering to load subjects that no higher limit
+	// will ever return.
+	HiddenNotable int `json:"hiddenNotable,omitempty"`
 }
 
 // PolicyCoverageResponse answers "what did this policy decide about the
@@ -468,6 +474,9 @@ func (s *Server) handlePolicyCoverage(w http.ResponseWriter, r *http.Request) {
 		// relevant, so they are never hidden by a namespace view filter.
 		if len(viewFilter) > 0 && o.Subject.Namespace != "" && !viewFilter[o.Subject.Namespace] {
 			bucket.HiddenByFilter++
+			if !isPolicyPassResult(o.Finding.Result) {
+				bucket.HiddenNotable++
+			}
 			resp.HiddenByFilter++
 			continue
 		}

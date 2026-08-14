@@ -50,6 +50,10 @@ export interface PolicyCoverageRule {
   /** How many of `total` the namespace view filter held back. `counts` still
    *  describe every outcome, so the two must be read together. */
   hiddenByFilter?: number
+  /** The non-passing part of `hiddenByFilter`. Only non-passing subjects are
+   *  listed, so this is what separates a row the server cap dropped from one
+   *  the view filter held back. */
+  hiddenNotable?: number
 }
 
 /** What one policy decided about the cluster — the inverse of

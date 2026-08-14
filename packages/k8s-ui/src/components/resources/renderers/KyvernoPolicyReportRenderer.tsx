@@ -360,7 +360,15 @@ export function KyvernoPolicyRenderer({ data, coverage, queued }: KyvernoPolicyR
             {status.rulecount.validate !== undefined && <Property label="Validate" value={status.rulecount.validate} />}
             {status.rulecount.mutate !== undefined && <Property label="Mutate" value={status.rulecount.mutate} />}
             {status.rulecount.generate !== undefined && <Property label="Generate" value={status.rulecount.generate} />}
-            {status.rulecount.verifyImages !== undefined && <Property label="Verify Images" value={status.rulecount.verifyImages} />}
+            {/* All-lowercase in Kyverno's own status, so the camelCase read
+                dropped the only non-zero row on an image-verification policy
+                and left three zeros reading as "no rules". */}
+            {(status.rulecount.verifyImages ?? status.rulecount.verifyimages) !== undefined && (
+              <Property
+                label="Verify Images"
+                value={status.rulecount.verifyImages ?? status.rulecount.verifyimages}
+              />
+            )}
           </PropertyList>
         </Section>
       )}

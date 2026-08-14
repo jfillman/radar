@@ -86,3 +86,26 @@ func TestPolicyReportResourceFollowsSubjectScope(t *testing.T) {
 		}
 	}
 }
+
+// The listed subjects are only the non-passing ones, so a rule's missing rows
+// have two possible causes and the client cannot distinguish them from
+// HiddenByFilter alone: it counts passing subjects too. Without the split, a
+// rule whose only failure sits outside the namespace filter looks capped, and
+// the UI offers to load rows that no higher limit will ever return.
+func TestHiddenNotableSeparatesTheFilterFromTheCap(t *testing.T) {
+	var bucket PolicyCoverageRule
+	for _, result := range []string{"pass", "pass", "fail", "warn", "error", "skip"} {
+		bucket.HiddenByFilter++
+		if !isPolicyPassResult(result) {
+			bucket.HiddenNotable++
+		}
+	}
+	if bucket.HiddenByFilter != 6 {
+		t.Errorf("HiddenByFilter = %d, want 6", bucket.HiddenByFilter)
+	}
+	// Every non-passing result counts: warn, error and skip are listed as rows
+	// exactly like fail, so leaving any of them out re-creates the same gap.
+	if bucket.HiddenNotable != 4 {
+		t.Errorf("HiddenNotable = %d, want 4", bucket.HiddenNotable)
+	}
+}

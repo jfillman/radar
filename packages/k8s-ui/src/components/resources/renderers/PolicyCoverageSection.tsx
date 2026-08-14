@@ -29,13 +29,9 @@ interface PolicyCoverageSectionProps {
   error?: Error | null
   onSelectSubject?: (subject: PolicyCoverageSubject) => void
   /**
-   * Re-fetch the coverage with a higher subject bound.
-   *
-   * The default response bounds each rule's list so an ordinary drawer open
-   * stays small. Without a way to raise it, a rule with more subjects than the
-   * bound ends at a sentence — the count is honest and the resources behind it
-   * are unreachable, which is the dead end this closes. Hosts that cannot
-   * re-fetch simply omit it and keep the sentence.
+   * Re-fetch with a higher subject bound. Without it a capped rule ends at a
+   * sentence naming resources the reader cannot open. Hosts that cannot
+   * re-fetch omit it and keep the sentence.
    */
   onLoadMore?: () => void
   loadingMore?: boolean
@@ -57,17 +53,10 @@ export interface OutcomeWords {
 }
 
 /**
- * Outcome vocabulary by policy family.
- *
- * The report says `result: fail` for every family, but it does not mean the same
- * thing in each. A validating policy's `fail` is a violation. A mutating
- * policy's `fail` carries the message "mutation is not applied" — nothing
- * violated anything, a label simply never got added. Printing "Fail" there tells
- * an operator their resource is non-compliant when it isn't.
- *
- * Validating keeps the upstream words verbatim: they are what
- * `kubectl get policyreport` prints, and matching them is what lets someone
- * correlate this screen with the CLI.
+ * Kyverno writes `result: fail` for every family and does not mean the same
+ * thing by it: a mutating policy's fail carries "mutation is not applied".
+ * Validating keeps the upstream words verbatim so the screen matches
+ * `kubectl get policyreport`.
  */
 export function outcomeWords(family: KyvernoPolicyFamily | undefined): OutcomeWords {
   switch (family) {
@@ -111,14 +100,9 @@ function resultTone(result: string, words: OutcomeWords): { badge: string; label
 }
 
 /**
- * Whether the policy's match rules cover updates to an existing object.
- *
- * This is what decides the consequence of enforcing, and it is not intuitive: a
- * CREATE-only policy never rejects a change to something that already exists, so
- * resources currently failing it are grandfathered until they are recreated.
- * Verified against Kyverno 1.18.2 — annotating a ConfigMap that fails a
- * CREATE-only Deny policy is admitted, while creating an identical one is
- * rejected.
+ * A CREATE-only policy never rejects a change to something that already exists,
+ * so resources failing it are grandfathered until recreated. Verified on 1.18.2:
+ * annotating a failing ConfigMap is admitted, creating an identical one is not.
  */
 function matchesUpdates(resource: any): boolean {
   if (isLegacyKyvernoPolicy(resource)) return legacyMatchesUpdates(resource)
@@ -128,13 +112,9 @@ function matchesUpdates(resource: any): boolean {
 }
 
 /**
- * The same question for a legacy policy, whose operations live somewhere else
- * entirely: `spec.rules[].match.any[].resources.operations`, not
- * `spec.matchConstraints`. Reading only the modern shape returns no rules at
- * all, which defaults to "matches updates" — and states the consequence
- * backwards for a CREATE-only legacy rule.
- *
- * Unset means CREATE and UPDATE in Kyverno, so an absent list is a match.
+ * Legacy operations live at `spec.rules[].match.any[].resources.operations`, not
+ * `spec.matchConstraints`; reading the modern shape finds no rules and defaults
+ * to "matches updates", stating the consequence backwards. Unset means both.
  */
 function legacyMatchesUpdates(resource: any): boolean {
   return legacyRuleUpdateMatches(resource).some(Boolean)
@@ -158,29 +138,15 @@ function legacyRuleUpdateMatches(resource: any): boolean[] {
   })
 }
 
-/**
- * Whether every rule of a legacy policy answers the update question the same
- * way.
- *
- * The consequence sentence is written once, above the rules, and applies to the
- * failing count as a whole. A policy with one CREATE-only rule and one that also
- * matches updates has two different answers, and stating either one asserts
- * something false about the resources failing the other.
- */
+/** The consequence sentence is one claim over the whole failing count, so rules
+ *  that disagree about updates make either answer false for some of them. */
 function legacyOperationsAgree(resource: any): boolean {
   const answers = legacyRuleUpdateMatches(resource)
   return answers.every((a) => a === answers[0])
 }
 
-/**
- * Whether every rule reaches the same verdict on blocking.
- *
- * A rule-level failureAction is per rule, so one policy can enforce on one rule
- * and audit on another. The consequence sentence is a single claim about a
- * single failing count and cannot say which rule a given failure came from, so
- * with rules in disagreement it would promise rejection for resources that only
- * ever get audited.
- */
+/** failureAction is per rule, and the sentence cannot say which rule a failure
+ *  came from — so rules disagreeing on Audit vs Enforce make it a false promise. */
 function legacyActionsAgree(resource: any): boolean {
   const spec = resource?.spec?.validationFailureAction
   const answers = (resource?.spec?.rules ?? [])
@@ -199,17 +165,10 @@ function legacyActionsAgree(resource: any): boolean {
 }
 
 /**
- * What to call a bucket of results.
- *
- * Kyverno does not only put authored rule names in `results[].rule`. The CEL
- * family writes an EMPTY rule for ordinary results, and writes the literal
- * `evaluation` when the engine itself failed — verified against 1.18.2, which
- * emits `rule: 'evaluation'` with `result: error` for a broken expression.
- * Rendering that string in the same slot as `validate-image-tag` presents a
- * rule the policy does not contain, and sends the reader looking for it.
- *
- * So a name is only shown when the policy actually declares it. Otherwise the
- * bucket is described by what it holds.
+ * `results[].rule` is not always an authored rule name: the CEL family writes an
+ * empty one, and the literal `evaluation` when the engine failed (1.18.2 emits
+ * `rule: 'evaluation'` with `result: error`). A name is shown only when the
+ * policy declares it; otherwise the bucket is described by what it holds.
  */
 function ruleHeading(resource: any, rule: PolicyCoverageRule): string | undefined {
   const name = rule.rule
@@ -242,15 +201,10 @@ function legacyRuleFamily(rule: any): KyvernoPolicyFamily | undefined {
 }
 
 /**
- * Family for a legacy policy, or for one rule of it.
- *
- * The modern API puts the family in the kind, so `getKyvernoPolicyFamily` is
- * enough there. A legacy ClusterPolicy is one kind carrying any mix of rules,
- * and reading the kind alone returns nothing — which falls back to Pass/Fail and
- * tells the reader a generate rule "failed" when nothing was generated.
- *
- * With no rule name, the answer is the family the whole policy agrees on;
- * a policy mixing families has no single answer and gets the neutral wording.
+ * The modern API puts the family in the kind; a legacy ClusterPolicy carries any
+ * mix of rules, so reading the kind alone falls back to Pass/Fail and calls a
+ * generate rule "failed". Without a rule name, only a policy whose rules agree
+ * has an answer.
  */
 export function policyFamilyFor(
   resource: any,
@@ -273,14 +227,10 @@ export function policyFamilyFor(
 }
 
 /**
- * Whether this policy blocks admission today.
- *
- * The two families answer this from different fields and the modern helper reads
- * neither of the legacy ones. A legacy ClusterPolicy carries
+ * The families answer from different fields: legacy carries
  * `spec.validationFailureAction` (or a per-rule `validate.failureAction`), while
- * `getKyvernoEnforcementPosture` looks at `spec.validationActions` — absent on
- * legacy, which makes an Enforce policy read as audit-only and produces the exact
- * inversion this section exists to prevent.
+ * `getKyvernoEnforcementPosture` reads `spec.validationActions`, absent on
+ * legacy — which makes an Enforce policy read as audit-only.
  */
 function blocksAdmission(resource: any, family: KyvernoPolicyFamily | undefined): boolean {
   if (isLegacyKyvernoPolicy(resource)) {
@@ -314,15 +264,9 @@ function canStateConsequence(resource: any, family: KyvernoPolicyFamily | undefi
 }
 
 /**
- * The sentence an operator acts on, and the one easiest to get wrong.
- *
- * Two plausible phrasings are both false. "Enforcing would block these N" — no,
- * admission acts on requests, and these resources already exist. "Their next
- * update is rejected" — only when the policy matches UPDATE; a CREATE-only
- * policy grandfathers them until something recreates them.
- *
- * Exported for tests: this wording is the feature, so it is pinned rather than
- * asserted through the DOM.
+ * Both plausible phrasings are false: admission acts on requests, not on the
+ * resources that already exist, and "their next update is rejected" holds only
+ * when the policy matches UPDATE. Exported so the wording is pinned directly.
  */
 export function enforcementConsequence(
   failing: number,
@@ -450,15 +394,9 @@ export function PolicyCoverageSection({
 }
 
 /**
- * Attribution, when the results did not all come from Kyverno.
- *
- * `results[].policy` is producer-defined and is not guaranteed to name a policy
- * object — Trivy and Falco write their own identifiers into the same field. The
- * lookup keys on that string, so a same-named producer's results would land on
- * this page. Saying nothing would present another engine's findings as this
- * policy's own, which is the mistake the report schema explicitly warns about.
- *
- * Silent in the ordinary case: one engine, and it is the one that owns the page.
+ * `results[].policy` is producer-defined — Trivy and Falco write their own
+ * identifiers into it — and the lookup keys on that string, so a same-named
+ * producer's results land here. Silent when one engine owns the page.
  */
 function ForeignEngines({ data }: { data: PolicyCoverageResponse }) {
   const engines = (data.engines ?? []).filter((e) => e !== 'kyverno' && e !== 'unknown')
@@ -498,23 +436,10 @@ function Headline({
         ? 'Across cluster-scoped resources'
         : 'Across the resources you can read'
 
-  // Leading with the examined total bounds the claim: these counts describe what
-  // the engine actually looked at, not the cluster.
-  //
-  // Outcomes and resources are not the same number. A policy with two rules
-  // matching one resource records two outcomes about it, and calling that "2
-  // resources examined" invents a resource. They coincide often enough that
-  // naming both every time would be noise, so the sentence says so only when
-  // they differ — and then leads with the resource count, which is the one a
-  // reader is trying to size.
+  // Leading with the examined total bounds the claim to what the engine looked
+  // at, not the cluster.
   const examined = data.examined || 0
-  const subjects = data.subjects ?? examined
-  const examinedPhrase =
-    subjects === examined
-      ? `${examined} ${examined === 1 ? 'resource' : 'resources'} examined`
-      : `${examined} ${examined === 1 ? 'check' : 'checks'} on ${subjects} ${
-          subjects === 1 ? 'resource' : 'resources'
-        }`
+  const examinedPhrase = examinedSummary(examined, data.subjects ?? examined)
   return (
     <div className="text-sm text-theme-text-secondary">
       {scope}, {examinedPhrase} — {parts.join(', ')}.
@@ -554,14 +479,7 @@ function Consequence({
   }
 
   if (data.counts.error > 0) {
-    const failClosed = getKyvernoFailurePolicy(resource) === 'Fail'
-    const n = data.counts.error
-    const one = n === 1
-    lines.push(
-      failClosed
-        ? `${n} could not be evaluated. This policy fails closed, so ${one ? 'that admission is' : 'those admissions are'} rejected for an engine error rather than a violation.`
-        : `${n} could not be evaluated and ${one ? 'is' : 'are'} being allowed through unchecked.`,
-    )
+    lines.push(engineErrorLine(data.counts.error, getKyvernoFailurePolicy(resource) === 'Fail'))
   }
 
   if (lines.length === 0) return null
@@ -574,31 +492,16 @@ function Consequence({
   )
 }
 
-/**
- * Outcomes that mean this policy has something wrong to show.
- *
- * An engine error is not a pass: the rule never reached a verdict, so a policy
- * whose results are all errors knows nothing about the cluster, and presenting
- * that under a green shield states the one thing it cannot. `skip` stays out —
- * a rule that did not apply is not a problem with anything.
- */
+/** An engine error is not a pass — the rule reached no verdict. `skip` stays
+ *  out: a rule that did not apply is not a problem with anything. */
 function problemCount(counts: PolicyResourceCounts): number {
   return counts.fail + counts.warn + counts.error
 }
 
 /**
- * Whether any results are missing from this response.
- *
- * Missing results are dropped before counting, so an examined count of zero has
- * two causes that mean opposite things: the policy checked nothing, or it
- * checked things that did not reach this response. Either way the empty state
- * cannot assert absence.
- *
- * The reasons are not interchangeable — the caller may be unable to read a
- * namespace or a report family, or radar's own probe may have failed to index
- * one — and attributing the second to the reader's permissions blames them for
- * radar's gap. Naming the reason is ScopeNote's job; this only decides whether
- * absence can be claimed at all.
+ * Missing results are dropped before counting, so an examined count of zero
+ * means either "nothing was checked" or "something did not arrive". Which one is
+ * ScopeNote's to say; this only decides whether absence can be claimed at all.
  */
 function anythingWithheld(data: PolicyCoverageResponse): boolean {
   return (
@@ -610,19 +513,10 @@ function anythingWithheld(data: PolicyCoverageResponse): boolean {
 }
 
 /**
- * Whether the server cap actually removed rows that would have been listed.
- *
- * `rule.truncated` alone is too blunt: a rule where 250 subjects pass and one
- * fails is capped, yet everything listable arrived and the passing count is
- * exact — a cap notice there implies a gap that does not exist.
- *
- * Subjects the namespace view filter held back are missing from the listed rows
- * as well, and they are not the cap's doing. Counting them as capped puts a
- * "Load the rest" button in front of rows no higher limit will ever return.
- *
- * @param notableListed non-passing subjects that arrived
- * @param notableTotal every non-passing subject the rule flagged, pre-cap
- * @param notableHidden non-passing subjects the view filter withheld
+ * Whether the cap removed rows that would have been listed. `rule.truncated` is
+ * too blunt (250 passing + 1 failing is capped, yet everything listable
+ * arrived), and rows the view filter withheld are not the cap's doing — counting
+ * those offers a "Load the rest" no higher limit can satisfy.
  */
 function capWorthMentioning(
   notableListed: number,
@@ -633,26 +527,40 @@ function capWorthMentioning(
 }
 
 /**
- * How many passing subjects are in view.
- *
- * `counts` describe the cluster and the lists describe the view, so the
- * cluster-wide passing count cannot label a list: it overstates what is there,
- * and the shortfall against the listed rows gets read as a server cap. Only
- * non-passing subjects are ever listed, so everything the filter withheld that
- * was not notable was a pass — this is exact, not inferred.
+ * `counts` describe the cluster, lists describe the view, so the cluster-wide
+ * count cannot label a list. Only non-passing subjects are listed, so everything
+ * withheld that was not notable was a pass — exact, not inferred.
  */
+/** Outcomes and resources are different counts: one resource matched by two
+ *  rules records two outcomes. Named apart only when they differ. */
+function examinedSummary(examined: number, subjects: number): string {
+  const res = (n: number) => `${n} ${n === 1 ? 'resource' : 'resources'}`
+  if (subjects === examined) return `${res(examined)} examined`
+  return `${examined} ${examined === 1 ? 'check' : 'checks'} on ${res(subjects)}`
+}
+
+/** A rule that could not evaluate reached no verdict, so what happens next
+ *  depends on the policy's failurePolicy rather than on the result. */
+function engineErrorLine(n: number, failClosed: boolean): string {
+  if (failClosed) {
+    return `${n} could not be evaluated. This policy fails closed, so ${
+      n === 1 ? 'that admission is' : 'those admissions are'
+    } rejected for an engine error rather than a violation.`
+  }
+  return `${n} could not be evaluated and ${n === 1 ? 'is' : 'are'} being allowed through unchecked.`
+}
+
+/** "Show all N" is a promise the client cannot keep once the server cap bit. */
+function foldLabel(listed: number, total: number, capped: boolean): string {
+  return capped ? `Show ${listed} of ${total}` : `Show all ${listed}`
+}
+
 function passingInView(passTotal: number, hiddenByFilter: number, hiddenNotable: number): number {
   return Math.max(0, passTotal - Math.max(0, hiddenByFilter - hiddenNotable))
 }
 
-/**
- * How to name a rule's passing subjects.
- *
- * "All" is a claim about the rule, and it holds only when the rule has nothing
- * outside the view. Next to a footer reporting subjects held back, it invites
- * the count to be read as the total, so a filtered rule says how many are in
- * view and leaves the total to the headline.
- */
+/** "All" holds only when nothing is outside the view; next to a footer naming
+ *  hidden subjects it invites the count to be read as the total. */
 function passingLabel(count: number, hiddenByFilter: number, words: OutcomeWords): string {
   const noun = count === 1 ? 'resource' : 'resources'
   return hiddenByFilter > 0
@@ -729,9 +637,7 @@ function RuleBlock({
               {/* "Show all N" is the house wording, but it is only true when the
                   client holds every subject. Once the server cap has bitten,
                   the button can only offer what arrived. */}
-              {notableCapped
-                ? `Show ${notable.length} of ${notableTotal}`
-                : `Show all ${notable.length}`}
+              {foldLabel(notable.length, notableTotal, notableCapped)}
             </button>
           )}
           {passing > 0 && (
@@ -759,20 +665,9 @@ function RuleBlock({
 }
 
 /**
- * What is not on screen.
- *
- * The count must describe the rows actually rendered, which is the convention
- * elsewhere (ClusterComplianceReport shows "Showing X of Y" only while a filter
- * is narrowing a visible list). Two mistakes are easy here and both shipped
- * once:
- *
- *  - Announcing truncation when nothing is listed at all. Passing subjects are
- *    summarised rather than listed, so a rule where everything passes renders
- *    zero rows — and "showing the 25 worst of 34" above an empty space is
- *    simply false.
- *  - Counting against the rule's total. The listed rows are only the
- *    non-passing subjects, so the denominator has to be that population, not
- *    every subject the rule examined.
+ * What is not on screen. The count describes the rows actually rendered — only
+ * non-passing subjects are listed, so the denominator is that population and a
+ * rule where everything passes announces no truncation over its zero rows.
  */
 function RuleFooter({
   rule,
@@ -1028,6 +923,9 @@ export const __testing = {
   anythingWithheld,
   blocksAdmission,
   capWorthMentioning,
+  engineErrorLine,
+  examinedSummary,
+  foldLabel,
   passingInView,
   passingLabel,
   problemCount,

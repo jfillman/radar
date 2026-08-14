@@ -11,18 +11,11 @@ import (
 	"github.com/skyhook-io/radar/pkg/resourceid"
 )
 
-// The two report families Radar indexes. They share no resource names at all —
-// wgpolicyk8s.io serves `policyreports` / `clusterpolicyreports`, openreports.io
-// serves `reports` / `clusterreports` — and a cluster may serve either, both
-// (mid-migration), or only the newer one, which is where Kyverno 1.15+ writes.
-// Authorizing against one name alone asks about a resource that may not exist on
-// the cluster in front of us, and the answer to that question is not the answer
-// we wanted.
-//
+// The two report families Radar indexes. They share no resource names, and a
+// cluster may serve either or both — Kyverno 1.15+ writes to openreports.io — so
+// authorizing against one name asks about a resource that may not exist here.
 // The namespaced/cluster-scoped split matters for the same reason: a grant of
-// `policyreports` cluster-wide does not imply `clusterpolicyreports`, so
-// authorizing a cluster-scoped finding against the namespaced resource asks
-// about the wrong object and Kubernetes answers yes to the wrong question.
+// `policyreports` cluster-wide does not imply `clusterpolicyreports`.
 var policyReportFamilies = []struct{ group, namespaced, clusterScoped string }{
 	{group: "wgpolicyk8s.io", namespaced: "policyreports", clusterScoped: "clusterpolicyreports"},
 	{group: "openreports.io", namespaced: "reports", clusterScoped: "clusterreports"},
@@ -123,15 +116,10 @@ func (s *Server) handlePolicyResource(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	// Authorization is an RBAC question, deliberately NOT parseNamespacesForUser.
-	// That helper folds in the header's namespace *view filter*, which is a
-	// display preference — denying on it would break this section for every
-	// resource outside the user's current filter, reached by deep link, search
-	// or topology navigation. What matters here is whether this identity may
-	// read policy reports in the resource's namespace.
-	//
-	// A denial is a 403 rather than an empty list on purpose: an empty list
-	// reads as "nothing is violated", which is a claim we have not earned.
+	// Deliberately not parseNamespacesForUser: that folds in the header's view
+	// filter, a display preference, which would break this section for any
+	// resource reached by deep link from outside the current filter. A denial is
+	// a 403 rather than an empty list, which would read as "nothing is violated".
 	families := s.readablePolicyReportFamilies(r, namespace)
 	if len(families) == 0 {
 		s.writeError(w, http.StatusForbidden, "no access to policy reports in this namespace")
@@ -321,16 +309,10 @@ type PolicyCoverageResponse struct {
 	// one means the policy name is ambiguous across producers and the view
 	// must not claim it all belongs to Kyverno.
 	Engines []string `json:"engines,omitempty"`
-	// Subjects is how many distinct resources these outcomes describe, and
-	// SubjectsFailing how many of those actually FAILED a rule — not merely
-	// failed to pass, which also covers warnings, skips, and rules that never
-	// reached a verdict.
-	//
-	// Not derivable from Examined, and not derivable on the client either: one
-	// resource matched by two rules produces two outcomes, and the per-rule
-	// subject lists are capped, so counting the rows that arrived would undercount
-	// a large policy as surely as counting outcomes overcounts a multi-rule one.
-	// Any sentence that says "resources" needs these; the counts are checks.
+	// Distinct resources, and how many of those FAILED a rule — not merely failed
+	// to pass, which also covers warnings, skips and rules that reached no
+	// verdict. Not derivable on the client: outcomes overcount a multi-rule
+	// policy and the capped subject lists undercount a large one.
 	Subjects        int                  `json:"subjects"`
 	SubjectsFailing int                  `json:"subjectsFailing"`
 	Rules           []PolicyCoverageRule `json:"rules"`

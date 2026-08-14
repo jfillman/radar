@@ -1,44 +1,25 @@
 import { isForbiddenError } from '../../../types/fetch-error'
 
 interface LookupFailureNoteProps {
-  /** The failed queries. Nulls and undefineds are ignored, so callers can pass
-   *  `[a.error, b.error, c.error]` straight from their hooks. */
+  /** Nulls are ignored, so callers can pass `[a.error, b.error]` from their hooks. */
   errors: unknown[]
-  /** What could not be checked, as the tail of a sentence: "which clusters use
-   *  this store", "what replicates out of this database". */
+  /** Tail of a sentence: "which clusters use this store". */
   what: string
-  /** True when rows are already on screen. The failure then means the list is
-   *  short rather than absent, and saying "could not check" over a populated
-   *  list reads as though nothing was found. */
+  /** Rows are already on screen, so the failure shortened the list rather than
+   *  emptying it. */
   incomplete?: boolean
 }
 
 /**
- * A reverse lookup that did not come back.
- *
- * Sections that answer "what else points at this object" run one query per kind
- * and then have three outcomes to tell apart: the list is genuinely empty, the
- * caller may not read it, or the fetch failed. Collapsing any two of those
- * states reports an absence that was never established — the same mistake
- * RBACErrorSection exists to prevent, one screen over.
- *
- * The split is the same as that component's, and for the same reason: being
- * unable to see something is an expected, non-actionable state and reads as a
- * calm note, while a genuine fault stays loud. Both use `isForbiddenError` so
- * "what counts as unavailable" has one definition across the two.
- *
- * A partially-failed lookup is the case most easily lost: when one query of
- * three fails and the others return rows, the section still has content to
- * render, and a count drawn from what survived is smaller than the truth.
- * `incomplete` is what keeps that count from reading as exact.
+ * A reverse lookup that did not come back, told apart from one that found
+ * nothing. Same split as RBACErrorSection and sharing its predicate: a denial is
+ * expected and reads calm, a fault stays loud.
  */
 export function LookupFailureNote({ errors, what, incomplete }: LookupFailureNoteProps) {
   const real = errors.filter(Boolean)
   if (real.length === 0) return null
 
-  // Any forbidden among them makes this a permission answer: the fetch worked,
-  // the caller is not allowed the data. A genuine fault alongside it still wins,
-  // because that one is actionable and this one is not.
+  // A fault outranks a denial: only one of the two is actionable.
   const fault = real.find((e) => !isForbiddenError(e))
   if (!fault) {
     return (

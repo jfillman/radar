@@ -233,7 +233,7 @@ describe('how many passed in view', () => {
 
 describe('fold button wording', () => {
   const label = (notable: number, notableTotal: number) =>
-    notable < notableTotal ? `Show ${notable} of ${notableTotal}` : `Show all ${notable}`
+    __testing.foldLabel(notable, notableTotal, notable < notableTotal)
 
   // "Show all 200" on a rule with 251 flagged subjects is a false promise.
   it('does not claim to show all when the cap cut the list', () => {
@@ -495,10 +495,7 @@ describe('naming the passing subjects', () => {
  * in the cluster.
  */
 describe('naming what was examined', () => {
-  const headline = (examined: number, subjects: number) =>
-    subjects === examined
-      ? `${examined} ${examined === 1 ? 'resource' : 'resources'} examined`
-      : `${examined} ${examined === 1 ? 'check' : 'checks'} on ${subjects} ${subjects === 1 ? 'resource' : 'resources'}`
+  const headline = __testing.examinedSummary
 
   it('says resources when each was checked once', () => {
     expect(headline(34, 34)).toBe('34 resources examined')
@@ -524,10 +521,7 @@ describe('naming what was examined', () => {
  * explain what the machine did.
  */
 describe('engine-error sentence agrees in number', () => {
-  const line = (n: number, failClosed: boolean) =>
-    failClosed
-      ? `${n} could not be evaluated. This policy fails closed, so ${n === 1 ? 'that admission is' : 'those admissions are'} rejected for an engine error rather than a violation.`
-      : `${n} could not be evaluated and ${n === 1 ? 'is' : 'are'} being allowed through unchecked.`
+  const line = __testing.engineErrorLine
 
   it('uses the singular for one', () => {
     expect(line(1, false)).toContain('1 could not be evaluated and is being allowed')

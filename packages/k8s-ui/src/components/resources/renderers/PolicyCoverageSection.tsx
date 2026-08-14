@@ -17,6 +17,7 @@ import type {
   PolicyCoverageResponse,
   PolicyCoverageRule,
   PolicyCoverageSubject,
+  PolicyResourceCounts,
 } from '../../../types/policy'
 
 interface PolicyCoverageSectionProps {
@@ -172,6 +173,32 @@ function legacyOperationsAgree(resource: any): boolean {
 }
 
 /**
+ * Whether every rule reaches the same verdict on blocking.
+ *
+ * A rule-level failureAction is per rule, so one policy can enforce on one rule
+ * and audit on another. The consequence sentence is a single claim about a
+ * single failing count and cannot say which rule a given failure came from, so
+ * with rules in disagreement it would promise rejection for resources that only
+ * ever get audited.
+ */
+function legacyActionsAgree(resource: any): boolean {
+  const spec = resource?.spec?.validationFailureAction
+  const answers = (resource?.spec?.rules ?? [])
+    .filter((rule: any) => rule?.validate || rule?.verifyImages)
+    .map((rule: any) => {
+      const declared = [
+        rule?.validate?.failureAction,
+        ...(Array.isArray(rule?.verifyImages)
+          ? rule.verifyImages.map((v: any) => v?.failureAction)
+          : []),
+      ].filter(Boolean)
+      const effective = declared.length > 0 ? declared : [spec]
+      return effective.includes('Enforce')
+    })
+  return answers.every((a: boolean) => a === answers[0])
+}
+
+/**
  * What to call a bucket of results.
  *
  * Kyverno does not only put authored rule names in `results[].rule`. The CEL
@@ -276,9 +303,14 @@ function canStateConsequence(resource: any, family: KyvernoPolicyFamily | undefi
   }
   const rules: any[] = resource?.spec?.rules ?? []
   if (rules.length === 0) return false
-  // Every rule has to validate AND agree on whether updates are matched; the
-  // sentence is one claim about one failing count and cannot straddle both.
-  return rules.every((rule) => !!rule?.validate) && legacyOperationsAgree(resource)
+  // Every rule has to validate AND agree on whether updates are matched AND on
+  // whether failing is blocking; the sentence is one claim about one failing
+  // count and cannot straddle any of the three.
+  return (
+    rules.every((rule) => !!rule?.validate) &&
+    legacyOperationsAgree(resource) &&
+    legacyActionsAgree(resource)
+  )
 }
 
 /**
@@ -378,17 +410,20 @@ export function PolicyCoverageSection({
   const examined = counts.pass + counts.fail + counts.warn + counts.error + counts.skip
 
   if (examined === 0) {
+    const withheld = anythingWithheld(data)
     return (
       <Section title={TITLE} icon={ShieldQuestion}>
         <div className="text-sm text-theme-text-tertiary">
-          Nothing has been checked against this policy yet.
+          {withheld
+            ? 'No results here that you can read.'
+            : 'Nothing has been checked against this policy yet.'}
         </div>
         <ScopeNote data={data} />
       </Section>
     )
   }
 
-  const bad = counts.fail + counts.warn
+  const bad = problemCount(counts)
   return (
     <Section title={TITLE} icon={bad > 0 ? ShieldAlert : ShieldCheck} defaultExpanded={bad > 0}>
       <Headline data={data} words={words} />
@@ -516,6 +551,34 @@ function Consequence({
         <div key={i}>{l}</div>
       ))}
     </div>
+  )
+}
+
+/**
+ * Outcomes that mean this policy has something wrong to show.
+ *
+ * An engine error is not a pass: the rule never reached a verdict, so a policy
+ * whose results are all errors knows nothing about the cluster, and presenting
+ * that under a green shield states the one thing it cannot. `skip` stays out —
+ * a rule that did not apply is not a problem with anything.
+ */
+function problemCount(counts: PolicyResourceCounts): number {
+  return counts.fail + counts.warn + counts.error
+}
+
+/**
+ * Whether any results exist that this caller was not allowed to see.
+ *
+ * Withheld results are dropped before counting, so an examined count of zero
+ * has two causes that mean opposite things: the policy checked nothing, or it
+ * checked things this caller may not read.
+ */
+function anythingWithheld(data: PolicyCoverageResponse): boolean {
+  return (
+    (data.withheldByFamily ?? 0) > 0 ||
+    data.withheldNamespaces > 0 ||
+    !!data.withheldClusterScoped ||
+    (data.deniedGroups ?? []).length > 0
   )
 }
 
@@ -904,9 +967,11 @@ function ScopeNote({ data }: { data: PolicyCoverageResponse }) {
  *  (a legacy Enforce policy with failures is rare in fixtures, common in the
  *  field), so it is pinned directly rather than through the DOM. */
 export const __testing = {
+  anythingWithheld,
   blocksAdmission,
   capWorthMentioning,
   passingInView,
+  problemCount,
   ruleHeading,
   legacyMatchesUpdates,
   legacyOperationsAgree,

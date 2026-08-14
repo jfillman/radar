@@ -130,6 +130,35 @@ describe('legacy vs modern policy families', () => {
     expect(__testing.canStateConsequence(legacy({ rules: [{ validate: {} }, { validate: {} }] }), undefined)).toBe(true)
   })
 
+  // failureAction is per rule, so one policy can enforce on one rule and audit
+  // on another. The sentence cannot say which rule a failure came from, so on
+  // disagreement it would promise rejection for resources that only get audited.
+  it('withholds the consequence when rules disagree on blocking', () => {
+    expect(
+      __testing.canStateConsequence(
+        legacy({
+          rules: [
+            { validate: { failureAction: 'Enforce' } },
+            { validate: { failureAction: 'Audit' } },
+          ],
+        }),
+        undefined,
+      ),
+    ).toBe(false)
+  })
+
+  it('states it when a rule-level action merely restates the spec-level one', () => {
+    expect(
+      __testing.canStateConsequence(
+        legacy({
+          validationFailureAction: 'Enforce',
+          rules: [{ validate: { failureAction: 'Enforce' } }, { validate: {} }],
+        }),
+        undefined,
+      ),
+    ).toBe(true)
+  })
+
   it('still states it for the modern validating families', () => {
     const modern = { apiVersion: 'policies.kyverno.io/v1', kind: 'ValidatingPolicy', spec: {} }
     expect(__testing.canStateConsequence(modern, 'validating')).toBe(true)
@@ -138,10 +167,9 @@ describe('legacy vs modern policy families', () => {
 })
 
 /**
- * The footer describes rows that exist. Three variants of the same mistake
- * shipped during review: a truncation notice above zero rows, a count taken
- * from the wrong population, and a cap notice on a rule where everything
- * listable had actually arrived.
+ * The footer describes rows that exist, and there are three ways to get that
+ * wrong: a truncation notice above zero rows, a count taken from the wrong
+ * population, and a cap notice on a rule where everything listable arrived.
  */
 describe('when the server cap is worth mentioning', () => {
   // notable = non-passing subjects that arrived; notableTotal = every
@@ -382,5 +410,51 @@ describe('ruleHeading', () => {
   it('keeps an unknown name when the bucket is not purely errors', () => {
     expect(ruleHeading({ spec: {} }, { rule: 'evaluation', counts: counts({ error: 1, fail: 1 }), subjects: [] } as any))
       .toBe('evaluation')
+  })
+})
+
+/**
+ * A rule that errored reached no verdict, so the policy knows nothing about
+ * that resource. Counting only fail and warn leaves an all-errors policy under
+ * a green shield, collapsed, claiming the one thing it cannot.
+ */
+describe('what counts as a problem', () => {
+  const counts = (c: Partial<Record<string, number>>) => ({
+    pass: 0, fail: 0, warn: 0, error: 0, skip: 0, ...c,
+  }) as any
+
+  it('treats engine errors as a problem', () => {
+    expect(__testing.problemCount(counts({ error: 3 }))).toBe(3)
+  })
+
+  it('does not treat a skipped rule as a problem', () => {
+    // The rule did not apply, which is not a problem with anything.
+    expect(__testing.problemCount(counts({ pass: 5, skip: 9 }))).toBe(0)
+  })
+
+  it('adds up the three that are', () => {
+    expect(__testing.problemCount(counts({ fail: 1, warn: 2, error: 4, pass: 8, skip: 3 }))).toBe(7)
+  })
+})
+
+/**
+ * Withheld results are dropped before counting, so an examined count of zero
+ * means either "nothing was checked" or "nothing you can read" — opposite
+ * claims, and only one of them is the policy's fault.
+ */
+describe('telling an empty policy from an unreadable one', () => {
+  const resp = (o: any) => ({
+    withheldNamespaces: 0, withheldClusterScoped: false, ...o,
+  }) as any
+
+  it('is silent when the caller can read everything', () => {
+    expect(__testing.anythingWithheld(resp({}))).toBe(false)
+  })
+
+  it('spots each way results can be withheld', () => {
+    expect(__testing.anythingWithheld(resp({ withheldNamespaces: 2 }))).toBe(true)
+    expect(__testing.anythingWithheld(resp({ withheldClusterScoped: true }))).toBe(true)
+    expect(__testing.anythingWithheld(resp({ withheldByFamily: 1 }))).toBe(true)
+    expect(__testing.anythingWithheld(resp({ deniedGroups: ['openreports.io'] }))).toBe(true)
   })
 })

@@ -6,9 +6,9 @@ function cpol(spec: any) {
 }
 
 /**
- * The two cases here were confirmed against a live Kyverno 1.18 admission
- * controller: each one creates a pod that the apiserver actually rejects while
- * the fields this accessor used to read say Audit.
+ * The Enforce cases here were confirmed against a live Kyverno 1.18 admission
+ * controller: each one creates a pod the apiserver actually rejects, while
+ * `spec.validationFailureAction` on the same policy reads Audit.
  */
 describe('getKyvernoPolicyAction', () => {
   it('lets a rule-level failureAction override the spec-level one', () => {
@@ -53,6 +53,39 @@ describe('getKyvernoPolicyAction', () => {
         cpol({
           validationFailureAction: 'Enforce',
           rules: [{ name: 'r', validate: { pattern: {} } }],
+        }),
+      ),
+    ).toBe('Enforce')
+  })
+
+  // Only validate and verifyImages rules can reject, so only they inherit the
+  // spec-level action. A mutate rule alongside them would otherwise report a
+  // policy as blocking when its one validating rule audits.
+  it('does not let a mutate rule carry the spec-level Enforce', () => {
+    expect(
+      getKyvernoPolicyAction(
+        cpol({
+          validationFailureAction: 'Enforce',
+          rules: [{ name: 'v', validate: { failureAction: 'Audit' } }, { name: 'm', mutate: {} }],
+        }),
+      ),
+    ).toBe('Audit')
+  })
+
+  it('reports Audit for a policy whose rules cannot reject at all', () => {
+    expect(
+      getKyvernoPolicyAction(
+        cpol({ validationFailureAction: 'Enforce', rules: [{ name: 'g', generate: {} }] }),
+      ),
+    ).toBe('Audit')
+  })
+
+  it('still inherits the spec action for a validating rule that declares none', () => {
+    expect(
+      getKyvernoPolicyAction(
+        cpol({
+          validationFailureAction: 'Enforce',
+          rules: [{ name: 'm', mutate: {} }, { name: 'v', validate: { pattern: {} } }],
         }),
       ),
     ).toBe('Enforce')

@@ -79,8 +79,8 @@ export interface PolicyCoverageResponse {
    *  namespace to name. */
   withheldClusterScoped?: boolean
   /** Outcomes dropped because they came only from a report family this caller
-   *  cannot read. The server drops them; without this the note could only say
-   *  results "may" have come from there, which is no longer what happens. */
+   *  cannot read. The server drops them before counting, so the note can state
+   *  how many were left out rather than hedging that some might have been. */
   withheldByFamily?: number
   /** Report families the CALLER cannot read. Distinct from deniedGroups, which
    *  are the ones radar's own probe could not read. */

@@ -3,6 +3,7 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -31,6 +32,12 @@ func TestNoEffortNotesReferencedFromSource(t *testing.T) {
 	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(home, "/") && len(home) > 6 {
 		banned = append(banned, home)
 	}
+
+	// The run-time home only matches on the machine that has it, so a macOS
+	// worktree path committed from a laptop would pass CI, where HOME is
+	// something else entirely — and CI is the check that actually blocks a
+	// merge. Any home-rooted worktree path is a leak whoever it belongs to.
+	worktreePath := regexp.MustCompile(`/(?:Users|home)/[^/\s"']+/wt[-/]`)
 
 	root := "../.."
 	var offenders []string
@@ -62,6 +69,9 @@ func TestNoEffortNotesReferencedFromSource(t *testing.T) {
 			if strings.Contains(string(b), s) {
 				offenders = append(offenders, path+" contains "+s)
 			}
+		}
+		if m := worktreePath.FindString(string(b)); m != "" {
+			offenders = append(offenders, path+" contains a home-rooted worktree path "+m)
 		}
 		return nil
 	})

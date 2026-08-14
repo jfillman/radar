@@ -106,4 +106,8 @@ export interface PolicyResourceResponse {
   liveUpdates: boolean
   counts: PolicyResourceCounts
   findings: PolicyResourceFinding[]
+  /** Findings dropped because they came only from a report family this caller
+   *  cannot read. `counts` excludes them too, so an all-passing count with this
+   *  set is not an all-clear — it is the part of the answer they may see. */
+  withheldByFamily?: number
 }

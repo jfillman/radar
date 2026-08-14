@@ -17,9 +17,16 @@ import (
 // on the MCP tool catalogue — so the guard lives on this side of the line.
 const hostRenderersDir = "../../web/src/components/resources/renderers"
 
-// A `const { ... } = useResources(...)` whose bindings are captured for inspection.
-var lookupDestructure = regexp.MustCompile(
-	`const\s*\{([^}]*)\}\s*=\s*use(?:Resources|RBACSubject|RBACRole|RBACNamespace|PolicyCoverage)\b`)
+const lookupHooks = `use(?:Resources|RBACSubject|RBACRole|RBACNamespace|PolicyCoverage)`
+
+// `const { data, error } = useResources(...)` — bindings captured for inspection.
+var lookupDestructure = regexp.MustCompile(`const\s*\{([^}]*)\}\s*=\s*` + lookupHooks + `\b`)
+
+// `const clusters = useResources(...)` — the query object is kept whole, which
+// is the dominant style in these files. Checking only the destructured form
+// would leave most call sites unguarded while appearing to cover them, so this
+// captures the identifier and the check below looks for `<identifier>.error`.
+var lookupAssignment = regexp.MustCompile(`const\s+([A-Za-z_$][\w$]*)\s*=\s*` + lookupHooks + `\b`)
 
 // Ratchet: files whose lookup destructure still discards the error.
 // This set may SHRINK. It must never GROW.
@@ -58,11 +65,26 @@ func TestReverseLookupsSurfaceTheirFailures(t *testing.T) {
 		if readErr != nil {
 			t.Fatalf("read %s: %v", name, readErr)
 		}
-		for _, m := range lookupDestructure.FindAllStringSubmatch(string(src), -1) {
+		text := string(src)
+		drops := false
+		for _, m := range lookupDestructure.FindAllStringSubmatch(text, -1) {
 			if !strings.Contains(m[1], "error") {
-				offenders = append(offenders, name)
+				drops = true
 				break
 			}
+		}
+		if !drops {
+			for _, m := range lookupAssignment.FindAllStringSubmatch(text, -1) {
+				// The query object is in hand, so the error is reachable; what
+				// matters is whether anything ever reads it.
+				if !strings.Contains(text, m[1]+".error") {
+					drops = true
+					break
+				}
+			}
+		}
+		if drops {
+			offenders = append(offenders, name)
 		}
 	}
 	sort.Strings(offenders)

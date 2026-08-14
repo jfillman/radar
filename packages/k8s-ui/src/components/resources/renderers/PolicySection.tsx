@@ -112,7 +112,12 @@ export function PolicySection({ data, loading, error }: PolicySectionProps) {
     >
       {failing === 0 ? (
         <div className="text-sm text-theme-text-secondary">
-          {`All ${counts.pass} ${counts.pass === 1 ? 'check' : 'checks'} passing.`}
+          {/* "All" is a claim about the resource, and it only holds when the
+              caller was shown everything. With results withheld it becomes an
+              all-clear on a question that was never fully asked. */}
+          {(data.withheldByFamily ?? 0) > 0
+            ? `${counts.pass} ${counts.pass === 1 ? 'check' : 'checks'} passing.`
+            : `All ${counts.pass} ${counts.pass === 1 ? 'check' : 'checks'} passing.`}
         </div>
       ) : (
         <div className="space-y-2">
@@ -158,9 +163,21 @@ function PolicyFindingRow({ finding }: { finding: PolicyResourceFinding }) {
  */
 function PartialCoverageNote({ data }: { data: PolicyResourceResponse }) {
   const denied = data.deniedGroups ?? []
-  if (denied.length === 0 && data.liveUpdates) return null
+  // Two different gaps. `deniedGroups` is a family radar's own probe could not
+  // read; `withheldByFamily` is one THIS caller may not, which the counts above
+  // already exclude — so without it a resource whose only failure came from
+  // that family reads as passing everything.
+  const withheld = data.withheldByFamily ?? 0
+  if (denied.length === 0 && withheld === 0 && data.liveUpdates) return null
   return (
     <div className="mt-2 pt-2 border-t border-theme-border text-xs text-theme-text-tertiary">
+      {withheld > 0 && (
+        <div>
+          {withheld === 1
+            ? '1 result is not shown here because you don’t have permission to read the report it came from.'
+            : `${withheld} results are not shown here because you don’t have permission to read the reports they came from.`}
+        </div>
+      )}
       {denied.length > 0 && (
         <div>{`Some policy results could not be read (${denied.join(', ')}), so this list may be incomplete.`}</div>
       )}

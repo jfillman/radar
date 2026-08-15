@@ -69,9 +69,9 @@ export function CloudFunnelButton() {
   const [seen, setSeen] = useState(readSeen)
   const [inFlowView, setInFlowView] = useState(false)
   const [blocked, setBlocked] = useState<CloudInstallBlocked | null>(null)
-  // Set when the in-app connect attempt fails before a flow ever existed. The
-  // pitch then offers the browser wizard, which is the only remaining way to
-  // say yes once the driver lane has proven broken on this cluster.
+  // Set once an in-app attempt has actually failed, so the pitch offers the
+  // browser wizard alongside a retry. Deliberately survives closing the modal:
+  // whatever broke is a property of this cluster, not of the dialog session.
   const [prepareFailed, setPrepareFailed] = useState(false)
 
   const capabilities = useCapabilities()
@@ -135,7 +135,6 @@ export function CloudFunnelButton() {
   const openModal = () => {
     setOpen(true)
     setSeen(true)
-    setPrepareFailed(false)
     markSeen()
     // Re-open lands on a live flow if one is running.
     if (lane === 'driver' && flowLive) setInFlowView(true)
@@ -148,7 +147,11 @@ export function CloudFunnelButton() {
     prepare.mutate()
   }
 
-  const exitFlow = () => {
+  // A flow that ended in failure leaves the pitch as the only surface left, so
+  // the pitch has to carry the browser alternative. The caller passes the
+  // outcome because dismissing already overwrote the status by this point.
+  const exitFlow = (failed = false) => {
+    if (failed) setPrepareFailed(true)
     setInFlowView(false)
     setBlocked(null)
   }
@@ -227,7 +230,7 @@ export function CloudFunnelButton() {
               blocked={blocked}
               signupUrl={signupUrlFor('flow-escape')}
               onStatus={applyStatus}
-              onExit={exitFlow}
+              onExit={() => exitFlow(flowForView.state === 'failed')}
             />
           </div>
         ) : (
@@ -256,7 +259,6 @@ export function CloudFunnelButton() {
     </>
   )
 }
-
 
 function assuranceItems(fromHub?: string[]): string[] {
   const items = fromHub?.length ? fromHub : DEFAULT_ASSURANCES
@@ -420,9 +422,7 @@ function ModalFooter({
   )
 }
 
-// Length-capped on purpose: the detail sits behind a disclosure so the first
-// screen stays short, without costing the reader the product context a
-// separate page would have taken away.
+// The detail sits behind a disclosure so the first screen stays short.
 function PitchBody({ lane }: { lane: 'driver' | 'wizard' }) {
   const [moreOpen, setMoreOpen] = useState(false)
   const moreId = useId()
@@ -507,4 +507,3 @@ function PitchBody({ lane }: { lane: 'driver' | 'wizard' }) {
     </div>
   )
 }
-

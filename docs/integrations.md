@@ -845,8 +845,14 @@ Deliberately narrow: the absence of a ScheduledBackup does not prove a cluster i
 | Backup | `postgresql.cnpg.io/v1` | — | Yes | — |
 | ScheduledBackup | `postgresql.cnpg.io/v1` | — | Yes | — |
 | Pooler | `postgresql.cnpg.io/v1` | — | Yes | — |
+| ObjectStore | `barmancloud.cnpg.io/v1` | — | Yes | — |
+| Database | `postgresql.cnpg.io/v1` | — | Yes | — |
+| Publication | `postgresql.cnpg.io/v1` | — | Yes | — |
+| Subscription | `postgresql.cnpg.io/v1` | — | Yes | — |
+| ImageCatalog | `postgresql.cnpg.io/v1` | — | Yes | — |
+| ClusterImageCatalog | `postgresql.cnpg.io/v1` | — | Yes | — |
 
-The `clusters` and `backups` plurals collide with Cluster API and Velero respectively. Radar resolves both with positive API-group guards, so a third operator's CRD sharing either plural (KubeBlocks, Redis/Valkey operators) falls through to the generic renderer instead of inheriting a fabricated PostgreSQL status.
+The `clusters` and `backups` plurals collide with Cluster API and Velero respectively, and the declarative types add more: `subscriptions` is also Knative messaging's, while `databases` and `publications` are generic enough that several database operators ship them. Radar resolves all of them with positive API-group guards, so a third operator's CRD sharing any of these plurals (KubeBlocks, Redis/Valkey operators) falls through to the generic renderer instead of inheriting a fabricated PostgreSQL status.
 
 ---
 
@@ -1015,6 +1021,10 @@ The count of queued work also appears **on the policy itself**, above its config
 | ClusterPolicy | `kyverno.io/v1` | — | Yes | — |
 | PolicyReport | `wgpolicyk8s.io/v1alpha2` | — | Yes | Yes |
 | ClusterPolicyReport | `wgpolicyk8s.io/v1alpha2` | — | Yes | Yes |
+| UpdateRequest | `kyverno.io/v2` | — | Yes | — |
+| GlobalContextEntry | `kyverno.io/v2` | — | Yes | — |
+| EphemeralReport | `reports.kyverno.io/v1` | — | Yes | — |
+| ClusterEphemeralReport | `reports.kyverno.io/v1` | — | Yes | — |
 
 PolicyReport findings are policy posture, not live operational failure, so they are **not** part of the `/api/issues` stream. They surface per-resource: the PolicyReport detail view (above) and the `resourceContext` policy rollup on a resource fetched via `get_resource`. (The cluster audit — `/api/audit` + MCP `get_cluster_audit` — is radar's own static best-practice scanner and does **not** include PolicyReport results.)
 

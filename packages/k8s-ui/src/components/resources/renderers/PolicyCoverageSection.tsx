@@ -665,6 +665,18 @@ function RuleBlock({
 }
 
 /**
+ * The word for what the hidden subjects ARE. Kyverno files engine errors under
+ * a rule of its own, and that bucket holds nothing else — so the family's fail
+ * word ("not mutated" for a mutating policy) names the one thing that did not
+ * happen to them, and the screen ends up claiming more failures than its own
+ * summary counted.
+ */
+function hiddenNotableWord(counts: PolicyResourceCounts, words: OutcomeWords): string {
+  const notable = counts.fail + counts.warn + counts.error + counts.skip
+  return notable > 0 && counts.error === notable ? 'could not be evaluated' : words.bad
+}
+
+/**
  * What is not on screen. The count describes the rows actually rendered — only
  * non-passing subjects are listed, so the denominator is that population and a
  * rule where everything passes announces no truncation over its zero rows.
@@ -700,7 +712,7 @@ function RuleFooter({
     const notableHidden = rule.hiddenNotable ?? 0
     parts.push(
       notableHidden > 0
-        ? `${hidden} hidden by your namespace filter, ${notableHidden} of them ${words.bad}`
+        ? `${hidden} hidden by your namespace filter, ${notableHidden} of them ${hiddenNotableWord(rule.counts, words)}`
         : `${hidden} hidden by your namespace filter`,
     )
   }

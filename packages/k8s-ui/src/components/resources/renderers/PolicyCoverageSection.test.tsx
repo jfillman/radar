@@ -148,6 +148,32 @@ describe('counts describe the cluster, lists describe the view', () => {
     }))
     expect(html).toContain('1 of them failing')
   })
+
+  // Kyverno files engine errors under a rule of their own. Calling those hidden
+  // rows by the family's fail word made the footers claim more failures than the
+  // summary above them had counted.
+  it('does not call a hidden engine error a failure of the rule', () => {
+    const html = render(coverage({
+      examined: 18, subjects: 18, counts: counts({ error: 18 }),
+      rules: [rule({
+        rule: 'evaluation', counts: counts({ error: 18 }), subjects: [], total: 18,
+        hiddenByFilter: 14, hiddenNotable: 14,
+      })],
+    }), mpol())
+    expect(html).toContain('14 of them could not be evaluated')
+    expect(html).not.toContain('14 of them not mutated')
+  })
+
+  it('still uses the family word when the hidden rows really did fail', () => {
+    const html = render(coverage({
+      examined: 4, subjects: 4, counts: counts({ fail: 3, error: 1 }),
+      rules: [rule({
+        counts: counts({ fail: 3, error: 1 }), subjects: [], total: 4,
+        hiddenByFilter: 3, hiddenNotable: 3,
+      })],
+    }), mpol())
+    expect(html).toContain('3 of them not mutated')
+  })
 })
 
 describe('a bounded list is not a dead end', () => {

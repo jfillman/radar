@@ -442,7 +442,7 @@ function PitchBody({ lane }: { lane: 'driver' | 'wizard' }) {
       <p className="text-[14px] leading-relaxed text-theme-text-secondary mb-5">
         The hosted side of Radar: your clusters in one place, run by us.{' '}
         <b className="text-theme-text-primary font-semibold">
-          The app you're looking at stays free and open source, always.
+          The Radar you're running stays free and open source, always.
         </b>
       </p>
       <ul className="space-y-2.5 mb-4">
@@ -458,10 +458,10 @@ function PitchBody({ lane }: { lane: 'driver' | 'wizard' }) {
         onClick={() => setMoreOpen((v) => !v)}
         aria-expanded={moreOpen}
         aria-controls={moreId}
-        className="flex items-center gap-1.5 mb-2 text-[12.5px] text-theme-text-tertiary hover:text-theme-text-primary transition-colors"
+        className="flex items-center gap-1.5 mb-2 text-[12.5px] font-medium text-theme-text-secondary hover:text-theme-text-primary transition-colors"
       >
         <CollapseChevron open={moreOpen} className="w-3 h-3" />
-        How it works and what it costs
+        Pricing, how it works, and who's behind it
       </button>
       <Collapse open={moreOpen}>
         <div id={moreId} className="pt-1 pb-3 pl-[18px] space-y-3.5">
@@ -476,8 +476,8 @@ function PitchBody({ lane }: { lane: 'driver' | 'wizard' }) {
           <section>
             <h4 className="text-[12.5px] font-semibold text-theme-text-primary mb-0.5">What it costs</h4>
             <p className="text-[12px] leading-relaxed text-theme-text-secondary">
-              There's a free tier, and the paid plans past it are what keep the lights on. Radar itself,
-              the app you're running now, stays Apache&nbsp;2.0 either way: every feature, forever.
+              There's a free tier. The paid plans above it are what keep the lights on. The Radar you're
+              running stays Apache&nbsp;2.0 either way: every feature, forever.
             </p>
           </section>
           <section>
@@ -491,7 +491,7 @@ function PitchBody({ lane }: { lane: 'driver' | 'wizard' }) {
             </p>
           </section>
           <p className="text-[12px] leading-relaxed text-theme-text-secondary">
-            Prefer your own VPC? Self-hosting is fully self-serve.{' '}
+            Prefer your own VPC? You can run the Radar Cloud control plane yourself.{' '}
             <a href={SELF_HOSTED_DOCS_URL} target="_blank" rel="noopener noreferrer" className="text-theme-text-secondary underline underline-offset-2 hover:text-theme-text-primary">
               Read the docs
             </a>
@@ -501,7 +501,7 @@ function PitchBody({ lane }: { lane: 'driver' | 'wizard' }) {
       </Collapse>
       <div className="mb-5 border-l-2 border-emerald-500/40 pl-3.5">
         <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
-          Just you and one cluster? Stay right here. This app is the product, not a demo.
+          Just you and one cluster? Stay right here. What you're already running is the product, not a demo.
         </p>
       </div>
     </div>

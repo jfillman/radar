@@ -469,8 +469,8 @@ function ConnectedCard({
         </h4>
       </div>
       <p className="text-[12.5px] leading-relaxed text-theme-text-secondary mb-4">
-        The in-cluster agent is live and tunneled. This local app keeps working exactly as before, and the
-        cluster is now also reachable for your team at one URL.
+        The in-cluster agent is live and tunneled. Radar keeps working here, and the cluster is now also
+        reachable for your team at one URL.
       </p>
       <div className="flex items-center gap-4 mb-4">
         <a

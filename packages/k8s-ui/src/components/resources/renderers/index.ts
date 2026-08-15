@@ -161,14 +161,9 @@ export * from './ResourceSliceRenderer'
 export * from './nvidia-cells'
 export * from './NvidiaClusterPolicyRenderer'
 export * from './NvidiaDriverRenderer'
-export { PolicySection } from './PolicySection'
-export { PolicyCoverageSection } from './PolicyCoverageSection'
-export { KyvernoGlobalContextRenderer, getKyvernoContextRefresh, getKyvernoGlobalContextStatus } from './KyvernoGlobalContextRenderer'
-export { KyvernoUpdateRequestRenderer, KyvernoEphemeralReportRenderer } from './KyvernoQueueRenderers'
-export { CNPGObjectStoreRenderer } from './CNPGObjectStoreRenderer'
-export {
-  CNPGDatabaseRenderer,
-  CNPGPublicationRenderer,
-  CNPGSubscriptionRenderer,
-  CNPGImageCatalogRenderer,
-} from './CNPGDeclarativeRenderer'
+export * from './PolicySection'
+export * from './PolicyCoverageSection'
+export * from './KyvernoGlobalContextRenderer'
+export * from './KyvernoQueueRenderers'
+export * from './CNPGObjectStoreRenderer'
+export * from './CNPGDeclarativeRenderer'

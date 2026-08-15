@@ -43,7 +43,7 @@ const TITLE = 'Resources'
 // a list of related resources folds behind "Show all N".
 const SUBJECT_FOLD_LIMIT = 10
 
-export interface OutcomeWords {
+interface OutcomeWords {
   /** Sentence form, e.g. "13 not mutated". */
   bad: string
   good: string
@@ -58,7 +58,7 @@ export interface OutcomeWords {
  * Validating keeps the upstream words verbatim so the screen matches
  * `kubectl get policyreport`.
  */
-export function outcomeWords(family: KyvernoPolicyFamily | undefined): OutcomeWords {
+function outcomeWords(family: KyvernoPolicyFamily | undefined): OutcomeWords {
   switch (family) {
     case 'mutating':
       return { bad: 'not mutated', good: 'mutated', badBadge: 'Not mutated', goodBadge: 'Mutated' }
@@ -206,7 +206,7 @@ function legacyRuleFamily(rule: any): KyvernoPolicyFamily | undefined {
  * generate rule "failed". Without a rule name, only a policy whose rules agree
  * has an answer.
  */
-export function policyFamilyFor(
+function policyFamilyFor(
   resource: any,
   ruleName?: string,
 ): KyvernoPolicyFamily | undefined {
@@ -268,7 +268,7 @@ function canStateConsequence(resource: any, family: KyvernoPolicyFamily | undefi
  * resources that already exist, and "their next update is rejected" holds only
  * when the policy matches UPDATE. Exported so the wording is pinned directly.
  */
-export function enforcementConsequence(
+function enforcementConsequence(
   failing: number,
   blocks: boolean,
   matchesUpdate: boolean,
@@ -919,21 +919,3 @@ function ScopeNote({ data }: { data: PolicyCoverageResponse }) {
 /** Internals exposed for tests — family gating is load-bearing and latent
  *  (a legacy Enforce policy with failures is rare in fixtures, common in the
  *  field), so it is pinned directly rather than through the DOM. */
-export const __testing = {
-  anythingWithheld,
-  blocksAdmission,
-  capWorthMentioning,
-  engineErrorLine,
-  examinedSummary,
-  foldLabel,
-  passingInView,
-  passingLabel,
-  problemCount,
-  ruleHeading,
-  legacyMatchesUpdates,
-  legacyOperationsAgree,
-  canStateConsequence,
-  isLegacyKyvernoPolicy,
-  matchesUpdates,
-  policyFamilyFor,
-}

@@ -26,7 +26,8 @@ type Nav = (ref: { kind: string; namespace: string; name: string; group?: string
  * and rendering that as a failure would condemn every object in its first
  * seconds.
  */
-export function CNPGDeclarativeRenderer({
+/** Shared shell for the three declarative kinds; not part of the package API. */
+function CNPGDeclarativeRenderer({
   data,
   onNavigate,
   details,

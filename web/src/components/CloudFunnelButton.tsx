@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Bell, Check, ChevronRight, Globe, History, Sparkles, Users, X } from 'lucide-react'
 import { Collapse, CollapseChevron } from '@skyhook-io/k8s-ui/components/ui/Collapse'
@@ -70,6 +70,7 @@ export function CloudFunnelButton() {
   const [inFlowView, setInFlowView] = useState(false)
   const [detailsView, setDetailsView] = useState(false)
   const [blocked, setBlocked] = useState<CloudInstallBlocked | null>(null)
+  const bodyScroll = useRef<HTMLDivElement>(null)
 
   const capabilities = useCapabilities()
   const lane = capabilities.data?.cloudConnect?.lane ?? 'wizard'
@@ -154,6 +155,13 @@ export function CloudFunnelButton() {
     if (open && lane === 'driver' && flowLive) setInFlowView(true)
   }, [open, lane, flowLive])
 
+  // Pitch and details swap inside one scroll container, so the offset carries
+  // across. On a viewport short enough for the incoming view to overflow, that
+  // opens it mid-page with its heading and Back control already scrolled past.
+  useEffect(() => {
+    if (bodyScroll.current) bodyScroll.current.scrollTop = 0
+  }, [detailsView])
+
   // The server owns the "nothing to pitch" decision: an already-tunneled
   // deployment gets no cloudConnect capability at all. Waiting for
   // capabilities (rather than defaulting to visible) keeps the funnel from
@@ -227,7 +235,7 @@ export function CloudFunnelButton() {
           </div>
         ) : (
           <>
-            <div className="min-h-0 overflow-y-auto">
+            <div ref={bodyScroll} className="min-h-0 overflow-y-auto">
               {detailsView ? (
                 <DetailsBody onBack={() => setDetailsView(false)} />
               ) : (

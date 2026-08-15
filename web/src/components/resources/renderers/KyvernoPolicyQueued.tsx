@@ -18,21 +18,33 @@ const STALLED_MINUTES = 5
 const BACKLOG_SIZE = 25
 
 /**
- * The banner headline, or null when a queue is doing what a queue does.
+ * The whole banner, or null when a queue is doing what a queue does. Headline
+ * and body are decided together — split across two places, the body went on
+ * diagnosing a stalled controller under a headline that had stopped claiming one.
  *
  * Only the first case has measured that the work stopped. The second says how
  * much is waiting and nothing more: everything in it is younger than the stall
- * threshold, so it is as likely to be a burst draining normally — asserting it
- * is not being processed would be a claim about the controller made from
- * evidence that suggests the opposite.
+ * threshold, so it is as likely to be a burst draining normally, and diagnosing
+ * a controller from that is a claim the evidence argues against.
  */
-export function queueBannerTitle(
+export function queueBanner(
   pending: number,
   stalledMinutes: number,
   oldestAge: string,
-): string | null {
-  if (stalledMinutes >= STALLED_MINUTES) return `Queued work has not moved for ${oldestAge}`
-  if (pending >= BACKLOG_SIZE) return `${pending} requests are queued`
+): { title: string; message: string } | null {
+  if (stalledMinutes >= STALLED_MINUTES) {
+    return {
+      title: `Queued work has not moved for ${oldestAge}`,
+      message:
+        'Requests build up when the background controller cannot keep up or cannot reach what it needs. They are retried on every reconcile, so a backlog grows rather than drains.',
+    }
+  }
+  if (pending >= BACKLOG_SIZE) {
+    return {
+      title: `${pending} requests are queued`,
+      message: `Nothing here has been waiting longer than ${STALLED_MINUTES} minutes, so this may be a burst still draining. Worth watching: if the count holds or the oldest keeps ageing, the controller is not keeping up.`,
+    }
+  }
   return null
 }
 
@@ -123,16 +135,12 @@ export function KyvernoPolicyQueued({ data }: { data: any }) {
   const stalledMinutes = oldestPending
     ? Math.floor((Date.now() - new Date(oldestPending).getTime()) / 60000)
     : 0
-  const title = queueBannerTitle(pending, stalledMinutes, formatAge(oldestPending))
+  const banner = queueBanner(pending, stalledMinutes, formatAge(oldestPending))
 
   return (
     <>
-      {title && (
-        <AlertBanner
-          variant="warning"
-          title={title}
-          message="Requests build up when the background controller cannot keep up or cannot reach what it needs. They are retried on every reconcile, so a backlog grows rather than drains."
-        />
+      {banner && (
+        <AlertBanner variant="warning" title={banner.title} message={banner.message} />
       )}
       <Section title="Queued Work" icon={Workflow} defaultExpanded={pending > 0 || failed > 0}>
         <PropertyList>

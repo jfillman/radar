@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { queueBannerTitle, requestBelongsTo } from './KyvernoPolicyQueued'
+import { queueBanner, requestBelongsTo } from './KyvernoPolicyQueued'
 
 /**
  * Kyverno permits a namespaced Policy and a ClusterPolicy to share a name, and
@@ -35,25 +35,32 @@ describe('requestBelongsTo', () => {
  * The banner is the only thing on this page that makes a claim rather than a
  * count, so the claim has to be the one the numbers support.
  */
-describe('queueBannerTitle', () => {
+describe('queueBanner', () => {
   it('says work stopped only when something has actually sat still', () => {
-    expect(queueBannerTitle(3, 12, '12m')).toBe('Queued work has not moved for 12m')
+    const b = queueBanner(3, 12, '12m')
+    expect(b?.title).toBe('Queued work has not moved for 12m')
+    expect(b?.message).toContain('cannot keep up')
   })
 
   // The bug: this branch fires when NOTHING is older than the stall threshold,
-  // which is the case most likely to be a burst draining normally.
+  // which is the case most likely to be a burst draining normally. The body has
+  // to agree with the headline — diagnosing a stalled controller underneath a
+  // headline that only reports a size puts the claim straight back.
   it('does not tell you a moving backlog is not being processed', () => {
-    const title = queueBannerTitle(30, 1, '1m')
-    expect(title).toBe('30 requests are queued')
-    expect(title).not.toContain('not being processed')
+    const b = queueBanner(30, 1, '1m')
+    expect(b?.title).toBe('30 requests are queued')
+    expect(b?.title).not.toContain('not being processed')
+    expect(b?.message).toContain('may be a burst still draining')
+    expect(b?.message).not.toContain('cannot keep up')
+    expect(b?.message).not.toContain('grows rather than drains')
   })
 
   it('stays quiet for a queue doing what a queue does', () => {
-    expect(queueBannerTitle(3, 1, '1m')).toBeNull()
-    expect(queueBannerTitle(0, 0, '')).toBeNull()
+    expect(queueBanner(3, 1, '1m')).toBeNull()
+    expect(queueBanner(0, 0, '')).toBeNull()
   })
 
   it('prefers the measured stall over the size when both apply', () => {
-    expect(queueBannerTitle(40, 30, '30m')).toContain('has not moved')
+    expect(queueBanner(40, 30, '30m')?.title).toContain('has not moved')
   })
 })

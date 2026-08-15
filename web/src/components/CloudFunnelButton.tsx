@@ -453,14 +453,16 @@ function PitchBody({ lane }: { lane: 'driver' | 'wizard' }) {
           </li>
         ))}
       </ul>
+      {/* Accented on purpose: at the bullet list's own color and size, and
+          with a leading glyph, it otherwise reads as one more bullet. */}
       <button
         type="button"
         onClick={() => setMoreOpen((v) => !v)}
         aria-expanded={moreOpen}
         aria-controls={moreId}
-        className="flex items-center gap-1.5 mb-2 text-[12.5px] font-medium text-theme-text-secondary hover:text-theme-text-primary transition-colors"
+        className="flex items-center gap-1.5 mb-3 text-[12.5px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline underline-offset-2 transition-colors"
       >
-        <CollapseChevron open={moreOpen} className="w-3 h-3" />
+        <CollapseChevron open={moreOpen} className="w-3.5 h-3.5" />
         How it works
       </button>
       <Collapse open={moreOpen}>

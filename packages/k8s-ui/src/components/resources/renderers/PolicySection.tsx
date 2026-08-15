@@ -115,7 +115,7 @@ export function PolicySection({ data, loading, error }: PolicySectionProps) {
           {/* "All" is a claim about the resource, and it only holds when the
               caller was shown everything. With results withheld it becomes an
               all-clear on a question that was never fully asked. */}
-          {(data.withheldByFamily ?? 0) > 0
+          {coverageIsPartial(data)
             ? `${counts.pass} ${counts.pass === 1 ? 'check' : 'checks'} passing.`
             : `All ${counts.pass} ${counts.pass === 1 ? 'check' : 'checks'} passing.`}
         </div>
@@ -157,18 +157,28 @@ function PolicyFindingRow({ finding }: { finding: PolicyResourceFinding }) {
 }
 
 /**
- * A result can be real and incomplete at the same time: some report families
- * may be unreadable by this identity, or the index may be frozen. Saying
- * "all checks passing" without mentioning that claims coverage we do not have.
+ * Whether findings are missing from this answer. Two different gaps reach here:
+ * `deniedGroups` is a family radar's own probe could not read, `withheldByFamily`
+ * one THIS caller may not — and the counts exclude both, so a resource whose only
+ * failure came from either reads as passing everything.
+ *
+ * Staleness is deliberately not one of them. A frozen index dates the answer
+ * rather than shrinking it, and "as of the last sync, all passed" is still true.
+ */
+function coverageIsPartial(data: PolicyResourceResponse): boolean {
+  return (data.withheldByFamily ?? 0) > 0 || (data.deniedGroups ?? []).length > 0
+}
+
+/**
+ * A result can be real and incomplete at the same time. Saying "all checks
+ * passing" without mentioning that claims coverage we do not have — so this note
+ * and the word "All" above it read the same predicate rather than each deciding
+ * for itself.
  */
 function PartialCoverageNote({ data }: { data: PolicyResourceResponse }) {
   const denied = data.deniedGroups ?? []
-  // Two different gaps. `deniedGroups` is a family radar's own probe could not
-  // read; `withheldByFamily` is one THIS caller may not, which the counts above
-  // already exclude — so without it a resource whose only failure came from
-  // that family reads as passing everything.
   const withheld = data.withheldByFamily ?? 0
-  if (denied.length === 0 && withheld === 0 && data.liveUpdates) return null
+  if (!coverageIsPartial(data) && data.liveUpdates) return null
   return (
     <div className="mt-2 pt-2 border-t border-theme-border text-xs text-theme-text-tertiary">
       {withheld > 0 && (

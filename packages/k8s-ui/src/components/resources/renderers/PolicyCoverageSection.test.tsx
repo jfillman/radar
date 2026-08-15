@@ -141,6 +141,26 @@ describe('counts describe the cluster, lists describe the view', () => {
     expect(html).toContain('1 hidden by your namespace filter')
   })
 
+  // The counts exclude what a family or a namespace held back, so "All" would be
+  // quantifying over a set the page itself goes on to say was short.
+  it('does not claim all passed when a report family was withheld', () => {
+    const html = render(coverage({
+      examined: 5, subjects: 5, counts: counts({ pass: 5 }),
+      withheldByFamily: 2, unreadableFamilies: ['openreports.io'],
+      rules: [rule({ counts: counts({ pass: 5 }), subjects: [], total: 5 })],
+    }))
+    expect(html).toContain('5 resources passing')
+    expect(html).not.toContain('All 5 resources passing')
+  })
+
+  it('keeps the plain claim when nothing was held back', () => {
+    const html = render(coverage({
+      examined: 5, subjects: 5, counts: counts({ pass: 5 }),
+      rules: [rule({ counts: counts({ pass: 5 }), subjects: [], total: 5 })],
+    }))
+    expect(html).toContain('All 5 resources passing')
+  })
+
   it('names the hidden rows that were failing', () => {
     const html = render(coverage({
       examined: 1, subjects: 1, counts: counts({ fail: 1 }),

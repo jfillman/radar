@@ -379,6 +379,7 @@ export function PolicyCoverageSection({
             key={rule.rule || `unnamed-${i}`}
             rule={rule}
             heading={ruleHeading(resource, rule)}
+            partial={anythingWithheld(data)}
             onLoadMore={onLoadMore}
             loadingMore={loadingMore}
             // Per rule, because one legacy policy can validate, mutate and
@@ -560,18 +561,26 @@ function passingInView(passTotal: number, hiddenByFilter: number, hiddenNotable:
 }
 
 /** "All" holds only when nothing is outside the view; next to a footer naming
- *  hidden subjects it invites the count to be read as the total. */
-function passingLabel(count: number, hiddenByFilter: number, words: OutcomeWords): string {
+ *  hidden subjects it invites the count to be read as the total. `partial` is
+ *  the other way the set can be short — a namespace or a report family nobody
+ *  put in front of this caller — which the counts silently exclude, so the word
+ *  would be claiming completeness the footer goes on to deny. */
+function passingLabel(
+  count: number,
+  hiddenByFilter: number,
+  words: OutcomeWords,
+  partial = false,
+): string {
   const noun = count === 1 ? 'resource' : 'resources'
-  return hiddenByFilter > 0
-    ? `${count} ${noun} ${words.good} in view`
-    : `All ${count} ${noun} ${words.good}`
+  if (hiddenByFilter > 0) return `${count} ${noun} ${words.good} in view`
+  return partial ? `${count} ${noun} ${words.good}` : `All ${count} ${noun} ${words.good}`
 }
 
 function RuleBlock({
   rule,
   heading,
   words,
+  partial,
   onSelectSubject,
   onLoadMore,
   loadingMore,
@@ -580,6 +589,8 @@ function RuleBlock({
   /** Undefined when this bucket has no name worth showing. */
   heading?: string
   words: OutcomeWords
+  /** Findings are missing from the whole response, so no rule may claim "All". */
+  partial?: boolean
   onSelectSubject?: (subject: PolicyCoverageSubject) => void
   onLoadMore?: () => void
   loadingMore?: boolean
@@ -614,7 +625,7 @@ function RuleBlock({
            when the filter withheld everything, which the footer says properly. */
         passing > 0 && (
           <PassingGroup
-            label={passingLabel(passing, rule.hiddenByFilter ?? 0, words)}
+            label={passingLabel(passing, rule.hiddenByFilter ?? 0, words, partial)}
             subjects={passingSubjects}
             total={passing}
             words={words}

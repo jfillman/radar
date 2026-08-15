@@ -10,6 +10,32 @@ import {
 import { formatAge } from '@skyhook-io/k8s-ui/components/resources/resource-utils'
 import { useResources, isForbiddenError } from '../../../api/client'
 
+/** A request sitting this long is not mid-flight. Kyverno retries on every
+ *  reconcile, so past this point a backlog grows rather than drains. */
+const STALLED_MINUTES = 5
+
+/** Enough at once to be worth raising even while it is still moving. */
+const BACKLOG_SIZE = 25
+
+/**
+ * The banner headline, or null when a queue is doing what a queue does.
+ *
+ * Only the first case has measured that the work stopped. The second says how
+ * much is waiting and nothing more: everything in it is younger than the stall
+ * threshold, so it is as likely to be a burst draining normally — asserting it
+ * is not being processed would be a claim about the controller made from
+ * evidence that suggests the opposite.
+ */
+export function queueBannerTitle(
+  pending: number,
+  stalledMinutes: number,
+  oldestAge: string,
+): string | null {
+  if (stalledMinutes >= STALLED_MINUTES) return `Queued work has not moved for ${oldestAge}`
+  if (pending >= BACKLOG_SIZE) return `${pending} requests are queued`
+  return null
+}
+
 /**
  * Whether a queued request belongs to this policy.
  *
@@ -97,21 +123,14 @@ export function KyvernoPolicyQueued({ data }: { data: any }) {
   const stalledMinutes = oldestPending
     ? Math.floor((Date.now() - new Date(oldestPending).getTime()) / 60000)
     : 0
-  // A request that has sat for minutes is not mid-flight. Kyverno retries these
-  // on every reconcile, so a backlog grows rather than drains.
-  const stalled = stalledMinutes >= 5
+  const title = queueBannerTitle(pending, stalledMinutes, formatAge(oldestPending))
 
   return (
     <>
-      {/* The pile-up is the failure. A handful mid-flight is normal. */}
-      {(stalled || pending >= 25) && (
+      {title && (
         <AlertBanner
           variant="warning"
-          title={
-            stalled
-              ? `Queued work has not moved for ${formatAge(oldestPending)}`
-              : `${pending} requests are queued and not being processed`
-          }
+          title={title}
           message="Requests build up when the background controller cannot keep up or cannot reach what it needs. They are retried on every reconcile, so a backlog grows rather than drains."
         />
       )}

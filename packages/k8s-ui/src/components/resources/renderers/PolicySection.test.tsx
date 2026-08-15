@@ -64,14 +64,26 @@ describe('PolicySection — what an empty result means', () => {
 describe('PolicySection — partial coverage', () => {
   it('admits when some report families were unreadable, even while passing', () => {
     // "All checks passing" plus an unreadable family is a claim of coverage we
-    // do not have.
+    // do not have. The note alone does not undo it — "All" is the word that gets
+    // read, and the note is the small print under a green shield.
     const html = renderToString(<PolicySection data={resp({
       counts: { pass: 3, fail: 0, warn: 0, error: 0, skip: 0 },
       deniedGroups: ['openreports.io'],
     })} />)
-    expect(html).toContain('All 3 checks passing')
+    expect(html).toContain('3 checks passing')
+    expect(html).not.toContain('All 3 checks passing')
     expect(html).toContain('may be incomplete')
     expect(html).toContain('openreports.io')
+  })
+
+  // Staleness dates the answer, it does not shrink it: "as of the last sync, all
+  // passed" is still a true sentence, so this one keeps the word.
+  it('still says all passed when the only caveat is a frozen index', () => {
+    const html = renderToString(<PolicySection data={resp({
+      counts: { pass: 3, fail: 0, warn: 0, error: 0, skip: 0 }, liveUpdates: false,
+    })} />)
+    expect(html).toContain('All 3 checks passing')
+    expect(html).toContain('not updating live')
   })
 
   it('admits when the results are frozen', () => {

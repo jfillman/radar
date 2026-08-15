@@ -461,12 +461,12 @@ function PitchBody({ lane }: { lane: 'driver' | 'wizard' }) {
         className="flex items-center gap-1.5 mb-2 text-[12.5px] font-medium text-theme-text-secondary hover:text-theme-text-primary transition-colors"
       >
         <CollapseChevron open={moreOpen} className="w-3 h-3" />
-        Pricing, how it works, and who's behind it
+        How it works
       </button>
       <Collapse open={moreOpen}>
         <div id={moreId} className="pt-1 pb-3 pl-[18px] space-y-3.5">
           <section>
-            <h4 className="text-[12.5px] font-semibold text-theme-text-primary mb-0.5">How it works</h4>
+            {/* No heading: the disclosure's own label already names this one. */}
             <p className="text-[12px] leading-relaxed text-theme-text-secondary">
               {lane === 'driver'
                 ? 'Setup runs here in the app: Radar installs a small agent that connects outward to Radar Cloud. You review the plan and approve in your browser before anything is installed.'

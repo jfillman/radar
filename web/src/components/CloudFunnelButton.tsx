@@ -1,6 +1,6 @@
 import { useEffect, useId, useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Bell, Check, Globe, History, Sparkles, Users, X } from 'lucide-react'
+import { ArrowLeft, Bell, Check, ChevronRight, Globe, History, Sparkles, Users, X } from 'lucide-react'
 import { Collapse, CollapseChevron } from '@skyhook-io/k8s-ui/components/ui/Collapse'
 import { DialogPortal } from '@skyhook-io/k8s-ui/components/ui/DialogPortal'
 import { Tooltip } from './ui/Tooltip'
@@ -68,6 +68,7 @@ export function CloudFunnelButton() {
   const [open, setOpen] = useState(false)
   const [seen, setSeen] = useState(readSeen)
   const [inFlowView, setInFlowView] = useState(false)
+  const [detailsView, setDetailsView] = useState(false)
   const [blocked, setBlocked] = useState<CloudInstallBlocked | null>(null)
 
   const capabilities = useCapabilities()
@@ -130,6 +131,7 @@ export function CloudFunnelButton() {
   const openModal = () => {
     setOpen(true)
     setSeen(true)
+    setDetailsView(false)
     markSeen()
     // Re-open lands on a live flow if one is running.
     if (lane === 'driver' && flowLive) setInFlowView(true)
@@ -174,7 +176,7 @@ export function CloudFunnelButton() {
     <>
       {/* Tooltip is suppressed while the modal is open — it portals above the
           modal backdrop and would otherwise paint on top of the dialog. */}
-      <Tooltip content="Radar Cloud — all your clusters, one URL" delay={100} position="bottom" disabled={open}>
+      <Tooltip content="Radar Cloud: all your clusters, one URL" delay={100} position="bottom" disabled={open}>
         <button
           onClick={openModal}
           aria-label="Radar Cloud"
@@ -226,12 +228,15 @@ export function CloudFunnelButton() {
         ) : (
           <>
             <div className="min-h-0 overflow-y-auto">
-              <ModalBody />
+              {detailsView ? (
+                <DetailsBody onBack={() => setDetailsView(false)} />
+              ) : (
+                <PitchBody onDetails={() => setDetailsView(true)} />
+              )}
             </div>
             <ModalFooter
               lane={lane}
               signupUrl={signupUrl}
-              driverEscapeUrl={signupUrlFor('driver-escape')}
               assurances={connectInfo.data?.assurances}
               notice={connectInfo.data?.notice}
               self={inCluster ? self.data : undefined}
@@ -310,7 +315,6 @@ function Eyebrow() {
 function ModalFooter({
   lane,
   signupUrl,
-  driverEscapeUrl,
   assurances,
   notice,
   self,
@@ -320,10 +324,6 @@ function ModalFooter({
 }: {
   lane: 'driver' | 'wizard'
   signupUrl: string
-  // The driver branch's "start in the browser" link — same destination as
-  // signupUrl, distinct utm_content so the Hub can tell an escape from an
-  // in-product flow apart from a pitch CTA click.
-  driverEscapeUrl: string
   // Live copy from the Hub; undefined until (or unless) it arrives.
   assurances?: string[]
   notice?: string
@@ -353,24 +353,24 @@ function ModalFooter({
             <>
               Radar found conflicting management metadata on this install, so it can't say whether a Helm
               upgrade or a repository change is the right move. Run{' '}
-              <code className="font-mono text-[11px]">radar cloud install</code> from a machine with kubectl —
-              it inspects the release and refuses rather than guessing.
+              <code className="font-mono text-[11px]">radar cloud install</code> from a machine with
+              kubectl. It inspects the release and refuses rather than guessing.
             </>
           ) : gitops ? (
             <>
               This Radar is managed by{' '}
               <b className="text-theme-text-primary">{self.controller || 'a GitOps controller'}</b>, so
-              connecting it is a values change in your repository — an imperative upgrade would be reverted.{' '}
+              connecting it is a values change in your repository; an imperative upgrade would be reverted.{' '}
               {cliOnly ? (
                 <>
                   Radar found that evidence but couldn't confirm it against the live object, so run{' '}
                   <code className="font-mono text-[11px]">radar cloud install</code> from a machine with
-                  kubectl — it inspects the release before generating anything.
+                  kubectl. It inspects the release before generating anything.
                 </>
               ) : (
                 <>
                   The wizard generates the values patch for that controller, plus the one command that
-                  creates the token Secret — the token never goes into your repository.
+                  creates the token Secret. The token never goes into your repository.
                 </>
               )}
             </>
@@ -387,30 +387,14 @@ function ModalFooter({
       {notice && (
         <div className="mb-3.5 card-inner p-3 text-[12px] leading-relaxed text-theme-text-secondary">{notice}</div>
       )}
-      {lane === 'driver' && (
-        <p className="mb-3.5 text-[12px] leading-relaxed text-theme-text-secondary">
-          The guided setup runs right here in the app — Radar installs the Cloud agent on this cluster, and
-          you approve the connection in your browser.
-        </p>
-      )}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
         {lane === 'driver' ? (
-          <>
-            <button
-              onClick={onConnect}
-              className="whitespace-nowrap px-6 py-2.5 rounded-[10px] bg-emerald-500 hover:bg-emerald-400 text-emerald-950 text-[14px] font-bold shadow-[0_0_22px_rgba(16,185,129,0.35)] hover:shadow-[0_0_30px_rgba(16,185,129,0.5)] hover:-translate-y-px transition-all"
-            >
-              Connect this cluster
-            </button>
-            <a
-              href={driverEscapeUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="whitespace-nowrap text-[13px] text-theme-text-secondary hover:text-theme-text-primary underline underline-offset-2 transition-colors"
-            >
-              or set up in the browser
-            </a>
-          </>
+          <button
+            onClick={onConnect}
+            className="whitespace-nowrap px-6 py-2.5 rounded-[10px] bg-emerald-500 hover:bg-emerald-400 text-emerald-950 text-[14px] font-bold shadow-[0_0_22px_rgba(16,185,129,0.35)] hover:shadow-[0_0_30px_rgba(16,185,129,0.5)] hover:-translate-y-px transition-all"
+          >
+            Connect this cluster
+          </button>
         ) : cliOnly ? null : (
           <a
             href={self?.wizardUrl || signupUrl}
@@ -427,96 +411,114 @@ function ModalFooter({
           Maybe later
         </button>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-x-5 gap-y-2 text-[11.5px] text-theme-text-tertiary">
+      <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1.5 text-[11.5px] text-theme-text-tertiary">
         {assuranceItems(assurances).map((item) => (
-          <span key={item} className="flex items-start gap-1.5">
-            <Check className="w-3 h-3 mt-[3px] shrink-0 text-emerald-600 dark:text-emerald-400" />
+          <span key={item} className="flex items-center gap-1.5">
+            <Check className="w-3 h-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
             {item}
           </span>
         ))}
       </div>
-      <Fold summary="Prefer to run the control plane in your own VPC?" className="mt-3.5">
-        Self-hosting is fully self-serve — set it up yourself, whenever you're ready.{' '}
-        <a href={SELF_HOSTED_DOCS_URL} target="_blank" rel="noopener noreferrer" className="text-theme-text-secondary underline underline-offset-2 hover:text-theme-text-primary">
-          Read the docs
-        </a>
-        .
-      </Fold>
     </div>
   )
 }
 
-// Headline defuses the paywall fear before anything is pitched; the grid
-// carries the concrete capabilities; the anti-sell closes — the credibility
-// beat that makes the sell land.
-function ModalBody() {
-  const features = [
-    {
-      icon: Globe,
-      title: 'All your clusters, one URL',
-      body: 'Fleet-wide issues, checks and search — instead of five browser tabs.',
-    },
-    {
-      icon: Users,
-      title: 'Bring the team',
-      body: "SSO, invites and roles — your cluster's RBAC still has the final say.",
-    },
-    {
-      icon: Bell,
-      title: 'Alerts that find you',
-      body: 'Slack or webhook the moment something breaks — even at 3am.',
-    },
-    {
-      icon: History,
-      title: 'History that sticks around',
-      body: 'A timeline that survives restarts — and keeps getting longer.',
-    },
-    {
-      icon: Sparkles,
-      title: 'An AI agent on your fleet',
-      body: 'Analyzes issues, pinpoints the root cause, and proposes the fix.',
-      wide: true,
-    },
+// The pitch answers what this is, what you get, and whether it can be
+// trusted. The headline names the product — an opener that defuses a fear
+// instead buries what the dialog is even about; one-line highlights carry the
+// value; the anti-sell line is the credibility beat. Anything longer lives one
+// click deeper in DetailsBody, so this stays short enough to read at a glance.
+function PitchBody({ onDetails }: { onDetails: () => void }) {
+  const highlights = [
+    { icon: Globe, text: 'Your whole fleet in one URL: issues, checks and search across every cluster' },
+    { icon: Users, text: "Bring the team: SSO, invites and roles. Your cluster's RBAC has the final say" },
+    { icon: Bell, text: 'Alerts that reach you the moment something breaks' },
+    { icon: History, text: 'Long-term retention: history that survives restarts and keeps growing' },
+    { icon: Sparkles, text: 'An AI agent that digs into issues and pinpoints the root cause' },
   ]
   return (
     <div className="px-8 pt-7 pb-2">
       <Eyebrow />
       <h3 className="text-[22px] font-semibold leading-tight tracking-tight text-theme-text-primary mb-3 text-balance">
-        First things first: Radar stays free.
+        Meet Radar Cloud
       </h3>
       <p className="text-[14px] leading-relaxed text-theme-text-secondary mb-5">
-        The app you're looking at is Apache&nbsp;2.0 — every feature, forever, no rug pulls.{' '}
-        <b className="text-theme-text-primary font-semibold">Radar Cloud is how we keep the lights on:</b> the
-        same Radar, plus the parts that are genuinely hard to run on your own.
+        The hosted side of Radar: your clusters in one place, run by us.{' '}
+        <b className="text-theme-text-primary font-semibold">This app stays free and open source, always.</b>
       </p>
-      <div className="grid grid-cols-2 gap-3 mb-5">
-        {features.map(({ icon: Icon, title, body, wide }) => (
-          <div
-            key={title}
-            className={`card-inner-lg p-3.5 flex gap-3 ${
-              wide ? 'col-span-2 bg-emerald-500/[0.06] border-emerald-500/25 dark:bg-emerald-500/[0.08]' : ''
-            }`}
-          >
-            <Icon className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
-            <div>
-              <div className="text-[13px] font-semibold text-theme-text-primary">{title}</div>
-              <p className="mt-1 text-[12px] leading-relaxed text-theme-text-tertiary">{body}</p>
-            </div>
-          </div>
+      <ul className="space-y-2.5 mb-4">
+        {highlights.map(({ icon: Icon, text }) => (
+          <li key={text} className="flex items-start gap-2.5 text-[13px] leading-relaxed text-theme-text-secondary">
+            <Icon className="w-4 h-4 shrink-0 mt-[3px] text-emerald-600 dark:text-emerald-400" />
+            {text}
+          </li>
         ))}
-      </div>
+      </ul>
+      <button
+        type="button"
+        onClick={onDetails}
+        className="flex items-center gap-1 mb-5 text-[12.5px] text-theme-text-tertiary hover:text-theme-text-primary transition-colors"
+      >
+        How it works and what it costs
+        <ChevronRight className="w-3.5 h-3.5" />
+      </button>
       <div className="mb-5 border-l-2 border-emerald-500/40 pl-3.5">
         <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
-          If it's just you and one cluster — honestly, stay right here. This app is the product, not a demo.
-        </p>
-        <p className="mt-2 text-[11.5px] leading-relaxed text-theme-text-tertiary">
-          Radar is built in the open by many hands, and overseen by a small team of humans — the kind you
-          can actually talk to.{' '}
-          <a href={ABOUT_URL} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap text-theme-text-secondary underline underline-offset-2 hover:text-theme-text-primary">
-            Meet us →
-          </a>
+          Just you and one cluster? Stay right here. This app is the product, not a demo.
         </p>
       </div>
+    </div>
+  )
+}
+
+// The deeper page earns its click by answering what the pitch raises but
+// leaves open — how the connection works, what it costs, who's behind it —
+// rather than restating the capability list the reader just saw. Copy here
+// must stay consistent with the flow's own claims (plan card, assurances).
+function DetailsBody({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="px-8 pt-6 pb-2">
+      <button
+        type="button"
+        onClick={onBack}
+        className="flex items-center gap-1.5 mb-4 text-[12px] text-theme-text-tertiary hover:text-theme-text-primary transition-colors"
+      >
+        <ArrowLeft className="w-3.5 h-3.5" />
+        Back
+      </button>
+      <div className="space-y-4 mb-4">
+        <section>
+          <h4 className="text-[13px] font-semibold text-theme-text-primary mb-1">How it works</h4>
+          <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
+            A small agent in your cluster connects outward to Radar Cloud. You approve the connection in
+            your browser before anything is installed, and your cluster data stays in your cluster.
+          </p>
+        </section>
+        <section>
+          <h4 className="text-[13px] font-semibold text-theme-text-primary mb-1">What it costs</h4>
+          <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
+            Free for 3 clusters, no credit card. Paid plans beyond that are what keep the lights on,
+            while this app stays Apache&nbsp;2.0: every feature, forever.
+          </p>
+        </section>
+        <section>
+          <h4 className="text-[13px] font-semibold text-theme-text-primary mb-1">Who's behind it</h4>
+          <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
+            Radar is built in the open by many hands, and overseen by a small team of humans, the kind
+            you can actually talk to.{' '}
+            <a href={ABOUT_URL} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap underline underline-offset-2 hover:text-theme-text-primary">
+              Meet us →
+            </a>
+          </p>
+        </section>
+      </div>
+      <Fold summary="Prefer to run the control plane in your own VPC?" className="mb-5">
+        Self-hosting is fully self-serve. Set it up yourself, whenever you're ready.{' '}
+        <a href={SELF_HOSTED_DOCS_URL} target="_blank" rel="noopener noreferrer" className="text-theme-text-secondary underline underline-offset-2 hover:text-theme-text-primary">
+          Read the docs
+        </a>
+        .
+      </Fold>
     </div>
   )
 }

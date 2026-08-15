@@ -40,7 +40,7 @@ export function CloudConnectFlow({
         <div className="px-8 py-10 flex flex-col items-center gap-3 text-center">
           <Loader2 className="w-5 h-5 animate-spin text-emerald-600 dark:text-emerald-400" />
           <p className="text-[13px] text-theme-text-secondary">
-            Checking this cluster and preparing the install — this can take a moment on a slow link.
+            Checking this cluster and preparing the install. This can take a moment on a slow link.
           </p>
         </div>
       )
@@ -312,7 +312,7 @@ function PlanCard({
        *  so this cannot assert whether an account already exists. Phrased to
        *  read correctly for a returning operator and a first-time one alike. */}
       <p className="mt-2.5 text-[11px] text-theme-text-tertiary">
-        Nothing is installed yet — you'll approve this cluster in the browser, creating your account and
+        Nothing is installed yet. You'll approve this cluster in the browser, creating your account and
         organization first if you don't have one. Then Radar installs the agent.
       </p>
     </div>
@@ -365,7 +365,7 @@ function ApprovalCard({ status, onStatus }: { status: CloudInstallStatus; onStat
       </div>
       <p className="text-[12.5px] leading-relaxed text-theme-text-secondary mb-3.5">
         Approve connecting <b className="text-theme-text-primary">{status.clusterName}</b> in the browser tab.
-        Sign-in and org setup happen there too — this screen advances automatically.
+        Sign-in and org setup happen there too, and this screen advances automatically.
       </p>
       {status.connectUrl && (
         <div className="card-inner flex items-center gap-2">
@@ -419,7 +419,7 @@ function ProgressCard({ status, onStatus }: { status: CloudInstallStatus; onStat
       <div className="mt-4">
         {provisioning ? (
           <p className="text-[11px] text-theme-text-tertiary">
-            Installing — this step completes atomically and can’t be canceled midway.
+            Installing. This step completes atomically and can’t be canceled midway.
           </p>
         ) : (
           cancel
@@ -469,7 +469,7 @@ function ConnectedCard({
         </h4>
       </div>
       <p className="text-[12.5px] leading-relaxed text-theme-text-secondary mb-4">
-        The in-cluster agent is live and tunneled. This local app keeps working exactly as before — the
+        The in-cluster agent is live and tunneled. This local app keeps working exactly as before, and the
         cluster is now also reachable for your team at one URL.
       </p>
       <div className="flex items-center gap-4 mb-4">

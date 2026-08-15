@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Bell, Check, ChevronRight, Globe, History, Sparkles, Users, X } from 'lucide-react'
 import { Collapse, CollapseChevron } from '@skyhook-io/k8s-ui/components/ui/Collapse'
@@ -70,7 +70,13 @@ export function CloudFunnelButton() {
   const [inFlowView, setInFlowView] = useState(false)
   const [detailsView, setDetailsView] = useState(false)
   const [blocked, setBlocked] = useState<CloudInstallBlocked | null>(null)
+  // Set when the in-app connect attempt fails before a flow ever existed. The
+  // pitch then offers the browser wizard, which is the only remaining way to
+  // say yes once the driver lane has proven broken on this cluster.
+  const [prepareFailed, setPrepareFailed] = useState(false)
   const bodyScroll = useRef<HTMLDivElement>(null)
+  const heading = useRef<HTMLHeadingElement>(null)
+  const prevDetails = useRef(false)
 
   const capabilities = useCapabilities()
   const lane = capabilities.data?.cloudConnect?.lane ?? 'wizard'
@@ -121,6 +127,7 @@ export function CloudFunnelButton() {
       // Anything else failed before a flow existed. Return to the pitch rather
       // than leaving the flow view armed, where a later status change would
       // pull the user into a screen they did not ask for.
+      setPrepareFailed(true)
       exitFlow()
       showApiError('Could not inspect this cluster for Cloud connect', err instanceof Error ? err.message : undefined)
     },
@@ -133,6 +140,7 @@ export function CloudFunnelButton() {
     setOpen(true)
     setSeen(true)
     setDetailsView(false)
+    setPrepareFailed(false)
     markSeen()
     // Re-open lands on a live flow if one is running.
     if (lane === 'driver' && flowLive) setInFlowView(true)
@@ -140,12 +148,16 @@ export function CloudFunnelButton() {
 
   const startConnect = () => {
     setBlocked(null)
+    setPrepareFailed(false)
     setInFlowView(true)
     prepare.mutate()
   }
 
+  // Leaving the flow returns to the pitch, never to the sub-page: the flow is a
+  // lane change, and landing back in "how it works" reads as a failed exit.
   const exitFlow = () => {
     setInFlowView(false)
+    setDetailsView(false)
     setBlocked(null)
   }
 
@@ -155,11 +167,15 @@ export function CloudFunnelButton() {
     if (open && lane === 'driver' && flowLive) setInFlowView(true)
   }, [open, lane, flowLive])
 
-  // Pitch and details swap inside one scroll container, so the offset carries
-  // across. On a viewport short enough for the incoming view to overflow, that
-  // opens it mid-page with its heading and Back control already scrolled past.
-  useEffect(() => {
+  // Both views share one scroll container and the trigger unmounts itself on
+  // click, so without this the offset carries across (opening the incoming view
+  // mid-page on a short viewport) and focus falls to the document body, outside
+  // a dialog that has no focus trap. Layout effect so neither is ever painted.
+  useLayoutEffect(() => {
+    if (prevDetails.current === detailsView) return
+    prevDetails.current = detailsView
     if (bodyScroll.current) bodyScroll.current.scrollTop = 0
+    heading.current?.focus()
   }, [detailsView])
 
   // The server owns the "nothing to pitch" decision: an already-tunneled
@@ -237,14 +253,16 @@ export function CloudFunnelButton() {
           <>
             <div ref={bodyScroll} className="min-h-0 overflow-y-auto">
               {detailsView ? (
-                <DetailsBody onBack={() => setDetailsView(false)} />
+                <DetailsBody headingRef={heading} lane={lane} onBack={() => setDetailsView(false)} />
               ) : (
-                <PitchBody onDetails={() => setDetailsView(true)} />
+                <PitchBody headingRef={heading} onDetails={() => setDetailsView(true)} />
               )}
             </div>
             <ModalFooter
               lane={lane}
               signupUrl={signupUrl}
+              driverEscapeUrl={signupUrlFor('driver-escape')}
+              prepareFailed={prepareFailed}
               assurances={connectInfo.data?.assurances}
               notice={connectInfo.data?.notice}
               self={inCluster ? self.data : undefined}
@@ -262,7 +280,7 @@ export function CloudFunnelButton() {
   )
 }
 
-// Secondary copy the pitch shouldn't spend vertical space on until asked for.
+// Secondary copy that shouldn't cost vertical space until asked for.
 function Fold({ summary, className = '', children }: { summary: string; className?: string; children: ReactNode }) {
   const [open, setOpen] = useState(false)
   const bodyId = useId()
@@ -290,8 +308,8 @@ function Fold({ summary, className = '', children }: { summary: string; classNam
 function assuranceItems(fromHub?: string[]): string[] {
   const items = fromHub?.length ? fromHub : DEFAULT_ASSURANCES
   if (items.some((item) => item.toLowerCase().includes('soc 2'))) return items
-  // Before the last item: the closer ("data stays in your cluster") is the
-  // longest line and wraps most naturally when it comes last.
+  // Second to last: the closer ("data stays in your cluster") is the longest
+  // line, and trailing it keeps the short chips together on the first row.
   return [...items.slice(0, -1), SOC2_ASSURANCE, items[items.length - 1]]
 }
 
@@ -323,6 +341,8 @@ function Eyebrow() {
 function ModalFooter({
   lane,
   signupUrl,
+  driverEscapeUrl,
+  prepareFailed,
   assurances,
   notice,
   self,
@@ -332,6 +352,10 @@ function ModalFooter({
 }: {
   lane: 'driver' | 'wizard'
   signupUrl: string
+  // Same destination as signupUrl, distinct utm_content so the Hub can tell an
+  // escape from a broken in-app attempt apart from a plain pitch CTA click.
+  driverEscapeUrl: string
+  prepareFailed: boolean
   // Live copy from the Hub; undefined until (or unless) it arrives.
   assurances?: string[]
   notice?: string
@@ -397,12 +421,24 @@ function ModalFooter({
       )}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
         {lane === 'driver' ? (
-          <button
-            onClick={onConnect}
-            className="whitespace-nowrap px-6 py-2.5 rounded-[10px] bg-emerald-500 hover:bg-emerald-400 text-emerald-950 text-[14px] font-bold shadow-[0_0_22px_rgba(16,185,129,0.35)] hover:shadow-[0_0_30px_rgba(16,185,129,0.5)] hover:-translate-y-px transition-all"
-          >
-            Connect this cluster
-          </button>
+          <>
+            <button
+              onClick={onConnect}
+              className="whitespace-nowrap px-6 py-2.5 rounded-[10px] bg-emerald-500 hover:bg-emerald-400 text-emerald-950 text-[14px] font-bold shadow-[0_0_22px_rgba(16,185,129,0.35)] hover:shadow-[0_0_30px_rgba(16,185,129,0.5)] hover:-translate-y-px transition-all"
+            >
+              {prepareFailed ? 'Try again' : 'Connect this cluster'}
+            </button>
+            {prepareFailed && (
+              <a
+                href={driverEscapeUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="whitespace-nowrap text-[13px] text-theme-text-secondary hover:text-theme-text-primary underline underline-offset-2 transition-colors"
+              >
+                or set up in the browser
+              </a>
+            )}
+          </>
         ) : cliOnly ? null : (
           <a
             href={self?.wizardUrl || signupUrl}
@@ -431,12 +467,14 @@ function ModalFooter({
   )
 }
 
-// The pitch answers what this is, what you get, and whether it can be
-// trusted. The headline names the product — an opener that defuses a fear
-// instead buries what the dialog is even about; one-line highlights carry the
-// value; the anti-sell line is the credibility beat. Anything longer lives one
-// click deeper in DetailsBody, so this stays short enough to read at a glance.
-function PitchBody({ onDetails }: { onDetails: () => void }) {
+// Length-capped on purpose: anything that doesn't fit belongs in DetailsBody.
+function PitchBody({
+  headingRef,
+  onDetails,
+}: {
+  headingRef: RefObject<HTMLHeadingElement | null>
+  onDetails: () => void
+}) {
   const highlights = [
     { icon: Globe, text: 'Your whole fleet in one URL: issues, checks and search across every cluster' },
     { icon: Users, text: "Bring the team: SSO, invites and roles. Your cluster's RBAC has the final say" },
@@ -447,7 +485,11 @@ function PitchBody({ onDetails }: { onDetails: () => void }) {
   return (
     <div className="px-8 pt-7 pb-2">
       <Eyebrow />
-      <h3 className="text-[22px] font-semibold leading-tight tracking-tight text-theme-text-primary mb-3 text-balance">
+      <h3
+        ref={headingRef}
+        tabIndex={-1}
+        className="text-[22px] font-semibold leading-tight tracking-tight text-theme-text-primary mb-3 outline-none"
+      >
         Meet Radar Cloud
       </h3>
       <p className="text-[14px] leading-relaxed text-theme-text-secondary mb-5">
@@ -479,34 +521,50 @@ function PitchBody({ onDetails }: { onDetails: () => void }) {
   )
 }
 
-// The deeper page earns its click by answering what the pitch raises but
-// leaves open — how the connection works, what it costs, who's behind it —
-// rather than restating the capability list the reader just saw. Copy here
-// must stay consistent with the flow's own claims (plan card, assurances).
-function DetailsBody({ onBack }: { onBack: () => void }) {
+// Answers what the pitch raises but leaves open, rather than restating the
+// capability list the reader just saw. Deliberately states no price or tier:
+// those are Hub-served (and therefore correctable) in the assurance strip, and
+// a second compiled-in copy would contradict it the day the terms change.
+function DetailsBody({
+  headingRef,
+  lane,
+  onBack,
+}: {
+  headingRef: RefObject<HTMLHeadingElement | null>
+  lane: 'driver' | 'wizard'
+  onBack: () => void
+}) {
   return (
     <div className="px-8 pt-6 pb-2">
       <button
         type="button"
         onClick={onBack}
-        className="flex items-center gap-1.5 mb-4 text-[12px] text-theme-text-tertiary hover:text-theme-text-primary transition-colors"
+        className="flex items-center gap-1.5 mb-3 text-[12px] text-theme-text-tertiary hover:text-theme-text-primary transition-colors"
       >
         <ArrowLeft className="w-3.5 h-3.5" />
         Back
       </button>
+      <h3
+        ref={headingRef}
+        tabIndex={-1}
+        className="text-[17px] font-semibold leading-tight tracking-tight text-theme-text-primary mb-4 outline-none"
+      >
+        How it works and what it costs
+      </h3>
       <div className="space-y-4 mb-4">
         <section>
           <h4 className="text-[13px] font-semibold text-theme-text-primary mb-1">How it works</h4>
           <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
-            A small agent in your cluster connects outward to Radar Cloud. You approve the connection in
-            your browser before anything is installed, and your cluster data stays in your cluster.
+            {lane === 'driver'
+              ? 'Setup runs here in the app: Radar installs a small agent that connects outward to Radar Cloud. You review the plan and approve in your browser before anything is installed.'
+              : 'A small agent in your cluster connects outward to Radar Cloud. You approve the connection before anything is installed.'}
           </p>
         </section>
         <section>
           <h4 className="text-[13px] font-semibold text-theme-text-primary mb-1">What it costs</h4>
           <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
-            Free for 3 clusters, no credit card. Paid plans beyond that are what keep the lights on,
-            while this app stays Apache&nbsp;2.0: every feature, forever.
+            There's a free tier, and the paid plans past it are what keep the lights on. This app stays
+            Apache&nbsp;2.0 either way: every feature, forever.
           </p>
         </section>
         <section>
@@ -514,7 +572,7 @@ function DetailsBody({ onBack }: { onBack: () => void }) {
           <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
             Radar is built in the open by many hands, and overseen by a small team of humans, the kind
             you can actually talk to.{' '}
-            <a href={ABOUT_URL} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap underline underline-offset-2 hover:text-theme-text-primary">
+            <a href={ABOUT_URL} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap text-theme-text-secondary underline underline-offset-2 hover:text-theme-text-primary">
               Meet us →
             </a>
           </p>

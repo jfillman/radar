@@ -312,7 +312,11 @@ function getColumnMinWidth(col: Column): number {
  * all. Those are opposite conclusions and a bare "No X found" renders them
  * identically.
  */
-function emptyKindNote(kind: string, group?: string): string | undefined {
+export function emptyKindNote(kind: string, group?: string, unfilteredTotal = 0): string | undefined {
+  // A search or column filter emptying the table is the reader's own doing.
+  // Explaining that none is the resting state then answers a question they did
+  // not ask, while their own term is still in the box.
+  if (unfilteredTotal > 0) return undefined
   const g = group ?? ''
   if (kind.toLowerCase() === 'updaterequest' && g === 'kyverno.io') {
     return 'These are deleted seconds after the work completes, so none is the normal resting state. It also looks like this if a generate or mutate-existing rule never ran — check the policy itself to tell the two apart.'
@@ -5056,9 +5060,9 @@ export function ResourcesView({
           ) : filteredResources.length === 0 ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-theme-text-tertiary">
               <p>No {selectedKind.kind} found</p>
-              {emptyKindNote(selectedKind.kind, selectedKind.group) && (
+              {emptyKindNote(selectedKind.kind, selectedKind.group, resources?.length ?? 0) && (
                 <p className="text-xs mt-2 max-w-md text-center text-theme-text-disabled">
-                  {emptyKindNote(selectedKind.kind, selectedKind.group)}
+                  {emptyKindNote(selectedKind.kind, selectedKind.group, resources?.length ?? 0)}
                 </p>
               )}
               {searchTerm && (

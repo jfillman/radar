@@ -1,6 +1,6 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Bell, Check, ChevronRight, Globe, History, Sparkles, Users, X } from 'lucide-react'
+import { Bell, Check, Globe, History, Sparkles, Users, X } from 'lucide-react'
 import { Collapse, CollapseChevron } from '@skyhook-io/k8s-ui/components/ui/Collapse'
 import { DialogPortal } from '@skyhook-io/k8s-ui/components/ui/DialogPortal'
 import { Tooltip } from './ui/Tooltip'
@@ -68,15 +68,11 @@ export function CloudFunnelButton() {
   const [open, setOpen] = useState(false)
   const [seen, setSeen] = useState(readSeen)
   const [inFlowView, setInFlowView] = useState(false)
-  const [detailsView, setDetailsView] = useState(false)
   const [blocked, setBlocked] = useState<CloudInstallBlocked | null>(null)
   // Set when the in-app connect attempt fails before a flow ever existed. The
   // pitch then offers the browser wizard, which is the only remaining way to
   // say yes once the driver lane has proven broken on this cluster.
   const [prepareFailed, setPrepareFailed] = useState(false)
-  const bodyScroll = useRef<HTMLDivElement>(null)
-  const heading = useRef<HTMLHeadingElement>(null)
-  const prevDetails = useRef(false)
 
   const capabilities = useCapabilities()
   const lane = capabilities.data?.cloudConnect?.lane ?? 'wizard'
@@ -139,7 +135,6 @@ export function CloudFunnelButton() {
   const openModal = () => {
     setOpen(true)
     setSeen(true)
-    setDetailsView(false)
     setPrepareFailed(false)
     markSeen()
     // Re-open lands on a live flow if one is running.
@@ -153,11 +148,8 @@ export function CloudFunnelButton() {
     prepare.mutate()
   }
 
-  // Leaving the flow returns to the pitch, never to the sub-page: the flow is a
-  // lane change, and landing back in "how it works" reads as a failed exit.
   const exitFlow = () => {
     setInFlowView(false)
-    setDetailsView(false)
     setBlocked(null)
   }
 
@@ -166,17 +158,6 @@ export function CloudFunnelButton() {
   useEffect(() => {
     if (open && lane === 'driver' && flowLive) setInFlowView(true)
   }, [open, lane, flowLive])
-
-  // Both views share one scroll container and the trigger unmounts itself on
-  // click, so without this the offset carries across (opening the incoming view
-  // mid-page on a short viewport) and focus falls to the document body, outside
-  // a dialog that has no focus trap. Layout effect so neither is ever painted.
-  useLayoutEffect(() => {
-    if (prevDetails.current === detailsView) return
-    prevDetails.current = detailsView
-    if (bodyScroll.current) bodyScroll.current.scrollTop = 0
-    heading.current?.focus()
-  }, [detailsView])
 
   // The server owns the "nothing to pitch" decision: an already-tunneled
   // deployment gets no cloudConnect capability at all. Waiting for
@@ -251,12 +232,8 @@ export function CloudFunnelButton() {
           </div>
         ) : (
           <>
-            <div ref={bodyScroll} className="min-h-0 overflow-y-auto">
-              {detailsView ? (
-                <DetailsBody headingRef={heading} lane={lane} onBack={() => setDetailsView(false)} />
-              ) : (
-                <PitchBody headingRef={heading} onDetails={() => setDetailsView(true)} />
-              )}
+            <div className="min-h-0 overflow-y-auto">
+              <PitchBody lane={lane} />
             </div>
             <ModalFooter
               lane={lane}
@@ -280,30 +257,6 @@ export function CloudFunnelButton() {
   )
 }
 
-// Secondary copy that shouldn't cost vertical space until asked for.
-function Fold({ summary, className = '', children }: { summary: string; className?: string; children: ReactNode }) {
-  const [open, setOpen] = useState(false)
-  const bodyId = useId()
-  return (
-    <div className={className}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-controls={bodyId}
-        className="flex items-center gap-1.5 text-[11.5px] text-theme-text-tertiary hover:text-theme-text-primary transition-colors"
-      >
-        <CollapseChevron open={open} className="w-3 h-3" />
-        {summary}
-      </button>
-      <Collapse open={open}>
-        <p id={bodyId} className="mt-2 pl-[18px] text-[11.5px] leading-relaxed text-theme-text-tertiary">
-          {children}
-        </p>
-      </Collapse>
-    </div>
-  )
-}
 
 function assuranceItems(fromHub?: string[]): string[] {
   const items = fromHub?.length ? fromHub : DEFAULT_ASSURANCES
@@ -467,14 +420,12 @@ function ModalFooter({
   )
 }
 
-// Length-capped on purpose: anything that doesn't fit belongs in DetailsBody.
-function PitchBody({
-  headingRef,
-  onDetails,
-}: {
-  headingRef: RefObject<HTMLHeadingElement | null>
-  onDetails: () => void
-}) {
+// Length-capped on purpose: the detail sits behind a disclosure so the first
+// screen stays short, without costing the reader the product context a
+// separate page would have taken away.
+function PitchBody({ lane }: { lane: 'driver' | 'wizard' }) {
+  const [moreOpen, setMoreOpen] = useState(false)
+  const moreId = useId()
   const highlights = [
     { icon: Globe, text: 'Your whole fleet in one URL: issues, checks and search across every cluster' },
     { icon: Users, text: "Bring the team: SSO, invites and roles. Your cluster's RBAC has the final say" },
@@ -485,11 +436,7 @@ function PitchBody({
   return (
     <div className="px-8 pt-7 pb-2">
       <Eyebrow />
-      <h3
-        ref={headingRef}
-        tabIndex={-1}
-        className="text-[22px] font-semibold leading-tight tracking-tight text-theme-text-primary mb-3 outline-none"
-      >
+      <h3 className="text-[22px] font-semibold leading-tight tracking-tight text-theme-text-primary mb-3">
         Meet Radar Cloud
       </h3>
       <p className="text-[14px] leading-relaxed text-theme-text-secondary mb-5">
@@ -508,12 +455,50 @@ function PitchBody({
       </ul>
       <button
         type="button"
-        onClick={onDetails}
-        className="flex items-center gap-1 mb-5 text-[12.5px] text-theme-text-tertiary hover:text-theme-text-primary transition-colors"
+        onClick={() => setMoreOpen((v) => !v)}
+        aria-expanded={moreOpen}
+        aria-controls={moreId}
+        className="flex items-center gap-1.5 mb-2 text-[12.5px] text-theme-text-tertiary hover:text-theme-text-primary transition-colors"
       >
+        <CollapseChevron open={moreOpen} className="w-3 h-3" />
         How it works and what it costs
-        <ChevronRight className="w-3.5 h-3.5" />
       </button>
+      <Collapse open={moreOpen}>
+        <div id={moreId} className="pt-1 pb-3 pl-[18px] space-y-3.5">
+          <section>
+            <h4 className="text-[12.5px] font-semibold text-theme-text-primary mb-0.5">How it works</h4>
+            <p className="text-[12px] leading-relaxed text-theme-text-secondary">
+              {lane === 'driver'
+                ? 'Setup runs here in the app: Radar installs a small agent that connects outward to Radar Cloud. You review the plan and approve in your browser before anything is installed.'
+                : 'A small agent in your cluster connects outward to Radar Cloud. You approve the connection before anything is installed.'}
+            </p>
+          </section>
+          <section>
+            <h4 className="text-[12.5px] font-semibold text-theme-text-primary mb-0.5">What it costs</h4>
+            <p className="text-[12px] leading-relaxed text-theme-text-secondary">
+              There's a free tier, and the paid plans past it are what keep the lights on. Radar itself,
+              the app you're running now, stays Apache&nbsp;2.0 either way: every feature, forever.
+            </p>
+          </section>
+          <section>
+            <h4 className="text-[12.5px] font-semibold text-theme-text-primary mb-0.5">Who's behind it</h4>
+            <p className="text-[12px] leading-relaxed text-theme-text-secondary">
+              Radar is built in the open by many hands, and overseen by a small team of humans, the kind
+              you can actually talk to.{' '}
+              <a href={ABOUT_URL} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap text-theme-text-secondary underline underline-offset-2 hover:text-theme-text-primary">
+                Meet us →
+              </a>
+            </p>
+          </section>
+          <p className="text-[12px] leading-relaxed text-theme-text-secondary">
+            Prefer your own VPC? Self-hosting is fully self-serve.{' '}
+            <a href={SELF_HOSTED_DOCS_URL} target="_blank" rel="noopener noreferrer" className="text-theme-text-secondary underline underline-offset-2 hover:text-theme-text-primary">
+              Read the docs
+            </a>
+            .
+          </p>
+        </div>
+      </Collapse>
       <div className="mb-5 border-l-2 border-emerald-500/40 pl-3.5">
         <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
           Just you and one cluster? Stay right here. This app is the product, not a demo.
@@ -523,70 +508,3 @@ function PitchBody({
   )
 }
 
-// Answers what the pitch raises but leaves open, rather than restating the
-// capability list the reader just saw. Deliberately states no price or tier:
-// those are Hub-served (and therefore correctable) in the assurance strip, and
-// a second compiled-in copy would contradict it the day the terms change.
-function DetailsBody({
-  headingRef,
-  lane,
-  onBack,
-}: {
-  headingRef: RefObject<HTMLHeadingElement | null>
-  lane: 'driver' | 'wizard'
-  onBack: () => void
-}) {
-  return (
-    <div className="px-8 pt-6 pb-2">
-      <button
-        type="button"
-        onClick={onBack}
-        className="flex items-center gap-1.5 mb-3 text-[12px] text-theme-text-tertiary hover:text-theme-text-primary transition-colors"
-      >
-        <ArrowLeft className="w-3.5 h-3.5" />
-        Back
-      </button>
-      <h3
-        ref={headingRef}
-        tabIndex={-1}
-        className="text-[17px] font-semibold leading-tight tracking-tight text-theme-text-primary mb-4 outline-none"
-      >
-        How it works and what it costs
-      </h3>
-      <div className="space-y-4 mb-4">
-        <section>
-          <h4 className="text-[13px] font-semibold text-theme-text-primary mb-1">How it works</h4>
-          <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
-            {lane === 'driver'
-              ? 'Setup runs here in the app: Radar installs a small agent that connects outward to Radar Cloud. You review the plan and approve in your browser before anything is installed.'
-              : 'A small agent in your cluster connects outward to Radar Cloud. You approve the connection before anything is installed.'}
-          </p>
-        </section>
-        <section>
-          <h4 className="text-[13px] font-semibold text-theme-text-primary mb-1">What it costs</h4>
-          <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
-            There's a free tier, and the paid plans past it are what keep the lights on. This app stays
-            Apache&nbsp;2.0 either way: every feature, forever.
-          </p>
-        </section>
-        <section>
-          <h4 className="text-[13px] font-semibold text-theme-text-primary mb-1">Who's behind it</h4>
-          <p className="text-[12.5px] leading-relaxed text-theme-text-secondary">
-            Radar is built in the open by many hands, and overseen by a small team of humans, the kind
-            you can actually talk to.{' '}
-            <a href={ABOUT_URL} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap text-theme-text-secondary underline underline-offset-2 hover:text-theme-text-primary">
-              Meet us →
-            </a>
-          </p>
-        </section>
-      </div>
-      <Fold summary="Prefer to run the control plane in your own VPC?" className="mb-5">
-        Self-hosting is fully self-serve. Set it up yourself, whenever you're ready.{' '}
-        <a href={SELF_HOSTED_DOCS_URL} target="_blank" rel="noopener noreferrer" className="text-theme-text-secondary underline underline-offset-2 hover:text-theme-text-primary">
-          Read the docs
-        </a>
-        .
-      </Fold>
-    </div>
-  )
-}

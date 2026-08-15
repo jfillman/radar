@@ -494,7 +494,9 @@ function PitchBody({
       </h3>
       <p className="text-[14px] leading-relaxed text-theme-text-secondary mb-5">
         The hosted side of Radar: your clusters in one place, run by us.{' '}
-        <b className="text-theme-text-primary font-semibold">This app stays free and open source, always.</b>
+        <b className="text-theme-text-primary font-semibold">
+          The app you're looking at stays free and open source, always.
+        </b>
       </p>
       <ul className="space-y-2.5 mb-4">
         {highlights.map(({ icon: Icon, text }) => (

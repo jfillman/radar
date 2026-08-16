@@ -313,6 +313,33 @@ func (i *Index) SourcedFindingsFor(group, kind, namespace, name string) []Policy
 	return out
 }
 
+// SourcedFindingsForAnyEngine is FindingsForAnyEngine with the provenance kept.
+//
+// A caller that both labels its result with an engine name AND authorizes per
+// report family needs the two filters together: engine alone over-counts once a
+// second producer is installed, family alone attributes another engine's
+// findings to Kyverno. The agent-facing surfaces need exactly that pair.
+func (i *Index) SourcedFindingsForAnyEngine(group, kind, namespace, name string, engines ...Engine) []PolicyOutcome {
+	if len(engines) == 0 {
+		return nil
+	}
+	all := i.SourcedFindingsFor(group, kind, namespace, name)
+	if len(all) == 0 {
+		return nil
+	}
+	want := make(map[Engine]bool, len(engines))
+	for _, e := range engines {
+		want[e] = true
+	}
+	out := make([]PolicyOutcome, 0, len(all))
+	for _, o := range all {
+		if want[o.Finding.Engine()] {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
 // FindingsForEngine returns the findings indexed for the given subject that
 // were produced by the given engine. Same contract as FindingsFor,
 // filtered.

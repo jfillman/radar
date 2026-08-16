@@ -11,36 +11,15 @@ import (
 	"github.com/skyhook-io/radar/pkg/resourceid"
 )
 
-// The two report families Radar indexes. They share no resource names, and a
-// cluster may serve either or both — Kyverno 1.15+ writes to openreports.io — so
-// authorizing against one name asks about a resource that may not exist here.
-// The namespaced/cluster-scoped split matters for the same reason: a grant of
-// `policyreports` cluster-wide does not imply `clusterpolicyreports`.
-var policyReportFamilies = []struct{ group, namespaced, clusterScoped string }{
-	{group: "wgpolicyk8s.io", namespaced: "policyreports", clusterScoped: "clusterpolicyreports"},
-	{group: "openreports.io", namespaced: "reports", clusterScoped: "clusterreports"},
-}
-
-// policyReportResource picks the resource a finding about this namespace would
-// have been read from. An empty namespace means a cluster-scoped subject, whose
-// findings live in the cluster-scoped report kind.
-func policyReportResource(family struct{ group, namespaced, clusterScoped string }, namespace string) string {
-	if namespace == "" {
-		return family.clusterScoped
-	}
-	return family.namespaced
-}
-
 // readablePolicyReportFamilies reports which families this identity may read at
 // the scope implied by namespace. Empty means none, which is a denial.
+//
+// The table and the walk live in internal/k8s so the AI and MCP surfaces
+// authorize against the same one.
 func (s *Server) readablePolicyReportFamilies(r *http.Request, namespace string) map[string]bool {
-	out := map[string]bool{}
-	for _, f := range policyReportFamilies {
-		if s.canRead(r, f.group, policyReportResource(f, namespace), namespace, "list") {
-			out[f.group] = true
-		}
-	}
-	return out
+	return k8s.ReadablePolicyReportFamilies(namespace, func(group, resource, ns string) bool {
+		return s.canRead(r, group, resource, ns, "list")
+	})
 }
 
 // canReadPolicyReports reports whether this identity may read policy results in
@@ -161,7 +140,7 @@ func (s *Server) handlePolicyResource(w http.ResponseWriter, r *http.Request) {
 		// Same provenance filter as the per-policy view. Being authorized on one
 		// family says nothing about the other, and the index merges both — so
 		// without this the two views disagree about what this identity may see.
-		if !outcomeReadable(o, families) {
+		if !k8s.PolicyOutcomeReadable(o, families) {
 			resp.WithheldByFamily++
 			continue
 		}
@@ -436,7 +415,7 @@ func (s *Server) handlePolicyCoverage(w http.ResponseWriter, r *http.Request) {
 		// Provenance filter. An outcome seen in both families is readable by a
 		// caller authorized on either; one carrying no group at all predates the
 		// provenance tracking and is withheld rather than guessed at.
-		if !outcomeReadable(o, families) {
+		if !k8s.PolicyOutcomeReadable(o, families) {
 			resp.WithheldByFamily++
 			for _, g := range o.Groups {
 				if !families[g] {
@@ -515,9 +494,9 @@ func (s *Server) handlePolicyCoverage(w http.ResponseWriter, r *http.Request) {
 	// Reported per caller, from what was actually withheld — not from what
 	// radar's own probe could reach. A family the caller cannot read but which
 	// carried nothing they asked for is not worth mentioning.
-	for _, f := range policyReportFamilies {
-		if unreadable[f.group] {
-			resp.UnreadableFamilies = append(resp.UnreadableFamilies, f.group)
+	for _, f := range k8s.PolicyReportFamilies {
+		if unreadable[f.Group] {
+			resp.UnreadableFamilies = append(resp.UnreadableFamilies, f.Group)
 		}
 	}
 
@@ -542,20 +521,6 @@ func (s *Server) handlePolicyCoverage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, resp)
-}
-
-// outcomeReadable reports whether the caller may see an outcome, based on the
-// report families it was read from.
-func outcomeReadable(o policyreports.PolicyOutcome, readable map[string]bool) bool {
-	if len(o.Groups) == 0 {
-		return false
-	}
-	for _, g := range o.Groups {
-		if readable[g] {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *PolicyResourceCounts) count(result string) {

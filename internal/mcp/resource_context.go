@@ -23,11 +23,20 @@ import (
 type mcpPolicyReportLookupAdapter struct {
 	idx    *policyreports.Index
 	status k8s.PolicyReportStatus
+	// families this caller may read, by report API group. Same gate as the UI
+	// and the REST agent surface — an agent that can ask the question a second
+	// way must not get an answer the first way withheld.
+	families map[string]bool
 }
 
 // Unavailable implements resourcecontext.PolicyReportAvailability so an agent
 // can tell "no violations" from "Radar could not read the policy reports".
 func (a mcpPolicyReportLookupAdapter) Unavailable() (resourcecontext.OmittedReason, bool) {
+	// Entitled to no family at all is a denial. Returning nothing without
+	// saying so would read as a resource that violates nothing.
+	if len(a.families) == 0 {
+		return resourcecontext.OmittedRBACDenied, true
+	}
 	return a.status.OmittedReason()
 }
 
@@ -39,7 +48,10 @@ func (a mcpPolicyReportLookupAdapter) FindingsFor(group, kind, namespace, name s
 	// and the index is shared with every other producer writing into the same
 	// report families — Trivy, Falco adapters, VAP evaluation. An unfiltered
 	// read would inflate the Kyverno rollup with enforcement Kyverno never did.
-	findings := a.idx.FindingsForAnyEngine(group, kind, namespace, name, policyreports.EnginesAttributableToKyverno...)
+	//
+	// Sourced, because the engine filter cannot tell which family an outcome was
+	// read from, and that is what this caller is authorized against.
+	findings := k8s.ReadableKyvernoFindings(a.idx, a.families, group, kind, namespace, name)
 	if len(findings) == 0 {
 		return nil
 	}

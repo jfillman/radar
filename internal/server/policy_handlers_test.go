@@ -1,6 +1,10 @@
 package server
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/skyhook-io/radar/internal/k8s"
+)
 
 // Report producers are inconsistent about case across report families, so the
 // vocabulary is normalized before anything branches on it.
@@ -54,8 +58,8 @@ func TestPolicyCountsIncludePassesThatAreNotListed(t *testing.T) {
 // answer says nothing about whether the caller can see their policy results.
 func TestPolicyReportFamiliesCarryTheirOwnResourceNames(t *testing.T) {
 	byGroup := map[string]string{}
-	for _, f := range policyReportFamilies {
-		byGroup[f.group] = f.namespaced
+	for _, f := range k8s.PolicyReportFamilies {
+		byGroup[f.Group] = f.Namespaced
 	}
 	if got := byGroup["wgpolicyk8s.io"]; got != "policyreports" {
 		t.Errorf("wgpolicyk8s.io resource = %q, want policyreports", got)
@@ -63,8 +67,8 @@ func TestPolicyReportFamiliesCarryTheirOwnResourceNames(t *testing.T) {
 	if got := byGroup["openreports.io"]; got != "reports" {
 		t.Errorf("openreports.io resource = %q, want reports — it is NOT policyreports", got)
 	}
-	if len(policyReportFamilies) != 2 {
-		t.Errorf("expected both families to be authorized against, got %d", len(policyReportFamilies))
+	if len(k8s.PolicyReportFamilies) != 2 {
+		t.Errorf("expected both families to be authorized against, got %d", len(k8s.PolicyReportFamilies))
 	}
 }
 
@@ -74,15 +78,15 @@ func TestPolicyReportFamiliesCarryTheirOwnResourceNames(t *testing.T) {
 // namespaced question about a cluster-scoped subject can only answer the wrong
 // one — in either direction.
 func TestPolicyReportResourceFollowsSubjectScope(t *testing.T) {
-	for _, f := range policyReportFamilies {
-		if got := policyReportResource(f, "kube-system"); got != f.namespaced {
-			t.Errorf("%s namespaced resource = %q, want %q", f.group, got, f.namespaced)
+	for _, f := range k8s.PolicyReportFamilies {
+		if got := f.ResourceAt("kube-system"); got != f.Namespaced {
+			t.Errorf("%s namespaced resource = %q, want %q", f.Group, got, f.Namespaced)
 		}
-		if got := policyReportResource(f, ""); got != f.clusterScoped {
-			t.Errorf("%s cluster-scoped resource = %q, want %q", f.group, got, f.clusterScoped)
+		if got := f.ResourceAt(""); got != f.ClusterScoped {
+			t.Errorf("%s cluster-scoped resource = %q, want %q", f.Group, got, f.ClusterScoped)
 		}
-		if f.namespaced == f.clusterScoped {
-			t.Errorf("%s uses one resource name for both scopes", f.group)
+		if f.Namespaced == f.ClusterScoped {
+			t.Errorf("%s uses one resource name for both scopes", f.Group)
 		}
 	}
 }

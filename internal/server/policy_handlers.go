@@ -681,7 +681,7 @@ func (s *Server) handlePolicyQueued(w http.ResponseWriter, r *http.Request) {
 		// Anything else — Radar's own SA denied the kind, discovery not ready,
 		// transient — is a failure to look, and reporting it as an empty queue
 		// is the "absence from a failed lookup" this surface exists to avoid.
-		log.Printf("[policy] Failed to list UpdateRequests for %s: %v", policy, err)
+		log.Printf("[policy] Failed to list UpdateRequests for %s: %v", sanitizeForLog(policy), err)
 		s.writeError(w, http.StatusServiceUnavailable, "could not read queued work")
 		return
 	}

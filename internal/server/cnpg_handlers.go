@@ -121,7 +121,7 @@ func (s *Server) handleCNPGCatalogUsers(w http.ResponseWriter, r *http.Request) 
 	default:
 		// "No cluster uses this catalog" is the sentence someone reads before
 		// editing it. Never say it because the lookup failed.
-		log.Printf("[cnpg] Failed to list Clusters for catalog %s/%s: %v", namespace, name, err)
+		log.Printf("[cnpg] Failed to list Clusters for catalog %s/%s: %v", sanitizeForLog(namespace), sanitizeForLog(name), err)
 		s.writeError(w, http.StatusServiceUnavailable, "could not read CloudNativePG clusters")
 		return
 	}

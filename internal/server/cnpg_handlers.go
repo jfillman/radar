@@ -1,6 +1,8 @@
 package server
 
 import (
+	"errors"
+	"log"
 	"net/http"
 	"sort"
 
@@ -29,6 +31,41 @@ type CNPGCatalogUser struct {
 // CNPGCatalogUsersResponse lists the Clusters referencing one image catalog.
 type CNPGCatalogUsersResponse struct {
 	Clusters []CNPGCatalogUser `json:"clusters"`
+}
+
+// catalogRefMatches reports whether a Cluster's imageCatalogRef names this
+// catalog.
+//
+// CloudNativePG defaults an omitted `kind` to the namespaced ImageCatalog, so a
+// reference without one must not be counted against a ClusterImageCatalog of the
+// same name — the two are different objects and may both exist.
+func catalogRefMatches(ref map[string]interface{}, name, wantKind string) bool {
+	if refName, _ := ref["name"].(string); refName != name {
+		return false
+	}
+	refKind, _ := ref["kind"].(string)
+	if refKind == "" {
+		refKind = "ImageCatalog"
+	}
+	return refKind == wantKind
+}
+
+// catalogRefMajor reads the PostgreSQL major from a catalog reference.
+//
+// Read tolerantly: the same field arrives as int64 or float64 depending on how
+// the object entered the dynamic cache, and NestedInt64 alone misses the float64
+// shape — which would drop a real major to zero, a state the screen treats as
+// "the reference carries no major at all".
+func catalogRefMajor(ref map[string]interface{}) int {
+	switch v := ref["major"].(type) {
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case int:
+		return v
+	}
+	return 0
 }
 
 // handleCNPGCatalogUsers returns the Clusters pinned to an image catalog.
@@ -70,10 +107,22 @@ func (s *Server) handleCNPGCatalogUsers(w http.ResponseWriter, r *http.Request) 
 	}
 	// A namespaced catalog can only be referenced from its own namespace; a
 	// cluster-scoped one from anywhere.
+	if !dynamicKindSynced("Cluster", cnpgGroup) {
+		s.writeError(w, http.StatusServiceUnavailable, "clusters are still loading")
+		return
+	}
 	items, err := cache.ListDynamicWithGroup(r.Context(), "Cluster", namespace, cnpgGroup)
-	if err != nil {
-		// Absent on every cluster without CloudNativePG, which is not a fault.
+	switch {
+	case err == nil:
+	case errors.Is(err, k8s.ErrUnknownDynamicKind):
+		// No CloudNativePG on this cluster, so nothing can be pinned to a catalog.
 		s.writeJSON(w, CNPGCatalogUsersResponse{Clusters: []CNPGCatalogUser{}})
+		return
+	default:
+		// "No cluster uses this catalog" is the sentence someone reads before
+		// editing it. Never say it because the lookup failed.
+		log.Printf("[cnpg] Failed to list Clusters for catalog %s/%s: %v", namespace, name, err)
+		s.writeError(w, http.StatusServiceUnavailable, "could not read CloudNativePG clusters")
 		return
 	}
 
@@ -86,22 +135,11 @@ func (s *Server) handleCNPGCatalogUsers(w http.ResponseWriter, r *http.Request) 
 		if !found {
 			continue
 		}
-		refName, _ := ref["name"].(string)
-		if refName != name {
-			continue
-		}
-		// Kyverno-style defaulting: an omitted kind means the namespaced form.
-		refKind, _ := ref["kind"].(string)
-		if refKind == "" {
-			refKind = "ImageCatalog"
-		}
-		if refKind != wantKind {
+		if !catalogRefMatches(ref, name, wantKind) {
 			continue
 		}
 		user := CNPGCatalogUser{Namespace: u.GetNamespace(), Name: u.GetName()}
-		if major, ok, _ := unstructured.NestedInt64(u.Object, "spec", "imageCatalogRef", "major"); ok {
-			user.Major = int(major)
-		}
+		user.Major = catalogRefMajor(ref)
 		if img, _, _ := unstructured.NestedString(u.Object, "status", "image"); img != "" {
 			user.Image = img
 		}

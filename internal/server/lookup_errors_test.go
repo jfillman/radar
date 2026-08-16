@@ -17,7 +17,7 @@ import (
 // on the MCP tool catalogue — so the guard lives on this side of the line.
 const hostRenderersDir = "../../web/src/components/resources/renderers"
 
-const lookupHooks = `use(?:Resources|RBACSubject|RBACRole|RBACNamespace|PolicyCoverage)`
+const lookupHooks = `use(?:Resources|RBACSubject|RBACRole|RBACNamespace|PolicyCoverage|PolicyQueued|CNPGCatalogUsers)`
 
 // `const { data, error } = useResources(...)` — bindings captured for inspection.
 var lookupDestructure = regexp.MustCompile(`const\s*\{([^}]*)\}\s*=\s*` + lookupHooks + `\b`)

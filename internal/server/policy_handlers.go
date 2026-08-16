@@ -1,6 +1,8 @@
 package server
 
 import (
+	"errors"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -598,6 +600,28 @@ type PolicyQueuedResponse struct {
 	Messages []string `json:"messages,omitempty"`
 }
 
+// dynamicKindSynced reports whether the informer backing this kind has finished
+// its initial sync.
+//
+// The dynamic cache does not gate reads on it, so the first read of a kind that
+// is not yet watched returns an empty list and no error — indistinguishable from
+// a genuine absence. On these screens that difference is the whole point: "no
+// queued work" and "no cluster uses this catalog" are answers people act on.
+// Returns true when the machinery is missing entirely, leaving the caller's
+// existing not-installed path to answer.
+func dynamicKindSynced(kind, group string) bool {
+	discovery := k8s.GetResourceDiscovery()
+	dynamicCache := k8s.GetDynamicResourceCache()
+	if discovery == nil || dynamicCache == nil {
+		return true
+	}
+	gvr, found := discovery.GetGVRWithGroup(kind, group)
+	if !found {
+		return true
+	}
+	return dynamicCache.IsSynced(gvr)
+}
+
 // policyRequestName is the value Kyverno records in `spec.policy` for this
 // policy. Exactly one form matches, never both: a namespaced Policy is recorded
 // as `namespace/name` and a cluster-scoped one bare, and Kyverno permits the two
@@ -634,11 +658,23 @@ func (s *Server) handlePolicyQueued(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusServiceUnavailable, "Resource cache not available")
 		return
 	}
+	if !dynamicKindSynced("UpdateRequest", "kyverno.io") {
+		s.writeError(w, http.StatusServiceUnavailable, "queued work is still loading")
+		return
+	}
 	items, err := cache.ListDynamicWithGroup(r.Context(), "UpdateRequest", "", "kyverno.io")
-	if err != nil {
-		// The CRD is absent on every cluster without Kyverno's background
-		// controller, which is not an error worth surfacing as one.
+	switch {
+	case err == nil:
+	case errors.Is(err, k8s.ErrUnknownDynamicKind):
+		// No background controller on this cluster. Genuinely nothing queued.
 		s.writeJSON(w, PolicyQueuedResponse{})
+		return
+	default:
+		// Anything else — Radar's own SA denied the kind, discovery not ready,
+		// transient — is a failure to look, and reporting it as an empty queue
+		// is the "absence from a failed lookup" this surface exists to avoid.
+		log.Printf("[policy] Failed to list UpdateRequests for %s: %v", policy, err)
+		s.writeError(w, http.StatusServiceUnavailable, "could not read queued work")
 		return
 	}
 

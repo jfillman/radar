@@ -1,6 +1,8 @@
 package server
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/skyhook-io/radar/internal/auth"
@@ -53,5 +55,45 @@ func TestPolicyQueued_DeniesRatherThanReportingAnEmptyQueue(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 403 {
 		t.Errorf("status = %d, want 403 for a caller who may not list updaterequests", resp.StatusCode)
+	}
+}
+
+// The input-validation and readiness paths, which the endpoint answers before it
+// reads anything.
+func TestPolicyQueued_RejectsAMissingPolicyName(t *testing.T) {
+	env := newAuthTestServer(t)
+	perms := &auth.UserPermissions{AllowedNamespaces: []string{"app"}}
+	allow(perms, "kyverno.io", "updaterequests", "", true)
+	env.srv.permCache.Set("alice", perms)
+
+	// chi will not route an empty {policy}, so the trailing-slash form is the
+	// reachable shape of "no name given".
+	resp := env.authGet(t, "/api/policy/policies//queued", "alice", "")
+	defer resp.Body.Close()
+	if resp.StatusCode == 200 {
+		t.Errorf("status = 200 for a request naming no policy; want a 4xx")
+	}
+}
+
+// A failed read must not render as an empty queue. The handler distinguishes an
+// absent CRD (no background controller — genuinely nothing queued) from every
+// other failure, which is the distinction certificate.go already draws for the
+// same call and the one this whole surface exists to preserve.
+func TestPolicyQueued_SeparatesAnAbsentCRDFromAFailedRead(t *testing.T) {
+	src, err := os.ReadFile("policy_handlers.go")
+	if err != nil {
+		t.Fatalf("read handler: %v", err)
+	}
+	body := string(src)
+	i := strings.Index(body, "func (s *Server) handlePolicyQueued")
+	if i < 0 {
+		t.Fatal("handler moved")
+	}
+	h := body[i:]
+	if !strings.Contains(h, "k8s.ErrUnknownDynamicKind") {
+		t.Error("handler does not special-case an absent CRD, so every failure reads as an empty queue")
+	}
+	if !strings.Contains(h, "StatusServiceUnavailable") {
+		t.Error("handler has no failure path — a denied or unready read would answer 200 with nothing queued")
 	}
 }

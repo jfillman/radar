@@ -624,10 +624,11 @@ func dynamicKindSynced(kind, group, namespace string) bool {
 	if !found {
 		return true
 	}
-	if namespace == "" {
-		return dynamicCache.IsClusterWideSynced(gvr)
-	}
-	return dynamicCache.IsSynced(gvr)
+	// Namespace-aware deliberately: IsSynced spans every informer for the GVR, so
+	// one already-watched namespace would license a read of a namespace that has
+	// never been watched — which starts a fresh informer and returns an empty
+	// list with no error, an absence the cache never established.
+	return dynamicCache.IsNamespaceSynced(gvr, namespace)
 }
 
 // policyRequestName is the value Kyverno records in `spec.policy` for this

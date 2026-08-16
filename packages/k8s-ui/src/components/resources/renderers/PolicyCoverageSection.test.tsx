@@ -258,13 +258,17 @@ describe('an engine error is not a verdict', () => {
     expect(html).toContain('could not be evaluated')
   })
 
+  // The policy has to declare Ignore to reach this wording at all: an absent
+  // failurePolicy means Fail per the CRD, so the default is the fail-closed
+  // sentence, not this one.
   it('agrees in number', () => {
-    expect(render(allErrors)).toContain('1 could not be evaluated and is being allowed through unchecked')
+    const ignores = vpol({ failurePolicy: 'Ignore' })
+    expect(render(allErrors, ignores)).toContain('1 could not be evaluated and is being allowed through unchecked')
     const two = coverage({
       examined: 2, subjects: 2, counts: counts({ error: 2 }),
       rules: [rule({ rule: 'evaluation', counts: counts({ error: 2 }), subjects: [subject('a', 'error')], total: 2 })],
     })
-    expect(render(two)).toContain('2 could not be evaluated and are being allowed through unchecked')
+    expect(render(two, ignores)).toContain('2 could not be evaluated and are being allowed through unchecked')
   })
 
   it('says a fail-closed policy rejects on the error instead', () => {
@@ -305,5 +309,33 @@ describe('absence is only claimed when the whole answer arrived', () => {
       rules: [rule({ counts: counts({ fail: 1 }), subjects: [subject('a', 'fail')], total: 1 })],
     }))
     expect(html).toContain('trivy')
+  })
+})
+
+/**
+ * An engine error is either rejected or waved through, and which one is the
+ * whole point of the sentence. `spec.failurePolicy` defaults to Fail per the
+ * published CRD and most policies never set it, so reading absent as anything
+ * else states the opposite of what the cluster does.
+ */
+describe('what an engine error costs', () => {
+  const errored = coverage({
+    examined: 2, subjects: 2, counts: counts({ error: 2 }),
+    rules: [rule({ counts: counts({ error: 2 }), subjects: [], total: 2 })],
+  })
+
+  it('treats an unset failurePolicy as fail-closed, like the CRD does', () => {
+    const html = render(errored, vpol({}))
+    expect(html).toContain('rejected for an engine error')
+    expect(html).not.toContain('allowed through unchecked')
+  })
+
+  it('says so plainly when the policy declares Ignore', () => {
+    const html = render(errored, vpol({ failurePolicy: 'Ignore' }))
+    expect(html).toContain('allowed through unchecked')
+  })
+
+  it('agrees with an explicit Fail', () => {
+    expect(render(errored, vpol({ failurePolicy: 'Fail' }))).toContain('rejected for an engine error')
   })
 })

@@ -10,7 +10,7 @@ import {
   getKyvernoPolicyFamily,
   getKyvernoEnforcementPosture,
   getKyvernoResourceRules,
-  getKyvernoFailurePolicy,
+  getKyvernoEffectiveFailurePolicy,
   type KyvernoPolicyFamily,
 } from '../resource-utils-kyverno-modern'
 import { getKyvernoPolicyAction } from '../resource-utils-kyverno'
@@ -475,7 +475,7 @@ function Consequence({
   }
 
   if (data.counts.error > 0) {
-    lines.push(engineErrorLine(data.counts.error, getKyvernoFailurePolicy(resource) === 'Fail'))
+    lines.push(engineErrorLine(data.counts.error, getKyvernoEffectiveFailurePolicy(resource) === 'Fail'))
   }
 
   if (lines.length === 0) return null

@@ -121,11 +121,12 @@ func TestCNPGCatalogUsers_SeparatesAnAbsentCRDFromAFailedRead(t *testing.T) {
 	}
 }
 
-// A cluster-wide absence needs a cluster-wide guarantee. IsSynced can be true
-// while the cache holds only some namespaces, and the cache's own contract says
-// "not found" must not be read as "doesn't exist" in that state — so the
-// cluster-scoped route must ask IsClusterWideSynced, and the namespaced route
-// must not (it would never be satisfied by a namespace-scoped cache).
+// A cluster-wide absence needs a cluster-wide guarantee, and a namespaced read
+// needs one for the namespace it is about to read. IsSynced satisfies neither on
+// its own: it spans every informer for the GVR, so one watched namespace makes a
+// never-watched one look ready. The behaviour itself is tested where the cache
+// lives (pkg/k8score, TestIsNamespaceSynced_DoesNotBorrowAnotherNamespacesInformer);
+// this only pins that the handler asks the scope-aware question.
 func TestDynamicKindSynced_AsksTheQuestionThatMatchesTheScope(t *testing.T) {
 	src, err := os.ReadFile("policy_handlers.go")
 	if err != nil {
@@ -136,11 +137,11 @@ func TestDynamicKindSynced_AsksTheQuestionThatMatchesTheScope(t *testing.T) {
 	if i < 0 {
 		t.Fatal("helper moved")
 	}
-	fn := body[i : i+900]
-	if !strings.Contains(fn, "IsClusterWideSynced") {
-		t.Error("a cluster-wide read is licensed by IsSynced alone, which may know only some namespaces")
+	fn := body[i : i+1100]
+	if !strings.Contains(fn, "IsNamespaceSynced") {
+		t.Error("a namespaced read must ask about its own namespace, not the GVR as a whole")
 	}
-	if !strings.Contains(fn, "IsSynced(gvr)") {
-		t.Error("a namespaced read should use the per-namespace check, not the cluster-wide one")
+	if strings.Contains(fn, "IsSynced(gvr)") {
+		t.Error("IsSynced spans all namespaces — it cannot license an absence in one")
 	}
 }

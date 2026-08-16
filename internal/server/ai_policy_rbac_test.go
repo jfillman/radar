@@ -148,3 +148,30 @@ func TestAIResourceContext_ReportsNoWithholdingForAGenuinelyCleanResource(t *tes
 		t.Error("nothing about this resource was withheld; a note here is a false alarm on every clean resource")
 	}
 }
+
+// A cluster with no policy engine has nothing to withhold, and the family SARs
+// fail there for exactly that reason — the report kinds do not exist. Claiming
+// a denial would stamp a note on every resource of every non-Kyverno cluster,
+// which is the noise the status mapping already refuses to make.
+func TestAIResourceContext_SaysNothingWhenThereIsNoPolicyEngine(t *testing.T) {
+	a := policyReportLookupAdapter{
+		status:   k8s.PolicyReportStatus{Status: k8s.KyvernoStatusNotInstalled, ReasonCode: k8s.ReasonNotInstalled},
+		families: map[string]bool{},
+	}
+	if reason, unavailable := a.Unavailable(); unavailable {
+		t.Errorf("omitted=%v reason=%q on a cluster without Kyverno, want silence", unavailable, reason)
+	}
+}
+
+// The same empty family set IS a denial once the index is live, because then
+// there are findings behind it.
+func TestAIResourceContext_DeniesOnlyWhenThereAreFindingsToWithhold(t *testing.T) {
+	a := policyReportLookupAdapter{
+		status:   k8s.PolicyReportStatus{Status: k8s.KyvernoStatusReady},
+		families: map[string]bool{},
+	}
+	reason, unavailable := a.Unavailable()
+	if !unavailable || reason != resourcecontext.OmittedRBACDenied {
+		t.Errorf("omitted=%v reason=%q, want true/%q", unavailable, reason, resourcecontext.OmittedRBACDenied)
+	}
+}

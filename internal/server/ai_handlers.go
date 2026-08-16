@@ -74,13 +74,21 @@ type policyReportLookupAdapter struct {
 // resource whose policy findings could not be read says so, instead of being
 // indistinguishable from a resource with no violations.
 func (a policyReportLookupAdapter) Unavailable() (resourcecontext.OmittedReason, bool) {
-	// A caller entitled to no family at all is a denial, and saying so is the
-	// whole point of the omitted-field contract: silence here reads as "this
-	// resource violates nothing".
+	// Install status first. With no policy engine there is nothing to withhold,
+	// and the mapping above is deliberately silent there — a denial note on every
+	// resource of every non-Kyverno cluster is noise rather than honesty, and a
+	// restricted caller fails the family SARs on that cluster precisely because
+	// the report kinds do not exist.
+	if reason, unavailable := a.status.OmittedReason(); unavailable {
+		return reason, true
+	}
+	if a.status.Status != k8s.KyvernoStatusReady {
+		return "", false
+	}
 	if len(a.families) == 0 {
 		return resourcecontext.OmittedRBACDenied, true
 	}
-	return a.status.OmittedReason()
+	return "", false
 }
 
 // WithheldFor implements resourcecontext.PolicyReportWithholding: this subject

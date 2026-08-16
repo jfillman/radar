@@ -14,6 +14,15 @@ import {
 } from '../resource-utils-velero'
 import { VeleroPhaseValue } from './velero-cells'
 
+/** Past its TTL. Velero's garbage collector removes these, so one still listed
+ *  is either awaiting collection or waiting on a controller that is not running —
+ *  either way it is not a restore point. */
+function veleroExpired(b: { expiration?: string }): boolean {
+  if (!b.expiration) return false
+  const at = Date.parse(b.expiration)
+  return Number.isFinite(at) && at < Date.now()
+}
+
 /** One Backup held in this location, from the stored-backups lookup. */
 export interface VeleroStoredBackup {
   namespace: string
@@ -41,12 +50,16 @@ export function VeleroBSLRenderer({ data, storedBackups, lookupNote, onNavigate 
   const conditions = status.conditions || []
   const bslStatus = getBSLStatus(data)
   const config = data.spec?.config || {}
-  // Only a Completed backup is something to restore from; the rest are in the
-  // list because they are stored here, not because they are usable.
-  const restorable = (storedBackups ?? []).filter((b) => b.phase === 'Completed').length
-  const newest = (storedBackups ?? [])
-    .filter((b) => b.phase === 'Completed' && b.completed)
-    .map((b) => b.completed as string)
+  // Two things falsify "restorable", and the phase sees neither. A backup that
+  // did complete is still not something to go back to once its TTL has passed —
+  // Velero deletes expired backups, and while its controller is down they sit
+  // here looking finished long after the data behind them went.
+  const usable = (storedBackups ?? []).filter((b) => b.phase === 'Completed' && !veleroExpired(b))
+  const restorable = usable.length
+  const expired = (storedBackups ?? []).filter((b) => b.phase === 'Completed' && veleroExpired(b)).length
+  const newest = usable
+    .map((b) => b.completed)
+    .filter((c): c is string => !!c)
     .sort()
     .pop()
 
@@ -112,6 +125,11 @@ export function VeleroBSLRenderer({ data, storedBackups, lookupNote, onNavigate 
               {bslStatus.level !== 'healthy' && restorable > 0 && (
                 <div className="text-xs text-warning-text mb-2">
                   {`${restorable} completed ${restorable === 1 ? 'backup is' : 'backups are'} stored here. While this location is ${bslStatus.text}, ${restorable === 1 ? 'it is' : 'they are'} not something you can restore from.`}
+                </div>
+              )}
+              {expired > 0 && (
+                <div className="text-xs text-theme-text-secondary mb-2">
+                  {`${expired} stored ${expired === 1 ? 'backup has' : 'backups have'} passed ${expired === 1 ? 'its' : 'their'} retention and ${expired === 1 ? 'is' : 'are'} not counted above.`}
                 </div>
               )}
               <RelationshipGroup

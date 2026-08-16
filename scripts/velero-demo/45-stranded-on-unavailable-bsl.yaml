@@ -45,3 +45,28 @@ status:
     itemsBackedUp: 508
     totalItems: 508
   startTimestamp: "@now-4366m"
+---
+# A backup that completed and has since passed its retention.
+#
+# Velero's garbage collector deletes these, so one still listed means either the
+# collector has not got to it or — as on this cluster — the controller is not
+# running to collect anything. Either way it is not a restore point, and the
+# phase still reads Completed.
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: dr-nightly-expired
+  namespace: velero
+spec:
+  includedNamespaces:
+    - "*"
+  storageLocation: dr-replica
+  ttl: 24h0m0s
+status:
+  completionTimestamp: "@now-5800m"
+  expiration: "@now-4360m"
+  phase: Completed
+  progress:
+    itemsBackedUp: 500
+    totalItems: 500
+  startTimestamp: "@now-5806m"

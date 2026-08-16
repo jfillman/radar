@@ -75,6 +75,33 @@ describe('what a storage location holds', () => {
     expect(html).toContain('1 completed backup is stored here')
   })
 
+  // The second thing a phase cannot see. Velero deletes expired backups, so one
+  // still listed is either awaiting collection or waiting on a controller that
+  // is not running — and this cluster's controller is deliberately stopped.
+  it('does not offer an expired backup as a restore point', () => {
+    const past = new Date(Date.now() - 86_400_000).toISOString()
+    const html = renderToString(
+      <VeleroBSLRenderer
+        data={bsl('Available')}
+        storedBackups={[{ ...completed('stale', '2026-01-01T00:00:00Z'), expiration: past }]}
+      />,
+    )
+    expect(html).toContain('passed its retention')
+    expect(html).not.toContain('Most recent restorable point')
+  })
+
+  it('still counts a backup inside its retention', () => {
+    const future = new Date(Date.now() + 86_400_000).toISOString()
+    const html = renderToString(
+      <VeleroBSLRenderer
+        data={bsl('Unavailable')}
+        storedBackups={[{ ...completed('fresh', '2026-08-14T01:00:00Z'), expiration: future }]}
+      />,
+    )
+    expect(html).toContain('1 completed backup is stored here')
+    expect(html).not.toContain('passed its retention')
+  })
+
   // The distinction the whole feature rests on: not having looked is not the
   // same as having looked and found nothing.
   it('claims nothing while the lookup is unresolved', () => {

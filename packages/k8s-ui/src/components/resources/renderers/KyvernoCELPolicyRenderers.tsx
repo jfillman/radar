@@ -15,6 +15,7 @@ import type React from 'react'
 
 import { FileWarning, ShieldCheck, Wand2, Sparkles, Trash2, Clock, Fingerprint, ScrollText } from 'lucide-react'
 import { Section, PropertyList, Property, ConditionsSection, AlertBanner } from '../../ui/drawer-components'
+import { CronValue } from '../../ui/ScheduleValue'
 import {
   KyvernoEvaluationSection,
   KyvernoExpressionList,
@@ -293,7 +294,7 @@ export function KyvernoDeletingPolicyRenderer({ data, coverage }: { data: any; c
         <PropertyList>
           <Property
             label="Cron"
-            value={schedule ? <span className="font-mono">{schedule}</span> : 'Not set — this policy will not run'}
+            value={schedule ? <CronValue cron={schedule} /> : 'Not set — this policy will not run'}
           />
           {propagation && <Property label="Deletion Propagation" value={propagation} />}
         </PropertyList>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { queueBanner, requestBelongsTo } from './KyvernoPolicyQueued'
+import { policyQueuesWork, queueBanner, requestBelongsTo } from './KyvernoPolicyQueued'
 
 /**
  * Kyverno permits a namespaced Policy and a ClusterPolicy to share a name, and
@@ -62,5 +62,38 @@ describe('queueBanner', () => {
 
   it('prefers the measured stall over the size when both apply', () => {
     expect(queueBanner(40, 30, '30m')?.title).toContain('has not moved')
+  })
+})
+
+/**
+ * A denial is only worth disclosing where it can cost something. Silence on a
+ * policy that queues nothing keeps the page clean; silence on one that DOES
+ * queue hides a backlog behind a page that looks healthy.
+ */
+describe('policyQueuesWork', () => {
+  it('is true for a policy that generates resources', () => {
+    expect(policyQueuesWork({ spec: { rules: [{ name: 'g', generate: {} }] } })).toBe(true)
+    expect(policyQueuesWork({ kind: 'GeneratingPolicy', spec: {} })).toBe(true)
+  })
+
+  it('is true for a policy that mutates resources which already exist', () => {
+    expect(policyQueuesWork({ spec: { rules: [{ mutate: { targets: [{ kind: 'Pod' }] } }] } })).toBe(true)
+    expect(policyQueuesWork({ spec: { evaluation: { mutateExisting: { enabled: true } } } })).toBe(true)
+  })
+
+  // The common case, and the reason a blanket note would be noise.
+  it('is false for a validate-only policy', () => {
+    expect(policyQueuesWork({ spec: { rules: [{ name: 'v', validate: {} }] } })).toBe(false)
+    expect(policyQueuesWork({ kind: 'ValidatingPolicy', spec: {} })).toBe(false)
+  })
+
+  // A mutate rule with no targets runs at admission only — nothing is queued.
+  it('is false for admission-time mutation', () => {
+    expect(policyQueuesWork({ spec: { rules: [{ mutate: { patchStrategicMerge: {} } }] } })).toBe(false)
+  })
+
+  it('handles a policy with no spec at all', () => {
+    expect(policyQueuesWork({})).toBe(false)
+    expect(policyQueuesWork(undefined)).toBe(false)
   })
 })

@@ -5,6 +5,7 @@ import { LookupFailureNote } from '@skyhook-io/k8s-ui/components/resources/rende
 import { HEALTH_BADGE_COLORS } from '@skyhook-io/k8s-ui/utils/badge-colors'
 import { formatAge } from '@skyhook-io/k8s-ui/components/resources/resource-utils'
 import { isForbiddenError } from '../../../api/client'
+import { isKyvernoMutateExistingEnabled } from '@skyhook-io/k8s-ui/components/resources/resource-utils-kyverno-modern'
 import { usePolicyQueued } from '../../../api/policy'
 
 /** A request sitting this long is not mid-flight. Kyverno retries on every
@@ -46,6 +47,23 @@ export function queueBanner(
 }
 
 /**
+ * Whether this policy can queue background work at all.
+ *
+ * Decides whether a denial is worth mentioning. A validate-only policy never
+ * queues anything, so "you can't see the queue" there is noise on the majority
+ * of policy pages. A policy that generates, or mutates resources that already
+ * exist, does queue — and for those a denial hides a backlog that looks exactly
+ * like a healthy policy with nothing pending.
+ */
+export function policyQueuesWork(data: any): boolean {
+  if (data?.kind === 'GeneratingPolicy') return true
+  if (isKyvernoMutateExistingEnabled(data)) return true
+  return (data?.spec?.rules ?? []).some(
+    (r: any) => !!r?.generate || Array.isArray(r?.mutate?.targets),
+  )
+}
+
+/**
  * Whether a queued request belongs to this policy.
  *
  * Exactly one form matches, never both. A namespaced Policy is recorded as
@@ -83,13 +101,14 @@ export function KyvernoPolicyQueued({ data }: { data: any }) {
 
   const total = queued?.requests ?? 0
   if (total === 0) {
-    // An empty list and an unreadable one are not the same answer, but they do
-    // not deserve the same treatment either. Being denied `updaterequests` is
-    // cluster-static and would put an identical note on every policy page,
-    // including the majority that only validate and never queue anything — the
-    // house rule for a bonus surface is to hide the expected state and keep the
-    // genuine fault, which is neither permanent nor beyond acting on.
-    if (!error || isForbiddenError(error)) return null
+    // An empty list and an unreadable one are not the same answer. A denial is
+    // cluster-static, so disclosing it on every policy page would be noise on the
+    // majority that only validate and never queue anything — but staying silent
+    // about it on a policy that DOES queue hides a backlog behind a page that
+    // looks like a healthy one with nothing pending. So it is disclosed exactly
+    // where it can cost something.
+    if (!error) return null
+    if (isForbiddenError(error) && !policyQueuesWork(data)) return null
     return (
       <Section title="Queued Work" icon={Workflow}>
         <LookupFailureNote errors={[error]} what="what this policy has queued" />

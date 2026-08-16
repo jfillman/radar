@@ -127,9 +127,14 @@ export function VeleroBSLRenderer({ data, storedBackups, lookupNote, onNavigate 
                   {`${restorable} completed ${restorable === 1 ? 'backup is' : 'backups are'} stored here. While this location is ${bslStatus.text}, ${restorable === 1 ? 'it is' : 'they are'} not something you can restore from.`}
                 </div>
               )}
+                {/* Stands on its own. "Not counted above" referred to a line that
+                    only renders for an unhealthy location, so on a healthy one —
+                    and whenever every stored backup has expired — it pointed at
+                    nothing. */}
               {expired > 0 && (
                 <div className="text-xs text-theme-text-secondary mb-2">
-                  {`${expired} stored ${expired === 1 ? 'backup has' : 'backups have'} passed ${expired === 1 ? 'its' : 'their'} retention and ${expired === 1 ? 'is' : 'are'} not counted above.`}
+                  {`${expired} stored ${expired === 1 ? 'backup has' : 'backups have'} passed ${expired === 1 ? 'its' : 'their'} retention and ${expired === 1 ? 'is' : 'are'} no longer a restore point.`}
+                  {restorable === 0 && ' Nothing stored here can be restored from.'}
                 </div>
               )}
               <RelationshipGroup

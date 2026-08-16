@@ -127,6 +127,36 @@ describe('what a storage location holds', () => {
     expect(html).not.toContain('passed its retention')
   })
 
+  // "not counted above" pointed at a line that only renders for an unhealthy
+  // location, so on a healthy one it referred to nothing.
+  it('states the expired count without leaning on a line that may not be there', () => {
+    const past = new Date(Date.now() - 86_400_000).toISOString()
+    const html = renderToString(
+      <VeleroBSLRenderer
+        data={bsl('Available')}
+        storedBackups={[
+          { ...completed('stale', '2026-01-01T00:00:00Z'), expiration: past },
+          completed('fresh', '2026-08-14T01:00:00Z'),
+        ]}
+      />,
+    )
+    expect(html).toContain('no longer a restore point')
+    expect(html).not.toContain('not counted above')
+  })
+
+  // Every stored backup expired: the location holds things, and none of them
+  // are any use.
+  it('says so when nothing stored is restorable at all', () => {
+    const past = new Date(Date.now() - 86_400_000).toISOString()
+    const html = renderToString(
+      <VeleroBSLRenderer
+        data={bsl('Available')}
+        storedBackups={[{ ...completed('stale', '2026-01-01T00:00:00Z'), expiration: past }]}
+      />,
+    )
+    expect(html).toContain('Nothing stored here can be restored from')
+  })
+
   // The distinction the whole feature rests on: not having looked is not the
   // same as having looked and found nothing.
   it('claims nothing while the lookup is unresolved', () => {

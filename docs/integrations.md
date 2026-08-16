@@ -709,6 +709,12 @@ They roll up under two categories: `backup_failed` for runs, and `backup_target_
 
 **Kind collisions.** `restores` and `schedules` are shared plurals — `rancher/backup-restore-operator` ships `restores.resources.cattle.io`, and several operators ship their own `schedules` kind. For those two, Radar's renderers, status readers, column sets and cells all select on the `velero.io` group, so a foreign resource with the same plural falls through to the generic renderer instead of being dressed up as a backup. `backupstoragelocations` and `volumesnapshotlocations` are keyed on the plural alone — no other operator is known to claim those names — though their renderers and cells still group-guard. The kind→colour and kind→icon tables have no group awareness at all, so only Velero-unique kinds appear in them: `Backup`, `Restore` and `Schedule` are deliberately left unstyled rather than risk decorating a foreign resource.
 
+**Limitations**:
+- **A backup's phase is not its restorability.** `Completed` says the run finished, which stays true after the storage location holding it goes Unavailable or its TTL expires. The BackupStorageLocation page carries the consequence — what it holds and whether those backups can be restored from right now — because the Backup's own status cannot observe it.
+- **A stalled run is inferred from elapsed time, not observed.** Radar reports a Backup or Restore still in flight past `spec.itemOperationTimeout` (four hours by default). It does not check whether the Velero controller is running, so the message says how long the run has sat and does not name a cause.
+- **Anything needing a live Velero controller is out of reach.** Data-mover objects (`DataUpload`/`DataDownload`), real progress counters, backup logs and per-item error detail live behind a `DownloadRequest` served by a running controller and in object storage. Error and warning *counts* come from the CR and are shown; the messages behind them are not.
+- **Verified against fixtures, not a live backup.** The demo cluster runs with the controller scaled to zero so the phases hold still, which means every screen here is exercised against recorded status rather than a backup Radar watched happen.
+
 ---
 
 ## External Secrets Operator

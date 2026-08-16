@@ -1,4 +1,6 @@
 import { Archive, Clock, HardDrive, Filter } from 'lucide-react'
+import { clsx } from 'clsx'
+import { HEALTH_BADGE_COLORS } from '../../../utils/badge-colors'
 import { Section, PropertyList, Property, ConditionsSection, AlertBanner } from '../../ui/drawer-components'
 import {
   getBackupStatus,
@@ -26,9 +28,20 @@ import { formatAge } from '../resource-utils'
 
 interface VeleroBackupRendererProps {
   data: any
+  /**
+   * The phase of the storage location this backup was written to, when the host
+   * looked it up. Undefined means unresolved — not "healthy".
+   *
+   * A backup cannot observe the health of the bucket holding it. Its own status
+   * keeps saying Completed, accurately, while the location goes Unavailable and
+   * there is nothing to restore from. This page is where someone checks whether
+   * they can go back to this point, so the fact belongs here rather than one
+   * screen away.
+   */
+  storageLocationPhase?: string
 }
 
-export function VeleroBackupRenderer({ data }: VeleroBackupRendererProps) {
+export function VeleroBackupRenderer({ data, storageLocationPhase }: VeleroBackupRendererProps) {
   const status = data.status || {}
   const conditions = status.conditions || []
 
@@ -196,7 +209,24 @@ export function VeleroBackupRenderer({ data }: VeleroBackupRendererProps) {
       {/* Storage section */}
       <Section title="Storage" icon={HardDrive} defaultExpanded>
         <PropertyList>
-          <Property label="Storage Location" value={getBackupStorageLocation(data)} />
+          <Property
+            label="Storage Location"
+            value={
+              <span className="flex items-center gap-2">
+                {getBackupStorageLocation(data)}
+                {storageLocationPhase && storageLocationPhase !== 'Available' && (
+                  <span className={clsx('badge', HEALTH_BADGE_COLORS.unhealthy)}>{storageLocationPhase}</span>
+                )}
+              </span>
+            }
+          />
+          {/* Only when it changes the answer. On a healthy location this would be
+              a warning about nothing, on every backup in the cluster. */}
+          {storageLocationPhase && storageLocationPhase !== 'Available' && (
+            <div className="text-xs text-warning-text">
+              {`This backup is stored in a location Velero reports as ${storageLocationPhase}. Its own phase does not change when that happens — until the location recovers, there is nothing here to restore from.`}
+            </div>
+          )}
           {vslLocations.length > 0 && (
             <Property label="Volume Snapshot Locations" value={
               <div className="flex flex-wrap gap-1">

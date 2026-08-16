@@ -329,6 +329,8 @@ export interface RendererOverrides {
     data: any
     onNavigate?: (ref: ResourceRef) => void
   }>
+  /** Host-injected: adds the storage location's health to a backup. */
+  VeleroBackupRenderer?: React.ComponentType<{ data: any }>
   // Kyverno policy coverage: the host fetches /api/policy/policies/... and
   // renders the section, which the policy renderers accept as a slot. One
   // override serves all six policy renderers — they differ in what the policy
@@ -643,6 +645,7 @@ export function ResourceRendererDispatch({
   const CNPGSubscriptionComp = rendererOverrides?.CNPGSubscriptionRenderer ?? CNPGSubscriptionRenderer
   const CNPGObjectStoreComp = rendererOverrides?.CNPGObjectStoreRenderer ?? CNPGObjectStoreRenderer
   const VeleroBSLComp = rendererOverrides?.VeleroBSLRenderer ?? VeleroBSLRenderer
+  const VeleroBackupComp = rendererOverrides?.VeleroBackupRenderer ?? VeleroBackupRenderer
   const KyvernoCoverageComp = rendererOverrides?.KyvernoPolicyCoverage
   const kyvernoCoverage = KyvernoCoverageComp ? (
     <KyvernoCoverageComp data={data} onNavigate={onNavigate} />
@@ -773,7 +776,7 @@ export function ResourceRendererDispatch({
         {kind === 'subscriptions' && isApiGroup(data.apiVersion, CNPG_GROUP) && <CNPGSubscriptionComp data={data} onNavigate={onNavigate} />}
         {(kind === 'imagecatalogs' || kind === 'clusterimagecatalogs') && isApiGroup(data.apiVersion, CNPG_GROUP) && <CNPGImageCatalogComp data={data} onNavigate={onNavigate} />}
         {kind === 'backups' && isApiGroup(data.apiVersion, CNPG_GROUP) && <CNPGBackupRenderer data={data} onNavigate={onNavigate} />}
-        {kind === 'backups' && isApiGroup(data.apiVersion, 'velero.io') && <VeleroBackupRenderer data={data} />}
+        {kind === 'backups' && isApiGroup(data.apiVersion, 'velero.io') && <VeleroBackupComp data={data} />}
         {kind === 'restores' && isVeleroResource(data) && <VeleroRestoreRenderer data={data} />}
         {kind === 'schedules' && isVeleroResource(data) && <VeleroScheduleRenderer data={data} />}
         {kind === 'backupstoragelocations' && isVeleroResource(data) && <VeleroBSLComp data={data} onNavigate={onNavigate} />}

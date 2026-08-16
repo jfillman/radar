@@ -622,8 +622,24 @@ func listDynamicSynced(ctx context.Context, cache *k8s.ResourceCache, kind, grou
 	if !found {
 		return cache.ListDynamicWithGroup(ctx, kind, namespace, group)
 	}
-	return dynamicCache.ListBlocking(gvr, namespace, dynamicSyncWait)
+	items, err := dynamicCache.ListBlocking(gvr, namespace, dynamicSyncWait)
+	if err != nil {
+		return nil, err
+	}
+	// ListBlocking discards what WaitForCacheSync returned, so an informer that
+	// did not finish in time falls through to an empty indexer and no error —
+	// the false absence again, one layer down. Confirm afterwards: the read has
+	// already started the informer, so asking now cannot deadlock the way a gate
+	// before the read did.
+	if !dynamicCache.IsNamespaceSynced(gvr, namespace) {
+		return nil, errDynamicNotSynced
+	}
+	return items, nil
 }
+
+// errDynamicNotSynced means the cache could not answer for the scope in time.
+// Distinct from an absent CRD: nothing was established either way.
+var errDynamicNotSynced = errors.New("resource cache not synced")
 
 // Long enough for a cold informer on a healthy apiserver, short enough that a
 // drawer section does not hang on one that will not sync.
@@ -671,6 +687,9 @@ func (s *Server) handlePolicyQueued(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, k8s.ErrUnknownDynamicKind):
 		// No background controller on this cluster. Genuinely nothing queued.
 		s.writeJSON(w, PolicyQueuedResponse{})
+		return
+	case errors.Is(err, errDynamicNotSynced):
+		s.writeError(w, http.StatusServiceUnavailable, "queued work is still loading")
 		return
 	default:
 		// Anything else — Radar's own SA denied the kind, discovery not ready,

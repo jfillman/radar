@@ -114,6 +114,9 @@ func (s *Server) handleCNPGCatalogUsers(w http.ResponseWriter, r *http.Request) 
 		// No CloudNativePG on this cluster, so nothing can be pinned to a catalog.
 		s.writeJSON(w, CNPGCatalogUsersResponse{Clusters: []CNPGCatalogUser{}})
 		return
+	case errors.Is(err, errDynamicNotSynced):
+		s.writeError(w, http.StatusServiceUnavailable, "clusters are still loading")
+		return
 	default:
 		// "No cluster uses this catalog" is the sentence someone reads before
 		// editing it. Never say it because the lookup failed.

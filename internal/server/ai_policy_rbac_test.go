@@ -107,3 +107,44 @@ func TestAIResourceContext_KeepsEverythingForAFullyAuthorizedCaller(t *testing.T
 		t.Error("nothing was withheld, so nothing should be reported as omitted")
 	}
 }
+
+// The half-authorized case that Unavailable cannot see: the lookup is serving
+// normally, so it reports no problem, yet THIS resource's only findings are in
+// the family the caller may not read. Without the per-subject signal the agent
+// receives an empty policy summary and no reason for it — which is the shape of
+// a resource that violates nothing.
+func TestAIResourceContext_SaysSoWhenThisResourcesFindingsWereWithheld(t *testing.T) {
+	env := newAuthTestServer(t)
+	publishIndex(t, report("openreports.io", "app", "require-probes", podSubject("web"), "fail"))
+	perms := &auth.UserPermissions{AllowedNamespaces: []string{"app"}}
+	allow(perms, "wgpolicyk8s.io", "policyreports", "app", true)
+	allow(perms, "openreports.io", "reports", "app", false)
+	env.srv.permCache.Set("half", perms)
+
+	a := aiPolicyAdapter(t, env, "half", "app")
+	if got := a.FindingsFor("", "Pod", "app", "web"); len(got) != 0 {
+		t.Fatalf("findings = %d, want 0 — the unreadable family leaked", len(got))
+	}
+	// Serving normally overall: the whole-lookup signal has nothing to report.
+	if _, unavailable := a.Unavailable(); unavailable {
+		t.Fatal("lookup reports itself unavailable; this test is no longer covering the gap it was written for")
+	}
+	if !a.WithheldFor("", "Pod", "app", "web") {
+		t.Error("withheld=false, but this resource's only finding was unreadable — the agent is told nothing was found")
+	}
+}
+
+// The opposite case must stay quiet, or every clean resource on a cluster where
+// the caller lacks one family carries a false alarm.
+func TestAIResourceContext_ReportsNoWithholdingForAGenuinelyCleanResource(t *testing.T) {
+	env := newAuthTestServer(t)
+	publishIndex(t, report("openreports.io", "app", "require-probes", podSubject("other"), "fail"))
+	perms := &auth.UserPermissions{AllowedNamespaces: []string{"app"}}
+	allow(perms, "wgpolicyk8s.io", "policyreports", "app", true)
+	allow(perms, "openreports.io", "reports", "app", false)
+	env.srv.permCache.Set("half", perms)
+
+	if aiPolicyAdapter(t, env, "half", "app").WithheldFor("", "Pod", "app", "web") {
+		t.Error("nothing about this resource was withheld; a note here is a false alarm on every clean resource")
+	}
+}

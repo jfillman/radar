@@ -40,6 +40,12 @@ func (a mcpPolicyReportLookupAdapter) Unavailable() (resourcecontext.OmittedReas
 	return a.status.OmittedReason()
 }
 
+// WithheldFor implements resourcecontext.PolicyReportWithholding: this subject
+// has findings the caller may not read, so an empty summary is not an all-clear.
+func (a mcpPolicyReportLookupAdapter) WithheldFor(group, kind, namespace, name string) bool {
+	return k8s.PolicyFindingsWithheld(a.idx, a.families, group, kind, namespace, name)
+}
+
 func (a mcpPolicyReportLookupAdapter) FindingsFor(group, kind, namespace, name string) []resourcecontext.KyvernoFinding {
 	if a.idx == nil {
 		return nil

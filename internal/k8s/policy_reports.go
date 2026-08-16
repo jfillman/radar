@@ -834,3 +834,21 @@ func ReadableKyvernoFindings(idx *policyreports.Index, families map[string]bool,
 	}
 	return out
 }
+
+// PolicyFindingsWithheld reports whether any finding for this subject was
+// filtered out as unreadable by the caller.
+//
+// The distinction the plain finding list cannot make: no findings because the
+// resource is clean, versus no findings because the ones it has live in a
+// family this identity may not read. Both render as silence otherwise.
+func PolicyFindingsWithheld(idx *policyreports.Index, families map[string]bool, group, kind, namespace, name string) bool {
+	if idx == nil {
+		return false
+	}
+	for _, o := range idx.SourcedFindingsForAnyEngine(group, kind, namespace, name, policyreports.EnginesAttributableToKyverno...) {
+		if !PolicyOutcomeReadable(o, families) {
+			return true
+		}
+	}
+	return false
+}

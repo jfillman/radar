@@ -1,0 +1,47 @@
+# Backups that completed successfully into a storage location that is now
+# Unavailable.
+#
+# This is the state a phase alone cannot describe. Both of these say Completed —
+# they did complete, and the record is accurate — but dr-replica is Unavailable,
+# so right now there is nothing to restore them from. A screen that reads the
+# phase and stops calls this a healthy pair of backups.
+#
+# Two of them, not one, so the location's summary has a plural to get right.
+---
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: dr-nightly-recent
+  namespace: velero
+spec:
+  includedNamespaces:
+    - "*"
+  storageLocation: dr-replica
+  ttl: 720h0m0s
+status:
+  completionTimestamp: "@now-2920m"
+  expiration: "@now+40280m"
+  phase: Completed
+  progress:
+    itemsBackedUp: 512
+    totalItems: 512
+  startTimestamp: "@now-2926m"
+---
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: dr-nightly-older
+  namespace: velero
+spec:
+  includedNamespaces:
+    - "*"
+  storageLocation: dr-replica
+  ttl: 720h0m0s
+status:
+  completionTimestamp: "@now-4360m"
+  expiration: "@now+38840m"
+  phase: Completed
+  progress:
+    itemsBackedUp: 508
+    totalItems: 508
+  startTimestamp: "@now-4366m"

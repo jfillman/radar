@@ -150,3 +150,17 @@ export interface CNPGCatalogUser {
 export interface CNPGCatalogUsersResponse {
   clusters: CNPGCatalogUser[]
 }
+
+/** What one Velero BackupStorageLocation holds, from the stored-backups lookup. */
+export interface VeleroStoredBackupsResponse {
+  backups: Array<{
+    namespace: string
+    name: string
+    phase?: string
+    expiration?: string
+    completed?: string
+  }>
+  /** How many reached Completed — the rest are stored here but are not something
+   *  to restore from. */
+  restorable: number
+}

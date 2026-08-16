@@ -112,6 +112,7 @@ import { PVCRenderer } from '../resources/renderers/PVCRenderer'
 import { KyvernoPolicyCoverage } from '../resources/renderers/KyvernoPolicyCoverage'
 import { KyvernoPolicyQueued } from '../resources/renderers/KyvernoPolicyQueued'
 import { CNPGObjectStoreRenderer } from '../resources/renderers/CNPGObjectStoreRenderer'
+import { VeleroBSLRenderer } from '../resources/renderers/VeleroBSLRenderer'
 import { CNPGClusterRenderer } from '../resources/renderers/CNPGClusterRenderer'
 import { CNPGImageCatalogRenderer } from '../resources/renderers/CNPGImageCatalogRenderer'
 import {
@@ -154,6 +155,7 @@ const rendererOverrides: RendererOverrides = {
   KyvernoPolicyCoverage,
   KyvernoPolicyQueued,
   CNPGObjectStoreRenderer,
+  VeleroBSLRenderer,
   CNPGClusterRenderer,
   CNPGDatabaseRenderer,
   CNPGPublicationRenderer,

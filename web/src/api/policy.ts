@@ -4,6 +4,7 @@ import type {
   PolicyCoverageResponse,
   PolicyQueuedResponse,
   CNPGCatalogUsersResponse,
+  VeleroStoredBackupsResponse,
 } from '@skyhook-io/k8s-ui'
 import { fetchJSON } from './client'
 
@@ -136,6 +137,25 @@ export function useCNPGCatalogUsers(name: string, namespace = '', enabled = true
     queryKey: ['cnpg', 'catalog-users', namespace, name],
     queryFn: () => fetchJSON<CNPGCatalogUsersResponse>(path),
     enabled: enabled && !!name,
+    staleTime: 15000,
+    retry: false,
+  })
+}
+
+// /api/velero/backupstoragelocations/{namespace}/{name}/backups
+//
+// The inverse of the location a Backup names. Server-side and RBAC-gated for the
+// same reason as the other reverse lookups: "this location holds nothing" is a
+// sentence someone reads before deciding whether they can still restore, and it
+// must not come from a browsing filter or a lookup that failed.
+export function useVeleroStoredBackups(namespace: string, name: string, enabled = true) {
+  return useQuery<VeleroStoredBackupsResponse>({
+    queryKey: ['velero', 'stored-backups', namespace, name],
+    queryFn: () =>
+      fetchJSON<VeleroStoredBackupsResponse>(
+        `/velero/backupstoragelocations/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/backups`,
+      ),
+    enabled: enabled && !!namespace && !!name,
     staleTime: 15000,
     retry: false,
   })

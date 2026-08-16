@@ -854,6 +854,10 @@ Deliberately narrow: the absence of a ScheduledBackup does not prove a cluster i
 
 The `clusters` and `backups` plurals collide with Cluster API and Velero respectively, and the declarative types add more: `subscriptions` is also Knative messaging's, while `databases` and `publications` are generic enough that several database operators ship them. Radar resolves all of them with positive API-group guards, so a third operator's CRD sharing any of these plurals (KubeBlocks, Redis/Valkey operators) falls through to the generic renderer instead of inheriting a fabricated PostgreSQL status.
 
+**Limitations**:
+- The image-catalog and backup views describe what the cluster reports. A `ScheduledBackup`'s cron is CloudNativePG's six-field form (seconds first) and is shown verbatim rather than translated, because reading it as a five-field expression would state the wrong time.
+- Verified against clusters of a few hundred resources. Neither the recovery-window table nor the declarative-object lists have been exercised on a fleet with thousands of Postgres clusters.
+
 ---
 
 ## Crossplane
@@ -1027,6 +1031,12 @@ The count of queued work also appears **on the policy itself**, above its config
 | ClusterEphemeralReport | `reports.kyverno.io/v1` | — | Yes | — |
 
 PolicyReport findings are policy posture, not live operational failure, so they are **not** part of the `/api/issues` stream. They surface per-resource: the PolicyReport detail view (above) and the `resourceContext` policy rollup on a resource fetched via `get_resource`. (The cluster audit — `/api/audit` + MCP `get_cluster_audit` — is radar's own static best-practice scanner and does **not** include PolicyReport results.)
+
+**Limitations**:
+- Queued work (`UpdateRequest`) is only shown for policies that generate or mutate existing resources, and only while it is in flight — Kyverno deletes these seconds after the work completes, so an empty section is the normal resting state rather than evidence that nothing ran.
+- Coverage counts describe the whole cluster; the per-rule subject lists are capped by the server and follow the caller's namespace view filter. The screen states which number it is showing, but the two are not interchangeable.
+- Findings from a report family the caller cannot read are withheld from both lists and counts, and the number withheld is reported. A caller entitled to no family at all is told so rather than shown an empty result.
+- Verified against a cluster with a few hundred policy results. The 200-subject cap and its **Load the rest** control are unproven on a cluster with tens of thousands of findings; the load-test harness cannot synthesize PolicyReports.
 
 ---
 

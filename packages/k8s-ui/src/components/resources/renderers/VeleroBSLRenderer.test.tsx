@@ -33,6 +33,31 @@ describe('what a storage location holds', () => {
     expect(html).toContain('dr-nightly')
   })
 
+  // The panel said "not something you can restore from" and then, four lines
+  // later, "Most recent restorable point" — two claims about the same backups
+  // that cannot both hold.
+  it('does not call a point restorable on a location it just said was not', () => {
+    const html = renderToString(
+      <VeleroBSLRenderer
+        data={bsl('Unavailable')}
+        storedBackups={[completed('dr-nightly', '2026-08-14T01:00:00Z')]}
+      />,
+    )
+    expect(html).toContain('not something you can restore from')
+    expect(html).not.toContain('Most recent restorable point')
+    expect(html).toContain('once this location is reachable again')
+  })
+
+  it('calls it a restorable point when the location can actually serve it', () => {
+    const html = renderToString(
+      <VeleroBSLRenderer
+        data={bsl('Available')}
+        storedBackups={[completed('nightly', '2026-08-14T01:00:00Z')]}
+      />,
+    )
+    expect(html).toContain('Most recent restorable point')
+  })
+
   it('agrees in number', () => {
     const html = renderToString(
       <VeleroBSLRenderer

@@ -58,13 +58,23 @@ var veleroDecidedPhases = map[string]bool{
 // Phases in which work is still moving — or is supposed to be. Velero advances
 // these only while its controller is running, so past a point they stop meaning
 // "in flight" and start meaning "nothing is advancing this".
+//
+// Deliberately excludes two groups.
+//
+// The *PartiallyFailed variants are decided runs (see veleroDecidedPhases) and
+// already raise an issue of their own. Counting them here too put two issues on
+// one object that disagreed: one saying it reached a verdict, the other that
+// nothing was advancing it.
+//
+// Deleting is excluded because nothing here can time it. The only timestamp a
+// Backup carries is startTimestamp, which records when the ORIGINAL run started
+// and is never rewritten — and Velero only deletes backups that already ran, so
+// that value is old by definition. Measuring a just-started deletion against it
+// announces "nothing is advancing this" about a deletion proceeding normally.
 var veleroInFlightPhases = map[string]bool{
-	"InProgress":                                true,
-	"WaitingForPluginOperations":                true,
-	"WaitingForPluginOperationsPartiallyFailed": true,
-	"Finalizing":                                true,
-	"FinalizingPartiallyFailed":                 true,
-	"Deleting":                                  true,
+	"InProgress":                 true,
+	"WaitingForPluginOperations": true,
+	"Finalizing":                 true,
 }
 
 // How long an in-flight run may legitimately take before its silence is worth
@@ -110,8 +120,13 @@ func detectVeleroIssues(gvr schema.GroupVersionResource, kind string, items []*u
 	case "Backup":
 		return veleroBackupIssues(gvr, kind, visible)
 	case "Restore":
-		return veleroRunIssues(gvr, kind, visible,
+		// A restore stops moving for the same reason a backup does, and it is the
+		// more urgent of the two: someone is waiting on it to get their data back.
+		// No supersession grouping here — restores are one-off runs, nothing
+		// later supersedes one.
+		out := veleroRunIssues(gvr, kind, visible,
 			ReasonVeleroRestoreFailed, ReasonVeleroRestorePartiallyFailed, ReasonVeleroRestoreValidationFailed)
+		return append(out, veleroStalledRunIssues(gvr, kind, visible)...)
 	case "Schedule":
 		return veleroScheduleIssues(gvr, kind, visible)
 	case "BackupStorageLocation":

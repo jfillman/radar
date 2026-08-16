@@ -52,23 +52,52 @@ func TestVeleroStalledRun(t *testing.T) {
 		}
 	})
 
-	// Every phase Velero advances from its controller, not just InProgress.
-	t.Run("covers the other phases that need a controller to move", func(t *testing.T) {
-		for _, phase := range []string{
-			"WaitingForPluginOperations", "Finalizing", "Deleting",
-			"FinalizingPartiallyFailed", "WaitingForPluginOperationsPartiallyFailed",
-		} {
+	// Every phase Velero advances from its controller, and ONLY those. Asserting
+	// presence alone is what let a second, contradicting issue through on the
+	// partially-failed phases.
+	t.Run("covers the phases a controller has to move, and only those", func(t *testing.T) {
+		for _, phase := range []string{"WaitingForPluginOperations", "Finalizing"} {
 			got := detectBackups(veleroObj{
 				name: "x", phase: phase, startedMinsAgo: overBudget, createdMinsAgo: overBudget,
 			})
-			var found bool
+			if len(got) != 1 || got[0].Reason != ReasonVeleroRunStalled {
+				t.Errorf("phase %s stuck past budget gave %v, want exactly one stall issue", phase, reasonsOf(got))
+			}
+		}
+	})
+
+	// These are decided runs — veleroDecidedPhases already reports them as
+	// partially failed. Counting them as in flight as well put two issues on one
+	// object saying opposite things: it reached a verdict, and nothing is
+	// advancing it.
+	t.Run("does not also call a partially-failed run stalled", func(t *testing.T) {
+		for _, phase := range []string{"FinalizingPartiallyFailed", "WaitingForPluginOperationsPartiallyFailed"} {
+			got := detectBackups(veleroObj{
+				name: "p", phase: phase, startedMinsAgo: overBudget, createdMinsAgo: overBudget,
+			})
+			if len(got) != 1 {
+				t.Errorf("phase %s gave %v, want exactly one issue", phase, reasonsOf(got))
+			}
 			for _, iss := range got {
 				if iss.Reason == ReasonVeleroRunStalled {
-					found = true
+					t.Errorf("phase %s reported as stalled as well as decided", phase)
 				}
 			}
-			if !found {
-				t.Errorf("phase %s stuck past budget raised no stall issue", phase)
+		}
+	})
+
+	// Velero only deletes backups that already ran, and startTimestamp still holds
+	// when that original run began — it is never rewritten. Timing a deletion
+	// against it announces that a deletion which started seconds ago has been
+	// stuck for as long as the backup has existed.
+	t.Run("does not time a deletion against the original run", func(t *testing.T) {
+		got := detectBackups(veleroObj{
+			name: "d", phase: "Deleting",
+			startedMinsAgo: 14 * 24 * 60, createdMinsAgo: 14 * 24 * 60,
+		})
+		for _, iss := range got {
+			if iss.Reason == ReasonVeleroRunStalled {
+				t.Error("a deletion of a two-week-old backup reported as stalled on the backup's own age")
 			}
 		}
 	})
@@ -97,4 +126,25 @@ func TestVeleroStalledRun(t *testing.T) {
 			t.Errorf("issues = %d, want 0 for a run with no startTimestamp: %+v", len(got), got)
 		}
 	})
+}
+
+// The docs say Radar reports a Backup OR Restore still in flight. Restores went
+// down a different branch that never reached the check, so the claim was true of
+// half the kinds it named — and a stuck restore is the more urgent of the two,
+// because someone is waiting on it to get their data back.
+func TestVeleroStalledRestore(t *testing.T) {
+	items := buildVelero("Restore", veleroObj{
+		name: "r-inprogress", phase: "InProgress", startedMinsAgo: 5 * 60, createdMinsAgo: 5 * 60,
+	})
+	got := detectVeleroIssues(veleroGVR("restores"), "Restore", items, nil)
+
+	var found bool
+	for _, iss := range got {
+		if iss.Reason == ReasonVeleroRunStalled {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a restore in flight for 5h raised %v, want a stall issue", reasonsOf(got))
+	}
 }

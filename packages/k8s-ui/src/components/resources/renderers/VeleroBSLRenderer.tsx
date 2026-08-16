@@ -144,8 +144,23 @@ export function VeleroBSLRenderer({ data, storedBackups, lookupNote, onNavigate 
               />
               {newest && (
                 <div className="mt-2 pt-2 border-t border-theme-border text-xs text-theme-text-secondary">
-                  {/* The question this page is opened to answer. */}
-                  Most recent restorable point: <TimeValue timestamp={newest} /> ago
+                  {/* The question this page is opened to answer — worded for the
+                      state the location is actually in. Calling this a
+                      "restorable point" on an unavailable location contradicts
+                      the sentence directly above it, which has just said these
+                      are not something you can restore from. The date is still
+                      worth having: it is what you get back when the location
+                      recovers. */}
+                  {bslStatus.level === 'healthy' ? (
+                    <>
+                      Most recent restorable point: <TimeValue timestamp={newest} /> ago
+                    </>
+                  ) : (
+                    <>
+                      Most recent point held here, once this location is reachable again:{' '}
+                      <TimeValue timestamp={newest} /> ago
+                    </>
+                  )}
                 </div>
               )}
             </>

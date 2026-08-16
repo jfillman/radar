@@ -600,16 +600,21 @@ type PolicyQueuedResponse struct {
 	Messages []string `json:"messages,omitempty"`
 }
 
-// dynamicKindSynced reports whether the informer backing this kind has finished
-// its initial sync.
+// dynamicKindSynced reports whether the cache can answer authoritatively for the
+// scope about to be read.
 //
-// The dynamic cache does not gate reads on it, so the first read of a kind that
-// is not yet watched returns an empty list and no error — indistinguishable from
-// a genuine absence. On these screens that difference is the whole point: "no
-// queued work" and "no cluster uses this catalog" are answers people act on.
+// Two different questions, and the wrong one gives a confident empty answer. The
+// cache does not gate reads on sync, so a first read of a kind returns an empty
+// list and no error — indistinguishable from genuine absence. Worse for a
+// cluster-wide read: IsSynced can be true while the cache holds only a subset of
+// namespaces, and the cache's own contract says "not found" must NOT be treated
+// as "doesn't exist" in that state. Only IsClusterWideSynced licenses a
+// cluster-wide absence, which is exactly what "no queued work" and "no cluster
+// uses this catalog" claim.
+//
 // Returns true when the machinery is missing entirely, leaving the caller's
-// existing not-installed path to answer.
-func dynamicKindSynced(kind, group string) bool {
+// not-installed path to answer.
+func dynamicKindSynced(kind, group, namespace string) bool {
 	discovery := k8s.GetResourceDiscovery()
 	dynamicCache := k8s.GetDynamicResourceCache()
 	if discovery == nil || dynamicCache == nil {
@@ -618,6 +623,9 @@ func dynamicKindSynced(kind, group string) bool {
 	gvr, found := discovery.GetGVRWithGroup(kind, group)
 	if !found {
 		return true
+	}
+	if namespace == "" {
+		return dynamicCache.IsClusterWideSynced(gvr)
 	}
 	return dynamicCache.IsSynced(gvr)
 }
@@ -658,7 +666,7 @@ func (s *Server) handlePolicyQueued(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusServiceUnavailable, "Resource cache not available")
 		return
 	}
-	if !dynamicKindSynced("UpdateRequest", "kyverno.io") {
+	if !dynamicKindSynced("UpdateRequest", "kyverno.io", "") {
 		s.writeError(w, http.StatusServiceUnavailable, "queued work is still loading")
 		return
 	}

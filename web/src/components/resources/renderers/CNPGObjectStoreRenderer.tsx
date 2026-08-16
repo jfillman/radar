@@ -59,6 +59,25 @@ export function CNPGObjectStoreRenderer({
     if (server && c?.metadata?.name) clusterForServer.set(server, c.metadata.name)
   }
 
+  // A recovery window is only advancing while WAL archiving works. The Cluster
+  // owns that condition, and the ObjectStore's own status cannot see it — so a
+  // server whose archiving has stopped reports its last successful backup and
+  // reads as green here while the recovery point is frozen. The page whose job is
+  // "how far back can I restore" is the last place that should have to be
+  // cross-checked against another screen.
+  const archivingFailing = new Set<string>()
+  for (const c of users) {
+    const stalled = (c?.status?.conditions ?? []).some(
+      (cond: any) => cond?.type === 'ContinuousArchiving' && cond?.status === 'False',
+    )
+    if (!stalled) continue
+    const plugin = (c?.spec?.plugins ?? []).find(
+      (p: any) => p?.name === CNPG_BARMAN_PLUGIN_NAME && p?.parameters?.barmanObjectName === storeName,
+    )
+    const server = plugin?.parameters?.serverName || c?.metadata?.name
+    if (server) archivingFailing.add(server)
+  }
+
   // Named in the window, traceable to none of the clusters above — the gap the
   // note explains.
   const unlisted = servers.filter((s) => !clusterForServer.has(s))
@@ -72,6 +91,7 @@ export function CNPGObjectStoreRenderer({
         // plugin parameters rather than by name, so a cluster that renamed its
         // archive still resolves. Undefined while the lookup is unresolved.
         clusterForServer={clusters.isLoading || clusters.error ? undefined : clusterForServer}
+        archivingFailing={clusters.isLoading || clusters.error ? undefined : archivingFailing}
       />
       <Section title="Used By" icon={Database} defaultExpanded>
         {clusters.isLoading ? (

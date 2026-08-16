@@ -44,12 +44,17 @@ function RecoveryTime({ at }: { at: string }) {
 export function CNPGObjectStoreRenderer({
   data,
   clusterForServer,
+  archivingFailing,
   onNavigate,
 }: {
   data: any
   /** Server key -> the Cluster archiving under it, so a key is only linked when
    *  something is behind it. See RecoveryWindowRow. */
   clusterForServer?: Map<string, string>
+  /** Servers whose Cluster reports WAL archiving stopped. The window keeps its
+   *  last successful backup and reads as recoverable, while the recovery point
+   *  has stopped advancing — a claim this status alone cannot correct. */
+  archivingFailing?: Set<string>
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }) {
   const windows = getCNPGObjectStoreRecoveryWindows(data)
@@ -80,6 +85,7 @@ export function CNPGObjectStoreRenderer({
           <div className="space-y-2">
             {windows.map((w) => (
               <RecoveryWindowRow
+                archivingFailing={archivingFailing}
                 clusterForServer={clusterForServer}
                 key={w.server}
                 window={w}
@@ -154,6 +160,7 @@ function RecoveryWindowRow({
   retention,
   namespace,
   clusterForServer,
+  archivingFailing,
   onNavigate,
 }: {
   window: CNPGObjectStoreRecoveryWindow
@@ -168,9 +175,16 @@ function RecoveryWindowRow({
    *  loading, it may have failed, or the host may not be able to ask. All three
    *  render the key as text, which is the part that is always true. */
   clusterForServer?: Map<string, string>
+  /** Servers whose Cluster reports WAL archiving stopped. */
+  archivingFailing?: Set<string>
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }) {
-  const tone = w.failingSinceLastSuccess ? 'degraded' : w.lastSuccessfulBackupTime ? 'healthy' : 'unknown'
+  const stalled = archivingFailing?.has(w.server)
+  const tone = w.failingSinceLastSuccess || stalled
+    ? 'degraded'
+    : w.lastSuccessfulBackupTime
+      ? 'healthy'
+      : 'unknown'
   return (
     <div className="card-inner">
       <div className="flex items-center gap-2 mb-1">
@@ -193,9 +207,25 @@ function RecoveryWindowRow({
           )}
         </span>
         <span className={clsx('badge', HEALTH_BADGE_COLORS[tone as keyof typeof HEALTH_BADGE_COLORS])}>
-          {w.failingSinceLastSuccess ? 'Backups failing' : w.lastSuccessfulBackupTime ? 'Recoverable' : 'No backups yet'}
+          {w.failingSinceLastSuccess
+            ? 'Backups failing'
+            : stalled
+              ? 'Not advancing'
+              : w.lastSuccessfulBackupTime
+                ? 'Recoverable'
+                : 'No backups yet'}
         </span>
       </div>
+      {stalled && !w.failingSinceLastSuccess && (
+        <div className="text-xs text-warning-text mb-1">
+          {/* The timestamps below are real and still describe the last backup that
+              worked. What they no longer describe is a window still growing, and
+              "Recoverable" alone invites exactly that reading on the screen
+              someone checks before a restore. */}
+          WAL archiving has stopped on the cluster behind this server, so the times below are the
+          last ones recorded rather than a window still advancing.
+        </div>
+      )}
       <PropertyList>
         {w.firstRecoverabilityPoint && (
           <Property

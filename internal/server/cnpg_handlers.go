@@ -107,7 +107,7 @@ func (s *Server) handleCNPGCatalogUsers(w http.ResponseWriter, r *http.Request) 
 	}
 	// A namespaced catalog can only be referenced from its own namespace; a
 	// cluster-scoped one from anywhere.
-	if !dynamicKindSynced("Cluster", cnpgGroup) {
+	if !dynamicKindSynced("Cluster", cnpgGroup, namespace) {
 		s.writeError(w, http.StatusServiceUnavailable, "clusters are still loading")
 		return
 	}

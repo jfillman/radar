@@ -120,3 +120,27 @@ func TestCNPGCatalogUsers_SeparatesAnAbsentCRDFromAFailedRead(t *testing.T) {
 		t.Error("handler does not wait for the informer to sync; a cold read answers 'no users' before looking")
 	}
 }
+
+// A cluster-wide absence needs a cluster-wide guarantee. IsSynced can be true
+// while the cache holds only some namespaces, and the cache's own contract says
+// "not found" must not be read as "doesn't exist" in that state — so the
+// cluster-scoped route must ask IsClusterWideSynced, and the namespaced route
+// must not (it would never be satisfied by a namespace-scoped cache).
+func TestDynamicKindSynced_AsksTheQuestionThatMatchesTheScope(t *testing.T) {
+	src, err := os.ReadFile("policy_handlers.go")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	body := string(src)
+	i := strings.Index(body, "func dynamicKindSynced")
+	if i < 0 {
+		t.Fatal("helper moved")
+	}
+	fn := body[i : i+900]
+	if !strings.Contains(fn, "IsClusterWideSynced") {
+		t.Error("a cluster-wide read is licensed by IsSynced alone, which may know only some namespaces")
+	}
+	if !strings.Contains(fn, "IsSynced(gvr)") {
+		t.Error("a namespaced read should use the per-namespace check, not the cluster-wide one")
+	}
+}

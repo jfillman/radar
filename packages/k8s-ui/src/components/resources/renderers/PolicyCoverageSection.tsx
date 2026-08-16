@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Section } from '../../ui/drawer-components'
 import { SEVERITY_BADGE } from '../../../utils/badge-colors'
 import { isForbiddenError } from '../../../types/fetch-error'
+import { LookupFailureNote } from './LookupFailureNote'
 import {
   getKyvernoPolicyFamily,
   getKyvernoEnforcementPosture,
@@ -317,18 +318,12 @@ export function PolicyCoverageSection({
   }
 
   if (error) {
-    if (isForbiddenError(error)) {
-      return (
-        <Section title={TITLE} icon={ShieldQuestion}>
-          <div className="text-sm text-theme-text-tertiary">
-            You don’t have permission to view policy results.
-          </div>
-        </Section>
-      )
-    }
+    // Same split as every other lookup on these screens, from the component that
+    // owns it — a denial is expected and reads calm, a fault stays loud. Repeating
+    // the predicate here is how the two drift into disagreeing about the same error.
     return (
-      <Section title={TITLE} icon={ShieldAlert}>
-        <div className="text-sm text-red-400">{`Could not load policy results: ${error.message}`}</div>
+      <Section title={TITLE} icon={isForbiddenError(error) ? ShieldQuestion : ShieldAlert}>
+        <LookupFailureNote errors={[error]} what="policy results" />
       </Section>
     )
   }

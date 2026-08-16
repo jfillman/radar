@@ -1,5 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
-import type { PolicyResourceResponse, PolicyCoverageResponse, PolicyQueuedResponse } from '@skyhook-io/k8s-ui'
+import type {
+  PolicyResourceResponse,
+  PolicyCoverageResponse,
+  PolicyQueuedResponse,
+  CNPGCatalogUsersResponse,
+} from '@skyhook-io/k8s-ui'
 import { fetchJSON } from './client'
 
 // /api/policy/resource/{kind}/{namespace}/{name}
@@ -111,6 +116,27 @@ export function usePolicyQueued(policy: string, namespace = '', enabled = true) 
     // These live for seconds, so a long stale window would describe a queue that
     // has already drained.
     staleTime: 5000,
+    retry: false,
+  })
+}
+
+// /api/cnpg/{imagecatalogs/{namespace}|clusterimagecatalogs}/{name}/clusters
+//
+// A ClusterImageCatalog is cluster-scoped and referenceable from any namespace,
+// so the answer's scope is not the subject's. Asking the generic resources
+// endpoint without a namespace inherits the caller's namespace view filter and
+// would report "nothing uses this" on the strength of whichever namespaces they
+// happen to be showing — an all-clear before an edit, derived from a browsing
+// preference. Read server-side, gated on listing Clusters.
+export function useCNPGCatalogUsers(name: string, namespace = '', enabled = true) {
+  const path = namespace
+    ? `/cnpg/imagecatalogs/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/clusters`
+    : `/cnpg/clusterimagecatalogs/${encodeURIComponent(name)}/clusters`
+  return useQuery<CNPGCatalogUsersResponse>({
+    queryKey: ['cnpg', 'catalog-users', namespace, name],
+    queryFn: () => fetchJSON<CNPGCatalogUsersResponse>(path),
+    enabled: enabled && !!name,
+    staleTime: 15000,
     retry: false,
   })
 }

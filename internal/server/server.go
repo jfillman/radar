@@ -532,6 +532,8 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Get("/rbac/role/{kind}/{namespace}/{name}", s.handleRBACRole)
 			r.Get("/rbac/namespace/{namespace}", s.handleRBACNamespace)
 			r.Get("/rbac/whoami", s.handleRBACWhoami)
+			r.Get("/cnpg/imagecatalogs/{namespace}/{name}/clusters", s.handleCNPGCatalogUsers)
+			r.Get("/cnpg/clusterimagecatalogs/{name}/clusters", s.handleCNPGCatalogUsers)
 
 			r.Get("/namespaces", s.handleNamespaces)
 			r.Get("/api-resources", s.handleAPIResources)

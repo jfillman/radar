@@ -133,3 +133,20 @@ export interface PolicyQueuedResponse {
   /** The only diagnosis these objects carry. */
   messages?: string[]
 }
+
+/** One Cluster pinned to a CloudNativePG image catalog. */
+export interface CNPGCatalogUser {
+  namespace: string
+  name: string
+  /** Absent when the reference carries no major — the screen must not render
+   *  "asks for PostgreSQL 0". */
+  major?: number
+  /** A catalog-pinned Cluster has no spec.imageName, so this is the only place
+   *  the image it actually resolved appears. */
+  image?: string
+}
+
+/** Clusters referencing one image catalog, from the CNPG catalog-users endpoint. */
+export interface CNPGCatalogUsersResponse {
+  clusters: CNPGCatalogUser[]
+}

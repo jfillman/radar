@@ -4,7 +4,7 @@ import { Section, RelationshipGroup } from '@skyhook-io/k8s-ui'
 import { LookupFailureNote } from '@skyhook-io/k8s-ui/components/resources/renderers/LookupFailureNote'
 import { getCNPGImageCatalogEntries } from '../resource-utils-cnpg'
 import type { ResourceRef } from '@skyhook-io/k8s-ui'
-import { useResources } from '../../../api/client'
+import { useCNPGCatalogUsers } from '../../../api/policy'
 
 const CNPG_GROUP = 'postgresql.cnpg.io'
 
@@ -27,31 +27,27 @@ export function CNPGImageCatalogRenderer({
   const kind = data?.kind
   const name = data?.metadata?.name ?? ''
   const namespace = data?.metadata?.namespace ?? ''
-  // A ClusterImageCatalog is cluster-scoped and may be referenced from any
-  // namespace, so that lookup is unscoped.
+  // A ClusterImageCatalog is cluster-scoped and referenceable from any namespace,
+  // so the answer's scope is not this resource's. Read server-side rather than
+  // filtering a client-side list: omitting the namespace there means "the
+  // caller's namespace view filter", which would answer a question about the
+  // whole cluster from whichever namespaces they happen to be showing.
   const scoped = kind === 'ImageCatalog'
-  const enabled = !!name
+  const clusters = useCNPGCatalogUsers(name, scoped ? namespace : '', !!name)
 
-  const clusters = useResources<any>('clusters', scoped ? namespace : undefined, CNPG_GROUP, { enabled })
-
-  const users = (clusters.data ?? []).filter((c: any) => {
-    const ref = c?.spec?.imageCatalogRef
-    if (!ref?.name) return false
-    const refKind = ref.kind || 'ImageCatalog'
-    return ref.name === name && refKind === kind
-  })
+  const users = clusters.data?.clusters ?? []
 
   // A cluster asking for a major this catalog does not carry is the failure the
   // catalog page exists to explain, and it is invisible from the cluster side —
   // there the reference looks fine.
   const majors = new Set(getCNPGImageCatalogEntries(data).map((e) => e.major))
-  const unmet = users.filter((c: any) => !majors.has(c?.spec?.imageCatalogRef?.major))
-  const met = users.filter((c: any) => majors.has(c?.spec?.imageCatalogRef?.major))
+  const unmet = users.filter((c) => !majors.has(c.major as number))
+  const met = users.filter((c) => majors.has(c.major as number))
 
-  const toRef = (c: any) => ({
+  const toRef = (c: { namespace: string; name: string }) => ({
     kind: 'Cluster',
-    namespace: c?.metadata?.namespace ?? '',
-    name: c?.metadata?.name ?? '',
+    namespace: c.namespace,
+    name: c.name,
     group: CNPG_GROUP,
   })
 
@@ -95,11 +91,11 @@ export function CNPGImageCatalogRenderer({
                     refs={unmet.map(toRef)}
                     onNavigate={onNavigate}
                   />
-                  {unmet.some((c: any) => c?.status?.image) && (
+                  {unmet.some((c) => !!c.image) && (
                     <div className="text-xs text-theme-text-secondary">
                       {`Running now: ${unmet
-                        .filter((c: any) => c?.status?.image)
-                        .map((c: any) => `${c.metadata?.name} on ${c.status.image}`)
+                        .filter((c) => !!c.image)
+                        .map((c) => `${c.name} on ${c.image}`)
                         .join(', ')}`}
                     </div>
                   )}
@@ -112,8 +108,8 @@ export function CNPGImageCatalogRenderer({
                         form only when there is a major to name: a reference
                         missing one lands here too, and "asks for PostgreSQL
                         undefined" would be worse than the general sentence. */}
-                    {unmet.length === 1 && typeof unmet[0]?.spec?.imageCatalogRef?.major === 'number'
-                      ? `${unmet[0]?.metadata?.name} asks for PostgreSQL ${unmet[0].spec.imageCatalogRef.major}, which this catalog does not list. Whatever image it is running now, the next time it has to resolve one it will fail.`
+                    {unmet.length === 1 && typeof unmet[0]?.major === 'number'
+                      ? `${unmet[0]?.name} asks for PostgreSQL ${unmet[0].major}, which this catalog does not list. Whatever image it is running now, the next time it has to resolve one it will fail.`
                       : 'These clusters ask for a major version this catalog does not list. Whatever image they are running now, the next time they have to resolve one they will fail.'}
                   </div>
                 </div>

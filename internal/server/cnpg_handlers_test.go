@@ -116,32 +116,40 @@ func TestCNPGCatalogUsers_SeparatesAnAbsentCRDFromAFailedRead(t *testing.T) {
 	if !strings.Contains(h, "StatusServiceUnavailable") {
 		t.Error("handler has no failure path — a denied or unready read would answer 200 with no users")
 	}
-	if !strings.Contains(h, "dynamicKindSynced") {
+	if !strings.Contains(h, "listDynamicSynced") {
 		t.Error("handler does not wait for the informer to sync; a cold read answers 'no users' before looking")
 	}
 }
 
-// A cluster-wide absence needs a cluster-wide guarantee, and a namespaced read
-// needs one for the namespace it is about to read. IsSynced satisfies neither on
-// its own: it spans every informer for the GVR, so one watched namespace makes a
-// never-watched one look ready. The behaviour itself is tested where the cache
-// lives (pkg/k8score, TestIsNamespaceSynced_DoesNotBorrowAnotherNamespacesInformer);
-// this only pins that the handler asks the scope-aware question.
-func TestDynamicKindSynced_AsksTheQuestionThatMatchesTheScope(t *testing.T) {
+// An empty result is only an absence if the cache actually looked. The informer
+// for a namespace is started BY the read, so a gate that refuses to read until
+// one exists never lets the first read happen — ListBlocking starts it and waits
+// instead, which is what makes a subsequent empty list mean something.
+func TestHandlersEstablishAbsenceRatherThanAssumeIt(t *testing.T) {
 	src, err := os.ReadFile("policy_handlers.go")
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	body := string(src)
-	i := strings.Index(body, "func dynamicKindSynced")
+	i := strings.Index(body, "func listDynamicSynced")
 	if i < 0 {
 		t.Fatal("helper moved")
 	}
-	fn := body[i : i+1100]
-	if !strings.Contains(fn, "IsNamespaceSynced") {
-		t.Error("a namespaced read must ask about its own namespace, not the GVR as a whole")
+	fn := body[i : i+1400]
+	if !strings.Contains(fn, "ListBlocking") {
+		t.Error("the read does not wait for sync, so an empty list may be a cache that never looked")
 	}
-	if strings.Contains(fn, "IsSynced(gvr)") {
-		t.Error("IsSynced spans all namespaces — it cannot license an absence in one")
+	for _, f := range []string{"policy_handlers.go", "cnpg_handlers.go"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		if !strings.Contains(string(b), "listDynamicSynced(") {
+			t.Errorf("%s reads the cache without waiting for the scope it reads", f)
+		}
+		// A pre-read gate is the deadlock: nothing else starts the informer.
+		if strings.Contains(string(b), "if !dynamicKindSynced(") {
+			t.Errorf("%s gates on sync before reading; the first read of a namespace would never succeed", f)
+		}
 	}
 }

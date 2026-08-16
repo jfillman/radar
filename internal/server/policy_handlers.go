@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -600,36 +601,33 @@ type PolicyQueuedResponse struct {
 	Messages []string `json:"messages,omitempty"`
 }
 
-// dynamicKindSynced reports whether the cache can answer authoritatively for the
-// scope about to be read.
+// listDynamicSynced reads a kind after making sure the cache can actually answer
+// for the scope being read.
 //
-// Two different questions, and the wrong one gives a confident empty answer. The
-// cache does not gate reads on sync, so a first read of a kind returns an empty
-// list and no error — indistinguishable from genuine absence. Worse for a
-// cluster-wide read: IsSynced can be true while the cache holds only a subset of
-// namespaces, and the cache's own contract says "not found" must NOT be treated
-// as "doesn't exist" in that state. Only IsClusterWideSynced licenses a
-// cluster-wide absence, which is exactly what "no queued work" and "no cluster
-// uses this catalog" claim.
+// Not a gate before the read: the informer for a namespace is started BY the
+// read, so refusing to read until one exists is a deadlock — the first request
+// for a namespace would fail forever. ListBlocking starts it and waits, so an
+// empty result afterwards is an absence the cache established rather than one it
+// simply had not looked for.
 //
-// Returns true when the machinery is missing entirely, leaving the caller's
-// not-installed path to answer.
-func dynamicKindSynced(kind, group, namespace string) bool {
+// Falls back to the plain read when the machinery is missing, leaving the
+// caller's not-installed path to answer.
+func listDynamicSynced(ctx context.Context, cache *k8s.ResourceCache, kind, group, namespace string) ([]*unstructured.Unstructured, error) {
 	discovery := k8s.GetResourceDiscovery()
 	dynamicCache := k8s.GetDynamicResourceCache()
 	if discovery == nil || dynamicCache == nil {
-		return true
+		return cache.ListDynamicWithGroup(ctx, kind, namespace, group)
 	}
 	gvr, found := discovery.GetGVRWithGroup(kind, group)
 	if !found {
-		return true
+		return cache.ListDynamicWithGroup(ctx, kind, namespace, group)
 	}
-	// Namespace-aware deliberately: IsSynced spans every informer for the GVR, so
-	// one already-watched namespace would license a read of a namespace that has
-	// never been watched — which starts a fresh informer and returns an empty
-	// list with no error, an absence the cache never established.
-	return dynamicCache.IsNamespaceSynced(gvr, namespace)
+	return dynamicCache.ListBlocking(gvr, namespace, dynamicSyncWait)
 }
+
+// Long enough for a cold informer on a healthy apiserver, short enough that a
+// drawer section does not hang on one that will not sync.
+const dynamicSyncWait = 3 * time.Second
 
 // policyRequestName is the value Kyverno records in `spec.policy` for this
 // policy. Exactly one form matches, never both: a namespaced Policy is recorded
@@ -667,11 +665,7 @@ func (s *Server) handlePolicyQueued(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusServiceUnavailable, "Resource cache not available")
 		return
 	}
-	if !dynamicKindSynced("UpdateRequest", "kyverno.io", "") {
-		s.writeError(w, http.StatusServiceUnavailable, "queued work is still loading")
-		return
-	}
-	items, err := cache.ListDynamicWithGroup(r.Context(), "UpdateRequest", "", "kyverno.io")
+	items, err := listDynamicSynced(r.Context(), cache, "UpdateRequest", "kyverno.io", "")
 	switch {
 	case err == nil:
 	case errors.Is(err, k8s.ErrUnknownDynamicKind):

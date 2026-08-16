@@ -157,7 +157,14 @@ export function getKyvernoFailurePolicy(resource: any): string {
  * only what the policy actually declares.
  */
 export function getKyvernoEffectiveFailurePolicy(resource: any): string {
-  return resource?.spec?.failurePolicy || 'Fail'
+  return (
+    resource?.spec?.failurePolicy ||
+    // Where the legacy family keeps it since 1.13. Reading only the modern
+    // location would default a policy that explicitly set Ignore to Fail, and
+    // announce a rejection the cluster is not making.
+    resource?.spec?.webhookConfiguration?.failurePolicy ||
+    'Fail'
+  )
 }
 
 /**

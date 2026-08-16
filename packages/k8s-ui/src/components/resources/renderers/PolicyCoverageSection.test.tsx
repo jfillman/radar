@@ -335,6 +335,13 @@ describe('what an engine error costs', () => {
     expect(html).toContain('allowed through unchecked')
   })
 
+  // The legacy family keeps the field somewhere else entirely.
+  it('honours a legacy policy that opted out via webhookConfiguration', () => {
+    const html = render(errored, legacy({ webhookConfiguration: { failurePolicy: 'Ignore' }, rules: [] }))
+    expect(html).toContain('allowed through unchecked')
+    expect(html).not.toContain('fails closed')
+  })
+
   it('agrees with an explicit Fail', () => {
     expect(render(errored, vpol({ failurePolicy: 'Fail' }))).toContain('rejected for an engine error')
   })

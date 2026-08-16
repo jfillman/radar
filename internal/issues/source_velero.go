@@ -1,6 +1,7 @@
 package issues
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ const (
 	ReasonVeleroScheduleValidationFailed = "ScheduleValidationFailed"
 	ReasonVeleroBSLUnavailable           = "BackupStorageLocationUnavailable"
 	ReasonVeleroRepositoryNotReady       = "BackupRepositoryNotReady"
+	ReasonVeleroRunStalled               = "VeleroRunStalled"
 )
 
 // veleroScheduleLabel is what the schedule controller stamps on every backup it
@@ -51,6 +53,36 @@ var veleroDecidedPhases = map[string]bool{
 	"PartiallyFailed":           true,
 	"FinalizingPartiallyFailed": true,
 	"WaitingForPluginOperationsPartiallyFailed": true,
+}
+
+// Phases in which work is still moving — or is supposed to be. Velero advances
+// these only while its controller is running, so past a point they stop meaning
+// "in flight" and start meaning "nothing is advancing this".
+var veleroInFlightPhases = map[string]bool{
+	"InProgress":                                true,
+	"WaitingForPluginOperations":                true,
+	"WaitingForPluginOperationsPartiallyFailed": true,
+	"Finalizing":                                true,
+	"FinalizingPartiallyFailed":                 true,
+	"Deleting":                                  true,
+}
+
+// How long an in-flight run may legitimately take before its silence is worth
+// reporting.
+//
+// Anchored on Velero's own field rather than a number of our choosing:
+// `spec.itemOperationTimeout` bounds asynchronous operations and is documented
+// as defaulting to four hours. A run still in flight past its own timeout has
+// outlived the window Velero itself allows, whatever the cluster's size.
+const veleroDefaultItemOperationTimeout = 4 * time.Hour
+
+func veleroInFlightBudget(u *unstructured.Unstructured) time.Duration {
+	if raw, ok, _ := unstructured.NestedString(u.Object, "spec", "itemOperationTimeout"); ok && raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return veleroDefaultItemOperationTimeout
 }
 
 var veleroPartialPhases = map[string]bool{
@@ -121,7 +153,77 @@ func veleroBackupIssues(gvr schema.GroupVersionResource, kind string, items []*u
 			out = append(out, iss)
 		}
 	}
+	return append(out, veleroStalledRunIssues(gvr, kind, items)...)
+}
+
+// veleroStalledRunIssues reports runs that are still in flight long past the
+// window Velero allows for one.
+//
+// Deliberately separate from the supersession grouping above, which considers
+// only DECIDED runs: a backup that never reaches a verdict is invisible to that
+// logic by design, and it is exactly the run worth reporting. Velero advances an
+// in-flight phase only while its controller is running, so a backup that has sat
+// in one for longer than its own itemOperationTimeout is not slow — nothing is
+// moving it, and every screen showing it as "in progress" is describing work
+// that stopped.
+//
+// The message says how long and what the budget was, and stops there. Naming the
+// cause would mean asserting something about the controller, which this source
+// cannot see.
+func veleroStalledRunIssues(gvr schema.GroupVersionResource, kind string, items []*unstructured.Unstructured) []Issue {
+	var out []Issue
+	for _, u := range items {
+		phase := veleroPhase(u)
+		if !veleroInFlightPhases[phase] {
+			continue
+		}
+		started := veleroRunStart(u)
+		if started.IsZero() {
+			continue
+		}
+		budget := veleroInFlightBudget(u)
+		age := time.Since(started)
+		if age <= budget {
+			continue
+		}
+		msg := "phase " + phase + " for " + formatVeleroDuration(age) +
+			", past the " + formatVeleroDuration(budget) +
+			" Velero allows for one operation — nothing appears to be advancing it"
+		out = append(out, newConditionIssue(gvr, kind, u.GetNamespace(), u.GetName(),
+			SeverityWarning, ReasonVeleroRunStalled, msg,
+			age, "", u.GetCreationTimestamp().Time))
+	}
 	return out
+}
+
+// veleroRunStart is when the run began. Only startTimestamp is meaningful here:
+// creationTimestamp would call a queued backup stalled the moment it is created,
+// before Velero has had any chance to pick it up.
+func veleroRunStart(u *unstructured.Unstructured) time.Time {
+	if ts, ok, _ := unstructured.NestedString(u.Object, "status", "startTimestamp"); ok && ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+// formatVeleroDuration renders a duration the way an operator reads one: whole
+// hours past an hour, whole minutes below that. Go's default prints 31h9m22.6s.
+func formatVeleroDuration(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		days := int(d.Hours()) / 24
+		hours := int(d.Hours()) % 24
+		if hours == 0 {
+			return fmt.Sprintf("%dd", days)
+		}
+		return fmt.Sprintf("%dd %dh", days, hours)
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
 }
 
 // veleroBackupSeriesKey identifies the recurring series a backup belongs to.

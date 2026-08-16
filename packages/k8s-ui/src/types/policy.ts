@@ -120,3 +120,16 @@ export interface PolicyResourceResponse {
    *  set is not an all-clear — it is the part of the answer they may see. */
   withheldByFamily?: number
 }
+
+/** Background work Kyverno currently has in flight for one policy, from
+ *  GET /api/policy/policies/{policy}/queued. Computed server-side: the requests
+ *  live in the engine's namespace, not the policy's. */
+export interface PolicyQueuedResponse {
+  /** Zero is a real answer — Kyverno deletes these seconds after they complete. */
+  requests: number
+  byState?: Record<string, number>
+  /** Separates healthy churn from a stopped controller. */
+  oldestPending?: string
+  /** The only diagnosis these objects carry. */
+  messages?: string[]
+}

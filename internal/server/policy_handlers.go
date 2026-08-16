@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/skyhook-io/radar/internal/k8s"
@@ -572,4 +575,103 @@ func policyResultRank(result string) int {
 		return 3
 	}
 	return 4
+}
+
+// PolicyQueuedResponse is the background work Kyverno currently has in flight
+// for one policy.
+//
+// Computed server-side for the same reason every other reverse lookup here is:
+// the answer's scope is not the subject's. Kyverno records UpdateRequests in its
+// own namespace whatever namespace the policy lives in, so a client asking the
+// generic resource list would inherit the caller's namespace view filter — a
+// browsing preference — and silently answer for the wrong scope.
+type PolicyQueuedResponse struct {
+	// Requests matching this policy. Zero is a real answer here: Kyverno deletes
+	// these seconds after the work completes.
+	Requests int            `json:"requests"`
+	ByState  map[string]int `json:"byState,omitempty"`
+	// OldestPending separates healthy churn from a stopped controller — two
+	// Pending three seconds old and two Pending forty minutes old count the same.
+	OldestPending string `json:"oldestPending,omitempty"`
+	// Messages are the distinct status messages, which carry the only diagnosis
+	// these objects have.
+	Messages []string `json:"messages,omitempty"`
+}
+
+// policyRequestName is the value Kyverno records in `spec.policy` for this
+// policy. Exactly one form matches, never both: a namespaced Policy is recorded
+// as `namespace/name` and a cluster-scoped one bare, and Kyverno permits the two
+// to share a name — so accepting the bare form as a fallback for a namespaced
+// policy hands it a ClusterPolicy's backlog.
+func policyRequestName(policy, namespace string) string {
+	if namespace != "" {
+		return namespace + "/" + policy
+	}
+	return policy
+}
+
+// handlePolicyQueued returns the queued background work for one policy.
+// GET /api/policy/policies/{policy}/queued?namespace=X
+//
+// Cluster-wide by design, gated on the caller's ability to list the kind —
+// scope follows permission, never the namespace switcher.
+func (s *Server) handlePolicyQueued(w http.ResponseWriter, r *http.Request) {
+	if !s.requireConnected(w) {
+		return
+	}
+	policy := chi.URLParam(r, "policy")
+	if policy == "" {
+		s.writeError(w, http.StatusBadRequest, "policy name is required")
+		return
+	}
+	if !s.canRead(r, "kyverno.io", "updaterequests", "", "list") {
+		s.writeError(w, http.StatusForbidden, "no access to update requests")
+		return
+	}
+
+	cache := k8s.GetResourceCache()
+	if cache == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "Resource cache not available")
+		return
+	}
+	items, err := cache.ListDynamicWithGroup(r.Context(), "UpdateRequest", "", "kyverno.io")
+	if err != nil {
+		// The CRD is absent on every cluster without Kyverno's background
+		// controller, which is not an error worth surfacing as one.
+		s.writeJSON(w, PolicyQueuedResponse{})
+		return
+	}
+
+	want := policyRequestName(policy, r.URL.Query().Get("namespace"))
+
+	resp := PolicyQueuedResponse{ByState: map[string]int{}}
+	seen := map[string]bool{}
+	for _, u := range items {
+		if u == nil {
+			continue
+		}
+		if got, _, _ := unstructured.NestedString(u.Object, "spec", "policy"); got != want {
+			continue
+		}
+		resp.Requests++
+		state, _, _ := unstructured.NestedString(u.Object, "status", "state")
+		if state == "" {
+			state = "Unknown"
+		}
+		resp.ByState[state]++
+		if msg, _, _ := unstructured.NestedString(u.Object, "status", "message"); msg != "" && !seen[msg] {
+			seen[msg] = true
+			resp.Messages = append(resp.Messages, msg)
+		}
+		if state == "Pending" {
+			if ts := u.GetCreationTimestamp(); !ts.IsZero() {
+				iso := ts.UTC().Format(time.RFC3339)
+				if resp.OldestPending == "" || iso < resp.OldestPending {
+					resp.OldestPending = iso
+				}
+			}
+		}
+	}
+	sort.Strings(resp.Messages)
+	s.writeJSON(w, resp)
 }

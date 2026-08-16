@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import type { PolicyResourceResponse, PolicyCoverageResponse } from '@skyhook-io/k8s-ui'
+import type { PolicyResourceResponse, PolicyCoverageResponse, PolicyQueuedResponse } from '@skyhook-io/k8s-ui'
 import { fetchJSON } from './client'
 
 // /api/policy/resource/{kind}/{namespace}/{name}
@@ -85,5 +85,32 @@ export function usePolicyCoverage(
       isSameCoverageSubject(prevQuery?.queryKey, policy, namespace ?? '', viewFilter)
         ? prev
         : undefined,
+  })
+}
+
+// /api/policy/policies/{policy}/queued
+//
+// Kyverno records UpdateRequests in its own namespace whatever namespace the
+// policy lives in, so this cannot be a client-side list: omitting the namespace
+// on the generic resources endpoint means "apply the caller's namespace view
+// filter", and a reader narrowed to their own namespace would be answered for
+// the wrong scope. The server reads cluster-wide, gated on the caller's ability
+// to list the kind — the same shape as the RBAC reverse lookups.
+//
+// No view filter in the key: the answer does not depend on one.
+export function usePolicyQueued(policy: string, namespace = '', enabled = true) {
+  return useQuery<PolicyQueuedResponse>({
+    queryKey: ['policy', 'queued', policy, namespace],
+    queryFn: () =>
+      fetchJSON<PolicyQueuedResponse>(
+        `/policy/policies/${encodeURIComponent(policy)}/queued${
+          namespace ? `?namespace=${encodeURIComponent(namespace)}` : ''
+        }`,
+      ),
+    enabled: enabled && !!policy,
+    // These live for seconds, so a long stale window would describe a queue that
+    // has already drained.
+    staleTime: 5000,
+    retry: false,
   })
 }

@@ -3,12 +3,9 @@ import { clsx } from 'clsx'
 import { Section, PropertyList, Property, AlertBanner } from '@skyhook-io/k8s-ui'
 import { LookupFailureNote } from '@skyhook-io/k8s-ui/components/resources/renderers/LookupFailureNote'
 import { HEALTH_BADGE_COLORS } from '@skyhook-io/k8s-ui/utils/badge-colors'
-import {
-  getKyvernoRequestState,
-  getKyvernoRequestMessage,
-} from '@skyhook-io/k8s-ui/components/resources/resource-utils-kyverno-queue'
 import { formatAge } from '@skyhook-io/k8s-ui/components/resources/resource-utils'
-import { useResources, isForbiddenError } from '../../../api/client'
+import { isForbiddenError } from '../../../api/client'
+import { usePolicyQueued } from '../../../api/policy'
 
 /** A request sitting this long is not mid-flight. Kyverno retries on every
  *  reconcile, so past this point a backlog grows rather than drains. */
@@ -78,25 +75,14 @@ export function requestBelongsTo(request: any, name: string, namespace: string):
 export function KyvernoPolicyQueued({ data }: { data: any }) {
   const name = data?.metadata?.name ?? ''
   const namespace = data?.metadata?.namespace ?? ''
-  // Requests live in the engine's own namespace whatever the policy's is, so
-  // this asks for every namespace and filters by the policy they name.
-  //
-  // KNOWN LIMIT: passing no namespace does not mean cluster-wide here. The
-  // resources endpoint falls back to the caller's namespace view filter, so a
-  // reader who has narrowed the header to their own namespace gets none of
-  // Kyverno's and this section stays silent — the one case where its silence is
-  // not "nothing is queued". Reaching past the filter needs the endpoint to opt
-  // out of it, the way the capacity surfaces deliberately do; until then the
-  // warning is unavailable to a filtered reader rather than wrong.
-  const {
-    data: requests,
-    error,
-  } = useResources<any>('updaterequests', undefined, 'kyverno.io', {
-    enabled: !!name,
-  })
 
-  const mine = (requests ?? []).filter((u: any) => requestBelongsTo(u, name, namespace))
-  if (mine.length === 0) {
+  // Server-side, because the answer's scope is not the subject's: Kyverno keeps
+  // these in its own namespace, and the generic resource list would have
+  // answered for whatever namespaces the reader happens to be viewing.
+  const { data: queued, error } = usePolicyQueued(name, namespace, !!name)
+
+  const total = queued?.requests ?? 0
+  if (total === 0) {
     // An empty list and an unreadable one are not the same answer, but they do
     // not deserve the same treatment either. Being denied `updaterequests` is
     // cluster-static and would put an identical note on every policy page,
@@ -111,31 +97,16 @@ export function KyvernoPolicyQueued({ data }: { data: any }) {
     )
   }
 
-  const byState = mine.reduce<Record<string, number>>((acc, u: any) => {
-    const s = getKyvernoRequestState(u)
-    acc[s.text] = (acc[s.text] ?? 0) + 1
-    return acc
-  }, {})
+  const byState = queued?.byState ?? {}
   const pending = byState['Pending'] ?? 0
   const failed = byState['Failed'] ?? 0
+  const messages = queued?.messages ?? []
+  const oldestPending = queued?.oldestPending
 
-  // The count alone cannot tell healthy churn from a stopped controller: two
-  // Pending three seconds old and two Pending forty minutes old render
-  // identically. Age of the OLDEST pending request is the number that separates
-  // them, and it is the one Kyverno's own troubleshooting guide sends you to
-  // look for.
-  const messages = Array.from(
-    new Set(mine.map((u: any) => getKyvernoRequestMessage(u)).filter(Boolean) as string[]),
-  )
-  const oldestPending = mine
-    .filter((u: any) => getKyvernoRequestState(u).text === 'Pending')
-    .map((u: any) => u?.metadata?.creationTimestamp)
-    .filter(Boolean)
-    .sort()[0]
   const stalledMinutes = oldestPending
     ? Math.floor((Date.now() - new Date(oldestPending).getTime()) / 60000)
     : 0
-  const banner = queueBanner(pending, stalledMinutes, formatAge(oldestPending))
+  const banner = queueBanner(pending, stalledMinutes, oldestPending ? formatAge(oldestPending) : '')
 
   return (
     <>
@@ -144,7 +115,7 @@ export function KyvernoPolicyQueued({ data }: { data: any }) {
       )}
       <Section title="Queued Work" icon={Workflow} defaultExpanded={pending > 0 || failed > 0}>
         <PropertyList>
-          <Property label="Requests" value={String(mine.length)} />
+          <Property label="Requests" value={String(total)} />
           {Object.entries(byState).map(([state, n]) => (
             <Property
               key={state}

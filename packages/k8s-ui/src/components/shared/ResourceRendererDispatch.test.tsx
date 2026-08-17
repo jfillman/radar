@@ -321,3 +321,29 @@ describe('shared plurals — the status path collides too', () => {
     expect(foreign?.text).toBe('Installed')
   })
 })
+
+// A BackupRepository has custom table columns and raises its own issue, but no
+// detail renderer — so it renders generically. Its status still has to resolve
+// through the Velero mapping, or the drawer header prints the raw phase next to
+// a table cell showing the human label for the same object.
+describe('Velero BackupRepository status', () => {
+  const repo = (phase: string) => ({
+    apiVersion: 'velero.io/v1',
+    kind: 'BackupRepository',
+    metadata: { name: 'r', namespace: 'velero' },
+    spec: { repositoryType: 'kopia' },
+    status: { phase },
+  })
+
+  it('resolves through the Velero mapping, not the raw phase', () => {
+    expect(getResourceStatus('backuprepositories', repo('NotReady'))?.text).toBe('Not ready')
+    expect(getResourceStatus('backuprepositories', repo('Ready'))?.text).toBe('Ready')
+  })
+
+  // The plural is not Velero's alone; another group's repository must not pick
+  // up Velero's mapping.
+  it('leaves a foreign backuprepositories kind alone', () => {
+    const foreign = { ...repo('NotReady'), apiVersion: 'example.com/v1' }
+    expect(getResourceStatus('backuprepositories', foreign)?.text).not.toBe('Not ready')
+  })
+})

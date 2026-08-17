@@ -170,3 +170,158 @@ describe('what a storage location holds', () => {
     expect(html).toContain('No backup in this namespace names this location')
   })
 })
+
+/**
+ * The list counts what is stored; the restorable point is derived from what
+ * completed. On a healthy location those are the only two numbers on the page,
+ * and when they disagree something has to say why — "Backups (2)" above a
+ * single restorable point otherwise reads as one of them being lost, rather
+ * than as one of them still running.
+ *
+ * The panel states how many ARE whole restore points rather than counting the
+ * rest and naming them: the phases it would have to name include `Deleting`,
+ * which already ran, and the *PartiallyFailed phases, which mean part of
+ * the data made it. "Has not completed" is false for both.
+ */
+describe('a location holding runs that are not restore points', () => {
+  const atPhase = (name: string, phase: string) => ({ namespace: 'velero', name, phase })
+
+  it('reconciles the stored count with the restorable one', () => {
+    const html = renderToString(
+      <VeleroBSLRenderer
+        data={bsl('Available')}
+        storedBackups={[
+          completed('nightly', '2026-08-14T01:00:00Z'),
+          atPhase('stalled', 'InProgress'),
+        ]}
+      />,
+    )
+    expect(html).toContain('1 of 2 backups stored here is a complete restore point')
+    // Both are stored, so both are listed — the sentence explains the list, it
+    // does not filter it.
+    expect(html).toContain('nightly')
+    expect(html).toContain('stalled')
+    // The completed one is still a restore point; the note must not read as
+    // though nothing here is usable.
+    expect(html).toContain('Most recent restorable point')
+  })
+
+  it('says nothing when every stored backup is a restore point', () => {
+    const html = renderToString(
+      <VeleroBSLRenderer
+        data={bsl('Available')}
+        storedBackups={[completed('nightly', '2026-08-14T01:00:00Z')]}
+      />,
+    )
+    expect(html).not.toContain('complete restore point')
+  })
+
+  // A Deleting backup already ran and is now on its way out, and a
+  // PartiallyFailed one finished with errors. Any wording that calls either
+  // "not completed" is false — which is why the sentence counts the whole
+  // restore points instead of characterising these.
+  it('does not claim a deleting or partially failed backup never completed', () => {
+    const html = renderToString(
+      <VeleroBSLRenderer
+        data={bsl('Available')}
+        storedBackups={[
+          atPhase('on-its-way-out', 'Deleting'),
+          atPhase('half-made-it', 'PartiallyFailed'),
+        ]}
+      />,
+    )
+    expect(html).not.toContain('not completed')
+    expect(html).toContain('None of the 2 backups stored here is a complete restore point')
+    expect(html).not.toContain('Most recent restorable point')
+  })
+})
+
+/**
+ * A location Velero has not validated yet has no phase at all. Treating that as
+ * "not healthy, therefore unreachable" turns missing data into a claim about the
+ * bucket — and this panel is read to decide whether a restore is possible.
+ */
+describe('a location Velero has not reported on', () => {
+  const noPhase = {
+    metadata: { name: 'fresh', namespace: 'velero' },
+    spec: { provider: 'aws', objectStorage: { bucket: 'b' } },
+    status: {},
+  }
+
+  it('does not say backups here cannot be restored from', () => {
+    const html = renderToString(
+      <VeleroBSLRenderer data={noPhase} storedBackups={[completed('nightly', '2026-08-14T01:00:00Z')]} />,
+    )
+    expect(html).not.toContain('not something you can restore from')
+    expect(html).toContain('has not reported a phase')
+  })
+
+  it('does not imply the location is unreachable', () => {
+    const html = renderToString(
+      <VeleroBSLRenderer data={noPhase} storedBackups={[completed('nightly', '2026-08-14T01:00:00Z')]} />,
+    )
+    expect(html).not.toContain('reachable again')
+  })
+})
+
+/**
+ * These sentences take counts, and a count of one is the common case on a small
+ * cluster. Both read as broken English at n=1 — "whether these is restorable",
+ * "None of the 1 backups" — which is the shape of a sentence assembled from
+ * fragments without anyone reading the result.
+ */
+describe('the sentences at a count of one', () => {
+  const oneOf = (phase: string, backups: Array<{ namespace: string; name: string; phase: string }>) =>
+    renderToString(
+      <VeleroBSLRenderer
+        data={{ metadata: { name: 'loc', namespace: 'velero' }, spec: {}, status: { phase } }}
+        storedBackups={backups}
+      />,
+    )
+
+  it('reads correctly when a single backup is not a restore point', () => {
+    const html = oneOf('Available', [{ namespace: 'velero', name: 'only', phase: 'InProgress' }])
+    expect(html).toContain('The backup stored here is not a complete restore point')
+    expect(html).not.toContain('None of the 1')
+  })
+
+  it('reads correctly when a single backup sits on an unvalidated location', () => {
+    const html = oneOf('', [{ namespace: 'velero', name: 'only', phase: 'Completed' }])
+    expect(html).toContain('whether this backup is restorable')
+    expect(html).not.toContain('whether these is')
+  })
+})
+
+/**
+ * Velero keeps every backup until its TTL expires, so an hourly schedule with a
+ * long retention leaves thousands in one location. The server sends a page; the
+ * panel has to say so, and its sentences have to count the location rather than
+ * the page — otherwise "1 of 200" describes a cap, not a cluster.
+ */
+describe('a location holding more backups than the list shows', () => {
+  const page = Array.from({ length: 200 }, (_, i) => ({
+    namespace: 'velero',
+    name: `nightly-${i}`,
+    phase: i === 0 ? 'Completed' : 'Failed',
+    completed: i === 0 ? '2026-08-14T01:00:00Z' : undefined,
+  }))
+
+  const html = () =>
+    renderToString(
+      <VeleroBSLRenderer
+        data={bsl('Available')}
+        storedBackups={page}
+        storedTotal={2000}
+        listTruncated
+      />,
+    )
+
+  it('says the list is a page', () => {
+    expect(html()).toContain('Showing the 200 most recent of 2000')
+  })
+
+  it('counts the location, not the page', () => {
+    // 1 restorable out of 2000 held — not out of the 200 that fit.
+    expect(html()).toContain('1 of 2000 backups stored here')
+  })
+})

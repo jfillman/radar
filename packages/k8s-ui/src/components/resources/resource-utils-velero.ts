@@ -196,6 +196,22 @@ export function getBackupTTL(resource: any): string {
   return resource.spec?.ttl || '-'
 }
 
+/**
+ * How long this backup allows a single operation before it has outlived its own
+ * budget. Shown because the stalled-run issue measures against this field and
+ * quotes it — without it on the page, the message cites a number from a spec
+ * option the page lists every sibling of.
+ *
+ * Unset renders as "default", the same word getBackupSnapshotVolumes uses for
+ * the same situation — not as a number. Velero's built-in is four hours, but the
+ * controller takes `--default-item-operation-timeout` and distributions ship
+ * their own, so printing 4h here would state an install setting nothing on this
+ * page can read.
+ */
+export function getBackupItemOperationTimeout(resource: any): string {
+  return resource.spec?.itemOperationTimeout || 'default'
+}
+
 export function getBackupSnapshotVolumes(resource: any): string {
   const val = resource.spec?.snapshotVolumes
   if (val === undefined || val === null) return 'default'

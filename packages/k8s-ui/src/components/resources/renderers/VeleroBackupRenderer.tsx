@@ -1,7 +1,8 @@
+import { VeleroRunMessages, type VeleroRunMessagesFetch } from './VeleroRunMessages'
 import { Archive, Clock, HardDrive, Filter } from 'lucide-react'
 import { clsx } from 'clsx'
 import { HEALTH_BADGE_COLORS } from '../../../utils/badge-colors'
-import { Section, PropertyList, Property, ConditionsSection, AlertBanner } from '../../ui/drawer-components'
+import { Section, PropertyList, Property, ConditionsSection, AlertBanner, ResourceLink } from '../../ui/drawer-components'
 import {
   getBackupStatus,
   getBackupStorageLocation,
@@ -16,6 +17,7 @@ import {
   getBackupWarnings,
   getBackupValidationErrors,
   getBackupTTL,
+  getBackupItemOperationTimeout,
   getBackupSnapshotVolumes,
   getBackupDefaultVolumesToFsBackup,
   getBackupVolumeSnapshotLocations,
@@ -24,6 +26,7 @@ import {
   isBackupPartialFailurePhase,
 } from '../resource-utils-velero'
 import { VeleroPhaseValue } from './velero-cells'
+import { veleroPhaseLabel } from '../resource-utils-velero'
 import { formatAge } from '../resource-utils'
 
 interface VeleroBackupRendererProps {
@@ -39,9 +42,15 @@ interface VeleroBackupRendererProps {
    * screen away.
    */
   storageLocationPhase?: string
+  /** Wired by the host, which owns the fetch. Optional: a consumer that does
+   *  not wire it gets the counts on their own, with no button. */
+  messages?: VeleroRunMessagesFetch
+  /** Without it the location renders as plain text: the page names a location as
+   *  the reason nothing can be restored and gives no way to go look at it. */
+  onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }
 
-export function VeleroBackupRenderer({ data, storageLocationPhase }: VeleroBackupRendererProps) {
+export function VeleroBackupRenderer({ data, storageLocationPhase, messages, onNavigate }: VeleroBackupRendererProps) {
   const status = data.status || {}
   const conditions = status.conditions || []
 
@@ -99,7 +108,9 @@ export function VeleroBackupRenderer({ data, storageLocationPhase }: VeleroBacku
         <AlertBanner
           variant="warning"
           title={`${warnings} Warning(s)`}
-          message={`Backup completed with ${warnings} warning(s).`}
+          message={phase === 'Completed'
+            ? `This backup completed, with ${warnings} warning(s).`
+            : `This backup has reported ${warnings} warning(s) so far. It is ${veleroPhaseLabel(phase).toLowerCase()}, so this is not a final count.`}
         />
       )}
 
@@ -131,6 +142,7 @@ export function VeleroBackupRenderer({ data, storageLocationPhase }: VeleroBacku
               : '0'
           } />
         </PropertyList>
+        {messages && <VeleroRunMessages {...messages} errors={errors} warnings={warnings} />}
       </Section>
 
       {/* Progress section (if in progress) */}
@@ -213,7 +225,13 @@ export function VeleroBackupRenderer({ data, storageLocationPhase }: VeleroBacku
             label="Storage Location"
             value={
               <span className="flex items-center gap-2">
-                {getBackupStorageLocation(data)}
+                <ResourceLink
+                  name={getBackupStorageLocation(data)}
+                  kind="BackupStorageLocation"
+                  namespace={data?.metadata?.namespace ?? ''}
+                  group="velero.io"
+                  onNavigate={onNavigate}
+                />
                 {storageLocationPhase && storageLocationPhase !== 'Available' && (
                   <span className={clsx('badge', HEALTH_BADGE_COLORS.unhealthy)}>{storageLocationPhase}</span>
                 )}
@@ -231,7 +249,15 @@ export function VeleroBackupRenderer({ data, storageLocationPhase }: VeleroBacku
             <Property label="Volume Snapshot Locations" value={
               <div className="flex flex-wrap gap-1">
                 {vslLocations.map((loc: string) => (
-                  <span key={loc} className="badge-sm bg-theme-hover text-theme-text-secondary">{loc}</span>
+                  <span key={loc} className="badge-sm bg-theme-hover text-theme-text-secondary">
+                    <ResourceLink
+                      name={loc}
+                      kind="VolumeSnapshotLocation"
+                      namespace={data?.metadata?.namespace ?? ''}
+                      group="velero.io"
+                      onNavigate={onNavigate}
+                    />
+                  </span>
                 ))}
               </div>
             } />
@@ -243,6 +269,7 @@ export function VeleroBackupRenderer({ data, storageLocationPhase }: VeleroBacku
       <Section title="Options" icon={Clock}>
         <PropertyList>
           <Property label="TTL" value={getBackupTTL(data)} />
+          <Property label="Item Operation Timeout" value={getBackupItemOperationTimeout(data)} />
           <Property label="Snapshot Volumes" value={getBackupSnapshotVolumes(data)} />
           <Property label="Default FS Backup" value={getBackupDefaultVolumesToFsBackup(data)} />
         </PropertyList>

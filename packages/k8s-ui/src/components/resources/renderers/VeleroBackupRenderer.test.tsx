@@ -39,3 +39,37 @@ describe('a backup whose storage location is unreachable', () => {
     expect(html).not.toContain('Unavailable')
   })
 })
+
+/**
+ * FailedValidation is the one outcome where Velero usually explains itself, in
+ * status.failureReason. Radar's own sentence is the fallback for when it does
+ * not — a run rejected before it started leaves no errors, no warnings and no
+ * item counts, so without either the page is an empty red banner.
+ */
+describe('a run Velero refused to start', () => {
+  const rejected = (failureReason?: string) => ({
+    metadata: { name: 'live-rejected', namespace: 'velero' },
+    spec: { storageLocation: 'dr-replica' },
+    status: {
+      phase: 'FailedValidation',
+      ...(failureReason ? { failureReason } : {}),
+      validationErrors: ['Backup storage location "dr-replica" is unavailable'],
+    },
+  })
+
+  // Velero's own words beat ours whenever it supplies them.
+  it('leads with the reason Velero gave', () => {
+    const html = renderToString(
+      <VeleroBackupRenderer data={rejected('backup storage location is in read-only mode')} />,
+    )
+    expect(html).toContain('backup storage location is in read-only mode')
+    expect(html).not.toContain('Velero rejected this backup before it started')
+  })
+
+  it('says nothing was backed up when Velero gave no reason', () => {
+    const html = renderToString(<VeleroBackupRenderer data={rejected()} />)
+    expect(html).toContain('nothing was backed up')
+    // The validation errors are the actionable half either way.
+    expect(html).toContain('dr-replica&quot; is unavailable')
+  })
+})

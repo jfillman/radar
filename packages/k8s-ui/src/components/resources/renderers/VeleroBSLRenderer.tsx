@@ -40,12 +40,18 @@ interface VeleroBSLRendererProps {
    * location holding nothing, and must not render as it.
    */
   storedBackups?: VeleroStoredBackup[]
+  /** How many the location holds in total. Larger than the list when the server
+   *  capped it — the counts describe the location, the list is a page of it. */
+  storedTotal?: number
+  /** The list is a page. Said out loud, because a capped list otherwise reads as
+   *  everything this location holds. */
+  listTruncated?: boolean
   /** Rendered by the host when the lookup failed, so a denial is not silence. */
   lookupNote?: React.ReactNode
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }
 
-export function VeleroBSLRenderer({ data, storedBackups, lookupNote, onNavigate }: VeleroBSLRendererProps) {
+export function VeleroBSLRenderer({ data, storedBackups, storedTotal, listTruncated, lookupNote, onNavigate }: VeleroBSLRendererProps) {
   const status = data.status || {}
   const conditions = status.conditions || []
   const bslStatus = getBSLStatus(data)
@@ -57,6 +63,9 @@ export function VeleroBSLRenderer({ data, storedBackups, lookupNote, onNavigate 
   const usable = (storedBackups ?? []).filter((b) => b.phase === 'Completed' && !veleroExpired(b))
   const restorable = usable.length
   const expired = (storedBackups ?? []).filter((b) => b.phase === 'Completed' && veleroExpired(b)).length
+  // The location's total, not the page's length: every sentence below counts
+  // what the location holds, and the list may be capped.
+  const stored = storedTotal ?? storedBackups?.length ?? 0
   const newest = usable
     .map((b) => b.completed)
     .filter((c): c is string => !!c)
@@ -122,9 +131,18 @@ export function VeleroBSLRenderer({ data, storedBackups, lookupNote, onNavigate 
           )}
           {storedBackups !== undefined && storedBackups.length > 0 && (
             <>
-              {bslStatus.level !== 'healthy' && restorable > 0 && (
+              {/* Only when Velero actually said the location is unavailable.
+                  `unknown` is the shape of a location Velero has not validated
+                  yet — no phase at all — and reading that as "unreachable" turns
+                  missing data into a statement about the bucket. */}
+              {bslStatus.level === 'unhealthy' && restorable > 0 && (
                 <div className="text-xs text-warning-text mb-2">
                   {`${restorable} completed ${restorable === 1 ? 'backup is' : 'backups are'} stored here. While this location is ${bslStatus.text}, ${restorable === 1 ? 'it is' : 'they are'} not something you can restore from.`}
+                </div>
+              )}
+              {bslStatus.level === 'unknown' && restorable > 0 && (
+                <div className="text-xs text-theme-text-secondary mb-2">
+                  {`Velero has not reported a phase for this location, so whether ${restorable === 1 ? 'this backup is' : 'these backups are'} restorable right now is not established here.`}
                 </div>
               )}
                 {/* Stands on its own. "Not counted above" referred to a line that
@@ -135,6 +153,30 @@ export function VeleroBSLRenderer({ data, storedBackups, lookupNote, onNavigate 
                 <div className="text-xs text-theme-text-secondary mb-2">
                   {`${expired} stored ${expired === 1 ? 'backup has' : 'backups have'} passed ${expired === 1 ? 'its' : 'their'} retention and ${expired === 1 ? 'is' : 'are'} no longer a restore point.`}
                   {restorable === 0 && ' Nothing stored here can be restored from.'}
+                </div>
+              )}
+              {/* The list below is everything stored here, and its count is the
+                  only number on a healthy location — so "Backups (2)" sat next
+                  to a restorable point derived from one of them with nothing
+                  reconciling the two.
+
+                  Stated as the positive on purpose. The alternative — counting
+                  the others and saying what they are — has to be right about
+                  every phase in the enum, and the obvious phrasing is wrong
+                  twice: a `Deleting` backup already ran, and the
+                  *PartiallyFailed phases mean part of the data made it (see
+                  BACKUP_PARTIAL_PHASES). Neither is "has not completed". How
+                  many are whole restore points is true regardless. */}
+              {restorable !== stored && (
+                <div className="text-xs text-theme-text-secondary mb-2">
+                  {restorable === 0
+                    ? `${stored === 1 ? 'The backup stored here is not' : `None of the ${stored} backups stored here is`} a complete restore point.`
+                    : `${restorable} of ${stored} backups stored here ${restorable === 1 ? 'is a complete restore point' : 'are complete restore points'}.`}
+                </div>
+              )}
+              {listTruncated && (
+                <div className="text-xs text-theme-text-tertiary mb-2">
+                  {`Showing the ${storedBackups.length} most recent of ${stored}.`}
                 </div>
               )}
               <RelationshipGroup
@@ -160,10 +202,16 @@ export function VeleroBSLRenderer({ data, storedBackups, lookupNote, onNavigate 
                     <>
                       Most recent restorable point: <TimeValue timestamp={newest} /> ago
                     </>
-                  ) : (
+                  ) : bslStatus.level === 'unhealthy' ? (
                     <>
                       Most recent point held here, once this location is reachable again:{' '}
                       <TimeValue timestamp={newest} /> ago
+                    </>
+                  ) : (
+                    // Unknown: do not imply it is unreachable, and do not call it
+                    // restorable either. Say what the timestamp is.
+                    <>
+                      Most recent point held here: <TimeValue timestamp={newest} /> ago
                     </>
                   )}
                 </div>

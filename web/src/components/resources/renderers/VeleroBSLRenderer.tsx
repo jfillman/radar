@@ -29,6 +29,8 @@ export function VeleroBSLRenderer({
       // Undefined while unresolved: an empty list would say this location holds
       // nothing, which is a different answer from not having looked yet.
       storedBackups={stored.isLoading || stored.error ? undefined : (stored.data?.backups ?? [])}
+      storedTotal={stored.data?.stored}
+      listTruncated={stored.data?.truncated}
       lookupNote={
         stored.error ? (
           <LookupFailureNote errors={[stored.error]} what="which backups are stored here" />

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -28,11 +29,27 @@ type VeleroStoredBackup struct {
 	Completed string `json:"completed,omitempty"`
 }
 
+// maxStoredBackupsListed bounds the list, not the counts. Velero keeps every
+// backup until its TTL expires, so an hourly schedule with a long retention
+// leaves thousands in one location — and this response backs a panel that
+// renders one chip each. Same split the policy coverage lookup makes: the counts
+// describe the location, the list is a page of it.
+const maxStoredBackupsListed = 200
+
 // VeleroStoredBackupsResponse lists what one storage location holds.
 type VeleroStoredBackupsResponse struct {
+	// Newest first, and capped at maxStoredBackupsListed. Truncated says so.
 	Backups []VeleroStoredBackup `json:"backups"`
-	// Restorable counts the backups that reached Completed. The rest are in the
-	// location's namespace but are not something to restore from.
+	// Stored is how many this location holds in total, counted before the cap —
+	// so a reader can tell a location holding 12 from one holding 12,000.
+	Stored int `json:"stored"`
+	// Truncated reports that the list above is a page. Without it a capped list
+	// reads as the whole location.
+	Truncated bool `json:"truncated,omitempty"`
+	// Restorable counts the backups that reached Completed AND have not passed
+	// their expiration. Velero deletes expired backups, so a Completed one that
+	// has aged out is not a restore point — and while its controller is down
+	// they sit here looking finished long after the data behind them went.
 	Restorable int `json:"restorable"`
 }
 
@@ -87,38 +104,90 @@ func (s *Server) handleVeleroStoredBackups(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Which location is the default one, read rather than assumed. A failure to
+	// list them is not fatal here: it only costs the fallback, and backups that
+	// name their location explicitly are unaffected.
+	defaultName := ""
+	if locs, lerr := listDynamicSynced(r.Context(), cache, "BackupStorageLocation", veleroGroup, namespace); lerr == nil {
+		defaultName = veleroDefaultLocationName(locs)
+	}
+
 	resp := VeleroStoredBackupsResponse{Backups: []VeleroStoredBackup{}}
 	for _, u := range items {
-		if u == nil || veleroBackupLocation(u) != name {
+		if u == nil || veleroBackupLocation(u, defaultName) != name {
 			continue
 		}
 		b := VeleroStoredBackup{Namespace: u.GetNamespace(), Name: u.GetName()}
 		b.Phase, _, _ = unstructured.NestedString(u.Object, "status", "phase")
 		b.Expiration, _, _ = unstructured.NestedString(u.Object, "status", "expiration")
 		b.Completed, _, _ = unstructured.NestedString(u.Object, "status", "completionTimestamp")
-		if b.Phase == "Completed" {
+		if b.Phase == "Completed" && !veleroExpired(b.Expiration) {
 			resp.Restorable++
 		}
 		resp.Backups = append(resp.Backups, b)
 	}
 	// Newest first: the question is almost always "what is the most recent thing
-	// I can restore from".
+	// I can restore from". The cap below depends on this order — the most recent
+	// restorable point is derived from this list, so the newest entries must be
+	// the ones that survive truncation.
 	sort.Slice(resp.Backups, func(i, j int) bool {
 		if resp.Backups[i].Completed != resp.Backups[j].Completed {
 			return resp.Backups[i].Completed > resp.Backups[j].Completed
 		}
 		return resp.Backups[i].Name < resp.Backups[j].Name
 	})
+	resp.Stored = len(resp.Backups)
+	if len(resp.Backups) > maxStoredBackupsListed {
+		resp.Backups = resp.Backups[:maxStoredBackupsListed]
+		resp.Truncated = true
+	}
 	s.writeJSON(w, resp)
 }
 
 // veleroBackupLocation is the storage location a Backup names, applying Velero's
-// default. An unset spec.storageLocation means the location marked default, which
-// Velero resolves at creation and records as the literal name "default" in every
-// install that has not renamed it.
-func veleroBackupLocation(u *unstructured.Unstructured) string {
+// default.
+//
+// An unset spec.storageLocation means "the location marked default", which is a
+// flag on the location (spec.default) and not a name. Assuming the literal name
+// "default" is right on most installs and silently wrong on any that renamed it
+// — and being wrong here does not look like an error, it looks like a location
+// holding nothing, which is the sentence someone reads before deciding they
+// cannot restore. So the flag is what decides, and the name is only the
+// fallback for when no location claims it.
+func veleroBackupLocation(u *unstructured.Unstructured, defaultLocation string) string {
 	if loc, ok, _ := unstructured.NestedString(u.Object, "spec", "storageLocation"); ok && loc != "" {
 		return loc
 	}
+	if defaultLocation != "" {
+		return defaultLocation
+	}
 	return "default"
+}
+
+// veleroDefaultLocationName returns the name of the location flagged
+// spec.default, or "" when none is. Velero permits at most one.
+func veleroDefaultLocationName(locations []*unstructured.Unstructured) string {
+	for _, l := range locations {
+		if l == nil {
+			continue
+		}
+		if isDefault, ok, _ := unstructured.NestedBool(l.Object, "spec", "default"); ok && isDefault {
+			return l.GetName()
+		}
+	}
+	return ""
+}
+
+// veleroExpired reports whether Velero's own expiration has passed. Same rule
+// the storage-location panel applies client-side; keeping the API's count on a
+// different rule would make two numbers describing the same thing disagree.
+func veleroExpired(expiration string) bool {
+	if expiration == "" {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, expiration)
+	if err != nil {
+		return false
+	}
+	return at.Before(time.Now())
 }

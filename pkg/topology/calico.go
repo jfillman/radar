@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 const (
@@ -49,27 +50,79 @@ func IsCalicoPolicyKind(kind NodeKind) bool {
 	return false
 }
 
-// CalicoPolicyRBACTuple returns the exact API identity for a Calico policy
-// node. The group is part of the identity because projectcalico.org and
-// crd.projectcalico.org can serve the same kind, namespace, and name.
-func CalicoPolicyRBACTuple(node *Node) (SARTuple, bool) {
+// calicoNodeAPIGroups returns every Calico API group that served a policy node.
+// A cluster running the Calico apiserver serves the same policy under both
+// groups; the node records all of them so authorization can consider each.
+// Node data survives a JSON round trip in some paths, so both the native and
+// the decoded shape have to be understood.
+func calicoNodeAPIGroups(node *Node) []string {
+	if node == nil || node.Data == nil {
+		return nil
+	}
+	var groups []string
+	switch recorded := node.Data["apiGroups"].(type) {
+	case []string:
+		groups = recorded
+	case []any:
+		for _, value := range recorded {
+			if group, ok := value.(string); ok {
+				groups = append(groups, group)
+			}
+		}
+	}
+	if len(groups) == 0 {
+		apiVersion, _ := node.Data["apiVersion"].(string)
+		if group := APIVersionGroup(apiVersion); group != "" {
+			groups = []string{group}
+		}
+	}
+	return groups
+}
+
+// CalicoPolicyRBACTuples returns the exact API identities for a Calico policy
+// node — one per group that served it. A caller authorized for any one of them
+// can genuinely read the policy, so the tuples are evaluated as alternatives.
+func CalicoPolicyRBACTuples(node *Node) ([]SARTuple, bool) {
 	if node == nil {
-		return SARTuple{}, false
+		return nil, false
 	}
 	definition, ok := calicoPolicyDefinitionForNodeKind(node.Kind)
 	if !ok || node.Data == nil {
-		return SARTuple{}, false
+		return nil, false
 	}
-	apiVersion, _ := node.Data["apiVersion"].(string)
-	group := strings.ToLower(APIVersionGroup(apiVersion))
-	if group != calicoProjectGroup && group != calicoCRDGroup {
-		return SARTuple{}, false
+	namespace := nodeNamespaceFromData(node)
+	seen := make(map[string]bool, 2)
+	var tuples []SARTuple
+	for _, group := range calicoNodeAPIGroups(node) {
+		group = strings.ToLower(group)
+		if group != calicoProjectGroup && group != calicoCRDGroup || seen[group] {
+			continue
+		}
+		seen[group] = true
+		tuples = append(tuples, SARTuple{
+			Group:     group,
+			Resource:  definition.resource,
+			Namespace: namespace,
+		})
 	}
-	return SARTuple{
-		Group:     group,
-		Resource:  definition.resource,
-		Namespace: nodeNamespaceFromData(node),
-	}, true
+	if len(tuples) == 0 {
+		return nil, false
+	}
+	return tuples, true
+}
+
+// isCalicoPolicyGVR reports whether a watched resource is one of the Calico
+// policy kinds the builder renders explicitly.
+func isCalicoPolicyGVR(gvr schema.GroupVersionResource) bool {
+	if gvr.Group != calicoProjectGroup && gvr.Group != calicoCRDGroup {
+		return false
+	}
+	for _, definition := range calicoPolicyDefinitions {
+		if definition.resource == gvr.Resource {
+			return true
+		}
+	}
+	return false
 }
 
 func calicoPolicyDefinitionForNodeKind(kind NodeKind) (calicoPolicyDefinition, bool) {
@@ -90,19 +143,24 @@ func (t *Topology) CalicoPolicyRBACTuples() []SARTuple {
 	seen := make(map[SARTuple]bool)
 	var tuples []SARTuple
 	for i := range t.Nodes {
-		tuple, ok := CalicoPolicyRBACTuple(&t.Nodes[i])
-		if !ok || seen[tuple] {
+		nodeTuples, ok := CalicoPolicyRBACTuples(&t.Nodes[i])
+		if !ok {
 			continue
 		}
-		seen[tuple] = true
-		tuples = append(tuples, tuple)
+		for _, tuple := range nodeTuples {
+			if seen[tuple] {
+				continue
+			}
+			seen[tuple] = true
+			tuples = append(tuples, tuple)
+		}
 	}
 	return tuples
 }
 
-// StripCalicoPoliciesExcept removes Calico policy nodes whose exact API
-// identity is not in allowed. Malformed Calico nodes fail closed. Native
-// NetworkPolicy nodes are intentionally untouched.
+// StripCalicoPoliciesExcept removes Calico policy nodes the caller cannot list
+// under any of the groups that served them. Malformed Calico nodes fail closed.
+// Native NetworkPolicy nodes are intentionally untouched.
 func (t *Topology) StripCalicoPoliciesExcept(allowed map[SARTuple]bool) {
 	if t == nil {
 		return
@@ -113,73 +171,93 @@ func (t *Topology) StripCalicoPoliciesExcept(allowed map[SARTuple]bool) {
 		if !IsCalicoPolicyKind(node.Kind) {
 			continue
 		}
-		tuple, ok := CalicoPolicyRBACTuple(node)
-		if !ok || !allowed[tuple] {
+		tuples, ok := CalicoPolicyRBACTuples(node)
+		if !ok {
+			deny[node.ID] = true
+			continue
+		}
+		authorized := false
+		for _, tuple := range tuples {
+			if allowed[tuple] {
+				authorized = true
+				break
+			}
+		}
+		if !authorized {
 			deny[node.ID] = true
 		}
 	}
 	t.StripNodeIDs(deny)
 }
 
-func calicoPolicyDefinitionForKind(kind string) (calicoPolicyDefinition, bool) {
-	for _, definition := range calicoPolicyDefinitions {
-		if strings.EqualFold(definition.kind, kind) || strings.EqualFold(string(definition.nodeKind), kind) {
-			return definition, true
-		}
-	}
-	return calicoPolicyDefinition{}, false
-}
-
 func calicoPolicyNodeID(kind NodeKind, namespace, name string) string {
 	return strings.ToLower(string(kind)) + "/" + namespace + "/" + name
 }
 
-// reserveCalicoPolicyNodeID keeps the common ID compact, but adds the API
-// group only when the legacy and modern Calico APIs expose the same identity.
-// Both groups can be served during an upgrade, so dropping the group from the
-// ID unconditionally would make one policy overwrite the other in indexes.
-func reserveCalicoPolicyNodeID(nodes []Node, edges []Edge, kind NodeKind, namespace, name, group string) (string, []Node, []Edge, bool) {
-	baseID := calicoPolicyNodeID(kind, namespace, name)
-	duplicate := false
+// recordCalicoPolicyGroup folds a policy that a second API group also serves
+// into the node already built for it, and reports whether it did. A cluster
+// running the Calico apiserver serves every policy under both
+// projectcalico.org and crd.projectcalico.org — they are two views of one
+// stored object, so rendering one node per group would double every policy and
+// every edge it draws. The extra group is kept in node data because the two are
+// authorized independently.
+func recordCalicoPolicyGroup(nodes []Node, kind NodeKind, namespace, name, group string) bool {
 	for i := range nodes {
 		node := &nodes[i]
 		if node.Kind != kind || node.Name != name || nodeNamespaceFromData(node) != namespace {
 			continue
 		}
-		existingGroup := nodeAPIGroupFromData(node)
-		if existingGroup == group {
-			return "", nodes, edges, true
+		if node.Data == nil {
+			node.Data = map[string]any{}
 		}
-		duplicate = true
-		if node.ID == baseID {
-			qualifiedID := baseID + "/" + existingGroup
-			for edgeIndex := range edges {
-				edge := &edges[edgeIndex]
-				oldSource, oldTarget := edge.Source, edge.Target
-				if oldSource == baseID {
-					edge.Source = qualifiedID
-				}
-				if oldTarget == baseID {
-					edge.Target = qualifiedID
-				}
-				if edge.ID == oldSource+"-to-"+oldTarget {
-					edge.ID = edge.Source + "-to-" + edge.Target
-				}
+		groups, _ := node.Data["apiGroups"].([]string)
+		for _, existing := range groups {
+			if existing == group {
+				return true
 			}
-			node.ID = qualifiedID
 		}
+		node.Data["apiGroups"] = append(groups, group)
+		return true
 	}
-	if duplicate {
-		return baseID + "/" + group, nodes, edges, false
-	}
-	return baseID, nodes, edges, false
+	return false
 }
 
 type calicoWorkload struct {
 	id             string
 	namespace      string
 	labels         map[string]string
+	endpointLabels map[string]string
 	serviceAccount string
+}
+
+func newCalicoWorkload(id, namespace string, workloadLabels map[string]string, serviceAccount string) calicoWorkload {
+	return calicoWorkload{
+		id:             id,
+		namespace:      namespace,
+		labels:         workloadLabels,
+		endpointLabels: CalicoEndpointLabels(namespace, workloadLabels),
+		serviceAccount: serviceAccount,
+	}
+}
+
+// CalicoStagedActionPreviewsProtection reports whether a staged policy is a
+// preview of protection that would exist once promoted. Delete is not: it
+// previews removing a policy, and the Calico API requires its spec to be
+// otherwise empty, so its absent selector would otherwise read as "selects every
+// workload". Ignore means the staged policy is skipped altogether. Any other
+// action, including one Calico adds later, is treated as a preview — omitting a
+// real preview is the worse error.
+func CalicoStagedActionPreviewsProtection(policy *unstructured.Unstructured) bool {
+	if policy == nil {
+		return false
+	}
+	action, _, _ := unstructured.NestedString(policy.Object, "spec", "stagedAction")
+	switch strings.ToLower(action) {
+	case "delete", "ignore":
+		return false
+	default:
+		return true
+	}
 }
 
 // CalicoEndpointLabels returns the labels Calico exposes for a Kubernetes
@@ -559,64 +637,112 @@ func calicoServiceAccountLabels(serviceAccount *corev1.ServiceAccount) map[strin
 	return labels
 }
 
-func calicoPolicyMatchesWorkload(policy *unstructured.Unstructured, definition calicoPolicyDefinition, workload calicoWorkload, namespaceLabels map[string]string, serviceAccounts map[string]map[string]string) (matched, endpointSelectorValid bool) {
-	if definition.kubernetes {
-		return calicoKubernetesPolicyMatchesWorkload(policy, workload.labels)
-	}
-	return CalicoPolicyMatchesWorkload(
-		policy,
-		CalicoEndpointLabels(workload.namespace, workload.labels),
-		namespaceLabels,
-		workload.serviceAccount,
-		serviceAccounts[workload.namespace+"/"+workload.serviceAccount],
-	)
+// CalicoPolicyMatcher is one policy's selectors, compiled. Compiling a selector
+// costs roughly eighty times what evaluating it does, and every policy is
+// evaluated against every workload, so the compile must happen once per policy
+// rather than once per pair.
+type CalicoPolicyMatcher struct {
+	kubernetes         bool
+	kubernetesSelector labels.Selector
+
+	endpoint      calicoSelectorExpr
+	endpointValid bool
+
+	// blocked records a selector that is present but unusable. It cannot match
+	// anything, yet it says nothing about the endpoint selector's validity.
+	blocked bool
+
+	namespaceSelector      calicoSelectorExpr
+	serviceAccountSelector calicoSelectorExpr
 }
 
-func CalicoPolicyMatchesWorkload(policy *unstructured.Unstructured, workloadLabels, namespaceLabels map[string]string, serviceAccountName string, serviceAccountLabels map[string]string) (matched, endpointSelectorValid bool) {
-	if isStagedKubernetesNetworkPolicy(policy) {
-		return calicoKubernetesPolicyMatchesWorkload(policy, workloadLabels)
+// CompileCalicoPolicyMatcher compiles a policy's selectors once so it can be
+// tested against many workloads.
+func CompileCalicoPolicyMatcher(policy *unstructured.Unstructured) *CalicoPolicyMatcher {
+	matcher := &CalicoPolicyMatcher{}
+	if policy == nil {
+		return matcher
 	}
+	if isStagedKubernetesNetworkPolicy(policy) {
+		matcher.kubernetes = true
+		selector, ok := calicoKubernetesPodSelector(policy)
+		if !ok {
+			return matcher
+		}
+		matcher.kubernetesSelector = selector
+		matcher.endpointValid = true
+		return matcher
+	}
+
 	selector, found, err := unstructured.NestedString(policy.Object, "spec", "selector")
 	if err != nil {
-		return false, false
+		return matcher
 	}
 	if !found {
 		selector = ""
 	}
-	endpointMatcher, valid := compileCalicoSelector(selector)
+	endpoint, valid := compileCalicoSelector(selector)
 	if !valid {
-		return false, false
+		return matcher
 	}
-	if !endpointMatcher(workloadLabels) {
-		return false, true
-	}
+	matcher.endpoint = endpoint
+	matcher.endpointValid = true
 
 	namespaceSelector, found, err := unstructured.NestedString(policy.Object, "spec", "namespaceSelector")
-	if err != nil {
-		return false, true
-	}
-	if found && !isCalicoAllSelector(namespaceSelector) {
-		matcher, selectorOK := compileCalicoSelector(namespaceSelector)
-		if !selectorOK || namespaceLabels == nil || !matcher(namespaceLabels) {
-			return false, true
+	switch {
+	case err != nil:
+		matcher.blocked = true
+	case found && !isCalicoAllSelector(namespaceSelector):
+		compiled, ok := compileCalicoSelector(namespaceSelector)
+		if !ok {
+			matcher.blocked = true
+		} else {
+			matcher.namespaceSelector = compiled
 		}
 	}
 
 	serviceAccountSelector, found, err := unstructured.NestedString(policy.Object, "spec", "serviceAccountSelector")
-	if err != nil {
-		return false, true
-	}
-	if found && !isCalicoAllSelector(serviceAccountSelector) {
-		matcher, selectorOK := compileCalicoSelector(serviceAccountSelector)
-		if !selectorOK || serviceAccountName == "" {
-			return false, true
-		}
-		if serviceAccountLabels == nil || !matcher(serviceAccountLabels) {
-			return false, true
+	switch {
+	case err != nil:
+		matcher.blocked = true
+	case found && !isCalicoAllSelector(serviceAccountSelector):
+		compiled, ok := compileCalicoSelector(serviceAccountSelector)
+		if !ok {
+			matcher.blocked = true
+		} else {
+			matcher.serviceAccountSelector = compiled
 		}
 	}
 
+	return matcher
+}
+
+// Matches reports whether the policy selects the workload, and whether its
+// endpoint selector was usable at all. An unusable endpoint selector is the
+// only case a caller must treat as "unknown" rather than "not selected".
+func (m *CalicoPolicyMatcher) Matches(workloadLabels, namespaceLabels map[string]string, serviceAccountName string, serviceAccountLabels map[string]string) (matched, endpointSelectorValid bool) {
+	if m == nil || !m.endpointValid {
+		return false, false
+	}
+	if m.kubernetes {
+		return m.kubernetesSelector.Matches(labels.Set(workloadLabels)), true
+	}
+	if !m.endpoint(workloadLabels) || m.blocked {
+		return false, true
+	}
+	if m.namespaceSelector != nil && (namespaceLabels == nil || !m.namespaceSelector(namespaceLabels)) {
+		return false, true
+	}
+	if m.serviceAccountSelector != nil {
+		if serviceAccountName == "" || serviceAccountLabels == nil || !m.serviceAccountSelector(serviceAccountLabels) {
+			return false, true
+		}
+	}
 	return true, true
+}
+
+func CalicoPolicyMatchesWorkload(policy *unstructured.Unstructured, workloadLabels, namespaceLabels map[string]string, serviceAccountName string, serviceAccountLabels map[string]string) (matched, endpointSelectorValid bool) {
+	return CompileCalicoPolicyMatcher(policy).Matches(workloadLabels, namespaceLabels, serviceAccountName, serviceAccountLabels)
 }
 
 func isStagedKubernetesNetworkPolicy(policy *unstructured.Unstructured) bool {
@@ -762,7 +888,7 @@ func (b *Builder) addCalicoPolicyNodes(
 			if sa == "" {
 				sa = "default"
 			}
-			targets = append(targets, calicoWorkload{id: id, namespace: deployment.Namespace, labels: deployment.Spec.Template.Labels, serviceAccount: sa})
+			targets = append(targets, newCalicoWorkload(id, deployment.Namespace, deployment.Spec.Template.Labels, sa))
 		}
 	}
 	for _, statefulSet := range statefulsets {
@@ -771,7 +897,7 @@ func (b *Builder) addCalicoPolicyNodes(
 			if sa == "" {
 				sa = "default"
 			}
-			targets = append(targets, calicoWorkload{id: id, namespace: statefulSet.Namespace, labels: statefulSet.Spec.Template.Labels, serviceAccount: sa})
+			targets = append(targets, newCalicoWorkload(id, statefulSet.Namespace, statefulSet.Spec.Template.Labels, sa))
 		}
 	}
 	for _, daemonSet := range daemonsets {
@@ -784,7 +910,7 @@ func (b *Builder) addCalicoPolicyNodes(
 			if sa == "" {
 				sa = "default"
 			}
-			targets = append(targets, calicoWorkload{id: id, namespace: daemonSet.Namespace, labels: daemonSet.Spec.Template.Labels, serviceAccount: sa})
+			targets = append(targets, newCalicoWorkload(id, daemonSet.Namespace, daemonSet.Spec.Template.Labels, sa))
 		}
 	}
 
@@ -838,19 +964,22 @@ func (b *Builder) addCalicoPolicyNodes(
 					}
 				}
 
-				nodeID, updatedNodes, updatedEdges, duplicate := reserveCalicoPolicyNodeID(
-					nodes, edges, definition.nodeKind, namespace, policy.GetName(), group,
-				)
-				nodes, edges = updatedNodes, updatedEdges
-				if duplicate {
+				if recordCalicoPolicyGroup(nodes, definition.nodeKind, namespace, policy.GetName(), group) {
 					continue
 				}
+				nodeData["apiGroups"] = []string{group}
+				nodeID := calicoPolicyNodeID(definition.nodeKind, namespace, policy.GetName())
 				status := StatusHealthy
 				if definition.staged {
 					status = StatusNeutral
 				}
 				nodes = append(nodes, Node{ID: nodeID, Kind: definition.nodeKind, Name: policy.GetName(), Status: status, Data: nodeData})
 
+				if definition.staged && !CalicoStagedActionPreviewsProtection(policy) {
+					continue
+				}
+
+				matcher := CompileCalicoPolicyMatcher(policy)
 				endpointAll := calicoPolicyMatchesAllWorkloads(policy, definition)
 				if endpointAll {
 					nodeData["matchesAllPods"] = true
@@ -860,7 +989,16 @@ func (b *Builder) addCalicoPolicyNodes(
 					if definition.namespaced && target.namespace != namespace {
 						continue
 					}
-					matched, selectorValid := calicoPolicyMatchesWorkload(policy, definition, target, namespaceLabels[target.namespace], serviceAccounts)
+					workloadLabels := target.endpointLabels
+					if definition.kubernetes {
+						workloadLabels = target.labels
+					}
+					matched, selectorValid := matcher.Matches(
+						workloadLabels,
+						namespaceLabels[target.namespace],
+						target.serviceAccount,
+						serviceAccounts[target.namespace+"/"+target.serviceAccount],
+					)
 					if !selectorValid || !matched {
 						continue
 					}

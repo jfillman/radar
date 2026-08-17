@@ -120,15 +120,13 @@ func GetCascadeDeletePreview(root ResourceRef, topo *Topology, dp DynamicProvide
 
 	rootNode, ok := nodeByID[rootID]
 	if root.Group != "" {
-		if ok && nodeAPIGroupFromData(rootNode) != root.Group {
+		if ok && !nodeMatchesAPIGroup(rootNode, root.Group) {
 			ok = false
 		}
 		if !ok {
-			// Calico's legacy and modern APIs can contain the same identity.
-			// Their topology IDs are group-qualified only once that collision is
-			// observed, so the deterministic kind/ns/name ID above may not exist.
-			// Resolve against the node's recorded API group instead of falling
-			// back to whichever duplicate was inserted last.
+			// Two CRDs can share a lowercase plural, so the deterministic
+			// kind/ns/name ID may resolve to the wrong API group. Resolve
+			// against each node's recorded API group instead.
 			if matched, _ := findNodeByRef(topo.Nodes, root); matched != nil {
 				rootNode = matched
 				rootID = matched.ID

@@ -8199,10 +8199,7 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 		"nodepool": true, "nodeclaim": true, // Karpenter
 		"ec2nodeclass": true, "aksnodeclass": true, "gcenodeclass": true, // Karpenter NodeClass
 		"scaledobject": true, "scaledjob": true, // KEDA
-		"networkpolicy": true, "globalnetworkpolicy": true,
-		"stagednetworkpolicy": true, "stagedglobalnetworkpolicy": true,
-		"stagedkubernetesnetworkpolicy": true,                                  // Calico
-		"workflowtemplate":              true, "clusterworkflowtemplate": true, // Argo Workflows
+		"workflowtemplate": true, "clusterworkflowtemplate": true, // Argo Workflows
 		"gatewayclass":   true,                                                // Gateway API
 		"virtualservice": true, "destinationrule": true, "serviceentry": true, // Istio networking
 		"peerauthentication": true, "authorizationpolicy": true, // Istio security
@@ -8269,8 +8266,13 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 		}
 		kindLower := strings.ToLower(kind)
 
-		// Skip if already processed or not a CRD
+		// Skip if already processed or not a CRD. Calico's policy kinds are
+		// skipped by group rather than by name: other CNIs serve a CRD called
+		// NetworkPolicy under their own group and still need generic nodes.
 		if processedKinds[kindLower] {
+			continue
+		}
+		if isCalicoPolicyGVR(gvr) {
 			continue
 		}
 		if !resourceDiscovery.IsCRD(kind) {

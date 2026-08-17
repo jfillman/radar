@@ -273,11 +273,11 @@ func RBACTuplesForNode(n *Node, disc PseudoKindDiscoveryLookup) (decision NodeRB
 	ns := nodeNamespaceFromData(n)
 	if ns != "" {
 		if IsCalicoPolicyKind(n.Kind) {
-			tuple, ok := CalicoPolicyRBACTuple(n)
+			tuples, ok := CalicoPolicyRBACTuples(n)
 			if !ok {
 				return NodeRBACDeny, nil
 			}
-			return NodeRBACCheckTuples, []SARTuple{tuple}
+			return NodeRBACCheckTuples, tuples
 		}
 		if n.Kind == KindSecret {
 			return NodeRBACCheckTuples, []SARTuple{{Group: "", Resource: "secrets", Namespace: ns}}
@@ -286,11 +286,11 @@ func RBACTuplesForNode(n *Node, disc PseudoKindDiscoveryLookup) (decision NodeRB
 	}
 
 	if IsCalicoPolicyKind(n.Kind) {
-		tuple, ok := CalicoPolicyRBACTuple(n)
+		tuples, ok := CalicoPolicyRBACTuples(n)
 		if !ok {
 			return NodeRBACDeny, nil
 		}
-		return NodeRBACCheckTuples, []SARTuple{tuple}
+		return NodeRBACCheckTuples, tuples
 	}
 
 	// NodeClass provider kinds are open-ended. The builder resolves each

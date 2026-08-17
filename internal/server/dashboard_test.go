@@ -276,3 +276,62 @@ func dashboardTestCalicoPolicy(gvr schema.GroupVersionResource, kind, namespace,
 		"spec":       spec,
 	}}
 }
+
+func TestDashboardStagedDeletionRemovesProjectedCoverage(t *testing.T) {
+	deployment := dashboardTestDeployment("ns-a", "frontend", "frontend")
+	core, err := k8score.NewResourceCache(k8score.CacheConfig{
+		Client:        kubernetesfake.NewSimpleClientset(deployment),
+		ResourceTypes: map[string]bool{k8score.Deployments: true},
+		DeferredTypes: map[string]bool{},
+		SyncTimeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache: %v", err)
+	}
+	t.Cleanup(core.Stop)
+	cache := &k8s.ResourceCache{ResourceCache: core}
+
+	networkPolicy := schema.GroupVersionResource{Group: "projectcalico.org", Version: "v3", Resource: "networkpolicies"}
+	stagedNetworkPolicy := schema.GroupVersionResource{Group: "projectcalico.org", Version: "v3", Resource: "stagednetworkpolicies"}
+	resources := []k8s.APIResource{
+		{Group: networkPolicy.Group, Version: networkPolicy.Version, Kind: "NetworkPolicy", Name: networkPolicy.Resource, Namespaced: true, IsCRD: true, Verbs: []string{"get", "list", "watch"}},
+		{Group: stagedNetworkPolicy.Group, Version: stagedNetworkPolicy.Version, Kind: "StagedNetworkPolicy", Name: stagedNetworkPolicy.Resource, Namespaced: true, IsCRD: true, Verbs: []string{"get", "list", "watch"}},
+	}
+	listKinds := map[schema.GroupVersionResource]string{
+		networkPolicy:       "NetworkPolicyList",
+		stagedNetworkPolicy: "StagedNetworkPolicyList",
+	}
+	objects := []runtime.Object{
+		dashboardTestCalicoPolicy(networkPolicy, "NetworkPolicy", "ns-a", "frontend-policy", map[string]any{"selector": "app == 'frontend'"}),
+		// Staging a deletion of that same policy. The Calico API requires the rest
+		// of the spec to be empty, so the absent selector must not be read as one
+		// that selects everything.
+		dashboardTestCalicoPolicy(stagedNetworkPolicy, "StagedNetworkPolicy", "ns-a", "frontend-policy", map[string]any{"stagedAction": "Delete"}),
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, objects...)
+	if err := k8s.InitTestDynamicResourceCache(dyn, resources); err != nil {
+		t.Fatalf("InitTestDynamicResourceCache: %v", err)
+	}
+	t.Cleanup(k8s.ResetTestDynamicState)
+
+	dynamicCache := k8s.GetDynamicResourceCache()
+	for _, gvr := range []schema.GroupVersionResource{networkPolicy, stagedNetworkPolicy} {
+		if _, err := dynamicCache.List(gvr, ""); err != nil {
+			t.Fatalf("List(%v): %v", gvr, err)
+		}
+		if !dynamicCache.WaitForSync(gvr, 2*time.Second) {
+			t.Fatalf("%v informer did not sync", gvr)
+		}
+	}
+
+	got := (&Server{}).getDashboardNetworkPolicyCoverage(requestWithUser("GET", "/", nil), cache, nil)
+	if got == nil {
+		t.Fatal("coverage is nil")
+	}
+	if got.CoveredWorkloads != 1 {
+		t.Fatalf("CoveredWorkloads = %d, want the enforced policy to still count", got.CoveredWorkloads)
+	}
+	if got.CoveredWorkloadsIfStaged != 0 {
+		t.Fatalf("CoveredWorkloadsIfStaged = %d, want 0 once the policy is staged for deletion", got.CoveredWorkloadsIfStaged)
+	}
+}

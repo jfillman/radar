@@ -211,11 +211,17 @@ func TestClientCanSeeChange_Authorizer(t *testing.T) {
 }
 
 func TestAuthorizedCalicoPolicyTuplesFilterSSETopologyByExactGroup(t *testing.T) {
-	projectID := "calicoglobalnetworkpolicy//shared/projectcalico.org"
-	legacyID := "calicoglobalnetworkpolicy//shared/crd.projectcalico.org"
+	sharedID := "calicoglobalnetworkpolicy//shared"
+	legacyOnlyID := "calicoglobalnetworkpolicy//legacy-only"
 	topo := &topology.Topology{Nodes: []topology.Node{
-		{ID: projectID, Kind: topology.KindCalicoGlobalNetworkPolicy, Name: "shared", Data: map[string]any{"apiVersion": "projectcalico.org/v3"}},
-		{ID: legacyID, Kind: topology.KindCalicoGlobalNetworkPolicy, Name: "shared", Data: map[string]any{"apiVersion": "crd.projectcalico.org/v1"}},
+		{ID: sharedID, Kind: topology.KindCalicoGlobalNetworkPolicy, Name: "shared", Data: map[string]any{
+			"apiVersion": "projectcalico.org/v3",
+			"apiGroups":  []string{"projectcalico.org", "crd.projectcalico.org"},
+		}},
+		{ID: legacyOnlyID, Kind: topology.KindCalicoGlobalNetworkPolicy, Name: "legacy-only", Data: map[string]any{
+			"apiVersion": "crd.projectcalico.org/v1",
+			"apiGroups":  []string{"crd.projectcalico.org"},
+		}},
 	}}
 
 	allowed := authorizedCalicoPolicyTuples(topo, func(group, resource, namespace, verb string) bool {
@@ -223,7 +229,20 @@ func TestAuthorizedCalicoPolicyTuplesFilterSSETopologyByExactGroup(t *testing.T)
 	})
 	filtered := cloneTopology(topo)
 	filtered.StripCalicoPoliciesExcept(allowed)
-	if len(filtered.Nodes) != 1 || filtered.Nodes[0].ID != projectID {
-		t.Fatalf("SSE Calico filter nodes = %+v, want project group only", filtered.Nodes)
+	if len(filtered.Nodes) != 1 || filtered.Nodes[0].ID != sharedID {
+		t.Fatalf("SSE Calico filter nodes = %+v, want only the policy the caller can list", filtered.Nodes)
+	}
+}
+
+func TestAuthorizedCalicoPolicyTuplesFailClosedWithoutAnAuthorizer(t *testing.T) {
+	topo := &topology.Topology{Nodes: []topology.Node{{
+		ID: "calicoglobalnetworkpolicy//shared", Kind: topology.KindCalicoGlobalNetworkPolicy, Name: "shared",
+		Data: map[string]any{"apiVersion": "projectcalico.org/v3", "apiGroups": []string{"projectcalico.org"}},
+	}}}
+
+	filtered := cloneTopology(topo)
+	filtered.StripCalicoPoliciesExcept(authorizedCalicoPolicyTuples(topo, nil))
+	if len(filtered.Nodes) != 0 {
+		t.Fatalf("Calico nodes survived a missing authorizer = %+v", filtered.Nodes)
 	}
 }

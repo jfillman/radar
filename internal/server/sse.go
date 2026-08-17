@@ -914,15 +914,15 @@ func authorizedClusterScopedDynamicTuples(topo *topology.Topology, authorize fun
 
 // authorizedCalicoPolicyTuples applies the client's exact API-group and
 // namespace authorization to the Calico policy identities present in a
-// topology. A nil authorizer is used by direct broadcaster tests and means no
-// additional user-level filtering.
+// topology. A missing authorizer authorizes nothing, matching how the NodeClass
+// and cluster-scoped dynamic filters treat it.
 func authorizedCalicoPolicyTuples(topo *topology.Topology, authorize func(group, resource, namespace, verb string) bool) map[topology.SARTuple]bool {
 	allowed := make(map[topology.SARTuple]bool)
-	if topo == nil {
+	if topo == nil || authorize == nil {
 		return allowed
 	}
 	for _, tuple := range topo.CalicoPolicyRBACTuples() {
-		if authorize == nil || authorize(tuple.Group, tuple.Resource, tuple.Namespace, "list") {
+		if authorize(tuple.Group, tuple.Resource, tuple.Namespace, "list") {
 			allowed[tuple] = true
 		}
 	}

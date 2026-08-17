@@ -1562,19 +1562,47 @@ type DashboardNetworkPolicyCoverage struct {
 	TotalPolicies            int `json:"totalPolicies"`
 	StagedPolicies           int `json:"stagedPolicies,omitempty"`
 	CoveredWorkloads         int `json:"coveredWorkloads"`
-	CoveredWorkloadsIfStaged int `json:"coveredWorkloadsIfStaged,omitempty"`
+	CoveredWorkloadsIfStaged int `json:"coveredWorkloadsIfStaged"`
 	TotalWorkloads           int `json:"totalWorkloads"`
 }
 
 type npSelector struct {
 	namespace string
+	name      string
 	selector  labels.Selector
 }
 
 type dashboardCalicoPolicy struct {
 	policy     *unstructured.Unstructured
+	matcher    *topology.CalicoPolicyMatcher
+	kind       string
 	namespaced bool
 	staged     bool
+	// previewsProtection is false for the staged actions that describe removing
+	// or ignoring a policy rather than adding one.
+	previewsProtection bool
+}
+
+// stagedPolicyTarget identifies the enforced policy a staged one refers to.
+type stagedPolicyTarget struct {
+	kind      string
+	namespace string
+	name      string
+}
+
+// enforcedKindForStagedKind maps a staged Calico kind to the enforced kind it
+// stages a change to. A StagedKubernetesNetworkPolicy stages a change to a core
+// Kubernetes NetworkPolicy, not to a Calico one.
+func enforcedKindForStagedKind(kind string) string {
+	switch kind {
+	case "StagedNetworkPolicy":
+		return "NetworkPolicy"
+	case "StagedGlobalNetworkPolicy":
+		return "GlobalNetworkPolicy"
+	case "StagedKubernetesNetworkPolicy":
+		return "KubernetesNetworkPolicy"
+	}
+	return ""
 }
 
 type dashboardPolicyWorkload struct {
@@ -1618,7 +1646,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 				if err != nil {
 					continue
 				}
-				allNPs = append(allNPs, npSelector{np.Namespace, sel})
+				allNPs = append(allNPs, npSelector{np.Namespace, np.Name, sel})
 			}
 		} else {
 			for _, ns := range readableNamespaces {
@@ -1632,7 +1660,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 					if err != nil {
 						continue
 					}
-					allNPs = append(allNPs, npSelector{np.Namespace, sel})
+					allNPs = append(allNPs, npSelector{np.Namespace, np.Name, sel})
 				}
 			}
 		}
@@ -1659,7 +1687,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 						}
 						selectorMap, _, _ := unstructured.NestedMap(cnp.Object, "spec", "endpointSelector", "matchLabels")
 						if len(selectorMap) == 0 {
-							allNPs = append(allNPs, npSelector{ns, labels.Everything()})
+							allNPs = append(allNPs, npSelector{ns, cnp.GetName(), labels.Everything()})
 						} else {
 							selectorLabels := make(map[string]string)
 							for k, v := range selectorMap {
@@ -1668,7 +1696,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 								}
 							}
 							if sel, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: selectorLabels}); err == nil {
-								allNPs = append(allNPs, npSelector{ns, sel})
+								allNPs = append(allNPs, npSelector{ns, cnp.GetName(), sel})
 							}
 						}
 					}
@@ -1715,7 +1743,14 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 							continue
 						}
 						seenCalicoPolicies[identity] = struct{}{}
-						calicoPolicies = append(calicoPolicies, dashboardCalicoPolicy{policy: policy, namespaced: definition.namespaced, staged: definition.staged})
+						calicoPolicies = append(calicoPolicies, dashboardCalicoPolicy{
+							policy:             policy,
+							matcher:            topology.CompileCalicoPolicyMatcher(policy),
+							kind:               definition.kind,
+							namespaced:         definition.namespaced,
+							staged:             definition.staged,
+							previewsProtection: !definition.staged || topology.CalicoStagedActionPreviewsProtection(policy),
+						})
 					}
 				}
 			}
@@ -1814,12 +1849,32 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 		}
 	}
 
+	// A staged deletion is a preview of protection going away, so the enforced
+	// policy it names must not count towards the projected coverage.
+	stagedForDeletion := make(map[stagedPolicyTarget]bool)
+	for _, policy := range calicoPolicies {
+		if !policy.staged || policy.previewsProtection {
+			continue
+		}
+		enforcedKind := enforcedKindForStagedKind(policy.kind)
+		if enforcedKind == "" {
+			continue
+		}
+		stagedForDeletion[stagedPolicyTarget{
+			kind:      enforcedKind,
+			namespace: policy.policy.GetNamespace(),
+			name:      policy.policy.GetName(),
+		}] = true
+	}
+
 	for _, workload := range workloads {
 		for _, np := range allNPs {
-			if np.namespace == workload.namespace && np.selector.Matches(labels.Set(workload.labels)) {
-				covered[workload.key] = true
+			if np.namespace != workload.namespace || !np.selector.Matches(labels.Set(workload.labels)) {
+				continue
+			}
+			covered[workload.key] = true
+			if !stagedForDeletion[stagedPolicyTarget{kind: "KubernetesNetworkPolicy", namespace: np.namespace, name: np.name}] {
 				coveredIfStaged[workload.key] = true
-				break
 			}
 		}
 		calicoEndpointLabels := topology.CalicoEndpointLabels(workload.namespace, workload.labels)
@@ -1828,11 +1883,10 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 				continue
 			}
 			policyLabels := calicoEndpointLabels
-			if strings.EqualFold(policy.policy.GetKind(), "StagedKubernetesNetworkPolicy") {
+			if strings.EqualFold(policy.kind, "StagedKubernetesNetworkPolicy") {
 				policyLabels = workload.labels
 			}
-			matched, valid := topology.CalicoPolicyMatchesWorkload(
-				policy.policy,
+			matched, valid := policy.matcher.Matches(
 				policyLabels,
 				namespaceLabels[workload.namespace],
 				workload.serviceAccount,
@@ -1841,9 +1895,15 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 			if !valid || !matched {
 				continue
 			}
-			coveredIfStaged[workload.key] = true
-			if !policy.staged {
-				covered[workload.key] = true
+			if policy.staged {
+				if policy.previewsProtection {
+					coveredIfStaged[workload.key] = true
+				}
+				continue
+			}
+			covered[workload.key] = true
+			if !stagedForDeletion[stagedPolicyTarget{kind: policy.kind, namespace: policy.policy.GetNamespace(), name: policy.policy.GetName()}] {
+				coveredIfStaged[workload.key] = true
 			}
 		}
 	}

@@ -218,11 +218,16 @@ loadtest: frontend embed
 # Bootstrap a kind cluster pre-loaded with curated Velero fixtures (all 13
 # Backup phases, the supersession series, a paused+invalid Schedule, an
 # unavailable BSL, a restic repository, and the rancher plural collision).
-# The Velero controller is deliberately scaled to 0 — the failure phases
-# cannot be produced without real object storage, so status is written
-# directly. See scripts/velero-demo/README.md for the coverage matrix.
+# The Velero controller is deliberately scaled to 0, so the fixtures' own
+# status survives and all thirteen phases are on screen at once. Run
+# ./scripts/velero-demo.sh live for the other half: MinIO plus a running
+# controller, which earns the states instead of asserting them.
+# See scripts/velero-demo/README.md for the coverage matrix.
 velero-demo:
 	./scripts/velero-demo.sh up
+
+velero-demo-live:
+	./scripts/velero-demo.sh live
 
 velero-demo-down:
 	./scripts/velero-demo.sh down
@@ -384,6 +389,8 @@ help:
 	@echo "  make kyverno-demo     - Live Kyverno policy + report fixtures"
 	@echo "  make cnpg-demo        - Frozen CNPG rendering fixtures"
 	@echo "  make cnpg-demo-live   - CNPG fixtures with the operator running"
+	@echo "  make velero-demo      - Velero fixtures, all 13 backup phases at once"
+	@echo "  make velero-demo-live - Velero with real object storage; states produced by the controller"
 	@echo "  make beyla-demo       - Grafana Beyla eBPF traffic fixtures"
 	@echo ""
 	@echo "Desktop:"

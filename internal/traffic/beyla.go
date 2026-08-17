@@ -343,9 +343,9 @@ func (p l4LabelPresence) warning(flowCount int) string {
 	// sees UDP but cannot place it" is the only honest explanation for an empty
 	// graph.
 	if p.hiddenUDP {
-		parts = append(parts, "Some traffic is not shown: Beyla reports it as direction=unknown on both "+
-			"sides of the conversation — which is where UDP such as DNS lands — so which end initiated it "+
-			"cannot be determined, and drawing it would invent an arrow.")
+		parts = append(parts, "Traffic Beyla reports as direction=unknown on both sides of the "+
+			"conversation — which is where UDP such as DNS lands — is left out, because which end "+
+			"initiated it cannot be determined and drawing it would invent an arrow.")
 	}
 
 	return strings.Join(parts, " ")

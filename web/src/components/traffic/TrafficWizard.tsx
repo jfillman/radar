@@ -209,7 +209,9 @@ export function TrafficWizard({
               <AlertBanner
                 key={source.name}
                 variant="warning"
-                title={`${source.name}${source.version ? ` ${source.version}` : ''} is installed but not usable`}
+                // Source names are lowercase ids; the block this replaced applied a
+                // capitalize class, which an AlertBanner title (a plain string) cannot.
+                title={`${source.name.charAt(0).toUpperCase()}${source.name.slice(1)}${source.version ? ` ${source.version}` : ''} is installed but not usable`}
                 message={source.message}
               />
             ))}

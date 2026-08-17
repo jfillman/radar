@@ -1177,7 +1177,7 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
                 >
                   <AlertBanner
                     variant="warning"
-                    title="Some traffic isn't shown"
+                    title="This map is incomplete"
                     message={flowsData.warning}
                   />
                 </div>

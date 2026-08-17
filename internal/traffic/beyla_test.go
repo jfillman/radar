@@ -403,10 +403,10 @@ func TestBeylaSource_GetFlows_WarningKindSeparatesRetryableFromPermanent(t *test
 	})
 }
 
-func TestBeylaSource_DiagnosticsProbe_SkippedWithoutDiagnosticsAndCachedWithThem(t *testing.T) {
-	// StreamFlows has nowhere to put a warning, so it must not pay for one. And on
-	// the REST path the answer describes Beyla's configuration, not its traffic, so
-	// it is cached rather than re-queried on every poll.
+func TestBeylaSource_DiagnosticsProbe_SkippedOnTheStreamPath(t *testing.T) {
+	// StreamFlows has nowhere to put a warning, so it must not pay for one. That
+	// skip is also what makes the probe affordable uncached: the REST path is a
+	// user-triggered snapshot, not a poll.
 	var probes int
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
@@ -424,19 +424,56 @@ func TestBeylaSource_DiagnosticsProbe_SkippedWithoutDiagnosticsAndCachedWithThem
 		t.Fatalf("the stream path must not run the diagnostics probe, ran it %d time(s)", probes)
 	}
 
-	for i := 0; i < 3; i++ {
-		if _, err := src.GetFlows(context.Background(), FlowOptions{}); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+	if _, err := src.GetFlows(context.Background(), FlowOptions{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if probes != 1 {
-		t.Errorf("expected the probe to be cached after the first call, ran it %d times", probes)
+		t.Errorf("the REST path must run it, ran it %d time(s)", probes)
 	}
 }
 
-func TestBeylaSource_DiagnosticsProbe_FailureIsNotCached(t *testing.T) {
-	// A failed probe is not an answer. Caching it would suppress the warning for a
-	// whole TTL because Prometheus blipped once.
+func TestBeylaSource_DiagnosticsProbe_NotCachedAcrossCalls(t *testing.T) {
+	// The probe reports on current traffic, not on how Beyla is configured, so a
+	// cached answer goes stale as soon as such traffic starts. It was cached once,
+	// which meant traffic appearing after the first call stayed unmentioned.
+	var probes int
+	hidden := false
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			probes++
+			if hidden {
+				return promResult("vector", promSeries(map[string]string{}, 2)), nil
+			}
+			return emptyResult(), nil
+		}
+		return emptyResult(), nil
+	}
+
+	first, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(first.Warning, "direction=unknown") {
+		t.Fatal("nothing was hidden yet, so nothing should have been claimed")
+	}
+
+	hidden = true
+	second, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(second.Warning, "direction=unknown") {
+		t.Error("traffic that started after the first call must still be reported")
+	}
+	if probes != 2 {
+		t.Errorf("expected a probe per request, got %d", probes)
+	}
+}
+
+func TestBeylaSource_DiagnosticsProbe_FailureStaysSilentThenRecovers(t *testing.T) {
+	// A failed probe is not an answer: say nothing rather than assert an absence,
+	// and report normally once it succeeds.
 	var probes int
 	failing := true
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
@@ -462,7 +499,7 @@ func TestBeylaSource_DiagnosticsProbe_FailureIsNotCached(t *testing.T) {
 	if probes != 2 {
 		t.Errorf("expected the probe to be retried after a failure, ran it %d times", probes)
 	}
-	if !strings.Contains(resp.Warning, "UDP") {
+	if !strings.Contains(resp.Warning, "direction=unknown") {
 		t.Errorf("once the probe succeeds the warning must appear, got: %q", resp.Warning)
 	}
 }
@@ -931,37 +968,6 @@ func TestBeylaSource_DiagnosticsProbe_ScopesNamespaceOnEitherEnd(t *testing.T) {
 	}
 	if !strings.Contains(probe, `k8s_src_namespace="demo"`) || !strings.Contains(probe, `k8s_dst_namespace="demo"`) {
 		t.Errorf("probe must scope on either end, got: %s", probe)
-	}
-}
-
-func TestBeylaSource_DiagnosticsProbe_CacheIsPerNamespace(t *testing.T) {
-	// The cache key carries the namespace: one namespace's answer must not be
-	// served for another's, and expired entries must not accumulate.
-	probes := map[string]int{}
-	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
-	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		if strings.Contains(query, `direction="unknown"`) {
-			switch {
-			case strings.Contains(query, `"demo"`):
-				probes["demo"]++
-			case strings.Contains(query, `"other"`):
-				probes["other"]++
-			default:
-				probes["all"]++
-			}
-		}
-		return emptyResult(), nil
-	}
-
-	for _, ns := range []string{"demo", "demo", "other", "other", ""} {
-		if _, err := src.GetFlows(context.Background(), FlowOptions{Namespace: ns}); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	}
-	for ns, want := range map[string]int{"demo": 1, "other": 1, "all": 1} {
-		if probes[ns] != want {
-			t.Errorf("namespace %q probed %d times, want %d", ns, probes[ns], want)
-		}
 	}
 }
 

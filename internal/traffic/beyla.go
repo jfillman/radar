@@ -59,18 +59,7 @@ type BeylaSource struct {
 	// resolved by Detect. Empty until then; flowMetricName falls back to the
 	// Beyla spelling so a GetFlows before Detect still queries something valid.
 	flowMetric string
-	// unorientable caches whether the cluster has traffic the direction filter
-	// excludes. It answers a question about how Beyla is configured, which does
-	// not change between polls, so it is probed at most once per TTL rather than
-	// on every request.
-	unorientable     map[string]bool
-	unorientableAsOf map[string]time.Time
 }
-
-// beylaUnorientableTTL bounds how stale the "UDP is hidden" answer may be. It
-// tracks a Beyla configuration change, not traffic, so minutes are fine and the
-// alternative is a third query on every poll of every streaming client.
-const beylaUnorientableTTL = 5 * time.Minute
 
 // NewBeylaSource creates a new Beyla traffic source wired to the shared Prometheus client.
 func NewBeylaSource(client kubernetes.Interface) *BeylaSource {
@@ -531,13 +520,15 @@ func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions, withDiagnos
 	return flows, presence, nil
 }
 
-// hasUnorientableTraffic reports whether the cluster has traffic the direction
-// filter excluded. A cheap instant count, not a rate: it only decides whether to
-// explain an absence, so a failed probe stays silent rather than guessing.
+// hasUnorientableTraffic reports whether there is traffic the direction filter
+// excluded, so its absence from the graph can be stated instead of read as an
+// absence of traffic. A failed probe stays silent rather than guessing.
 //
-// The answer describes Beyla's configuration rather than current traffic, so it
-// is cached per (metric, job selector, namespace) for beylaUnorientableTTL. Without
-// that, every poll of every streaming client would pay for it.
+// Deliberately uncached. It reports on current traffic, not on how Beyla is
+// configured, so a cached answer goes stale the moment such traffic starts or
+// stops — and the load it was guarding against is gone: the stream path skips
+// diagnostics entirely, and the REST path is a user-triggered snapshot rather
+// than a poll.
 func (s *BeylaSource) hasUnorientableTraffic(ctx context.Context, opts FlowOptions) bool {
 	metric := s.flowMetricName()
 	base := beylaJobSelector() + beylaUnknownDirectionProbe
@@ -559,16 +550,10 @@ func (s *BeylaSource) hasUnorientableTraffic(ctx context.Context, opts FlowOptio
 		query = rated(fmt.Sprintf(`, k8s_src_namespace=%q`, opts.Namespace)) + " or " +
 			rated(fmt.Sprintf(`, k8s_dst_namespace=%q`, opts.Namespace))
 	}
-	key := metric + "|" + base + "|" + opts.Namespace
-
-	if cached, ok := s.cachedUnorientable(key); ok {
-		return cached
-	}
-
 	found := false
 	qr, err := s.query(ctx, query)
 	if err != nil {
-		// Not cached: a failed probe is not an answer, and the next poll may get one.
+		// A failed probe is not an answer; say nothing rather than assert an absence.
 		return false
 	}
 	if qr != nil {
@@ -580,38 +565,7 @@ func (s *BeylaSource) hasUnorientableTraffic(ctx context.Context, opts FlowOptio
 			}
 		}
 	}
-	s.storeUnorientable(key, found)
 	return found
-}
-
-func (s *BeylaSource) cachedUnorientable(key string) (bool, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	asOf, ok := s.unorientableAsOf[key]
-	if !ok || time.Since(asOf) > beylaUnorientableTTL {
-		return false, false
-	}
-	return s.unorientable[key], true
-}
-
-func (s *BeylaSource) storeUnorientable(key string, found bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.unorientable == nil {
-		s.unorientable = make(map[string]bool)
-		s.unorientableAsOf = make(map[string]time.Time)
-	}
-	// The key includes the namespace, so a user browsing namespace by namespace
-	// adds an entry each time. Dropping the expired ones on write keeps that
-	// bounded by what is actually in use rather than by everything ever asked for.
-	for k, asOf := range s.unorientableAsOf {
-		if time.Since(asOf) > beylaUnorientableTTL {
-			delete(s.unorientableAsOf, k)
-			delete(s.unorientable, k)
-		}
-	}
-	s.unorientable[key] = found
-	s.unorientableAsOf[key] = time.Now()
 }
 
 func (s *BeylaSource) queryL7(ctx context.Context, opts FlowOptions) ([]Flow, error) {

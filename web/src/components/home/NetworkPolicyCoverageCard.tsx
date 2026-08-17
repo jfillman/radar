@@ -1,6 +1,7 @@
 import type { DashboardNetworkPolicyCoverage } from '../../api/client'
 import { ShieldCheck, ArrowRight } from 'lucide-react'
 import { clsx } from 'clsx'
+import { Tooltip } from '../ui/Tooltip'
 
 interface NetworkPolicyCoverageCardProps {
   data: DashboardNetworkPolicyCoverage
@@ -66,16 +67,23 @@ export function NetworkPolicyCoverageCard({ data, onNavigate }: NetworkPolicyCov
                     />
                   )}
                   {hasStagedPolicies && stagedDeltaPercentage > 0 && (
-                    <div
-                      className={clsx('h-full', stagedDelta > 0 ? 'text-yellow-500' : 'text-red-500')}
-                      title={stagedDelta > 0
-                        ? `${stagedDelta} more workloads covered if staged policies are applied`
-                        : `${-stagedDelta} workloads lose coverage if staged policies are applied`}
-                      style={{
-                        width: `${stagedDeltaPercentage}%`,
-                        backgroundImage: 'repeating-linear-gradient(135deg, currentColor 0, currentColor 2px, transparent 2px, transparent 5px)',
-                      }}
-                    />
+                    // The width belongs on the flex child; the tooltip wrapper
+                    // inside it carries the hover target.
+                    <div className="h-full" style={{ width: `${stagedDeltaPercentage}%` }}>
+                      <Tooltip
+                        content={stagedDelta > 0
+                          ? `${stagedDelta} more workloads covered if staged policies are applied`
+                          : `${-stagedDelta} workloads lose coverage if staged policies are applied`}
+                        wrapperClassName="!block h-full w-full"
+                      >
+                        <div
+                          className={clsx('h-full w-full', stagedDelta > 0 ? 'text-yellow-500' : 'text-red-500')}
+                          style={{
+                            backgroundImage: 'repeating-linear-gradient(135deg, currentColor 0, currentColor 2px, transparent 2px, transparent 5px)',
+                          }}
+                        />
+                      </Tooltip>
+                    </div>
                   )}
                   {100 - enforcedPercentage - stagedDeltaPercentage > 0 && (
                     <div

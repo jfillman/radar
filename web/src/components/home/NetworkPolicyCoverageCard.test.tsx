@@ -9,6 +9,14 @@ import { NetworkPolicyCoverageCard } from "./NetworkPolicyCoverageCard";
 const render = (element: React.ReactElement) =>
   renderToString(element).replaceAll("<!-- -->", "");
 
+// The card's own accent turns red at low coverage, so an assertion has to look
+// at the striped staged segment rather than at the whole card.
+const stagedSegmentClass = (html: string) => {
+  const match = html.match(/class="([^"]*)"[^>]*repeating-linear-gradient/);
+  if (!match) throw new Error("no staged segment rendered");
+  return match[1];
+};
+
 describe("NetworkPolicyCoverageCard", () => {
   it("shows enforced and staged preview coverage separately", () => {
     const html = render(
@@ -31,10 +39,10 @@ describe("NetworkPolicyCoverageCard", () => {
     expect(html).toContain("Covered if staged");
     expect(html).toContain("Uncovered workloads");
     expect(html).toContain("Uncovered if staged");
-    expect(html).toContain("repeating-linear-gradient");
-    expect(html).toContain(
-      "2 more workloads covered if staged policies are applied",
-    );
+    // The delta segment's tone carries the direction: amber for coverage the
+    // staged set would add. Its wording lives in a Tooltip portal, which server
+    // rendering does not emit, so the class is what an assertion can reach.
+    expect(stagedSegmentClass(html)).toContain("text-yellow-500");
   });
 
   it("shows coverage going down when a staged policy stages a deletion", () => {
@@ -53,9 +61,8 @@ describe("NetworkPolicyCoverageCard", () => {
 
     expect(html).toContain("80%");
     expect(html).toContain("(50% if staged applied)");
-    expect(html).toContain(
-      "3 workloads lose coverage if staged policies are applied",
-    );
+    // Red, not amber: this staged set takes coverage away.
+    expect(stagedSegmentClass(html)).toContain("text-red-500");
     // The projected figure must not be clamped up to today's coverage.
     expect(html).toContain("5/10");
   });

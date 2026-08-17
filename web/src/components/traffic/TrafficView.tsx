@@ -1166,7 +1166,15 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
           ) : finalFlows.length > 0 ? (
             <>
               {flowsData?.warning && warningIsPermanent && (
-                <div className="absolute top-2 left-1/2 z-10 w-full max-w-2xl -translate-x-1/2 px-3">
+                // Sits below the two chip rows (both top-3) rather than beside
+                // them: centred at that height it would cover the flow count and
+                // the refresh control at common widths. role/aria-live because it
+                // appears after the graph has already rendered.
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="absolute top-14 left-1/2 z-10 w-[min(40rem,calc(100%-1.5rem))] -translate-x-1/2"
+                >
                   <AlertBanner
                     variant="warning"
                     title="Some traffic isn't shown"

@@ -36,7 +36,9 @@
 #     A stock install exports neither, so any consumer grouping by them gets empty labels.
 #   - `direction` (request/response/unknown) IS on by default. Every conversation is
 #     reported twice, once per direction, with src and dst swapped. Aggregating without
-#     it produces a mirrored edge for every real edge.
+#     it produces a mirrored edge for every real edge. Radar keeps direction="request"
+#     only: UDP is reported as "unknown" on BOTH ends, so it cannot be oriented at all
+#     and is excluded rather than drawn with an invented arrow.
 #   - Selecting dst.port makes the response-direction series carry the client's EPHEMERAL
 #     port, which is a cardinality bomb: ~400 mirror series for 2 forward series here.
 #   - kind nodes do not mount bpffs, so Beyla logs a warning and disables pinned-map
@@ -633,19 +635,21 @@ for k in sorted(keys): print("      " + k)
 cmd_query() {
   require_cluster
 
-  step "Radar L4 query (network flows, grouped at owner level)"
-  note "sum by (8 labels) (rate(beyla_network_flow_bytes_total{${JOB_SELECTOR}}[5m]))"
-  prom_query "sum by (k8s_src_owner_name, k8s_src_namespace, k8s_src_owner_type, k8s_dst_owner_name, k8s_dst_namespace, k8s_dst_owner_type, dst_port, transport) (rate(beyla_network_flow_bytes_total{${JOB_SELECTOR}}[5m]))" | print_series
+  step "Radar L4 query (network flows, request direction only)"
+  note "sum by (8 labels) (rate(beyla_network_flow_bytes_total{${JOB_SELECTOR}, direction=\"request\"}[5m]))"
+  prom_query "sum by (k8s_src_owner_name, k8s_src_namespace, k8s_src_owner_type, k8s_dst_owner_name, k8s_dst_namespace, k8s_dst_owner_type, dst_port, transport) (rate(beyla_network_flow_bytes_total{${JOB_SELECTOR}, direction=\"request\"}[5m]))" | print_series
 
-  step "Same query, keeping 'direction' (shows the mirrored response edge)"
+  step "Without the direction filter (what the mirrored response edges look like)"
+  note "the same query with no direction filter — every edge above gains a twin pointing the other way"
   prom_query "sum by (direction, k8s_src_owner_name, k8s_dst_owner_name, k8s_src_owner_type, k8s_dst_owner_type, dst_port, transport) (rate(beyla_network_flow_bytes_total{${JOB_SELECTOR}, k8s_src_namespace=\"${DEMO_NS}\", k8s_dst_namespace=\"${DEMO_NS}\"}[5m]))" | print_series
 
-  step "Radar L7 query (HTTP server duration count)"
-  note "sum by (6 labels) (rate(http_server_request_duration_seconds_count{${JOB_SELECTOR}}[5m]))"
-  prom_query "sum by (k8s_namespace_name, k8s_owner_name, k8s_pod_name, http_request_method, http_route, http_response_status_code) (rate(http_server_request_duration_seconds_count{${JOB_SELECTOR}}[5m]))" | print_series
+  step "Traffic Radar excludes: direction=unknown (UDP, both ends)"
+  note "this is the probe behind the \"UDP is not shown\" warning"
+  prom_query "sum by (direction, k8s_src_owner_name, k8s_dst_owner_name, dst_port, transport) (rate(beyla_network_flow_bytes_total{${JOB_SELECTOR}, direction=\"unknown\"}[5m]))" | print_series
 
-  step "Same L7 query, keeping server_port (the port label the metric DOES carry)"
-  prom_query "sum by (k8s_namespace_name, k8s_owner_name, server_port, http_request_method, http_route, http_response_status_code) (rate(http_server_request_duration_seconds_count{${JOB_SELECTOR}}[5m]))" | print_series
+  step "Radar L7 query (HTTP server duration count, joined on server_port)"
+  note "sum by (7 labels incl. server_port) (rate(http_server_request_duration_seconds_count{${JOB_SELECTOR}}[5m]))"
+  prom_query "sum by (k8s_namespace_name, k8s_owner_name, k8s_pod_name, server_port, http_request_method, http_route, http_response_status_code) (rate(http_server_request_duration_seconds_count{${JOB_SELECTOR}}[5m]))" | print_series
 
   step "Mirror-series count for one conversation"
   printf "    %-34s %s\n" "client -> web" "$(prom_query 'count(beyla_network_flow_bytes_total{k8s_src_owner_name="client",k8s_dst_owner_name="web"})' | python3 -c 'import json,sys; r=json.load(sys.stdin)["data"]["result"]; print(r[0]["value"][1] if r else 0)' 2>/dev/null)"

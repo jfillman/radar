@@ -166,6 +166,17 @@ func (s *BeylaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 		return result, nil
 	}
 
+	// Nothing under the selector at all. If Beyla is in Prometheus under some other
+	// job name, the selector is the problem and telling the operator to enable a
+	// feature they have already enabled sends them the wrong way.
+	if version := s.buildInfoVersion(ctx, false); version != "" {
+		result.Version = version
+		result.Present = true
+		result.Message = fmt.Sprintf("Beyla %s is in Prometheus, but none of its metrics match %s. "+
+			"Point --beyla-job-selector at the job Beyla is scraped under.", version, beylaJobSelector())
+		return result, nil
+	}
+
 	// Pods are a diagnostic only, never a reason to claim availability: if
 	// something Beyla-shaped is running but Prometheus holds nothing for it, the
 	// useful thing to say is that the scrape or the job selector is the problem.
@@ -181,14 +192,29 @@ func (s *BeylaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 }
 
 // detectVersion reads the version out of build_info, which is present whenever
-// Beyla is running regardless of which metric features are enabled.
+// Beyla is running regardless of which metric features are enabled. Scoped to the
+// same jobs the flow queries read, so it cannot report a version for an instance
+// GetFlows will never see.
+func (s *BeylaSource) detectVersion(ctx context.Context) string {
+	return s.buildInfoVersion(ctx, true)
+}
+
+// buildInfoVersion reads the version from build_info, optionally without the job
+// selector. The unscoped form exists only to tell two failures apart: Beyla
+// installed with the network feature off, versus Beyla installed and emitting
+// fine but under a job name the selector does not match. Both look like "no flow
+// metric", and they need opposite fixes.
 //
 // obi_build_info is inferred from the flow-metric prefix rather than observed —
 // upstream OBI was not available to scrape. A wrong guess is harmless: the query
 // returns no series and the next candidate is tried.
-func (s *BeylaSource) detectVersion(ctx context.Context) string {
+func (s *BeylaSource) buildInfoVersion(ctx context.Context, scoped bool) string {
 	for _, metric := range []string{"beyla_build_info", "obi_build_info"} {
-		qr, err := s.query(ctx, metric)
+		query := metric
+		if scoped {
+			query = fmt.Sprintf(`%s{%s}`, metric, beylaJobSelector())
+		}
+		qr, err := s.query(ctx, query)
 		if err != nil || qr == nil {
 			continue
 		}
@@ -301,9 +327,9 @@ func (p l4LabelPresence) warning(flowCount int) string {
 	// sees UDP but cannot place it" is the only honest explanation for an empty
 	// graph.
 	if p.hiddenUDP {
-		parts = append(parts, "UDP traffic (DNS, for example) is not shown: Beyla reports it as "+
-			"direction=unknown on both sides of the conversation, so which end initiated it cannot be "+
-			"determined and drawing it would invent an arrow.")
+		parts = append(parts, "Some traffic is not shown: Beyla reports it as direction=unknown on both "+
+			"sides of the conversation — which is where UDP such as DNS lands — so which end initiated it "+
+			"cannot be determined, and drawing it would invent an arrow.")
 	}
 
 	return strings.Join(parts, " ")
@@ -514,18 +540,33 @@ func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions, withDiagnos
 // that, every poll of every streaming client would pay for it.
 func (s *BeylaSource) hasUnorientableTraffic(ctx context.Context, opts FlowOptions) bool {
 	metric := s.flowMetricName()
-	selector := beylaJobSelector() + beylaUnknownDirectionProbe
-	if opts.Namespace != "" {
-		selector += fmt.Sprintf(`, k8s_src_namespace=%q`, opts.Namespace)
+	base := beylaJobSelector() + beylaUnknownDirectionProbe
+
+	// Rate-filtered, not a bare series count. Beyla keeps emitting a series after
+	// its traffic stops, and a zero-rate unknown-direction series was observed for
+	// plain TCP — counting series would announce hidden traffic on a cluster that
+	// has none. `> 0` is the same bar parseL4Flows applies to a flow.
+	//
+	// Scoped the way beylaRateQuery scopes flows — either end of the conversation
+	// inside the namespace — so the warning describes the traffic the user is
+	// actually looking at. Filtering on the source alone would both miss inbound
+	// traffic and report traffic the user cannot see.
+	rated := func(extra string) string {
+		return fmt.Sprintf(`count(rate(%s{%s%s}[5m]) > 0)`, metric, base, extra)
 	}
-	key := metric + "|" + selector
+	query := rated("")
+	if opts.Namespace != "" {
+		query = rated(fmt.Sprintf(`, k8s_src_namespace=%q`, opts.Namespace)) + " or " +
+			rated(fmt.Sprintf(`, k8s_dst_namespace=%q`, opts.Namespace))
+	}
+	key := metric + "|" + base + "|" + opts.Namespace
 
 	if cached, ok := s.cachedUnorientable(key); ok {
 		return cached
 	}
 
 	found := false
-	qr, err := s.query(ctx, fmt.Sprintf(`count(%s{%s})`, metric, selector))
+	qr, err := s.query(ctx, query)
 	if err != nil {
 		// Not cached: a failed probe is not an answer, and the next poll may get one.
 		return false
@@ -559,6 +600,15 @@ func (s *BeylaSource) storeUnorientable(key string, found bool) {
 	if s.unorientable == nil {
 		s.unorientable = make(map[string]bool)
 		s.unorientableAsOf = make(map[string]time.Time)
+	}
+	// The key includes the namespace, so a user browsing namespace by namespace
+	// adds an entry each time. Dropping the expired ones on write keeps that
+	// bounded by what is actually in use rather than by everything ever asked for.
+	for k, asOf := range s.unorientableAsOf {
+		if time.Since(asOf) > beylaUnorientableTTL {
+			delete(s.unorientableAsOf, k)
+			delete(s.unorientable, k)
+		}
 	}
 	s.unorientable[key] = found
 	s.unorientableAsOf[key] = time.Now()

@@ -1,7 +1,8 @@
 # Beyla demo cluster
 
 `../beyla-demo.sh` builds a `kind` cluster running Grafana Beyla with eBPF loaded,
-a minimal Prometheus scraping it, and two conversations to observe. It exists
+a minimal Prometheus scraping it, and three conversations to observe — HTTP, raw
+TCP, and DNS, the last being the only UDP. It exists
 because Beyla's traffic source cannot be reasoned about from the code: which
 labels Beyla exports depends on configuration, and the answer changes the shape
 of any consumer.
@@ -42,14 +43,22 @@ how UDP becomes TCP. Configuration B is the only one where they appear.
 **`direction` is exported by default, and every conversation is reported twice.**
 Values are `request`, `response` and `unknown`. The response series has source and
 destination swapped, so a consumer that ignores the label draws a mirror edge for
-every real edge. UDP traffic — DNS here — reports `unknown`, not `request`, so
-filtering on `direction="request"` silently drops it. Exclude `response` instead.
+every real edge.
+
+UDP — DNS here — reports `unknown`, and it does so on **both** ends of the
+conversation. That leaves no way to tell which side initiated it, so excluding only
+`response` keeps a mirrored pair for every UDP conversation, and with `dst.port`
+selected the reverse half carries ephemeral ports: 287 spurious coredns edges out
+of 289 flows, measured. Radar therefore keeps `direction="request"` only, which
+drops UDP entirely, and says so in the Traffic view rather than letting the
+absence look like an absence of traffic. Orienting `unknown` pairs by port range
+is possible and deliberately not done — see the draft PR's open questions.
 
 **Selecting `dst.port` makes the mirror explode.** Response-direction series carry
 the *client's* ephemeral port, so one client-to-server conversation became 2
 forward series against 400 mirrors, and the cluster went from 24 series to 1543
-within minutes. Filtering out the response direction is what makes `dst.port`
-usable at all; the two changes are not independent.
+within minutes. Restricting to the request direction is what makes `dst.port`
+usable at all; the two are not independent choices.
 
 **`k8s_*_owner_type` includes `Service`, and Service-routed conversations are
 reported twice with byte-identical values** — once attributed to the workload,

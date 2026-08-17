@@ -876,3 +876,112 @@ func TestBeylaSource_DetectAndPollConcurrently(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestBeylaSource_Detect_JobSelectorMismatchIsNotReportedAsFeatureOff(t *testing.T) {
+	// Beyla is installed, scraped, and emitting network metrics — under a job name
+	// the selector does not match. Both that and "network feature off" look like
+	// "no flow metric", and they need opposite fixes, so the two must not collapse
+	// into the same advice.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// Anything scoped to the job selector finds nothing.
+		if strings.Contains(query, "job=~") {
+			return emptyResult(), nil
+		}
+		if strings.Contains(query, "beyla_build_info") {
+			return promResult("vector", promSeries(map[string]string{"version": "v3.25.0"}, 1)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	result, err := src.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Available {
+		t.Fatal("expected available=false: nothing the flow queries can read")
+	}
+	if !result.Present {
+		t.Error("Beyla is demonstrably running, so Present must be set for the reason to surface")
+	}
+	if !strings.Contains(result.Message, "beyla-job-selector") {
+		t.Errorf("message should point at the job selector, got: %q", result.Message)
+	}
+	if strings.Contains(result.Message, "OTEL_EBPF_METRICS_FEATURES") {
+		t.Errorf("this is not a feature-flag problem and must not be reported as one, got: %q", result.Message)
+	}
+}
+
+func TestBeylaSource_DiagnosticsProbe_ScopesNamespaceOnEitherEnd(t *testing.T) {
+	// beylaRateQuery treats a namespace filter as "either end of the conversation",
+	// so the probe behind the warning has to match. Filtering on the source alone
+	// would miss inbound UDP and would report UDP from namespaces the user is not
+	// looking at.
+	var probe string
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			probe = query
+		}
+		return emptyResult(), nil
+	}
+
+	if _, err := src.GetFlows(context.Background(), FlowOptions{Namespace: "demo"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(probe, `k8s_src_namespace="demo"`) || !strings.Contains(probe, `k8s_dst_namespace="demo"`) {
+		t.Errorf("probe must scope on either end, got: %s", probe)
+	}
+}
+
+func TestBeylaSource_DiagnosticsProbe_CacheIsPerNamespace(t *testing.T) {
+	// The cache key carries the namespace: one namespace's answer must not be
+	// served for another's, and expired entries must not accumulate.
+	probes := map[string]int{}
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			switch {
+			case strings.Contains(query, `"demo"`):
+				probes["demo"]++
+			case strings.Contains(query, `"other"`):
+				probes["other"]++
+			default:
+				probes["all"]++
+			}
+		}
+		return emptyResult(), nil
+	}
+
+	for _, ns := range []string{"demo", "demo", "other", "other", ""} {
+		if _, err := src.GetFlows(context.Background(), FlowOptions{Namespace: ns}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	for ns, want := range map[string]int{"demo": 1, "other": 1, "all": 1} {
+		if probes[ns] != want {
+			t.Errorf("namespace %q probed %d times, want %d", ns, probes[ns], want)
+		}
+	}
+}
+
+func TestBeylaSource_DiagnosticsProbe_IgnoresSeriesWithNoTraffic(t *testing.T) {
+	// Beyla keeps emitting a series after its traffic stops, and a zero-rate
+	// unknown-direction series was observed live for plain TCP. Counting series
+	// rather than rates would announce hidden traffic on a cluster that has none.
+	var probe string
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			probe = query
+		}
+		return emptyResult(), nil
+	}
+
+	if _, err := src.GetFlows(context.Background(), FlowOptions{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(probe, "rate(") || !strings.Contains(probe, "> 0") {
+		t.Errorf("probe must count series carrying traffic, not series that exist, got: %s", probe)
+	}
+}

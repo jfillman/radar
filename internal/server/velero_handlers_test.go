@@ -266,6 +266,12 @@ func TestVeleroStoredBackupsCountsWhatCanActuallyBeRestored(t *testing.T) {
 	if got.Restorable != 1 {
 		t.Errorf("Restorable = %d, want 1 — only nightly-fresh is Completed and still inside its TTL", got.Restorable)
 	}
+	// Both counts are the location's, not the page's. The panel prints them
+	// beside Stored, so one derived from a capped list would disagree with the
+	// total sitting next to it.
+	if got.Expired != 1 {
+		t.Errorf("Expired = %d, want 1 — nightly-aged completed but has aged out", got.Expired)
+	}
 	if len(got.Backups) == 0 || got.Backups[0].Name != "nightly-fresh" {
 		t.Errorf("first entry = %+v, want nightly-fresh — the most recent restorable point is read off the top", got.Backups)
 	}

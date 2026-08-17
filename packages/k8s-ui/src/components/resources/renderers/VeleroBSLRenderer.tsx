@@ -43,6 +43,12 @@ interface VeleroBSLRendererProps {
   /** How many the location holds in total. Larger than the list when the server
    *  capped it — the counts describe the location, the list is a page of it. */
   storedTotal?: number
+  /** How many of those are complete restore points, counted by the server over
+   *  the whole location. Deriving this from the list instead would pair a page's
+   *  count with the location's total and undercount a capped location. */
+  restorableTotal?: number
+  /** How many have aged out, on the same terms. */
+  expiredTotal?: number
   /** The list is a page. Said out loud, because a capped list otherwise reads as
    *  everything this location holds. */
   listTruncated?: boolean
@@ -51,7 +57,7 @@ interface VeleroBSLRendererProps {
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }
 
-export function VeleroBSLRenderer({ data, storedBackups, storedTotal, listTruncated, lookupNote, onNavigate }: VeleroBSLRendererProps) {
+export function VeleroBSLRenderer({ data, storedBackups, storedTotal, restorableTotal, expiredTotal, listTruncated, lookupNote, onNavigate }: VeleroBSLRendererProps) {
   const status = data.status || {}
   const conditions = status.conditions || []
   const bslStatus = getBSLStatus(data)
@@ -61,8 +67,13 @@ export function VeleroBSLRenderer({ data, storedBackups, storedTotal, listTrunca
   // Velero deletes expired backups, and while its controller is down they sit
   // here looking finished long after the data behind them went.
   const usable = (storedBackups ?? []).filter((b) => b.phase === 'Completed' && !veleroExpired(b))
-  const restorable = usable.length
-  const expired = (storedBackups ?? []).filter((b) => b.phase === 'Completed' && veleroExpired(b)).length
+  // The server's counts when the host wired them, because they are the
+  // location's; the page's own only as a fallback for a host that did not.
+  // Mixing the two reads worst on exactly the locations that need this panel —
+  // a location holding thousands is where a capped page and a full total sit in
+  // the same sentence.
+  const restorable = restorableTotal ?? usable.length
+  const expired = expiredTotal ?? (storedBackups ?? []).filter((b) => b.phase === 'Completed' && veleroExpired(b)).length
   // The location's total, not the page's length: every sentence below counts
   // what the location holds, and the list may be capped.
   const stored = storedTotal ?? storedBackups?.length ?? 0

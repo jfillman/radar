@@ -50,7 +50,14 @@ type VeleroStoredBackupsResponse struct {
 	// their expiration. Velero deletes expired backups, so a Completed one that
 	// has aged out is not a restore point — and while its controller is down
 	// they sit here looking finished long after the data behind them went.
+	//
+	// Counted over the whole location, like Stored and unlike Backups. A reader
+	// recomputing it from the capped list would undercount every location big
+	// enough to be capped.
 	Restorable int `json:"restorable"`
+	// Expired counts the Completed backups that have aged out, for the same
+	// reason and over the same scope.
+	Expired int `json:"expired"`
 }
 
 // handleVeleroStoredBackups returns the Backups held in one BackupStorageLocation.
@@ -121,8 +128,12 @@ func (s *Server) handleVeleroStoredBackups(w http.ResponseWriter, r *http.Reques
 		b.Phase, _, _ = unstructured.NestedString(u.Object, "status", "phase")
 		b.Expiration, _, _ = unstructured.NestedString(u.Object, "status", "expiration")
 		b.Completed, _, _ = unstructured.NestedString(u.Object, "status", "completionTimestamp")
-		if b.Phase == "Completed" && !veleroExpired(b.Expiration) {
-			resp.Restorable++
+		if b.Phase == "Completed" {
+			if veleroExpired(b.Expiration) {
+				resp.Expired++
+			} else {
+				resp.Restorable++
+			}
 		}
 		resp.Backups = append(resp.Backups, b)
 	}

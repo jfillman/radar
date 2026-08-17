@@ -160,9 +160,13 @@ export interface VeleroStoredBackupsResponse {
     expiration?: string
     completed?: string
   }>
-  /** How many reached Completed — the rest are stored here but are not something
-   *  to restore from. */
+  /** How many reached Completed and are still inside their retention — the rest
+   *  are stored here but are not something to restore from. Counted over the
+   *  whole location, like `stored`: recomputing it from the capped list above
+   *  undercounts every location big enough to be capped. */
   restorable: number
+  /** How many reached Completed but have aged out. Same scope as `restorable`. */
+  expired?: number
   /** How many the location holds in total, counted before the list was capped. */
   stored?: number
   /** The list above is a page, not the whole location. */

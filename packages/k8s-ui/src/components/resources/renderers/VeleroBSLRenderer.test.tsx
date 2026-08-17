@@ -325,3 +325,44 @@ describe('a location holding more backups than the list shows', () => {
     expect(html()).toContain('1 of 2000 backups stored here')
   })
 })
+
+/**
+ * Velero keeps every backup until its TTL expires, so an hourly schedule with a
+ * long retention leaves thousands in one location and the server sends a page.
+ * The counts describe the location and the list is a page of it — deriving a
+ * count from the page and printing it beside the location's total makes the two
+ * numbers disagree on exactly the locations big enough to need this panel.
+ */
+describe('a location whose list is a page', () => {
+  const page = Array.from({ length: 3 }, (_, i) => ({
+    namespace: 'velero',
+    name: `nightly-${i}`,
+    phase: 'Failed',
+  }))
+
+  it('reports what the location holds, not what the page shows', () => {
+    const html = renderToString(
+      <VeleroBSLRenderer
+        data={bsl('Available')}
+        storedBackups={page}
+        storedTotal={700}
+        restorableTotal={412}
+        expiredTotal={285}
+      />,
+    )
+    expect(html).toContain('412 of 700')
+    expect(html).toContain('285 stored')
+    // The page holds three failed backups. Counting it would have said none of
+    // the 700 is a restore point, on a location holding 412.
+    expect(html).not.toContain('None of the 700')
+  })
+
+  // A host that does not wire the lookup still gets a truthful panel from what
+  // it does have.
+  it('falls back to the page when the server counts are not wired', () => {
+    const html = renderToString(
+      <VeleroBSLRenderer data={bsl('Available')} storedBackups={[completed('only-one', '2026-08-16T01:00:00Z')]} />,
+    )
+    expect(html).toContain('only-one')
+  })
+})

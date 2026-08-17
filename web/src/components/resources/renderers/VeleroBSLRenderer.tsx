@@ -30,6 +30,8 @@ export function VeleroBSLRenderer({
       // nothing, which is a different answer from not having looked yet.
       storedBackups={stored.isLoading || stored.error ? undefined : (stored.data?.backups ?? [])}
       storedTotal={stored.data?.stored}
+      restorableTotal={stored.data?.restorable}
+      expiredTotal={stored.data?.expired}
       listTruncated={stored.data?.truncated}
       lookupNote={
         stored.error ? (

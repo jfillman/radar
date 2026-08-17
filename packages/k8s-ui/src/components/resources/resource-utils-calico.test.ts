@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   CALICO_SELECTOR_NOT_APPLICABLE,
   getCalicoApiGroup,
+  getCalicoIPPoolAllowedUses,
+  getCalicoIPPoolBlockSize,
+  getCalicoIPPoolEncapsulation,
   getCalicoPolicyKindLabel,
   getCalicoPolicySelector,
   getCalicoTierRef,
@@ -140,5 +143,27 @@ describe("staged deletions", () => {
       spec: {},
     };
     expect(getCalicoPolicySelector(enforced)).toBe("all workloads");
+  });
+});
+
+describe("IPPool derivations", () => {
+  it("applies Calico's block size default per address family", () => {
+    expect(getCalicoIPPoolBlockSize({ spec: { cidr: "192.168.0.0/16" } })).toBe(26);
+    expect(getCalicoIPPoolBlockSize({ spec: { cidr: "fd00::/48" } })).toBe(122);
+    expect(getCalicoIPPoolBlockSize({ spec: { cidr: "10.0.0.0/8", blockSize: 24 } })).toBe(24);
+    expect(getCalicoIPPoolBlockSize({ spec: {} })).toBeUndefined();
+  });
+
+  it("names the tunnel a pool encapsulates through", () => {
+    expect(getCalicoIPPoolEncapsulation({ spec: {} })).toBe("None");
+    expect(getCalicoIPPoolEncapsulation({ spec: { ipipMode: "Always" } })).toBe("IPIP Always");
+    expect(getCalicoIPPoolEncapsulation({ spec: { vxlanMode: "CrossSubnet" } })).toBe(
+      "VXLAN CrossSubnet",
+    );
+  });
+
+  it("falls back to Calico's default allowed uses", () => {
+    expect(getCalicoIPPoolAllowedUses({ spec: {} })).toBe("Workload, Tunnel");
+    expect(getCalicoIPPoolAllowedUses({ spec: { allowedUses: ["Tunnel"] } })).toBe("Tunnel");
   });
 });

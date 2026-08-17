@@ -205,3 +205,31 @@ export function getCalicoPolicyServiceAccountSelector(policy: any): string {
     ? "-"
     : String(selector);
 }
+
+/**
+ * Calico's own defaults for an IPPool, applied when a field is absent. The pool
+ * behaves this way whether or not the field is written, so a reader that shows
+ * only what is set describes the pool inaccurately.
+ */
+export function getCalicoIPPoolBlockSize(pool: any): number | undefined {
+  if (pool?.spec?.blockSize !== undefined) return Number(pool.spec.blockSize);
+  const cidr = pool?.spec?.cidr;
+  if (typeof cidr !== "string") return undefined;
+  return cidr.includes(":") ? 122 : 26;
+}
+
+/** The tunnel a pool encapsulates through, or "None" when it routes directly. */
+export function getCalicoIPPoolEncapsulation(pool: any): string {
+  const ipip = String(pool?.spec?.ipipMode ?? "Never");
+  const vxlan = String(pool?.spec?.vxlanMode ?? "Never");
+  if (ipip !== "Never") return `IPIP ${ipip}`;
+  if (vxlan !== "Never") return `VXLAN ${vxlan}`;
+  return "None";
+}
+
+export function getCalicoIPPoolAllowedUses(pool: any): string {
+  const uses = pool?.spec?.allowedUses;
+  return Array.isArray(uses) && uses.length > 0
+    ? uses.map(String).join(", ")
+    : "Workload, Tunnel";
+}

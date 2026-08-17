@@ -16,7 +16,7 @@ import { getBackupStatus as _getBackupStatus, getRestoreStatus as _getRestoreSta
 import { getExternalSecretStatus as _getExternalSecretStatus, getClusterExternalSecretStatus as _getClusterExternalSecretStatus, getSecretStoreStatus as _getSecretStoreStatus, getClusterSecretStoreStatus as _getClusterSecretStoreStatus, getSecretStoreProviderType as _getSecretStoreProviderType } from './resource-utils-eso'
 import { getHPATableState, hpaStatusFromState } from './resource-utils-hpa'
 import { getCNPGClusterStatus as _getCNPGClusterStatus, getCNPGBackupStatus as _getCNPGBackupStatus, getCNPGScheduledBackupStatus as _getCNPGScheduledBackupStatus, getCNPGPoolerStatus as _getCNPGPoolerStatus, isApiGroup as _isApiGroup, CNPG_GROUP as _CNPG_GROUP } from './resource-utils-cnpg'
-import { getCalicoPolicyNamespaceSelector, getCalicoPolicyRuleCount, getCalicoPolicySelector, getCalicoPolicyServiceAccountSelector, getCalicoPolicyTypes, isCalicoApiVersion, isCalicoPolicyResource } from './resource-utils-calico'
+import { getCalicoIPPoolEncapsulation, getCalicoPolicyNamespaceSelector, getCalicoPolicyRuleCount, getCalicoPolicySelector, getCalicoPolicyServiceAccountSelector, getCalicoPolicyTypes, isCalicoApiVersion, isCalicoPolicyResource } from './resource-utils-calico'
 
 // ============================================================================
 // STATUS & HEALTH UTILITIES
@@ -2220,11 +2220,7 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
       if (isCalicoApiVersion(resource?.apiVersion)) return String(resource.spec?.cidr ?? '')
       break
     case 'encapsulation':
-      if (isCalicoApiVersion(resource?.apiVersion)) {
-        const ipip = String(resource.spec?.ipipMode ?? 'Never')
-        const vxlan = String(resource.spec?.vxlanMode ?? 'Never')
-        return ipip !== 'Never' ? `IPIP ${ipip}` : vxlan !== 'Never' ? `VXLAN ${vxlan}` : 'None'
-      }
+      if (isCalicoApiVersion(resource?.apiVersion)) return getCalicoIPPoolEncapsulation(resource)
       break
     case 'disabled':
       if (isCalicoApiVersion(resource?.apiVersion)) return resource.spec?.disabled === true ? 'Disabled' : 'No'

@@ -1,5 +1,9 @@
 import { Network } from 'lucide-react'
 import { Property, PropertyList, Section } from '../../ui/drawer-components'
+import {
+  getCalicoIPPoolAllowedUses,
+  getCalicoIPPoolBlockSize,
+} from '../resource-utils-calico'
 
 interface CalicoIPPoolRendererProps {
   data: any
@@ -7,14 +11,13 @@ interface CalicoIPPoolRendererProps {
 
 export function CalicoIPPoolRenderer({ data }: CalicoIPPoolRendererProps) {
   const spec = data?.spec ?? {}
-  const defaultBlockSize = typeof spec.cidr === 'string' ? spec.cidr.includes(':') ? 122 : 26 : undefined
 
   return (
     <Section title="IP Pool" icon={Network}>
       <PropertyList>
-        <Property label="Allowed Uses" value={(spec.allowedUses ?? ['Workload', 'Tunnel']).join(', ')} />
+        <Property label="Allowed Uses" value={getCalicoIPPoolAllowedUses(data)} />
         <Property label="Assignment Mode" value={spec.assignmentMode ?? 'Automatic'} />
-        <Property label="Block Size" value={spec.blockSize ?? defaultBlockSize} />
+        <Property label="Block Size" value={getCalicoIPPoolBlockSize(data)} />
         <Property label="CIDR" value={spec.cidr} />
         <Property label="IP-in-IP Mode" value={spec.ipipMode ?? 'Never'} />
         <Property label="VXLAN Mode" value={spec.vxlanMode ?? 'Never'} />

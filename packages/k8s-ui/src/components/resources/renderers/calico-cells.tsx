@@ -6,6 +6,9 @@ import {
   getCalicoPolicySelector,
   getCalicoPolicyServiceAccountSelector,
   getCalicoPolicyTypes,
+  getCalicoIPPoolAllowedUses,
+  getCalicoIPPoolBlockSize,
+  getCalicoIPPoolEncapsulation,
   isCalicoApiVersion,
   isCalicoPolicyResource,
 } from "../resource-utils-calico";
@@ -105,9 +108,9 @@ export function CalicoInfraCell({
     case "cidr":
       return <MonoCell value={spec.cidr} />;
     case "blockSize":
-      return <PlainCell value={spec.blockSize ?? defaultBlockSize(spec.cidr)} />;
+      return <PlainCell value={getCalicoIPPoolBlockSize(resource)} />;
     case "encapsulation":
-      return <PlainCell value={encapsulation(spec)} />;
+      return <PlainCell value={getCalicoIPPoolEncapsulation(resource)} />;
     case "natOutgoing":
       return <YesNoCell value={spec.natOutgoing === true} />;
     case "disabled":
@@ -117,15 +120,7 @@ export function CalicoInfraCell({
         <span className="text-sm text-theme-text-secondary">No</span>
       );
     case "allowedUses":
-      return (
-        <PlainCell
-          value={
-            Array.isArray(spec.allowedUses) && spec.allowedUses.length > 0
-              ? spec.allowedUses.join(", ")
-              : "Workload, Tunnel"
-          }
-        />
-      );
+      return <PlainCell value={getCalicoIPPoolAllowedUses(resource)} />;
     case "nodeSelector":
       return <MonoCell value={spec.nodeSelector ?? "all()"} />;
     case "node":
@@ -151,20 +146,6 @@ export function CalicoInfraCell({
     default:
       return <span className="text-sm text-theme-text-tertiary">-</span>;
   }
-}
-
-/** Calico's own defaults when blockSize is left unset. */
-function defaultBlockSize(cidr: unknown): number | undefined {
-  if (typeof cidr !== "string") return undefined;
-  return cidr.includes(":") ? 122 : 26;
-}
-
-function encapsulation(spec: any): string {
-  const ipip = String(spec.ipipMode ?? "Never");
-  const vxlan = String(spec.vxlanMode ?? "Never");
-  if (ipip !== "Never") return `IPIP ${ipip}`;
-  if (vxlan !== "Never") return `VXLAN ${vxlan}`;
-  return "None";
 }
 
 function PlainCell({ value }: { value: unknown }) {

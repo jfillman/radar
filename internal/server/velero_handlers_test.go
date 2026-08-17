@@ -191,12 +191,11 @@ func TestVeleroExpiredDecidesWhatCountsAsARestorePoint(t *testing.T) {
 		}
 	}
 
-	// The count and the predicate are wired together in the handler; the two
-	// tests above are only worth having if that wiring holds.
-	src := mustReadSource(t, "velero_handlers.go")
-	if !strings.Contains(src, `b.Phase == "Completed" && !veleroExpired(b.Expiration)`) {
-		t.Error("Restorable no longer excludes expired backups — an aged-out backup would be offered as a restore point")
-	}
+	// No source-level guard on the wiring: matching the handler's text broke the
+	// moment the expression was refactored, while the behaviour it stood for was
+	// unchanged. TestVeleroStoredBackupsCountsWhatCanActuallyBeRestored drives
+	// the handler over an expired backup and asserts both counts, which is what
+	// the grep was approximating.
 }
 
 // The counts on the storage location page, driven through the handler rather

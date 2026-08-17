@@ -21,6 +21,9 @@ export {
   getCalicoPolicyTypes,
   getCalicoPolicyRuleCount,
   getCalicoPolicySelector,
+  getCalicoStagedAction,
+  isCalicoStagedDeletion,
+  CALICO_SELECTOR_NOT_APPLICABLE,
   getCalicoPolicyNamespaceSelector,
   getCalicoPolicyServiceAccountSelector,
 } from './resource-utils-calico'

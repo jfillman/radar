@@ -376,8 +376,14 @@ export function baseSubtitle(kind: NodeKind, nodeData: Record<string, unknown>):
     case "CalicoGlobalNetworkPolicy":
     case "CalicoStagedNetworkPolicy":
     case "CalicoStagedGlobalNetworkPolicy":
-    case "CalicoStagedKubernetesNetworkPolicy":
+    case "CalicoStagedKubernetesNetworkPolicy": {
+      // A staged deletion carries no selector; reading that as "all workloads"
+      // would show a removal as the broadest possible protection.
+      if (String(nodeData.stagedAction ?? "").toLowerCase() === "delete") {
+        return "staged deletion";
+      }
       return (nodeData.selector as string) || "all workloads";
+    }
     case "Ingress":
       return (nodeData.hostname as string) || "No host";
     case "Gateway": {

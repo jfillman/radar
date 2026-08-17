@@ -9,14 +9,19 @@ interface NetworkPolicyCoverageCardProps {
 
 export function NetworkPolicyCoverageCard({ data, onNavigate }: NetworkPolicyCoverageCardProps) {
   const hasStagedPolicies = (data.stagedPolicies ?? 0) > 0
-  const coveredIfStaged = Math.max(data.coveredWorkloads, data.coveredWorkloadsIfStaged ?? data.coveredWorkloads)
+  // A staged policy can stage a deletion, so the projected coverage is allowed
+  // to be lower than today's. Clamping it would hide exactly the case an
+  // operator most needs to see before promoting the staged set.
+  const coveredIfStaged = data.coveredWorkloadsIfStaged ?? data.coveredWorkloads
+  const stagedDelta = coveredIfStaged - data.coveredWorkloads
   const percentage = data.totalWorkloads > 0
     ? Math.round((data.coveredWorkloads / data.totalWorkloads) * 100)
     : 0
   const percentageIfStaged = data.totalWorkloads > 0
     ? Math.round((coveredIfStaged / data.totalWorkloads) * 100)
     : 0
-  const stagedOnlyPercentage = Math.max(0, percentageIfStaged - percentage)
+  const enforcedPercentage = Math.min(percentage, percentageIfStaged)
+  const stagedDeltaPercentage = Math.abs(percentageIfStaged - percentage)
   const hasPolicies = data.totalPolicies > 0
   const accentColor = !hasPolicies
     ? 'text-theme-text-tertiary'
@@ -54,26 +59,28 @@ export function NetworkPolicyCoverageCard({ data, onNavigate }: NetworkPolicyCov
             <>
               <div className="flex items-center gap-3 w-full">
                 <div className="flex-1 h-3 rounded-full overflow-hidden bg-theme-hover flex">
-                  {data.coveredWorkloads > 0 && (
+                  {enforcedPercentage > 0 && (
                     <div
                       className="h-full bg-green-500"
-                      style={{ width: `${percentage}%` }}
+                      style={{ width: `${enforcedPercentage}%` }}
                     />
                   )}
-                  {hasStagedPolicies && stagedOnlyPercentage > 0 && (
+                  {hasStagedPolicies && stagedDeltaPercentage > 0 && (
                     <div
-                      className="h-full text-yellow-500"
-                      title={`${coveredIfStaged - data.coveredWorkloads} additional workloads if staged policies are applied`}
+                      className={clsx('h-full', stagedDelta > 0 ? 'text-yellow-500' : 'text-red-500')}
+                      title={stagedDelta > 0
+                        ? `${stagedDelta} more workloads covered if staged policies are applied`
+                        : `${-stagedDelta} workloads lose coverage if staged policies are applied`}
                       style={{
-                        width: `${stagedOnlyPercentage}%`,
+                        width: `${stagedDeltaPercentage}%`,
                         backgroundImage: 'repeating-linear-gradient(135deg, currentColor 0, currentColor 2px, transparent 2px, transparent 5px)',
                       }}
                     />
                   )}
-                  {data.totalWorkloads - coveredIfStaged > 0 && (
+                  {100 - enforcedPercentage - stagedDeltaPercentage > 0 && (
                     <div
                       className="h-full bg-theme-hover"
-                      style={{ width: `${100 - percentageIfStaged}%` }}
+                      style={{ width: `${100 - enforcedPercentage - stagedDeltaPercentage}%` }}
                     />
                   )}
                 </div>

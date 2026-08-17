@@ -18,6 +18,7 @@ import {
   getCalicoPolicySelector,
   getCalicoPolicyTypes,
   formatKubernetesLabelSelector,
+  isCalicoStagedDeletion,
 } from "../resource-utils-calico";
 import { CalicoNetworkPolicyDiagram } from "./CalicoNetworkPolicyDiagram";
 
@@ -44,11 +45,28 @@ export function CalicoNetworkPolicyRenderer({
   const egress = Array.isArray(spec.egress) ? spec.egress : undefined;
   const types = getCalicoPolicyTypes(data);
   const tierRef = getCalicoTierRef(data);
+  // A staged deletion has no selector and no rules to draw — it stages the
+  // removal of the enforced policy with the same name.
+  const stagedDeletion = isCalicoStagedDeletion(data);
 
   return (
     <>
       <Section title="Policy Flow" icon={GitFork} defaultExpanded>
-        <CalicoNetworkPolicyDiagram spec={spec} staged={staged} />
+        {stagedDeletion ? (
+          <div className="card-inner-lg flex flex-col gap-1.5">
+            <div className="flex items-center gap-2 text-[11px] text-theme-text-tertiary">
+              <Badge severity="warning" size="sm">Staged deletion</Badge>
+              <span>Nothing is previewed as protected</span>
+            </div>
+            <span className="text-xs text-theme-text-secondary">
+              Promoting this removes {data?.metadata?.name ?? "the policy"} from the{" "}
+              {String(spec.tier ?? "default")} tier. Any workload protected only by that
+              policy loses its coverage.
+            </span>
+          </div>
+        ) : (
+          <CalicoNetworkPolicyDiagram spec={spec} staged={staged} />
+        )}
       </Section>
 
       <Section title="Policy" icon={ShieldCheck}>

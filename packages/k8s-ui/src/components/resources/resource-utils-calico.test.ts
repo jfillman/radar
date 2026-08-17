@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  CALICO_SELECTOR_NOT_APPLICABLE,
   getCalicoApiGroup,
   getCalicoPolicyKindLabel,
   getCalicoPolicySelector,
   getCalicoTierRef,
   isCalicoApiVersion,
   isCalicoPolicyResource,
+  isCalicoStagedDeletion,
   isCalicoStagedKubernetesNetworkPolicyKind,
   isCoreNetworkPolicyKind,
 } from "./resource-utils-calico";
@@ -99,5 +101,44 @@ describe("Calico API group matching", () => {
       isCoreNetworkPolicyKind("GlobalNetworkPolicy", "networking.k8s.io/v1"),
     ).toBe(false);
     expect(isCoreNetworkPolicyKind("Widget", undefined)).toBe(false);
+  });
+});
+
+describe("staged deletions", () => {
+  const deletion = {
+    apiVersion: "projectcalico.org/v3",
+    kind: "StagedNetworkPolicy",
+    metadata: { name: "retire-frontend", namespace: "demo" },
+    // The Calico API rejects any other spec field alongside a Delete action.
+    spec: { stagedAction: "Delete", tier: "default" },
+  };
+
+  it("does not read an absent selector as every workload", () => {
+    expect(isCalicoStagedDeletion(deletion)).toBe(true);
+    expect(getCalicoPolicySelector(deletion)).toBe(
+      CALICO_SELECTOR_NOT_APPLICABLE,
+    );
+    expect(getCalicoPolicySelector(deletion)).not.toContain("all workloads");
+  });
+
+  it("leaves a staged Set reading its real selector", () => {
+    const set = {
+      apiVersion: "projectcalico.org/v3",
+      kind: "StagedNetworkPolicy",
+      metadata: { name: "tighten", namespace: "demo" },
+      spec: { stagedAction: "Set", selector: "app == 'web'" },
+    };
+    expect(isCalicoStagedDeletion(set)).toBe(false);
+    expect(getCalicoPolicySelector(set)).toBe("app == 'web'");
+  });
+
+  it("still reads an enforced policy with no selector as every workload", () => {
+    const enforced = {
+      apiVersion: "projectcalico.org/v3",
+      kind: "NetworkPolicy",
+      metadata: { name: "catch-all", namespace: "demo" },
+      spec: {},
+    };
+    expect(getCalicoPolicySelector(enforced)).toBe("all workloads");
   });
 });

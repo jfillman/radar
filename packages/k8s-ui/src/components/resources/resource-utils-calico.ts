@@ -142,7 +142,25 @@ export function getCalicoPolicyRuleCount(policy: any): {
   };
 }
 
+/** The staged action, lower-cased. Absent means Set, which is Calico's default. */
+export function getCalicoStagedAction(policy: any): string {
+  const action = policy?.spec?.stagedAction;
+  return typeof action === "string" ? action.toLowerCase() : "";
+}
+
+/**
+ * A staged policy that stages a removal rather than a change. Calico requires
+ * the rest of its spec to be empty, so it has no selector and no rules — an
+ * absent selector here means "not applicable", never "every workload".
+ */
+export function isCalicoStagedDeletion(policy: any): boolean {
+  return getCalicoStagedAction(policy) === "delete";
+}
+
+export const CALICO_SELECTOR_NOT_APPLICABLE = "—";
+
 export function getCalicoPolicySelector(policy: any): string {
+  if (isCalicoStagedDeletion(policy)) return CALICO_SELECTOR_NOT_APPLICABLE;
   const kubernetesPolicy = isCalicoStagedKubernetesNetworkPolicyKind(policy?.kind);
   const selector = kubernetesPolicy
     ? policy?.spec?.podSelector

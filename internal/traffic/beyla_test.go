@@ -996,3 +996,135 @@ func TestBeylaSource_DiagnosticsProbe_IgnoresSeriesWithNoTraffic(t *testing.T) {
 		t.Errorf("probe must count series carrying traffic, not series that exist, got: %s", probe)
 	}
 }
+
+func TestBeylaSource_GetFlows_MultiPortHTTPSumsWhenEdgesHaveNoPort(t *testing.T) {
+	// dst_port is opt-in, so by default every L4 edge carries port 0 while the HTTP
+	// metric still reports a distinct server_port per port served. All of that HTTP
+	// traffic belongs to the same port-0 edge, so the rates have to be summed.
+	// Attaching each port's record in turn overwrites instead, leaving the rate
+	// short and the displayed route decided by map iteration order.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
+		if strings.Contains(query, "beyla_network_flow_bytes_total") {
+			// No dst_port label: the default install.
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+				"k8s_dst_owner_name": "api", "k8s_dst_namespace": "demo",
+			}, 40.0)), nil
+		}
+		return promResult("vector",
+			promSeries(map[string]string{
+				"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "80",
+				"http_request_method": "GET", "http_route": "/health", "http_response_status_code": "200",
+			}, 3.0),
+			promSeries(map[string]string{
+				"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "8080",
+				"http_request_method": "POST", "http_route": "/orders", "http_response_status_code": "201",
+			}, 7.0),
+		), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Flows) != 1 {
+		t.Fatalf("expected 1 flow, got %d", len(resp.Flows))
+	}
+	f := resp.Flows[0]
+	if f.RequestRate != 10.0 {
+		t.Errorf("requestRate = %v, want 10 (3 on :80 plus 7 on :8080); a lower value means one port overwrote the other", f.RequestRate)
+	}
+	// The busiest single series decides the label, so it must be deterministic
+	// rather than whichever the map happened to visit last.
+	assertEq(t, "httpMethod", f.HTTPMethod, "POST")
+	assertEq(t, "httpPath", f.HTTPPath, "/orders")
+}
+
+func TestBeylaSource_GetFlows_WarningNamesTheClustersOwnMetric(t *testing.T) {
+	// On an OBI install the attributes.select key is obi_network_flow_bytes.
+	// Telling the operator to configure the Beyla spelling would not work.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
+		if strings.Contains(query, "obi_network_flow_bytes_total") {
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+				"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+			}, 5.0)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	if _, err := src.Detect(context.Background()); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(resp.Warning, "obi_network_flow_bytes") {
+		t.Errorf("warning must name this cluster's metric, got: %q", resp.Warning)
+	}
+	if strings.Contains(resp.Warning, "beyla_network_flow_bytes") {
+		t.Errorf("warning must not send an OBI user to the Beyla spelling, got: %q", resp.Warning)
+	}
+}
+
+func TestBeylaSource_GetFlows_PortedEdgesWinOverThePortZeroLeftover(t *testing.T) {
+	// For five minutes after dst.port is added or removed, the rate window holds
+	// series from both configurations, so a destination has a port-80 edge and a
+	// port-0 edge at once. The port-bearing edge is authoritative; giving the
+	// port-0 leftover the destination aggregate as well puts the same HTTP rate on
+	// two edges and doubles it in any total.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
+		if strings.Contains(query, "beyla_network_flow_bytes_total") {
+			return promResult("vector",
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+					"dst_port": "80", "transport": "TCP",
+				}, 20.0),
+				promSeries(map[string]string{
+					// same conversation, from before dst.port was selected
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+				}, 18.0),
+			), nil
+		}
+		return promResult("vector", promSeries(map[string]string{
+			"k8s_namespace_name": "demo", "k8s_owner_name": "web", "server_port": "80",
+			"http_request_method": "GET", "http_route": "/", "http_response_status_code": "200",
+		}, 6.0)), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var total float64
+	byPort := map[int]float64{}
+	for _, f := range resp.Flows {
+		total += f.RequestRate
+		byPort[f.Port] = f.RequestRate
+	}
+	if total != 6.0 {
+		t.Errorf("request rates sum to %v, want 6 — the destination served 6/s and it must not be counted twice", total)
+	}
+	if byPort[80] != 6.0 {
+		t.Errorf("port 80 rate = %v, want 6: the port-bearing edge is the authoritative one", byPort[80])
+	}
+	if byPort[0] != 0 {
+		t.Errorf("the port-0 leftover must not also carry the rate, got %v", byPort[0])
+	}
+}

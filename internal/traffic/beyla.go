@@ -255,6 +255,13 @@ type l4Key struct {
 	transport      string
 }
 
+// dstKey identifies a destination workload, without a port. Needed because
+// dst_port is opt-in: when it is absent every L4 edge carries port 0, so a
+// destination's HTTP traffic has to be aggregated across ports.
+type dstKey struct {
+	dstNs, dstName string
+}
+
 // dstPortKey identifies a destination workload and the port it was served on.
 // The HTTP server-duration metric carries server_port, so L7 results join to the
 // exact L4 port rather than being matched by destination and guessed at.
@@ -269,6 +276,9 @@ type dstPortKey struct {
 // with no port and no protocol. That is worth telling the user about rather than
 // silently rendering port 0 and calling everything TCP.
 type l4LabelPresence struct {
+	// metric is the flow metric this cluster exposes, carried so the warning can
+	// name the right attributes.select key rather than assuming Beyla's spelling.
+	metric    string
 	port      bool
 	transport bool
 	// hiddenUDP is set when the cluster has traffic Beyla could not orient — UDP,
@@ -312,10 +322,13 @@ func (p l4LabelPresence) warning(flowCount int) string {
 			missing = append(missing, "transport")
 		}
 		if len(missing) > 0 {
+			// Names the metric this cluster actually exposes: on an OBI install the
+			// attributes.select key is obi_network_flow_bytes, and advice pointing at
+			// the other spelling does not work.
 			parts = append(parts, fmt.Sprintf("Beyla is not exporting %s, so these edges have no port or "+
 				"protocol detail (they are shown as port 0 over TCP). Both are opt-in attributes: add them "+
-				"to attributes.select for beyla_network_flow_bytes to see per-port edges.",
-				strings.Join(missing, " and ")))
+				"to attributes.select for %s to see per-port edges.",
+				strings.Join(missing, " and "), strings.TrimSuffix(p.metric, "_total")))
 		}
 	}
 
@@ -352,29 +365,46 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 		byDstPort[key] = append(byDstPort[key], f)
 	}
 
-	// Merge L7 into L4 on destination and port. server_port on the HTTP metric
-	// names the port the requests were served on, so there is no need to work out
-	// which of a destination's ports is the HTTP one.
-	for _, l7 := range busiestL7PerDstPort(l7Flows) {
-		dst := dstPortKey{l7.Destination.Namespace, l7.Destination.Name, l7.Port}
-		edges := byDstPort[dst]
-		if len(edges) == 0 {
-			// dst_port is opt-in and absent by default, in which case every L4
-			// edge carries port 0 and a destination's whole conversation with a
-			// given caller has already collapsed into one edge. Attaching the
-			// destination's HTTP metadata to that bucket is unambiguous, because
-			// there is only one port's worth of edges to attach it to. When
-			// dst_port is selected the exact match above applies instead.
-			edges = byDstPort[dstPortKey{l7.Destination.Namespace, l7.Destination.Name, 0}]
+	// Merge L7 into L4. server_port on the HTTP metric names the port the requests
+	// were served on, so there is no need to work out which of a destination's
+	// ports is the HTTP one.
+	//
+	// Driven from the L4 buckets rather than from the HTTP records: each bucket is
+	// then visited once, and its metadata is assigned once. Iterating the HTTP
+	// records instead means several of them can land on the same bucket — which is
+	// what happens by default, where dst_port is absent and every edge carries
+	// port 0 — and each assignment overwrites the last rather than accumulating.
+	// A destination can end up with both kinds of edge at once: for the five
+	// minutes after dst.port is added or removed, the rate window still holds
+	// series from the previous configuration. Where real ports exist for a
+	// destination they are authoritative, and the port-0 bucket is a leftover — so
+	// it must not also receive the destination-wide aggregate, or the same HTTP
+	// rate lands on two edges.
+	portedDsts := make(map[dstKey]bool)
+	for key := range byDstPort {
+		if key.port != 0 {
+			portedDsts[dstKey{key.dstNs, key.dstName}] = true
 		}
-		if len(edges) == 0 {
+	}
+
+	perPort, perDst := l7ByPortAndDestination(l7Flows)
+	for key, edges := range byDstPort {
+		l7, ok := perPort[key]
+		if !ok && key.port == 0 && !portedDsts[dstKey{key.dstNs, key.dstName}] {
+			// These edges carry no port information and this destination has no
+			// port-bearing edges either, so every port's HTTP traffic for it belongs
+			// to them. Use the destination-wide aggregate, which has summed the
+			// rates across ports.
+			l7, ok = perDst[dstKey{key.dstNs, key.dstName}]
+		}
+		if !ok {
 			continue
 		}
 		// The HTTP metric is recorded server-side and carries no source labels at
 		// all, so a destination's request rate still has to be divided across the
-		// callers that reached it on this port rather than copied onto each one.
-		// Weight by L4 byte volume as the best available proxy for each caller's
-		// share; server_port fixes which port, not which caller.
+		// callers that reached it rather than copied onto each one. Weight by L4
+		// byte volume as the best available proxy for each caller's share;
+		// server_port fixes which port, not which caller.
 		var totalBytes int64
 		for _, f := range edges {
 			totalBytes += f.BytesSent + f.BytesRecv
@@ -400,31 +430,48 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 	return result, presence, nil
 }
 
-// busiestL7PerDstPort collapses the HTTP series for one destination and port into
-// a single record: rates summed, and the route, method and status taken from the
-// busiest individual series so the edge label describes real traffic.
-func busiestL7PerDstPort(l7Flows []Flow) []Flow {
-	best := make(map[dstPortKey]Flow, len(l7Flows))
-	topRate := make(map[dstPortKey]float64, len(l7Flows))
+// l7ByPortAndDestination collapses the HTTP series two ways: per destination and
+// port, and per destination across all its ports. Both aggregate the same way —
+// rates summed, and the route, method and status taken from the busiest single
+// series so the edge label describes traffic that really happened.
+//
+// The destination-wide view exists because dst_port is opt-in: without it every
+// L4 edge carries port 0, and a destination serving HTTP on several ports has all
+// of that traffic on those same edges. Summing across ports is the only honest
+// answer there; attaching each port's record in turn would report whichever came
+// last.
+func l7ByPortAndDestination(l7Flows []Flow) (map[dstPortKey]Flow, map[dstKey]Flow) {
+	perPort := make(map[dstPortKey]Flow, len(l7Flows))
+	perPortTop := make(map[dstPortKey]float64, len(l7Flows))
+	perDst := make(map[dstKey]Flow, len(l7Flows))
+	perDstTop := make(map[dstKey]float64, len(l7Flows))
+
 	for _, f := range l7Flows {
-		dst := dstPortKey{f.Destination.Namespace, f.Destination.Name, f.Port}
-		cur, ok := best[dst]
-		if !ok {
-			best[dst], topRate[dst] = f, f.RequestRate
-			continue
+		portKey := dstPortKey{f.Destination.Namespace, f.Destination.Name, f.Port}
+		if cur, ok := perPort[portKey]; ok {
+			if f.RequestRate > perPortTop[portKey] {
+				perPortTop[portKey] = f.RequestRate
+				cur.HTTPMethod, cur.HTTPPath, cur.HTTPStatus = f.HTTPMethod, f.HTTPPath, f.HTTPStatus
+			}
+			cur.RequestRate += f.RequestRate
+			perPort[portKey] = cur
+		} else {
+			perPort[portKey], perPortTop[portKey] = f, f.RequestRate
 		}
-		if f.RequestRate > topRate[dst] {
-			topRate[dst] = f.RequestRate
-			cur.HTTPMethod, cur.HTTPPath, cur.HTTPStatus = f.HTTPMethod, f.HTTPPath, f.HTTPStatus
+
+		dst := dstKey{f.Destination.Namespace, f.Destination.Name}
+		if cur, ok := perDst[dst]; ok {
+			if f.RequestRate > perDstTop[dst] {
+				perDstTop[dst] = f.RequestRate
+				cur.HTTPMethod, cur.HTTPPath, cur.HTTPStatus = f.HTTPMethod, f.HTTPPath, f.HTTPStatus
+			}
+			cur.RequestRate += f.RequestRate
+			perDst[dst] = cur
+		} else {
+			perDst[dst], perDstTop[dst] = f, f.RequestRate
 		}
-		cur.RequestRate += f.RequestRate
-		best[dst] = cur
 	}
-	out := make([]Flow, 0, len(best))
-	for _, f := range best {
-		out = append(out, f)
-	}
-	return out
+	return perPort, perDst
 }
 
 // preferL4 chooses between two series that describe the same conversation.
@@ -521,6 +568,7 @@ func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions, withDiagnos
 		return nil, l4LabelPresence{}, err
 	}
 	flows, presence := s.parseL4Flows(result)
+	presence.metric = s.flowMetricName()
 	if withDiagnostics {
 		presence.hiddenUDP = s.hasUnorientableTraffic(ctx, opts)
 	}

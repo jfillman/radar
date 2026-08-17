@@ -193,8 +193,11 @@ func TestBeylaSource_GetFlows_OwnerLevel(t *testing.T) {
 	assertEq(t, "port", fmt.Sprintf("%d", f.Port), "8080")
 	assertEq(t, "protocol", f.Protocol, "tcp")
 	assertEq(t, "verdict", f.Verdict, "forwarded")
-	if f.Connections == 0 {
-		t.Error("expected non-zero connections")
+	// No HTTP data on this edge, so there is no rate to report. Beyla exports no
+	// connection count at all, and the old behaviour of writing 1 here invented a
+	// number that then drove edge thickness and the node totals.
+	if f.Connections != 0 {
+		t.Errorf("connections = %d, want 0: nothing here counts connections", f.Connections)
 	}
 }
 
@@ -562,7 +565,7 @@ func TestBeylaSource_QueryL4_KeepsOnlyTheRequestDirection(t *testing.T) {
 	// is selected the reverse half carries the client's ephemeral port, so a
 	// single DNS conversation becomes hundreds of edges. Only "request" is
 	// orientable.
-	var rateQuery string
+	var queries []string
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
 		// The diagnostics probe shares the metric name with the L4 query, so a stub
@@ -572,7 +575,7 @@ func TestBeylaSource_QueryL4_KeepsOnlyTheRequestDirection(t *testing.T) {
 			return emptyResult(), nil
 		}
 		if strings.Contains(query, "network_flow_bytes_total") && strings.Contains(query, "rate(") {
-			rateQuery = query
+			queries = append(queries, query)
 		}
 		return emptyResult(), nil
 	}
@@ -580,8 +583,19 @@ func TestBeylaSource_QueryL4_KeepsOnlyTheRequestDirection(t *testing.T) {
 	if _, err := src.GetFlows(context.Background(), FlowOptions{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(rateQuery, `direction="request"`) {
-		t.Errorf("L4 query must keep only the request direction, got: %s", rateQuery)
+	// The edge query is the one grouped by the full label set. A second query reads
+	// the response direction for received bytes and must not be mistaken for it.
+	var edgeQuery string
+	for _, q := range queries {
+		if strings.Contains(q, "dst_port") {
+			edgeQuery = q
+		}
+	}
+	if edgeQuery == "" {
+		t.Fatalf("no edge query was issued (%d flow queries seen)", len(queries))
+	}
+	if !strings.Contains(edgeQuery, `direction="request"`) {
+		t.Errorf("the edge query must keep only the request direction, got: %s", edgeQuery)
 	}
 	if strings.Contains(beylaL4GroupBy, "direction") {
 		t.Error("direction must stay out of the group-by so it cannot split one conversation across two keys")
@@ -1222,5 +1236,174 @@ func TestBeylaSource_GetFlows_ScopesTheTrafficClaimToWhatTheUserSees(t *testing.
 	}
 	if !strings.Contains(scoped.Warning, "direction=unknown") {
 		t.Errorf("expected the traffic claim when it is in scope, got: %q", scoped.Warning)
+	}
+}
+
+func TestBeylaSource_GetFlows_ConnectionsCarryTheRequestRate(t *testing.T) {
+	// Beyla measures rates, not connections — the same position Istio is in, which
+	// puts its rate in Connections and lets the graph label it req/s. An edge with
+	// HTTP traffic reports that rate; an edge without reports nothing rather than a
+	// fabricated 1, which is what previously made every edge the same thickness.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) || strings.Contains(query, `direction="response"`) {
+			return emptyResult(), nil
+		}
+		if strings.Contains(query, "beyla_network_flow_bytes_total") {
+			return promResult("vector",
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+					"dst_port": "80", "transport": "TCP",
+				}, 100.0),
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "db", "k8s_dst_namespace": "demo",
+					"dst_port": "6379", "transport": "TCP",
+				}, 40.0),
+			), nil
+		}
+		return promResult("vector", promSeries(map[string]string{
+			"k8s_namespace_name": "demo", "k8s_owner_name": "web", "server_port": "80",
+			"http_request_method": "GET", "http_route": "/", "http_response_status_code": "200",
+		}, 4.75)), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := map[string]int64{}
+	for _, f := range resp.Flows {
+		got[f.Destination.Name] = f.Connections
+	}
+	if got["web"] != 4 {
+		t.Errorf("web connections = %d, want 4 (4.75 req/s truncated, as istio does)", got["web"])
+	}
+	if got["db"] != 0 {
+		t.Errorf("db connections = %d, want 0: no HTTP data means no rate to report", got["db"])
+	}
+}
+
+func TestBeylaSource_GetFlows_FractionalRateStillCountsAsTraffic(t *testing.T) {
+	// Istio floors a sub-1 rate to 1 rather than 0, because traffic below one
+	// request per second is still traffic and a zero would read as none.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) || strings.Contains(query, `direction="response"`) {
+			return emptyResult(), nil
+		}
+		if strings.Contains(query, "beyla_network_flow_bytes_total") {
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+				"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+				"dst_port": "80", "transport": "TCP",
+			}, 10.0)), nil
+		}
+		return promResult("vector", promSeries(map[string]string{
+			"k8s_namespace_name": "demo", "k8s_owner_name": "web", "server_port": "80",
+			"http_request_method": "GET", "http_route": "/", "http_response_status_code": "200",
+		}, 0.2)), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Flows) != 1 || resp.Flows[0].Connections != 1 {
+		t.Fatalf("want a single flow reporting 1, got %+v", resp.Flows)
+	}
+}
+
+func TestBeylaSource_GetFlows_FillsLatencyAndErrorRateLikeTheOtherSources(t *testing.T) {
+	// Hubble fills LatencyNs and Istio fills ErrorRate; Beyla exports the data for
+	// both and previously used neither, so the flow list's Latency column read "—"
+	// on every row and the graph's "Errors (5xx)" legend could never light up.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		switch {
+		case strings.Contains(query, `direction="unknown"`), strings.Contains(query, `direction="response"`):
+			return emptyResult(), nil
+		case strings.Contains(query, "beyla_network_flow_bytes_total"):
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+				"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+				"dst_port": "80", "transport": "TCP",
+			}, 100.0)), nil
+		case strings.Contains(query, `http_response_status_code=~"5.."`):
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_namespace_name": "demo", "k8s_owner_name": "web", "server_port": "80",
+			}, 0.308)), nil
+		case strings.Contains(query, "http_server_request_duration_seconds_sum"):
+			// The query divides sum by count; the stub returns the quotient.
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_namespace_name": "demo", "k8s_owner_name": "web", "server_port": "80",
+			}, 0.000101133)), nil
+		}
+		return promResult("vector", promSeries(map[string]string{
+			"k8s_namespace_name": "demo", "k8s_owner_name": "web", "server_port": "80",
+			"http_request_method": "GET", "http_route": "/", "http_response_status_code": "200",
+		}, 5.0)), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Flows) != 1 {
+		t.Fatalf("expected 1 flow, got %d", len(resp.Flows))
+	}
+	f := resp.Flows[0]
+	if f.LatencyNs != 101133 {
+		t.Errorf("latencyNs = %d, want 101133 (0.000101133s expressed in nanoseconds)", f.LatencyNs)
+	}
+	if f.ErrorRate != 0.308 {
+		t.Errorf("errorRate = %v, want 0.308", f.ErrorRate)
+	}
+	// Istio marks the flow errored once any 5xx is present, and the graph colours
+	// the edge from the verdict.
+	assertEq(t, "verdict", f.Verdict, "error")
+}
+
+func TestBeylaSource_GetFlows_ReceivedBytesComeFromTheResponseDirection(t *testing.T) {
+	// The response half of a conversation cannot be drawn as an edge — that is what
+	// produced the mirror edges — but it is the true count of bytes coming back, so
+	// it fills BytesRecv instead of being discarded. Istio fills the same field from
+	// istio_response_bytes_sum.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		switch {
+		case strings.Contains(query, `direction="unknown"`):
+			return emptyResult(), nil
+		case strings.Contains(query, `direction="response"`):
+			// Runs destination-to-source: web answering client.
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "web", "k8s_src_namespace": "demo",
+				"k8s_dst_owner_name": "client", "k8s_dst_namespace": "demo",
+			}, 10.0)), nil
+		case strings.Contains(query, "beyla_network_flow_bytes_total"):
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+				"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+				"dst_port": "80", "transport": "TCP",
+			}, 4.0)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Flows) != 1 {
+		t.Fatalf("expected 1 flow, got %d", len(resp.Flows))
+	}
+	f := resp.Flows[0]
+	// Rates are converted to absolute counts over the window, as Istio does.
+	if f.BytesSent != 4*beylaRateWindowSeconds {
+		t.Errorf("bytesSent = %d, want %d", f.BytesSent, 4*beylaRateWindowSeconds)
+	}
+	if f.BytesRecv != 10*beylaRateWindowSeconds {
+		t.Errorf("bytesRecv = %d, want %d — the response direction carries it", f.BytesRecv, 10*beylaRateWindowSeconds)
 	}
 }

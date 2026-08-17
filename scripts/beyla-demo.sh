@@ -258,9 +258,30 @@ spec:
         - name: nginx
           image: nginx:1.27-alpine
           ports: [{ containerPort: 80 }]
+          volumeMounts:
+            - { name: conf, mountPath: /etc/nginx/conf.d }
           resources:
             requests: { cpu: 10m, memory: 16Mi }
             limits: { memory: 64Mi }
+      volumes:
+        - name: conf
+          configMap: { name: web-conf }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-conf
+  namespace: ${DEMO_NS}
+data:
+  # /boom returns 500 so the error path has something to report. Without it the
+  # graph's "Errors (5xx)" legend entry can never light up on this cluster, and an
+  # error rate of zero proves nothing about whether the code reads it correctly.
+  default.conf: |
+    server {
+      listen 80;
+      location / { return 200 'ok\n'; }
+      location /boom { return 500 'boom\n'; }
+    }
 ---
 apiVersion: v1
 kind: Service
@@ -325,6 +346,8 @@ spec:
                 for i in 1 2 3 4 5; do
                   wget -q -T 3 -O /dev/null "http://web.${DEMO_NS}.svc.cluster.local/" || true
                 done
+                # One 500 per five successes, so the 5xx rate is a visible minority.
+                wget -q -T 3 -O /dev/null "http://web.${DEMO_NS}.svc.cluster.local/boom" || true
                 printf 'PING\r\n' | nc -w 2 db.${DEMO_NS}.svc.cluster.local 6379 >/dev/null 2>&1 || true
                 sleep 1
               done
@@ -332,7 +355,7 @@ spec:
             requests: { cpu: 10m, memory: 16Mi }
             limits: { memory: 64Mi }
 YAML
-  ok "web (:80), db (:6379) and client traffic generator applied"
+  ok "web (:80, with a /boom 500 endpoint), db (:6379) and client traffic generator applied"
 }
 
 apply_prometheus() {

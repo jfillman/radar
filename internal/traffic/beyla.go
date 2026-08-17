@@ -332,8 +332,8 @@ func (p l4LabelPresence) warning(flowCount int) string {
 			// Names the metric this cluster actually exposes: on an OBI install the
 			// attributes.select key is obi_network_flow_bytes, and advice pointing at
 			// the other spelling does not work.
-			parts = append(parts, fmt.Sprintf("Beyla is not exporting %s, so these edges have no port or "+
-				"protocol detail (they are shown as port 0 over TCP). Both are opt-in attributes: add them "+
+			parts = append(parts, fmt.Sprintf("Beyla is not exporting %s, so any edges here have no port or "+
+				"protocol detail (they appear as port 0 over TCP). Both are opt-in attributes: add them "+
 				"to attributes.select for %s to see per-port edges.",
 				strings.Join(missing, " and "), strings.TrimSuffix(p.metric, "_total")))
 		}

@@ -43,3 +43,44 @@ func TestTrafficFlowsPayloadKeepsWarningKind(t *testing.T) {
 		t.Error("warningKind should be absent when the source did not set one")
 	}
 }
+
+// A partial-data warning describes the flows it arrived with. When namespace
+// filtering removes all of them, it describes edges this user cannot see.
+func TestTrafficFlowsPayloadDropsPartialWarningWhenFilteringRemovedEverything(t *testing.T) {
+	response := &traffic.FlowsResponse{
+		Source:      "beyla",
+		Flows:       []traffic.Flow{{Source: traffic.Endpoint{Namespace: "other"}}},
+		Warning:     "Beyla is not exporting dst.port and transport.",
+		WarningKind: traffic.WarningPartial,
+	}
+
+	// Everything the source returned was filtered out.
+	payload := trafficFlowsPayload(response, []traffic.Flow{})
+	if _, ok := payload["warning"]; ok {
+		t.Errorf("warning should be dropped: it qualifies flows the user cannot see, got %q", payload["warning"])
+	}
+
+	// The source itself returned nothing: the warning is the explanation for the
+	// empty result and must survive.
+	empty := &traffic.FlowsResponse{
+		Source:      "beyla",
+		Flows:       []traffic.Flow{},
+		Warning:     "Some traffic is not shown: Beyla reports it as direction=unknown on both sides.",
+		WarningKind: traffic.WarningPartial,
+	}
+	if _, ok := trafficFlowsPayload(empty, []traffic.Flow{})["warning"]; !ok {
+		t.Error("an empty result needs its explanation kept")
+	}
+
+	// A transient warning is about the fetch, not about the flows, so filtering
+	// does not affect it.
+	transient := &traffic.FlowsResponse{
+		Source:      "beyla",
+		Flows:       []traffic.Flow{{Source: traffic.Endpoint{Namespace: "other"}}},
+		Warning:     "Failed to query Beyla metrics: connection refused",
+		WarningKind: traffic.WarningTransient,
+	}
+	if _, ok := trafficFlowsPayload(transient, []traffic.Flow{})["warning"]; !ok {
+		t.Error("a transient warning is about the fetch and must survive filtering")
+	}
+}

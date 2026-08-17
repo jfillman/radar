@@ -65,6 +65,11 @@ func AggregateFlows(flows []Flow) []AggregatedFlow {
 
 		agg := acc.agg
 		agg.FlowCount++
+		// One unorientable flow makes the whole edge unorientable: the arrowhead
+		// would be claiming something none of its contributors established.
+		if f.DirectionUnknown {
+			agg.DirectionUnknown = true
+		}
 		agg.BytesSent += f.BytesSent
 		agg.BytesRecv += f.BytesRecv
 		agg.Connections += f.Connections

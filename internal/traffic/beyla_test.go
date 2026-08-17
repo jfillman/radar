@@ -411,107 +411,6 @@ func TestBeylaSource_GetFlows_WarningKindSeparatesRetryableFromPermanent(t *test
 	})
 }
 
-func TestBeylaSource_DiagnosticsProbe_SkippedOnTheStreamPath(t *testing.T) {
-	// StreamFlows has nowhere to put a warning, so it must not pay for one. That
-	// skip is also what makes the probe affordable uncached: the REST path is a
-	// user-triggered snapshot, not a poll.
-	var probes int
-	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
-	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		if strings.Contains(query, `direction="unknown"`) {
-			probes++
-			return promResult("vector", promSeries(map[string]string{}, 2)), nil
-		}
-		return emptyResult(), nil
-	}
-
-	if _, _, err := src.getFlowsInternal(context.Background(), FlowOptions{}, false); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if probes != 0 {
-		t.Fatalf("the stream path must not run the diagnostics probe, ran it %d time(s)", probes)
-	}
-
-	if _, err := src.GetFlows(context.Background(), FlowOptions{}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if probes != 1 {
-		t.Errorf("the REST path must run it, ran it %d time(s)", probes)
-	}
-}
-
-func TestBeylaSource_DiagnosticsProbe_NotCachedAcrossCalls(t *testing.T) {
-	// The probe reports on current traffic, not on how Beyla is configured, so a
-	// cached answer goes stale as soon as such traffic starts. It was cached once,
-	// which meant traffic appearing after the first call stayed unmentioned.
-	var probes int
-	hidden := false
-	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
-	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		if strings.Contains(query, `direction="unknown"`) {
-			probes++
-			if hidden {
-				return promResult("vector", promSeries(map[string]string{}, 2)), nil
-			}
-			return emptyResult(), nil
-		}
-		return emptyResult(), nil
-	}
-
-	first, err := src.GetFlows(context.Background(), FlowOptions{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.Contains(first.Warning, "direction=unknown") {
-		t.Fatal("nothing was hidden yet, so nothing should have been claimed")
-	}
-
-	hidden = true
-	second, err := src.GetFlows(context.Background(), FlowOptions{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(second.Warning, "direction=unknown") {
-		t.Error("traffic that started after the first call must still be reported")
-	}
-	if probes != 2 {
-		t.Errorf("expected a probe per request, got %d", probes)
-	}
-}
-
-func TestBeylaSource_DiagnosticsProbe_FailureStaysSilentThenRecovers(t *testing.T) {
-	// A failed probe is not an answer: say nothing rather than assert an absence,
-	// and report normally once it succeeds.
-	var probes int
-	failing := true
-	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
-	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		if strings.Contains(query, `direction="unknown"`) {
-			probes++
-			if failing {
-				return nil, fmt.Errorf("connection refused")
-			}
-			return promResult("vector", promSeries(map[string]string{}, 2)), nil
-		}
-		return emptyResult(), nil
-	}
-
-	if _, err := src.GetFlows(context.Background(), FlowOptions{}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	failing = false
-	resp, err := src.GetFlows(context.Background(), FlowOptions{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if probes != 2 {
-		t.Errorf("expected the probe to be retried after a failure, ran it %d times", probes)
-	}
-	if !strings.Contains(resp.Warning, "direction=unknown") {
-		t.Errorf("once the probe succeeds the warning must appear, got: %q", resp.Warning)
-	}
-}
-
 func TestBeylaSource_GetFlows_L7NotAttachedWhenItsPortHasNoNamedCaller(t *testing.T) {
 	// The destination serves HTTP on 8080, but its only caller there is an
 	// external one Beyla can't name, so that edge is dropped. Unrelated TCP
@@ -599,29 +498,6 @@ func TestBeylaSource_QueryL4_KeepsOnlyTheRequestDirection(t *testing.T) {
 	}
 	if strings.Contains(beylaL4GroupBy, "direction") {
 		t.Error("direction must stay out of the group-by so it cannot split one conversation across two keys")
-	}
-}
-
-func TestBeylaSource_GetFlows_SaysSoWhenUDPIsHidden(t *testing.T) {
-	// The direction filter drops UDP entirely. An empty or partial graph with no
-	// explanation reads as "there is no traffic", which is not what happened.
-	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
-	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		if strings.Contains(query, `direction="unknown"`) {
-			return promResult("vector", promSeries(map[string]string{}, 4)), nil
-		}
-		return emptyResult(), nil
-	}
-
-	resp, err := src.GetFlows(context.Background(), FlowOptions{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(resp.Flows) != 0 {
-		t.Fatalf("expected 0 flows, got %d", len(resp.Flows))
-	}
-	if !strings.Contains(resp.Warning, "UDP") {
-		t.Errorf("an empty graph with UDP present must explain itself, got: %q", resp.Warning)
 	}
 }
 
@@ -990,27 +866,6 @@ func TestBeylaSource_DiagnosticsProbe_ScopesNamespaceOnEitherEnd(t *testing.T) {
 	}
 }
 
-func TestBeylaSource_DiagnosticsProbe_IgnoresSeriesWithNoTraffic(t *testing.T) {
-	// Beyla keeps emitting a series after its traffic stops, and a zero-rate
-	// unknown-direction series was observed live for plain TCP. Counting series
-	// rather than rates would announce hidden traffic on a cluster that has none.
-	var probe string
-	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
-	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		if strings.Contains(query, `direction="unknown"`) {
-			probe = query
-		}
-		return emptyResult(), nil
-	}
-
-	if _, err := src.GetFlows(context.Background(), FlowOptions{}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(probe, "rate(") || !strings.Contains(probe, "> 0") {
-		t.Errorf("probe must count series carrying traffic, not series that exist, got: %s", probe)
-	}
-}
-
 func TestBeylaSource_GetFlows_MultiPortHTTPSumsWhenEdgesHaveNoPort(t *testing.T) {
 	// dst_port is opt-in, so by default every L4 edge carries port 0 while the HTTP
 	// metric still reports a distinct server_port per port served. All of that HTTP
@@ -1189,56 +1044,6 @@ func TestBeylaSource_GetFlows_PortedDestinationCountsEvenWhenItsCallerIsNameless
 	}
 }
 
-func TestBeylaSource_GetFlows_ScopesTheTrafficClaimToWhatTheUserSees(t *testing.T) {
-	// A user whose RBAC allows several namespaces gets a cluster-wide query and
-	// server-side filtering, so the unorientable-traffic probe cannot be scoped to
-	// what they may see. Reporting it anyway would describe traffic in a namespace
-	// they have no access to. The missing-attribute half describes Beyla's own
-	// configuration and stays either way.
-	var probes int
-	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
-	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		if strings.Contains(query, `direction="unknown"`) {
-			probes++
-			return promResult("vector", promSeries(map[string]string{}, 3)), nil
-		}
-		if strings.Contains(query, "beyla_network_flow_bytes_total") {
-			return promResult("vector", promSeries(map[string]string{
-				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
-				"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
-			}, 11.0)), nil
-		}
-		return emptyResult(), nil
-	}
-
-	resp, err := src.GetFlows(context.Background(), FlowOptions{ResultWillBeFiltered: true})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if probes != 0 {
-		t.Errorf("the probe cannot be scoped to this user's namespaces, so it should not run; ran %d time(s)", probes)
-	}
-	if strings.Contains(resp.Warning, "direction=unknown") {
-		t.Errorf("must not report traffic the user may not see, got: %q", resp.Warning)
-	}
-	if !strings.Contains(resp.Warning, "not exporting") {
-		t.Errorf("the configuration half of the warning still applies, got: %q", resp.Warning)
-	}
-
-	// A single namespace means the query was scoped to it, so the claim is in scope.
-	probes = 0
-	scoped, err := src.GetFlows(context.Background(), FlowOptions{Namespace: "demo", ResultWillBeFiltered: true})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if probes != 1 {
-		t.Errorf("a namespace-scoped query can report on its own namespace; probes = %d", probes)
-	}
-	if !strings.Contains(scoped.Warning, "direction=unknown") {
-		t.Errorf("expected the traffic claim when it is in scope, got: %q", scoped.Warning)
-	}
-}
-
 func TestBeylaSource_GetFlows_ConnectionsCarryTheRequestRate(t *testing.T) {
 	// Beyla measures rates, not connections — the same position Istio is in, which
 	// puts its rate in Connections and lets the graph label it req/s. An edge with
@@ -1405,5 +1210,150 @@ func TestBeylaSource_GetFlows_ReceivedBytesComeFromTheResponseDirection(t *testi
 	}
 	if f.BytesRecv != 10*beylaRateWindowSeconds {
 		t.Errorf("bytesRecv = %d, want %d — the response direction carries it", f.BytesRecv, 10*beylaRateWindowSeconds)
+	}
+}
+
+func TestBeylaSource_GetFlows_UnorientableConversationBecomesOneUndirectedEdge(t *testing.T) {
+	// Beyla labels both halves of a UDP conversation direction="unknown", so
+	// neither can be called the request. Dropping them removed DNS from the map and
+	// the workload on the other end with it; drawing both produced a mirrored pair
+	// of arrows. One edge, no direction claimed, bytes both ways.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		switch {
+		case strings.Contains(query, `direction="unknown"`):
+			return promResult("vector",
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_src_owner_type": "Deployment",
+					"k8s_dst_owner_name": "coredns", "k8s_dst_namespace": "kube-system",
+					"k8s_dst_owner_type": "Deployment", "transport": "UDP",
+				}, 10.0),
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "coredns", "k8s_src_namespace": "kube-system",
+					"k8s_src_owner_type": "Deployment",
+					"k8s_dst_owner_name": "client", "k8s_dst_namespace": "demo",
+					"k8s_dst_owner_type": "Deployment", "transport": "UDP",
+				}, 25.0),
+			), nil
+		case strings.Contains(query, `direction="response"`):
+			return emptyResult(), nil
+		}
+		return emptyResult(), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Flows) != 1 {
+		t.Fatalf("expected the pair to collapse to 1 edge, got %d", len(resp.Flows))
+	}
+	f := resp.Flows[0]
+	if !f.DirectionUnknown {
+		t.Error("the edge must declare that its direction is unknown, or the graph will draw an arrow")
+	}
+	assertEq(t, "protocol", f.Protocol, "udp")
+	// Endpoints are ordered deterministically so the edge does not flip between
+	// polls; demo/client sorts before kube-system/coredns.
+	assertEq(t, "source", f.Source.Name, "client")
+	assertEq(t, "destination", f.Destination.Name, "coredns")
+	if f.BytesSent != 10*beylaRateWindowSeconds || f.BytesRecv != 25*beylaRateWindowSeconds {
+		t.Errorf("bytes = %d/%d, want %d/%d — both halves belong to the one edge",
+			f.BytesSent, f.BytesRecv, 10*beylaRateWindowSeconds, 25*beylaRateWindowSeconds)
+	}
+	if f.Connections != 0 {
+		t.Errorf("connections = %d, want 0: Beyla reports no count for these", f.Connections)
+	}
+}
+
+func TestBeylaSource_GetFlows_UnorientablePairsCollapseAcrossEphemeralPorts(t *testing.T) {
+	// With dst.port selected the reverse half carries the client's ephemeral port,
+	// which is what turned one conversation into hundreds of edges. Grouping the
+	// pair without the port is what keeps it to one.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if !strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
+		series := []prom.Series{promSeries(map[string]string{
+			"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+			"k8s_dst_owner_name": "coredns", "k8s_dst_namespace": "kube-system",
+			"transport": "UDP", "dst_port": "53",
+		}, 5.0)}
+		for _, port := range []string{"41866", "41864", "37221", "52001"} {
+			series = append(series, promSeries(map[string]string{
+				"k8s_src_owner_name": "coredns", "k8s_src_namespace": "kube-system",
+				"k8s_dst_owner_name": "client", "k8s_dst_namespace": "demo",
+				"transport": "UDP", "dst_port": port,
+			}, 2.0))
+		}
+		return promResult("vector", series...), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Flows) != 1 {
+		t.Fatalf("five series for one conversation must collapse to 1 edge, got %d", len(resp.Flows))
+	}
+	// The four reverse series sum into the return direction.
+	if want := int64(4 * 2.0 * beylaRateWindowSeconds); resp.Flows[0].BytesRecv != want {
+		t.Errorf("bytesRecv = %d, want %d (all four ephemeral-port series)", resp.Flows[0].BytesRecv, want)
+	}
+}
+
+func TestBeylaSource_GetFlows_ReceivedBytesSplitAcrossAPairsEdges(t *testing.T) {
+	// Received bytes are known per conversation, not per port — the response series
+	// carry ephemeral ports. When a pair has more than one edge, copying the total
+	// onto each counts the same return traffic once per port; observed live as the
+	// identical recv figure on a destination's port-80 and port-0 edges.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		switch {
+		case strings.Contains(query, `direction="unknown"`):
+			return emptyResult(), nil
+		case strings.Contains(query, `direction="response"`):
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "web", "k8s_src_namespace": "demo",
+				"k8s_dst_owner_name": "client", "k8s_dst_namespace": "demo",
+			}, 30.0)), nil
+		case strings.Contains(query, "beyla_network_flow_bytes_total"):
+			return promResult("vector",
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+					"dst_port": "80", "transport": "TCP",
+				}, 30.0),
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+					"dst_port": "8080", "transport": "TCP",
+				}, 10.0),
+			), nil
+		}
+		return emptyResult(), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	total := int64(0)
+	for _, f := range resp.Flows {
+		total += f.BytesRecv
+	}
+	want := int64(30 * beylaRateWindowSeconds)
+	if total != want {
+		t.Errorf("received bytes total %d across the pair's edges, want %d — it must be divided, not copied", total, want)
+	}
+	// Divided by share of bytes sent: 30 and 10 means three quarters and one quarter.
+	byPort := map[int]int64{}
+	for _, f := range resp.Flows {
+		byPort[f.Port] = f.BytesRecv
+	}
+	if byPort[80] <= byPort[8080] {
+		t.Errorf("the busier port should take the larger share, got %d on :80 and %d on :8080", byPort[80], byPort[8080])
 	}
 }

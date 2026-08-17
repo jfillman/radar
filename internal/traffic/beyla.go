@@ -297,15 +297,10 @@ type l4LabelPresence struct {
 	portedDsts map[dstKey]bool
 	port       bool
 	transport  bool
-	// hiddenUDP is set when the cluster has traffic Beyla could not orient — UDP,
-	// which it reports as direction="unknown" in both directions and which the
-	// direction filter therefore drops. Recorded so the graph can say the traffic
-	// exists but is not shown, rather than appearing to be complete.
-	hiddenUDP bool
 }
 
 func (s *BeylaSource) GetFlows(ctx context.Context, opts FlowOptions) (*FlowsResponse, error) {
-	flows, presence, err := s.getFlowsInternal(ctx, opts, true)
+	flows, presence, err := s.getFlowsInternal(ctx, opts)
 	if err != nil {
 		log.Printf("[beyla] Error fetching flows: %v", err)
 		return &FlowsResponse{Source: "beyla", Timestamp: time.Now(), Flows: []Flow{},
@@ -348,23 +343,11 @@ func (p l4LabelPresence) warning(flowCount int) string {
 		}
 	}
 
-	// Stated whether or not there are flows: with no TCP traffic at all, "Beyla
-	// sees UDP but cannot place it" is the only honest explanation for an empty
-	// graph.
-	if p.hiddenUDP {
-		parts = append(parts, "Traffic Beyla reports as direction=unknown on both sides of the "+
-			"conversation — which is where UDP such as DNS lands — is left out, because which end "+
-			"initiated it cannot be determined and drawing it would invent an arrow.")
-	}
-
 	return strings.Join(parts, " ")
 }
 
-// getFlowsInternal fetches and merges the flows. withDiagnostics controls the
-// extra probe behind the partial-data warning: callers that discard the warning
-// must pass false rather than pay for an answer they throw away.
-func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, withDiagnostics bool) ([]Flow, l4LabelPresence, error) {
-	l4Map, presence, err := s.queryL4(ctx, opts, withDiagnostics)
+func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([]Flow, l4LabelPresence, error) {
+	l4Map, presence, err := s.queryL4(ctx, opts)
 	if err != nil {
 		return nil, presence, fmt.Errorf("L4 query: %w", err)
 	}
@@ -378,14 +361,39 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 	// Fill in what came back before anything else reads BytesRecv: the L7 split
 	// below weights each caller by its share of the conversation, and half a
 	// conversation is the wrong weight.
+	// Received bytes are known per conversation, not per port: the response series
+	// carry the client's ephemeral port, so they cannot be attributed to one of a
+	// pair's edges. Where a pair has several edges the total is divided between
+	// them by their share of bytes sent — copying it onto each would count the same
+	// return traffic once per port.
 	received := s.queryReceivedBytes(ctx, opts)
-	for _, f := range l4Map {
-		key := pairKey{
-			srcNs: f.Source.Namespace, srcName: f.Source.Name,
-			dstNs: f.Destination.Namespace, dstName: f.Destination.Name,
+	if len(received) > 0 {
+		sentPerPair := make(map[pairKey]int64)
+		edgesPerPair := make(map[pairKey][]*Flow)
+		for _, f := range l4Map {
+			key := pairKey{
+				srcNs: f.Source.Namespace, srcName: f.Source.Name,
+				dstNs: f.Destination.Namespace, dstName: f.Destination.Name,
+			}
+			sentPerPair[key] += f.BytesSent
+			edgesPerPair[key] = append(edgesPerPair[key], f)
 		}
-		if bytes, ok := received[key]; ok {
-			f.BytesRecv = bytes
+		for key, edges := range edgesPerPair {
+			total, ok := received[key]
+			if !ok {
+				continue
+			}
+			sent := sentPerPair[key]
+			for _, f := range edges {
+				switch {
+				case len(edges) == 1:
+					f.BytesRecv = total
+				case sent > 0:
+					f.BytesRecv = total * f.BytesSent / sent
+				default:
+					f.BytesRecv = total / int64(len(edges))
+				}
+			}
 		}
 	}
 
@@ -477,6 +485,10 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 	for _, f := range l4Map {
 		result = append(result, *f)
 	}
+	// Conversations Beyla could not orient are still conversations. They are drawn
+	// without an arrowhead rather than left out, which previously removed DNS from
+	// the map and coredns along with it.
+	result = append(result, s.queryUnorientable(ctx, opts)...)
 	return result, presence, nil
 }
 
@@ -571,9 +583,9 @@ const (
 	// The cost is that UDP traffic does not appear in the graph at all. That is
 	// surfaced to the user rather than left implicit — see l4LabelPresence.
 	beylaL4DirectionFilter = `, direction="request"`
-	// beylaUnknownDirectionProbe counts the series excluded by the filter above,
-	// so the absence of UDP can be stated instead of silently rendering nothing.
-	beylaUnknownDirectionProbe = `, direction="unknown"`
+	// beylaUnknownDirection selects the conversations Beyla could not orient. They
+	// are read separately and drawn without an arrowhead rather than dropped.
+	beylaUnknownDirection = `, direction="unknown"`
 	// beylaL7Metric is Beyla's OTel-aligned HTTP server histogram; there is no
 	// millisecond variant.
 	beylaL7Metric = "http_server_request_duration_seconds_count"
@@ -637,7 +649,7 @@ func beylaL7RateQuery(namespace string) string {
 	return fmt.Sprintf(`sum by (%s) (rate(%s{%s%s}[5m]))`, beylaL7GroupBy, beylaL7Metric, beylaJobSelector(), extra)
 }
 
-func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions, withDiagnostics bool) (map[l4Key]*Flow, l4LabelPresence, error) {
+func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions) (map[l4Key]*Flow, l4LabelPresence, error) {
 	query := beylaRateQuery(beylaL4GroupBy, s.flowMetricName(), opts.Namespace, beylaL4DirectionFilter)
 	result, err := s.query(ctx, query)
 	if err != nil {
@@ -645,63 +657,7 @@ func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions, withDiagnos
 	}
 	flows, presence := s.parseL4Flows(result)
 	presence.metric = s.flowMetricName()
-	// The unorientable-traffic probe is cluster-wide unless a single namespace was
-	// given, so when the caller is about to narrow the result it cannot be scoped
-	// to what the user may see. Skipped rather than reported out of scope. The
-	// missing-attribute part of the warning is unaffected: that describes Beyla's
-	// configuration, which is the same whichever namespaces you can read.
-	if withDiagnostics && !(opts.ResultWillBeFiltered && opts.Namespace == "") {
-		presence.hiddenUDP = s.hasUnorientableTraffic(ctx, opts)
-	}
 	return flows, presence, nil
-}
-
-// hasUnorientableTraffic reports whether there is traffic the direction filter
-// excluded, so its absence from the graph can be stated instead of read as an
-// absence of traffic. A failed probe stays silent rather than guessing.
-//
-// Deliberately uncached. It reports on current traffic, not on how Beyla is
-// configured, so a cached answer goes stale the moment such traffic starts or
-// stops — and the load it was guarding against is gone: the stream path skips
-// diagnostics entirely, and the REST path is a user-triggered snapshot rather
-// than a poll.
-func (s *BeylaSource) hasUnorientableTraffic(ctx context.Context, opts FlowOptions) bool {
-	metric := s.flowMetricName()
-	base := beylaJobSelector() + beylaUnknownDirectionProbe
-
-	// Rate-filtered, not a bare series count. Beyla keeps emitting a series after
-	// its traffic stops, and a zero-rate unknown-direction series was observed for
-	// plain TCP — counting series would announce hidden traffic on a cluster that
-	// has none. `> 0` is the same bar parseL4Flows applies to a flow.
-	//
-	// Scoped the way beylaRateQuery scopes flows — either end of the conversation
-	// inside the namespace — so the warning describes the traffic the user is
-	// actually looking at. Filtering on the source alone would both miss inbound
-	// traffic and report traffic the user cannot see.
-	rated := func(extra string) string {
-		return fmt.Sprintf(`count(rate(%s{%s%s}[5m]) > 0)`, metric, base, extra)
-	}
-	query := rated("")
-	if opts.Namespace != "" {
-		query = rated(fmt.Sprintf(`, k8s_src_namespace=%q`, opts.Namespace)) + " or " +
-			rated(fmt.Sprintf(`, k8s_dst_namespace=%q`, opts.Namespace))
-	}
-	found := false
-	qr, err := s.query(ctx, query)
-	if err != nil {
-		// A failed probe is not an answer; say nothing rather than assert an absence.
-		return false
-	}
-	if qr != nil {
-		for _, series := range qr.Series {
-			for _, point := range series.DataPoints {
-				if point.Value > 0 {
-					found = true
-				}
-			}
-		}
-	}
-	return found
 }
 
 // queryReceivedBytes reads the response half of each conversation, which the flow
@@ -744,6 +700,94 @@ func (s *BeylaSource) queryReceivedBytes(ctx context.Context, opts FlowOptions) 
 		received[key] += int64(val * beylaRateWindowSeconds)
 	}
 	return received
+}
+
+// queryUnorientable reads the conversations Beyla reports as direction="unknown"
+// — which is where UDP lands, DNS above all — and returns one edge per pair.
+//
+// Both halves carry that label, so neither can be called the request. Emitting
+// both would draw a mirrored pair of arrows, and dropping them removes real
+// traffic from the map along with the workload on the other end: with DNS gone,
+// coredns disappears entirely. Instead the pair is collapsed into a single edge,
+// ordered deterministically, marked as having no known direction so the graph
+// leaves the arrowhead off.
+//
+// Ports are not carried. In a default install they are absent anyway, and where
+// they exist one side holds the client's ephemeral port, so there is no single
+// port that describes the conversation.
+func (s *BeylaSource) queryUnorientable(ctx context.Context, opts FlowOptions) []Flow {
+	groupBy := `k8s_src_owner_name, k8s_src_namespace, k8s_src_owner_type, k8s_dst_owner_name, k8s_dst_namespace, k8s_dst_owner_type, transport`
+	query := beylaRateQuery(groupBy, s.flowMetricName(), opts.Namespace, beylaUnknownDirection)
+	result, err := s.query(ctx, query)
+	if err != nil || result == nil {
+		return nil
+	}
+
+	type halves struct {
+		flow     *Flow
+		forward  int64
+		backward int64
+	}
+	pairs := make(map[pairKey]*halves)
+
+	for _, series := range result.Series {
+		if len(series.DataPoints) == 0 {
+			continue
+		}
+		val := series.DataPoints[0].Value
+		if val <= 0 {
+			continue
+		}
+		labels := series.Labels
+		aName := pickLabel(labels, "k8s_src_owner_name", "k8s_src_name")
+		bName := pickLabel(labels, "k8s_dst_owner_name", "k8s_dst_name")
+		if aName == "" || bName == "" {
+			continue
+		}
+		aNs, bNs := labels["k8s_src_namespace"], labels["k8s_dst_namespace"]
+		aType, bType := labels["k8s_src_owner_type"], labels["k8s_dst_owner_type"]
+
+		// Order the endpoints so both halves of a conversation land on one key.
+		// Which end is "source" is arbitrary and the graph will not imply
+		// otherwise, but it has to be stable across polls or the edge would flip.
+		forward := aNs+"/"+aName < bNs+"/"+bName
+		key := pairKey{srcNs: aNs, srcName: aName, dstNs: bNs, dstName: bName}
+		if !forward {
+			key = pairKey{srcNs: bNs, srcName: bName, dstNs: aNs, dstName: aName}
+		}
+
+		p, ok := pairs[key]
+		if !ok {
+			srcType, dstType := aType, bType
+			if !forward {
+				srcType, dstType = bType, aType
+			}
+			p = &halves{flow: &Flow{
+				Source:      Endpoint{Name: key.srcName, Namespace: key.srcNs, Kind: mapBeylaKind(srcType), Workload: key.srcName},
+				Destination: Endpoint{Name: key.dstName, Namespace: key.dstNs, Kind: mapBeylaKind(dstType), Workload: key.dstName},
+				Protocol:    mapBeylaTransport(labels["transport"]),
+				Verdict:     "forwarded",
+				LastSeen:    time.Now(),
+				// Beyla reports no request count for these, and inferring one from
+				// bytes would be the same invention this source has been removing.
+				DirectionUnknown: true,
+			}}
+			pairs[key] = p
+		}
+		if forward {
+			p.forward += int64(val * beylaRateWindowSeconds)
+		} else {
+			p.backward += int64(val * beylaRateWindowSeconds)
+		}
+	}
+
+	flows := make([]Flow, 0, len(pairs))
+	for _, p := range pairs {
+		p.flow.BytesSent = p.forward
+		p.flow.BytesRecv = p.backward
+		flows = append(flows, *p.flow)
+	}
+	return flows
 }
 
 // queryL7Detail reads mean latency and 5xx rate per destination and port. Both are
@@ -986,11 +1030,7 @@ func (s *BeylaSource) StreamFlows(ctx context.Context, opts FlowOptions) (<-chan
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				// Streams carry flows only — there is nowhere to put a warning on
-				// this channel — so skip the diagnostics probe rather than run it
-				// every tick and discard the result. The REST poll behind the same
-				// view reports it.
-				flows, _, err := s.getFlowsInternal(ctx, opts, false)
+				flows, _, err := s.getFlowsInternal(ctx, opts)
 				if err != nil {
 					log.Printf("[beyla] Error fetching flows: %v", err)
 					continue

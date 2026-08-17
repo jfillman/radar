@@ -194,6 +194,10 @@ func calicoPolicyNodeID(kind NodeKind, namespace, name string) string {
 	return strings.ToLower(string(kind)) + "/" + namespace + "/" + name
 }
 
+func calicoPolicyIdentity(kind NodeKind, namespace, name string) string {
+	return string(kind) + "\x00" + namespace + "\x00" + name
+}
+
 // recordCalicoPolicyGroup folds a policy that a second API group also serves
 // into the node already built for it, and reports whether it did. A cluster
 // running the Calico apiserver serves every policy under both
@@ -201,25 +205,17 @@ func calicoPolicyNodeID(kind NodeKind, namespace, name string) string {
 // stored object, so rendering one node per group would double every policy and
 // every edge it draws. The extra group is kept in node data because the two are
 // authorized independently.
-func recordCalicoPolicyGroup(nodes []Node, kind NodeKind, namespace, name, group string) bool {
-	for i := range nodes {
-		node := &nodes[i]
-		if node.Kind != kind || node.Name != name || nodeNamespaceFromData(node) != namespace {
-			continue
-		}
-		if node.Data == nil {
-			node.Data = map[string]any{}
-		}
-		groups, _ := node.Data["apiGroups"].([]string)
-		for _, existing := range groups {
-			if existing == group {
-				return true
-			}
-		}
-		node.Data["apiGroups"] = append(groups, group)
-		return true
+func recordCalicoPolicyGroup(node *Node, group string) {
+	if node.Data == nil {
+		node.Data = map[string]any{}
 	}
-	return false
+	groups, _ := node.Data["apiGroups"].([]string)
+	for _, existing := range groups {
+		if existing == group {
+			return
+		}
+	}
+	node.Data["apiGroups"] = append(groups, group)
 }
 
 type calicoWorkload struct {
@@ -881,6 +877,10 @@ func (b *Builder) addCalicoPolicyNodes(
 
 	namespaceLabels := calicoNamespaceLabels(b.provider)
 	serviceAccounts := calicoServiceAccounts(b.provider)
+	// Only this function creates Calico policy nodes, so an index it fills as it
+	// goes is complete, and the second API group's pass becomes a lookup rather
+	// than a scan of every node in the graph.
+	policyNodeIndex := make(map[string]int)
 	targets := make([]calicoWorkload, 0, len(deployments)+len(statefulsets)+len(daemonsets))
 	for _, deployment := range deployments {
 		if id := deploymentIDs[deployment.Namespace+"/"+deployment.Name]; id != "" {
@@ -964,11 +964,14 @@ func (b *Builder) addCalicoPolicyNodes(
 					}
 				}
 
-				if recordCalicoPolicyGroup(nodes, definition.nodeKind, namespace, policy.GetName(), group) {
+				identity := calicoPolicyIdentity(definition.nodeKind, namespace, policy.GetName())
+				if index, built := policyNodeIndex[identity]; built {
+					recordCalicoPolicyGroup(&nodes[index], group)
 					continue
 				}
 				nodeData["apiGroups"] = []string{group}
 				nodeID := calicoPolicyNodeID(definition.nodeKind, namespace, policy.GetName())
+				policyNodeIndex[identity] = len(nodes)
 				status := StatusHealthy
 				if definition.staged {
 					status = StatusNeutral

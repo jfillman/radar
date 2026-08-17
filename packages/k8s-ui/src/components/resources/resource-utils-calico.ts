@@ -157,7 +157,7 @@ export function isCalicoStagedDeletion(policy: any): boolean {
   return getCalicoStagedAction(policy) === "delete";
 }
 
-export const CALICO_SELECTOR_NOT_APPLICABLE = "—";
+export const CALICO_SELECTOR_NOT_APPLICABLE = "-";
 
 export function getCalicoPolicySelector(policy: any): string {
   if (isCalicoStagedDeletion(policy)) return CALICO_SELECTOR_NOT_APPLICABLE;

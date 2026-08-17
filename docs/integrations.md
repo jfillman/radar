@@ -1224,7 +1224,7 @@ The [NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-op
 
 ### What Radar Shows
 
-**Topology:** Kubernetes, Cilium, and Calico policy nodes appear in the topology graph with edges connecting them to the Deployments, StatefulSets, and DaemonSets they protect. Calico matching evaluates workload, namespace, and service-account selectors. Staged Calico policies use dashed edges and preview styling so they are not mistaken for enforced protection.
+**Topology:** Kubernetes, Cilium, and Calico policy nodes appear in the topology graph with edges connecting them to the Deployments, StatefulSets, and DaemonSets they protect. Calico matching evaluates workload, namespace, and service-account selectors. Staged Calico policies use dashed edges and preview styling so they are not mistaken for enforced protection; a staged policy whose `stagedAction` is `Delete` or `Ignore` draws no edge at all, because promoting it would remove protection rather than add it.
 
 <p align="center">
   <img src="screenshots/integrations/calico-policy-topology.png" alt="Calico policy topology" width="900">
@@ -1238,7 +1238,7 @@ The [NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-op
   <br><em>Policy Flow Diagram — visual representation of ingress and egress rules</em>
 </p>
 
-**Dashboard Coverage Card:** The home dashboard includes a Network Policy Coverage card showing total policy count, the percentage of workloads covered by at least one enforced policy, and a count of uncovered workloads. When staged Calico policies exist, it separately shows projected coverage if those policies were applied. Policies exposed through both Calico API groups during an upgrade count once, with `projectcalico.org` preferred over `crd.projectcalico.org`.
+**Dashboard Coverage Card:** The home dashboard includes a Network Policy Coverage card showing total policy count, the percentage of workloads covered by at least one enforced policy, and a count of uncovered workloads. When staged Calico policies exist, it separately shows projected coverage if those policies were applied. That projection can be **lower** than today's coverage — a staged deletion removes the protection of the policy it names — and the bar marks the part that would be lost.
 
 <p align="center">
   <img src="screenshots/integrations/calico-dashboard-coverage.png" alt="Network Policy Coverage Card with staged Calico coverage" width="354">
@@ -1268,7 +1268,13 @@ The [NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-op
 
 **Calico Infrastructure Detail Views:** IPPool details show CIDR, encapsulation, NAT, block size, assignment mode, and node selectors. HostEndpoints show interface, expected IP addresses, profiles, and a link to the owning Node. Tier details show order and default action, and policies link back to their Tier.
 
-Radar recognizes both `projectcalico.org` and `crd.projectcalico.org`. The API group remains part of resource navigation and authorization, which also keeps Calico `NetworkPolicy` distinct from Kubernetes `networking.k8s.io` NetworkPolicy.
+Radar recognizes both `projectcalico.org` and `crd.projectcalico.org`. A cluster
+running the Calico API server serves the same stored policies under both, so each
+policy appears once, identified by kind, namespace and name. The API group stays
+part of resource navigation and authorization — it is what keeps Calico
+`NetworkPolicy` distinct from Kubernetes `networking.k8s.io` NetworkPolicy — and
+a policy is shown to anyone authorized to list it under **either** group, since
+either grant is enough to read it.
 
 <p align="center">
   <img src="screenshots/integrations/netpol-cilium-renderer.png" alt="CiliumNetworkPolicy Detail" width="400">
@@ -1306,7 +1312,7 @@ Radar recognizes both `projectcalico.org` and `crd.projectcalico.org`. The API g
 
 ### Calico Coverage Limits
 
-Radar statically evaluates Calico selectors against workload pod templates and the Namespace and ServiceAccount objects it can read. The result describes declared policy coverage, not live CNI enforcement or packet-level behavior. Missing labels or RBAC-restricted resources can prevent a relationship from being inferred, and staged policies are never included in enforced coverage.
+Radar statically evaluates Calico selectors against workload pod templates and the Namespace and ServiceAccount objects it can read. The result describes declared policy coverage, not live CNI enforcement or packet-level behavior. Missing labels or RBAC-restricted resources can prevent a relationship from being inferred, and staged policies are never included in enforced coverage. The projected "if staged" figure assumes every staged policy is promoted at once; it is a projection of the declared rules, not a simulation of what the data plane would do.
 
 ---
 

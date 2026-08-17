@@ -1297,6 +1297,10 @@ export interface TrafficSourcesResponse {
   active: string
   detected: TrafficSourceStatus[]
   notDetected: string[]
+  /** Why an undetected source is undetected, when there is something actionable
+   *  to say — installed but with the wrong feature enabled, running but not
+   *  scraped. A bare name in notDetected cannot distinguish those from absence. */
+  notDetectedUnavailable?: TrafficSourceStatus[]
   recommended?: TrafficRecommendation
 }
 
@@ -1307,6 +1311,11 @@ export interface TrafficFlowsResponse {
   flows: TrafficFlow[]
   aggregated: AggregatedFlow[]
   warning?: string  // Non-fatal warning (e.g., query errors)
+  /** 'transient' (or absent) means the condition may clear on its own and a
+   *  retry is worthwhile. 'partial' means the flows are correct but incomplete
+   *  for a reason retrying cannot change, so show the warning next to them and
+   *  do not refetch. */
+  warningKind?: 'transient' | 'partial'
 }
 
 // Wizard state for traffic setup

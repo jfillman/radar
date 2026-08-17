@@ -204,6 +204,21 @@ export function TrafficWizard({
               </div>
             ))}
 
+            {/* Installed but unusable — a fixable configuration, not an error */}
+            {sourcesData?.notDetectedUnavailable?.map(source => (
+              <div key={source.name} className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
+                  <div className="text-sm">
+                    <span className="font-medium text-amber-400 capitalize">{source.name}</span>
+                    {source.version && <span className="text-theme-text-tertiary"> {source.version}</span>}
+                    <span className="text-theme-text-secondary"> is not usable: </span>
+                    <span className="text-theme-text-tertiary">{source.message}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+
             {/* Recommendation */}
             {recommendation && (
               <div className="space-y-4">

@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -49,11 +50,27 @@ type promQueryFunc func(ctx context.Context, query string) (*prom.QueryResult, e
 type BeylaSource struct {
 	k8sClient kubernetes.Interface
 	queryFn   promQueryFunc
+
+	// mu guards the fields Detect resolves and the pollers read. Manager releases
+	// its own lock before calling into a source, so a re-detection can land while
+	// a StreamFlows goroutine is mid-poll.
+	mu sync.RWMutex
 	// flowMetric is the network-flow metric name this cluster actually exposes,
 	// resolved by Detect. Empty until then; flowMetricName falls back to the
 	// Beyla spelling so a GetFlows before Detect still queries something valid.
 	flowMetric string
+	// unorientable caches whether the cluster has traffic the direction filter
+	// excludes. It answers a question about how Beyla is configured, which does
+	// not change between polls, so it is probed at most once per TTL rather than
+	// on every request.
+	unorientable     map[string]bool
+	unorientableAsOf map[string]time.Time
 }
+
+// beylaUnorientableTTL bounds how stale the "UDP is hidden" answer may be. It
+// tracks a Beyla configuration change, not traffic, so minutes are fine and the
+// alternative is a third query on every poll of every streaming client.
+const beylaUnorientableTTL = 5 * time.Minute
 
 // NewBeylaSource creates a new Beyla traffic source wired to the shared Prometheus client.
 func NewBeylaSource(client kubernetes.Interface) *BeylaSource {
@@ -65,10 +82,18 @@ func NewBeylaSource(client kubernetes.Interface) *BeylaSource {
 func (s *BeylaSource) Name() string { return "beyla" }
 
 func (s *BeylaSource) flowMetricName() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.flowMetric != "" {
 		return s.flowMetric
 	}
 	return beylaFlowMetric
+}
+
+func (s *BeylaSource) setFlowMetric(metric string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flowMetric = metric
 }
 
 func (s *BeylaSource) defaultQuery(ctx context.Context, query string) (*prom.QueryResult, error) {
@@ -115,7 +140,7 @@ func (s *BeylaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 		if err != nil || qr == nil || len(qr.Series) == 0 {
 			continue
 		}
-		s.flowMetric = metric
+		s.setFlowMetric(metric)
 		result.Available = true
 		result.Native = false
 		result.Message = fmt.Sprintf("Beyla detected via Prometheus metrics (%s)", metric)
@@ -135,6 +160,7 @@ func (s *BeylaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 	// Caretta metrics before claiming it.
 	if version := s.detectVersion(ctx); version != "" {
 		result.Version = version
+		result.Present = true
 		result.Message = "Beyla is running but exposes no network flow metrics. " +
 			`Add "network" to OTEL_EBPF_METRICS_FEATURES to enable them.`
 		return result, nil
@@ -144,6 +170,7 @@ func (s *BeylaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 	// something Beyla-shaped is running but Prometheus holds nothing for it, the
 	// useful thing to say is that the scrape or the job selector is the problem.
 	if pods := s.countBeylaPods(ctx); pods > 0 {
+		result.Present = true
 		result.Message = fmt.Sprintf("Found %d running Alloy or Beyla pod(s), but Prometheus holds no Beyla metrics. "+
 			"Check that Prometheus scrapes Beyla, and that --beyla-job-selector matches its job label.", pods)
 		return result, nil
@@ -230,15 +257,20 @@ type l4LabelPresence struct {
 }
 
 func (s *BeylaSource) GetFlows(ctx context.Context, opts FlowOptions) (*FlowsResponse, error) {
-	flows, presence, err := s.getFlowsInternal(ctx, opts)
+	flows, presence, err := s.getFlowsInternal(ctx, opts, true)
 	if err != nil {
 		log.Printf("[beyla] Error fetching flows: %v", err)
 		return &FlowsResponse{Source: "beyla", Timestamp: time.Now(), Flows: []Flow{},
-			Warning: fmt.Sprintf("Failed to query Beyla metrics: %v", err)}, nil
+			Warning:     fmt.Sprintf("Failed to query Beyla metrics: %v", err),
+			WarningKind: WarningTransient}, nil
 	}
 	response := &FlowsResponse{Source: "beyla", Timestamp: time.Now(), Flows: flows}
 	if warning := presence.warning(len(flows)); warning != "" {
 		response.Warning = warning
+		// Describes how Beyla is configured, not a hiccup. Marked so the client
+		// shows it beside the flows instead of retrying for a better answer that
+		// is never coming.
+		response.WarningKind = WarningPartial
 	}
 	return response, nil
 }
@@ -277,8 +309,11 @@ func (p l4LabelPresence) warning(flowCount int) string {
 	return strings.Join(parts, " ")
 }
 
-func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([]Flow, l4LabelPresence, error) {
-	l4Map, presence, err := s.queryL4(ctx, opts)
+// getFlowsInternal fetches and merges the flows. withDiagnostics controls the
+// extra probe behind the partial-data warning: callers that discard the warning
+// must pass false rather than pay for an answer they throw away.
+func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, withDiagnostics bool) ([]Flow, l4LabelPresence, error) {
+	l4Map, presence, err := s.queryL4(ctx, opts, withDiagnostics)
 	if err != nil {
 		return nil, presence, fmt.Errorf("L4 query: %w", err)
 	}
@@ -457,37 +492,76 @@ func beylaL7RateQuery(namespace string) string {
 	return fmt.Sprintf(`sum by (%s) (rate(%s{%s%s}[5m]))`, beylaL7GroupBy, beylaL7Metric, beylaJobSelector(), extra)
 }
 
-func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions) (map[l4Key]*Flow, l4LabelPresence, error) {
+func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions, withDiagnostics bool) (map[l4Key]*Flow, l4LabelPresence, error) {
 	query := beylaRateQuery(beylaL4GroupBy, s.flowMetricName(), opts.Namespace, beylaL4DirectionFilter)
 	result, err := s.query(ctx, query)
 	if err != nil {
 		return nil, l4LabelPresence{}, err
 	}
 	flows, presence := s.parseL4Flows(result)
-	presence.hiddenUDP = s.hasUnorientableTraffic(ctx, opts)
+	if withDiagnostics {
+		presence.hiddenUDP = s.hasUnorientableTraffic(ctx, opts)
+	}
 	return flows, presence, nil
 }
 
 // hasUnorientableTraffic reports whether the cluster has traffic the direction
 // filter excluded. A cheap instant count, not a rate: it only decides whether to
 // explain an absence, so a failed probe stays silent rather than guessing.
+//
+// The answer describes Beyla's configuration rather than current traffic, so it
+// is cached per (metric, job selector, namespace) for beylaUnorientableTTL. Without
+// that, every poll of every streaming client would pay for it.
 func (s *BeylaSource) hasUnorientableTraffic(ctx context.Context, opts FlowOptions) bool {
+	metric := s.flowMetricName()
 	selector := beylaJobSelector() + beylaUnknownDirectionProbe
 	if opts.Namespace != "" {
 		selector += fmt.Sprintf(`, k8s_src_namespace=%q`, opts.Namespace)
 	}
-	qr, err := s.query(ctx, fmt.Sprintf(`count(%s{%s})`, s.flowMetricName(), selector))
-	if err != nil || qr == nil {
+	key := metric + "|" + selector
+
+	if cached, ok := s.cachedUnorientable(key); ok {
+		return cached
+	}
+
+	found := false
+	qr, err := s.query(ctx, fmt.Sprintf(`count(%s{%s})`, metric, selector))
+	if err != nil {
+		// Not cached: a failed probe is not an answer, and the next poll may get one.
 		return false
 	}
-	for _, series := range qr.Series {
-		for _, point := range series.DataPoints {
-			if point.Value > 0 {
-				return true
+	if qr != nil {
+		for _, series := range qr.Series {
+			for _, point := range series.DataPoints {
+				if point.Value > 0 {
+					found = true
+				}
 			}
 		}
 	}
-	return false
+	s.storeUnorientable(key, found)
+	return found
+}
+
+func (s *BeylaSource) cachedUnorientable(key string) (bool, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	asOf, ok := s.unorientableAsOf[key]
+	if !ok || time.Since(asOf) > beylaUnorientableTTL {
+		return false, false
+	}
+	return s.unorientable[key], true
+}
+
+func (s *BeylaSource) storeUnorientable(key string, found bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.unorientable == nil {
+		s.unorientable = make(map[string]bool)
+		s.unorientableAsOf = make(map[string]time.Time)
+	}
+	s.unorientable[key] = found
+	s.unorientableAsOf[key] = time.Now()
 }
 
 func (s *BeylaSource) queryL7(ctx context.Context, opts FlowOptions) ([]Flow, error) {
@@ -687,11 +761,16 @@ func (s *BeylaSource) StreamFlows(ctx context.Context, opts FlowOptions) (<-chan
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				response, err := s.GetFlows(ctx, opts)
+				// Streams carry flows only — there is nowhere to put a warning on
+				// this channel — so skip the diagnostics probe rather than run it
+				// every tick and discard the result. The REST poll behind the same
+				// view reports it.
+				flows, _, err := s.getFlowsInternal(ctx, opts, false)
 				if err != nil {
 					log.Printf("[beyla] Error fetching flows: %v", err)
 					continue
 				}
+				response := &FlowsResponse{Flows: flows}
 				for _, flow := range response.Flows {
 					select {
 					case flowCh <- flow:

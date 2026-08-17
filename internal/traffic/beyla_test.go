@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -16,6 +17,12 @@ import (
 func TestBeylaSource_Detect_MetricProbe(t *testing.T) {
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "beyla_network_flow_bytes_total") {
 			return promResult("vector", promSeries(map[string]string{}, 42)), nil
 		}
@@ -46,6 +53,12 @@ func TestBeylaSource_Detect_OBIMetricPrefix(t *testing.T) {
 	// the one that answered is what GetFlows must go on to query.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "obi_network_flow_bytes_total") {
 			return promResult("vector", promSeries(map[string]string{}, 7)), nil
 		}
@@ -98,6 +111,12 @@ func TestBeylaSource_Detect_BuildInfoWithoutNetworkFeature(t *testing.T) {
 	// but not watching the network", not as "no traffic yet".
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "beyla_build_info") {
 			return promResult("vector", promSeries(map[string]string{"version": "v3.25.0"}, 1)), nil
 		}
@@ -135,6 +154,12 @@ func TestBeylaSource_Detect_NotAvailable(t *testing.T) {
 func TestBeylaSource_GetFlows_OwnerLevel(t *testing.T) {
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "beyla_network_flow_bytes_total") {
 			return promResult("vector", promSeries(map[string]string{
 				"k8s_src_owner_name": "frontend", "k8s_src_namespace": "web",
@@ -174,6 +199,12 @@ func TestBeylaSource_GetFlows_L7OnlyDroppedWithoutL4Match(t *testing.T) {
 	// must be dropped rather than emitted as a sourceless flow.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "beyla_network_flow_bytes_total") {
 			return emptyResult(), nil
 		}
@@ -195,6 +226,12 @@ func TestBeylaSource_GetFlows_L7OnlyDroppedWithoutL4Match(t *testing.T) {
 func TestBeylaSource_GetFlows_L4PlusL7(t *testing.T) {
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "beyla_network_flow_bytes_total") {
 			return promResult("vector", promSeries(map[string]string{
 				"k8s_src_owner_name": "frontend", "k8s_src_namespace": "web",
@@ -231,6 +268,12 @@ func TestBeylaSource_GetFlows_L7LandsOnTheServedPortOnly(t *testing.T) {
 	// guard.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "beyla_network_flow_bytes_total") {
 			return promResult("vector",
 				promSeries(map[string]string{
@@ -276,41 +319,151 @@ func TestBeylaSource_GetFlows_L7LandsOnTheServedPortOnly(t *testing.T) {
 	}
 }
 
-func TestBeylaSource_GetFlows_TCPAndUDPSameEndpointBothSurvive(t *testing.T) {
-	// Same src/dst/port but different transport (e.g. DNS on 53) must not
-	// collide in l4Map — l4Key needs transport in addition to port.
+func TestBeylaSource_ParseL4Flows_TransportSeparatesOtherwiseIdenticalSeries(t *testing.T) {
+	// Same src/dst/port, different transport (DNS on 53) must not collide: the raw
+	// transport label is part of l4Key.
+	//
+	// Deliberately a parser-level test rather than a GetFlows one. The L4 query
+	// filters direction="request", and Beyla labels UDP "unknown", so real UDP
+	// never reaches the parser through that path — asserting it end to end would
+	// only prove the stub ignores the query it was handed.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	result := promResult("vector",
+		promSeries(map[string]string{
+			"k8s_src_owner_name": "app", "k8s_src_namespace": "web",
+			"k8s_dst_owner_name": "coredns", "k8s_dst_namespace": "kube-system",
+			"dst_port": "53", "transport": "TCP",
+		}, 4.0),
+		promSeries(map[string]string{
+			"k8s_src_owner_name": "app", "k8s_src_namespace": "web",
+			"k8s_dst_owner_name": "coredns", "k8s_dst_namespace": "kube-system",
+			"dst_port": "53", "transport": "UDP",
+		}, 20.0),
+	)
+
+	flows, presence := src.parseL4Flows(result)
+	if len(flows) != 2 {
+		t.Fatalf("expected 2 flows (TCP and UDP kept apart), got %d", len(flows))
+	}
+	protocols := map[string]bool{}
+	for _, f := range flows {
+		protocols[f.Protocol] = true
+	}
+	if !protocols["tcp"] || !protocols["udp"] {
+		t.Errorf("expected both tcp and udp to survive, got %v", protocols)
+	}
+	if !presence.port || !presence.transport {
+		t.Errorf("both attributes were present in the fixture, got port=%v transport=%v", presence.port, presence.transport)
+	}
+}
+
+func TestBeylaSource_GetFlows_WarningKindSeparatesRetryableFromPermanent(t *testing.T) {
+	// The client retries a transient warning and must not retry a permanent one:
+	// a source that cannot export a port will not start exporting it on a refetch,
+	// and a 2s retry loop against Prometheus is the cost of getting this wrong.
+	t.Run("partial data is permanent", func(t *testing.T) {
+		src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+		src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+			if strings.Contains(query, `direction="unknown"`) {
+				return emptyResult(), nil
+			}
+			if strings.Contains(query, "beyla_network_flow_bytes_total") {
+				return promResult("vector", promSeries(map[string]string{
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+				}, 9.0)), nil
+			}
+			return emptyResult(), nil
+		}
+
+		resp, err := src.GetFlows(context.Background(), FlowOptions{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.Warning == "" {
+			t.Fatal("expected a warning about the missing attributes")
+		}
+		assertEq(t, "warningKind", resp.WarningKind, WarningPartial)
+	})
+
+	t.Run("query failure is transient", func(t *testing.T) {
+		src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+		src.queryFn = func(_ context.Context, _ string) (*prom.QueryResult, error) {
+			return nil, fmt.Errorf("connection refused")
+		}
+
+		resp, err := src.GetFlows(context.Background(), FlowOptions{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.Warning == "" {
+			t.Fatal("expected a warning about the failed query")
+		}
+		assertEq(t, "warningKind", resp.WarningKind, WarningTransient)
+	})
+}
+
+func TestBeylaSource_DiagnosticsProbe_SkippedWithoutDiagnosticsAndCachedWithThem(t *testing.T) {
+	// StreamFlows has nowhere to put a warning, so it must not pay for one. And on
+	// the REST path the answer describes Beyla's configuration, not its traffic, so
+	// it is cached rather than re-queried on every poll.
+	var probes int
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		if strings.Contains(query, "beyla_network_flow_bytes_total") {
-			return promResult("vector",
-				promSeries(map[string]string{
-					"k8s_src_owner_name": "app", "k8s_src_namespace": "web",
-					"k8s_dst_owner_name": "coredns", "k8s_dst_namespace": "kube-system",
-					"dst_port": "53", "transport": "TCP",
-				}, 4.0),
-				promSeries(map[string]string{
-					"k8s_src_owner_name": "app", "k8s_src_namespace": "web",
-					"k8s_dst_owner_name": "coredns", "k8s_dst_namespace": "kube-system",
-					"dst_port": "53", "transport": "UDP",
-				}, 20.0),
-			), nil
+		if strings.Contains(query, `direction="unknown"`) {
+			probes++
+			return promResult("vector", promSeries(map[string]string{}, 2)), nil
 		}
 		return emptyResult(), nil
 	}
 
+	if _, _, err := src.getFlowsInternal(context.Background(), FlowOptions{}, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if probes != 0 {
+		t.Fatalf("the stream path must not run the diagnostics probe, ran it %d time(s)", probes)
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, err := src.GetFlows(context.Background(), FlowOptions{}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if probes != 1 {
+		t.Errorf("expected the probe to be cached after the first call, ran it %d times", probes)
+	}
+}
+
+func TestBeylaSource_DiagnosticsProbe_FailureIsNotCached(t *testing.T) {
+	// A failed probe is not an answer. Caching it would suppress the warning for a
+	// whole TTL because Prometheus blipped once.
+	var probes int
+	failing := true
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			probes++
+			if failing {
+				return nil, fmt.Errorf("connection refused")
+			}
+			return promResult("vector", promSeries(map[string]string{}, 2)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	if _, err := src.GetFlows(context.Background(), FlowOptions{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	failing = false
 	resp, err := src.GetFlows(context.Background(), FlowOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(resp.Flows) != 2 {
-		t.Fatalf("expected 2 flows (TCP and UDP both surviving), got %d", len(resp.Flows))
+	if probes != 2 {
+		t.Errorf("expected the probe to be retried after a failure, ran it %d times", probes)
 	}
-	protocols := map[string]bool{}
-	for _, f := range resp.Flows {
-		protocols[f.Protocol] = true
-	}
-	if !protocols["tcp"] || !protocols["udp"] {
-		t.Errorf("expected both tcp and udp flows to survive, got %v", protocols)
+	if !strings.Contains(resp.Warning, "UDP") {
+		t.Errorf("once the probe succeeds the warning must appear, got: %q", resp.Warning)
 	}
 }
 
@@ -321,6 +474,12 @@ func TestBeylaSource_GetFlows_L7NotAttachedWhenItsPortHasNoNamedCaller(t *testin
 	// land on 5432 just because 5432 is what's left.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "beyla_network_flow_bytes_total") {
 			return promResult("vector",
 				promSeries(map[string]string{
@@ -364,6 +523,12 @@ func TestBeylaSource_QueryL4_KeepsOnlyTheRequestDirection(t *testing.T) {
 	var rateQuery string
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "network_flow_bytes_total") && strings.Contains(query, "rate(") {
 			rateQuery = query
 		}
@@ -411,6 +576,12 @@ func TestBeylaSource_GetFlows_ServiceAndWorkloadDuplicateCollapsesToWorkload(t *
 	// order decide would make the rendered Kind arbitrary. The workload wins.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "beyla_network_flow_bytes_total") {
 			return promResult("vector",
 				promSeries(map[string]string{
@@ -448,6 +619,12 @@ func TestBeylaSource_GetFlows_WarnsWhenPortAndTransportAreNotExported(t *testing
 	// protocol. Rendering port 0 over TCP without saying so is the dishonest part.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "beyla_network_flow_bytes_total") {
 			return promResult("vector", promSeries(map[string]string{
 				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
@@ -534,6 +711,12 @@ func TestBeylaSource_GetFlows_NamespaceFilter(t *testing.T) {
 	var capturedQuery string
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		capturedQuery = query
 		return emptyResult(), nil
 	}
@@ -550,6 +733,12 @@ func TestBeylaSource_GetFlows_NamespaceFilter(t *testing.T) {
 func TestBeylaSource_GetFlows_FallbackToOwner(t *testing.T) {
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		// The diagnostics probe shares the metric name with the L4 query, so a stub
+		// that matched on the name alone would answer it with flow data and set a
+		// partial-data warning this test never asked for.
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
 		if strings.Contains(query, "beyla_network_flow_bytes_total") {
 			return promResult("vector", promSeries(map[string]string{
 				"k8s_src_owner_name": "api", "k8s_src_namespace": "backend",
@@ -655,4 +844,35 @@ func assertEq(t *testing.T, label, got, want string) {
 	if got != want {
 		t.Errorf("%s = %q, want %q", label, got, want)
 	}
+}
+
+func TestBeylaSource_DetectAndPollConcurrently(t *testing.T) {
+	// Manager releases its own lock before calling into a source, so a
+	// re-detection can land while a StreamFlows goroutine is mid-poll. Detect
+	// resolves the metric name and the pollers read it. Meaningful under -race.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, "network_flow_bytes_total") {
+			return promResult("vector", promSeries(map[string]string{}, 1)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if _, err := src.Detect(context.Background()); err != nil {
+				t.Errorf("Detect: %v", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := src.GetFlows(context.Background(), FlowOptions{}); err != nil {
+				t.Errorf("GetFlows: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
 }

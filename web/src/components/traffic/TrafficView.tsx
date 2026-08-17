@@ -432,13 +432,23 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
     enabled: wizardState === 'ready' && !isConnecting && !connectionError,
   })
 
+  // A 'partial' warning is the source telling us this is as complete as it gets —
+  // an attribute it does not export, traffic it cannot orient. Retrying returns
+  // the same answer, so retrying forever is all cost and no progress.
+  const warningIsPermanent = flowsData?.warningKind === 'partial'
+
   // Auto-retry when flows return with warning but no data (e.g., port-forward not ready yet)
   useEffect(() => {
-    if (flowsData?.warning && (!flowsData.aggregated || flowsData.aggregated.length === 0) && !flowsFetching) {
+    if (
+      flowsData?.warning &&
+      !warningIsPermanent &&
+      (!flowsData.aggregated || flowsData.aggregated.length === 0) &&
+      !flowsFetching
+    ) {
       const timer = setTimeout(() => refetchFlowsRaw(), 2000)
       return () => clearTimeout(timer)
     }
-  }, [flowsData, flowsFetching, refetchFlowsRaw])
+  }, [flowsData, warningIsPermanent, flowsFetching, refetchFlowsRaw])
 
   // Filter flows based on user preferences
   // Note: namespace filtering is done server-side via the global namespace selector
@@ -1154,15 +1164,25 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
               className="absolute inset-0"
             />
           ) : finalFlows.length > 0 ? (
-            <TrafficGraph
-              flows={finalFlows}
-              hotPathThreshold={hotPathThreshold}
-              showNamespaceGroups={showNamespaceGroups}
-              serviceCategories={serviceCategories}
-              addonMode={addonMode}
-              trafficSource={sourcesData?.active || ''}
-              onSelectionChange={setGraphSelection}
-            />
+            <>
+              {flowsData?.warning && warningIsPermanent && (
+                <div className="absolute top-2 left-1/2 z-10 -translate-x-1/2 px-3">
+                  <div className="card-inner flex max-w-2xl items-start gap-2 border-amber-500/30 bg-amber-500/10">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                    <span className="text-xs text-theme-text-secondary">{flowsData.warning}</span>
+                  </div>
+                </div>
+              )}
+              <TrafficGraph
+                flows={finalFlows}
+                hotPathThreshold={hotPathThreshold}
+                showNamespaceGroups={showNamespaceGroups}
+                serviceCategories={serviceCategories}
+                addonMode={addonMode}
+                trafficSource={sourcesData?.active || ''}
+                onSelectionChange={setGraphSelection}
+              />
+            </>
           ) : connectionError ? (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="text-center space-y-3">
@@ -1208,7 +1228,11 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
                   tone="neutral"
                   variant="card"
                   icon={AlertTriangle}
-                  headline="Unable to fetch traffic data"
+                  headline={
+                    warningIsPermanent
+                      ? 'No traffic Radar can place on the map'
+                      : 'Unable to fetch traffic data'
+                  }
                   body={flowsData.warning}
                   className="max-w-md"
                 />

@@ -188,6 +188,21 @@ func (m *Manager) DetectSources(ctx context.Context) (*SourcesResponse, error) {
 			}
 		} else {
 			response.NotDetected = append(response.NotDetected, name)
+			// A source can be absent for reasons the user can act on — installed
+			// but with the wrong feature enabled, or running but not scraped. The
+			// name alone throws that away and every such case reads as "not
+			// installed", so carry the explanation. Gated on Present: a source
+			// nobody installed needs no explanation, and surfacing one for each
+			// would bury the case that matters under three rows of noise.
+			if result.Present && result.Message != "" {
+				response.NotDetectedUnavailable = append(response.NotDetectedUnavailable, SourceStatus{
+					Name:    name,
+					Status:  "not_found",
+					Version: result.Version,
+					Native:  result.Native,
+					Message: result.Message,
+				})
+			}
 		}
 	}
 

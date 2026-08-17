@@ -1253,12 +1253,20 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
           stroke: strokeColor,
           ...(hasDrops && { strokeDasharray: '6 3' }),
         },
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          width: 16,
-          height: 16,
-          color: strokeColor,
-        },
+        // No arrowhead when the initiator is unknown. Beyla labels both halves of a
+        // UDP conversation the same way, so an arrow would be asserting something
+        // the data does not say; the edge still carries the traffic in both
+        // directions.
+        ...(flow.directionUnknown
+          ? {}
+          : {
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                width: 16,
+                height: 16,
+                color: strokeColor,
+              },
+            }),
       })
     })
 

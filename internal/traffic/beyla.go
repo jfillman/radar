@@ -137,21 +137,28 @@ func (s *BeylaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 		return result, nil
 	}
 
-	// No flow metric anywhere. build_info survives when the network feature is
-	// off — it is opt-in via OTEL_EBPF_METRICS_FEATURES and off by default — so
-	// it is what separates "Beyla is here but not watching the network" from
-	// "Beyla is not installed". Pod labels cannot make that distinction:
+	// No flow metric under the selector. build_info survives when the network
+	// feature is off — it is opt-in via OTEL_EBPF_METRICS_FEATURES and off by
+	// default — so it is what separates "Beyla is here" from "Beyla is not
+	// installed". Pod labels cannot make that distinction:
 	// app.kubernetes.io/name=alloy matches every Alloy install, and most Alloy
 	// installs carry no Beyla at all. Reporting Available on that basis wins the
 	// source priority order in manager.go and then renders a permanently empty
 	// graph with nothing to explain it, which is why availability now requires
 	// data, the same way the Caretta source validates its backend really holds
 	// Caretta metrics before claiming it.
+	//
+	// What build_info cannot establish is *why* the flow metric is missing. A
+	// cluster with the network feature off and a genuinely idle cluster both
+	// produce no series, so the message offers both rather than asserting the
+	// first — telling someone to enable a feature they already enabled sends them
+	// looking in the wrong place.
 	if version := s.detectVersion(ctx); version != "" {
 		result.Version = version
 		result.Present = true
-		result.Message = "Beyla is running but exposes no network flow metrics. " +
-			`Add "network" to OTEL_EBPF_METRICS_FEATURES to enable them.`
+		result.Message = fmt.Sprintf("Beyla %s is running, but Prometheus holds no network flow metrics for it. "+
+			`Either the network feature is off — add "network" to OTEL_EBPF_METRICS_FEATURES — `+
+			"or it is on and no traffic has been observed yet.", version)
 		return result, nil
 	}
 

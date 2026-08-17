@@ -134,6 +134,11 @@ func TestBeylaSource_Detect_BuildInfoWithoutNetworkFeature(t *testing.T) {
 	if !strings.Contains(result.Message, "OTEL_EBPF_METRICS_FEATURES") {
 		t.Errorf("message should tell the operator how to enable network metrics, got: %q", result.Message)
 	}
+	// An idle cluster with the feature already on produces the same evidence, so
+	// the message must offer that too rather than assert the cause it cannot see.
+	if !strings.Contains(result.Message, "no traffic has been observed") {
+		t.Errorf("message must not assert the feature is off when idleness looks identical, got: %q", result.Message)
+	}
 }
 
 func TestBeylaSource_Detect_NotAvailable(t *testing.T) {

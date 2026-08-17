@@ -58,15 +58,17 @@ func TestDetectSources_CarriesWhyAnUnavailableSourceIsUnavailable(t *testing.T) 
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// The bare-name list stays as it was, so existing consumers are unaffected.
-	if len(response.NotDetected) != 2 {
-		t.Fatalf("notDetected = %v, want both sources", response.NotDetected)
+	// A source that is merely absent keeps its bare name, as before.
+	if len(response.NotDetected) != 1 || response.NotDetected[0] != "caretta" {
+		t.Fatalf("notDetected = %v, want just the absent source", response.NotDetected)
 	}
 
+	// The present-but-unusable one is a status with an explanation, reported the
+	// same way a detection error is.
 	var beyla *traffic.SourceStatus
-	for i := range response.NotDetectedUnavailable {
-		if response.NotDetectedUnavailable[i].Name == "beyla" {
-			beyla = &response.NotDetectedUnavailable[i]
+	for i := range response.Detected {
+		if response.Detected[i].Name == "beyla" {
+			beyla = &response.Detected[i]
 		}
 	}
 	if beyla == nil {
@@ -81,9 +83,15 @@ func TestDetectSources_CarriesWhyAnUnavailableSourceIsUnavailable(t *testing.T) 
 	// Caretta is not installed at all. "Install Caretta" is what the
 	// recommendation section is for; repeating it as a per-source problem would
 	// bury the one source that does have a fixable problem.
-	for _, s := range response.NotDetectedUnavailable {
+	for _, s := range response.Detected {
 		if s.Name == "caretta" {
 			t.Errorf("a source that is merely absent must not be reported as unusable: %q", s.Message)
 		}
+	}
+
+	// Nothing here is usable, so the recommendation must still fire — a not_found
+	// entry in Detected must not read as "something is available".
+	if response.Recommended == nil && response.Active != "" {
+		t.Error("a not_found status must not make a source look active")
 	}
 }

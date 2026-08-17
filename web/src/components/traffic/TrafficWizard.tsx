@@ -205,7 +205,7 @@ export function TrafficWizard({
             ))}
 
             {/* Installed but unusable — a fixable configuration, not an error */}
-            {sourcesData?.notDetectedUnavailable?.map(source => (
+            {sourcesData?.detected.filter(s => s.status === 'not_found').map(source => (
               <AlertBanner
                 key={source.name}
                 variant="warning"

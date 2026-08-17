@@ -5,32 +5,32 @@ import "time"
 
 // Flow represents a single network flow between two endpoints.
 type Flow struct {
-	Source           Endpoint  `json:"source"`
-	Destination      Endpoint  `json:"destination"`
-	Protocol         string    `json:"protocol"` // tcp, udp, http, grpc
-	Port             int       `json:"port"`
-	L7Protocol       string    `json:"l7Protocol,omitempty"` // HTTP, gRPC, DNS (if L7 visibility)
-	HTTPMethod       string    `json:"httpMethod,omitempty"`
-	HTTPPath         string    `json:"httpPath,omitempty"`
-	HTTPStatus       int       `json:"httpStatus,omitempty"`
-	LatencyNs        uint64    `json:"latencyNs,omitempty"`    // from Layer7.latency_ns (RESPONSE flows)
-	L7Type           string    `json:"l7Type,omitempty"`       // REQUEST, RESPONSE, SAMPLE
-	HTTPProtocol     string    `json:"httpProtocol,omitempty"` // HTTP/1.1, HTTP/2
-	HTTPHeaders      []string  `json:"httpHeaders,omitempty"`  // allowlisted headers as "key: value"
-	DNSQuery         string    `json:"dnsQuery,omitempty"`
-	DNSIPs           []string  `json:"dnsIPs,omitempty"`
-	DNSTTL           uint32    `json:"dnsTTL,omitempty"`
-	DNSRCode         uint32    `json:"dnsRCode,omitempty"` // 0=NoError, 3=NXDomain
-	DNSQTypes        []string  `json:"dnsQTypes,omitempty"`
-	TrafficDirection string    `json:"trafficDirection,omitempty"` // ingress, egress
-	DropReasonDesc   string    `json:"dropReasonDesc,omitempty"`
-	SourceService    string    `json:"sourceService,omitempty"`
-	DestService      string    `json:"destService,omitempty"`
-	BytesSent        int64     `json:"bytesSent"`
-	BytesRecv        int64     `json:"bytesRecv"`
-	Connections      int64     `json:"connections"`
-	Verdict          string    `json:"verdict"` // forwarded, dropped, error
-	LastSeen         time.Time `json:"lastSeen"`
+	Source      Endpoint  `json:"source"`
+	Destination Endpoint  `json:"destination"`
+	Protocol    string    `json:"protocol"` // tcp, udp, http, grpc
+	Port        int       `json:"port"`
+	L7Protocol  string    `json:"l7Protocol,omitempty"` // HTTP, gRPC, DNS (if L7 visibility)
+	HTTPMethod       string   `json:"httpMethod,omitempty"`
+	HTTPPath         string   `json:"httpPath,omitempty"`
+	HTTPStatus       int      `json:"httpStatus,omitempty"`
+	LatencyNs        uint64   `json:"latencyNs,omitempty"`        // from Layer7.latency_ns (RESPONSE flows)
+	L7Type           string   `json:"l7Type,omitempty"`            // REQUEST, RESPONSE, SAMPLE
+	HTTPProtocol     string   `json:"httpProtocol,omitempty"`      // HTTP/1.1, HTTP/2
+	HTTPHeaders      []string `json:"httpHeaders,omitempty"`       // allowlisted headers as "key: value"
+	DNSQuery         string   `json:"dnsQuery,omitempty"`
+	DNSIPs           []string `json:"dnsIPs,omitempty"`
+	DNSTTL           uint32   `json:"dnsTTL,omitempty"`
+	DNSRCode         uint32   `json:"dnsRCode,omitempty"`          // 0=NoError, 3=NXDomain
+	DNSQTypes        []string `json:"dnsQTypes,omitempty"`
+	TrafficDirection string   `json:"trafficDirection,omitempty"`  // ingress, egress
+	DropReasonDesc   string   `json:"dropReasonDesc,omitempty"`
+	SourceService    string   `json:"sourceService,omitempty"`
+	DestService      string   `json:"destService,omitempty"`
+	BytesSent   int64     `json:"bytesSent"`
+	BytesRecv   int64     `json:"bytesRecv"`
+	Connections int64     `json:"connections"`
+	Verdict     string    `json:"verdict"` // forwarded, dropped, error
+	LastSeen    time.Time `json:"lastSeen"`
 	// L7 stats (populated by Istio source)
 	RequestRate float64 `json:"requestRate,omitempty"` // requests per second
 	ErrorRate   float64 `json:"errorRate,omitempty"`   // 5xx errors per second
@@ -99,18 +99,18 @@ type AggregatedFlow struct {
 	Connections int64     `json:"connections"`
 	LastSeen    time.Time `json:"lastSeen"`
 	// L7 stats (if available)
-	L7Protocol       string           `json:"l7Protocol,omitempty"` // HTTP, gRPC, DNS (from majority of flows)
-	RequestCount     int64            `json:"requestCount,omitempty"`
-	ErrorCount       int64            `json:"errorCount,omitempty"`
-	AvgLatencyMs     float64          `json:"avgLatencyMs,omitempty"`
-	LatencyP50Ms     float64          `json:"latencyP50Ms,omitempty"`
-	LatencyP95Ms     float64          `json:"latencyP95Ms,omitempty"`
-	LatencyP99Ms     float64          `json:"latencyP99Ms,omitempty"`
-	HTTPStatusCounts map[string]int64 `json:"httpStatusCounts,omitempty"` // "2xx": 150, "5xx": 3
-	TopHTTPPaths     []HTTPPathStat   `json:"topHTTPPaths,omitempty"`
-	TopDNSQueries    []DNSQueryStat   `json:"topDNSQueries,omitempty"`
-	VerdictCounts    map[string]int64 `json:"verdictCounts,omitempty"` // "forwarded": 500, "dropped": 3
-	DropReasons      map[string]int64 `json:"dropReasons,omitempty"`
+	L7Protocol       string             `json:"l7Protocol,omitempty"`       // HTTP, gRPC, DNS (from majority of flows)
+	RequestCount     int64              `json:"requestCount,omitempty"`
+	ErrorCount       int64              `json:"errorCount,omitempty"`
+	AvgLatencyMs     float64            `json:"avgLatencyMs,omitempty"`
+	LatencyP50Ms     float64            `json:"latencyP50Ms,omitempty"`
+	LatencyP95Ms     float64            `json:"latencyP95Ms,omitempty"`
+	LatencyP99Ms     float64            `json:"latencyP99Ms,omitempty"`
+	HTTPStatusCounts map[string]int64   `json:"httpStatusCounts,omitempty"` // "2xx": 150, "5xx": 3
+	TopHTTPPaths     []HTTPPathStat     `json:"topHTTPPaths,omitempty"`
+	TopDNSQueries    []DNSQueryStat     `json:"topDNSQueries,omitempty"`
+	VerdictCounts    map[string]int64   `json:"verdictCounts,omitempty"`    // "forwarded": 500, "dropped": 3
+	DropReasons      map[string]int64   `json:"dropReasons,omitempty"`
 }
 
 // HTTPPathStat tracks request statistics for a specific HTTP method+path combination.
@@ -187,14 +187,9 @@ type HelmChartInfo struct {
 
 // SourcesResponse is the response for GET /api/traffic/sources.
 type SourcesResponse struct {
-	Cluster     ClusterInfo    `json:"cluster"`
-	Active      string         `json:"active"`
-	Detected    []SourceStatus `json:"detected"`
-	NotDetected []string       `json:"notDetected"`
-	// NotDetectedUnavailable carries why each undetected source is undetected.
-	// NotDetected stays a bare name list so existing consumers keep working, but a
-	// name alone cannot distinguish "not installed" from "installed and
-	// misconfigured", and the second is worth telling the user how to fix.
-	NotDetectedUnavailable []SourceStatus  `json:"notDetectedUnavailable,omitempty"`
-	Recommended            *Recommendation `json:"recommended,omitempty"`
+	Cluster     ClusterInfo     `json:"cluster"`
+	Active      string          `json:"active"`
+	Detected    []SourceStatus  `json:"detected"`
+	NotDetected []string        `json:"notDetected"`
+	Recommended *Recommendation `json:"recommended,omitempty"`
 }

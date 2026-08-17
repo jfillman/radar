@@ -1297,10 +1297,6 @@ export interface TrafficSourcesResponse {
   active: string
   detected: TrafficSourceStatus[]
   notDetected: string[]
-  /** Why an undetected source is undetected, when there is something actionable
-   *  to say — installed but with the wrong feature enabled, running but not
-   *  scraped. A bare name in notDetected cannot distinguish those from absence. */
-  notDetectedUnavailable?: TrafficSourceStatus[]
   recommended?: TrafficRecommendation
 }
 

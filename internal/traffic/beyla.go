@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -255,6 +256,14 @@ type l4Key struct {
 	transport      string
 }
 
+// pairKey identifies a conversation by its two endpoints, ignoring port. Used to
+// match the response half of a conversation onto the request half: the response
+// series carry the client's ephemeral port, so port cannot take part in the match.
+type pairKey struct {
+	srcNs, srcName string
+	dstNs, dstName string
+}
+
 // dstKey identifies a destination workload, without a port. Needed because
 // dst_port is opt-in: when it is absent every L4 edge carries port 0, so a
 // destination's HTTP traffic has to be aggregated across ports.
@@ -366,6 +375,20 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 		l7Flows = nil
 	}
 
+	// Fill in what came back before anything else reads BytesRecv: the L7 split
+	// below weights each caller by its share of the conversation, and half a
+	// conversation is the wrong weight.
+	received := s.queryReceivedBytes(ctx, opts)
+	for _, f := range l4Map {
+		key := pairKey{
+			srcNs: f.Source.Namespace, srcName: f.Source.Name,
+			dstNs: f.Destination.Namespace, dstName: f.Destination.Name,
+		}
+		if bytes, ok := received[key]; ok {
+			f.BytesRecv = bytes
+		}
+	}
+
 	byDstPort := make(map[dstPortKey][]*Flow, len(l4Map))
 	for _, f := range l4Map {
 		key := dstPortKey{f.Destination.Namespace, f.Destination.Name, f.Port}
@@ -393,6 +416,7 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 	// could not name, in which case no bucket carries that port at all.
 	portedDsts := presence.portedDsts
 
+	latency, errorRates := s.queryL7Detail(ctx, opts)
 	perPort, perDst := l7ByPortAndDestination(l7Flows)
 	for key, edges := range byDstPort {
 		l7, ok := perPort[key]
@@ -425,6 +449,26 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 				f.RequestRate = l7.RequestRate * share
 			} else {
 				f.RequestRate = l7.RequestRate / float64(len(edges))
+			}
+			// Same shape as the Istio source: a rate-based source puts its rate in
+			// Connections and the graph labels it req/s rather than "conn". A
+			// fractional rate still means traffic, so it floors at one.
+			f.Connections = int64(f.RequestRate)
+			if f.Connections == 0 && f.RequestRate > 0 {
+				f.Connections = 1
+			}
+
+			// Latency and errors describe the destination and port, so they apply
+			// whole to each caller rather than being split the way the rate is.
+			detailKey := dstPortKey{l7.Destination.Namespace, l7.Destination.Name, l7.Port}
+			if seconds, ok := latency[detailKey]; ok {
+				f.LatencyNs = uint64(seconds * float64(time.Second))
+			}
+			if rate, ok := errorRates[detailKey]; ok {
+				f.ErrorRate = rate
+				// Istio marks the flow itself as errored once any 5xx is present, and
+				// the graph colours the edge from the verdict.
+				f.Verdict = "error"
 			}
 		}
 	}
@@ -556,6 +600,32 @@ func beylaRateQuery(groupBy, metric, namespace, extra string) string {
 		sum(fmt.Sprintf(`, k8s_dst_namespace=%q`, namespace))
 }
 
+// beylaL7LatencyQuery averages the HTTP server duration per destination and port.
+// Beyla exports the histogram's sum and count; their ratio over the same window is
+// the mean, which is what the flow list's Latency column shows. Hubble fills the
+// same field from packet timing.
+func beylaL7LatencyQuery(namespace string) string {
+	extra := ""
+	if namespace != "" {
+		extra = fmt.Sprintf(`, k8s_namespace_name=%q`, namespace)
+	}
+	group := `k8s_namespace_name, k8s_owner_name, server_port`
+	return fmt.Sprintf(`sum by (%s) (rate(http_server_request_duration_seconds_sum{%s%s}[5m])) / sum by (%s) (rate(%s{%s%s}[5m]))`,
+		group, beylaJobSelector(), extra, group, beylaL7Metric, beylaJobSelector(), extra)
+}
+
+// beylaL7ErrorQuery is the 5xx share of requests, the same definition the Istio
+// source uses for ErrorRate and what the graph's "Errors (5xx)" legend entry means.
+func beylaL7ErrorQuery(namespace string) string {
+	extra := ""
+	if namespace != "" {
+		extra = fmt.Sprintf(`, k8s_namespace_name=%q`, namespace)
+	}
+	group := `k8s_namespace_name, k8s_owner_name, server_port`
+	return fmt.Sprintf(`sum by (%s) (rate(%s{%s%s, http_response_status_code=~"5.."}[5m]))`,
+		group, beylaL7Metric, beylaJobSelector(), extra)
+}
+
 // beylaL7RateQuery builds the L7 query. Unlike beylaRateQuery, there's only
 // one namespace label to filter on (k8s_namespace_name) since the metric has
 // no source side.
@@ -634,6 +704,77 @@ func (s *BeylaSource) hasUnorientableTraffic(ctx context.Context, opts FlowOptio
 	return found
 }
 
+// queryReceivedBytes reads the response half of each conversation, which the flow
+// query itself excludes because it cannot be oriented into an edge. It is still
+// the true count of bytes coming back, so it fills BytesRecv rather than being
+// discarded — the same field Istio fills from istio_response_bytes_sum.
+//
+// Keyed by the forward edge: a response series runs destination-to-source, so its
+// endpoints are inverted here. Port is left out of the key because response series
+// carry the client's ephemeral port.
+func (s *BeylaSource) queryReceivedBytes(ctx context.Context, opts FlowOptions) map[pairKey]int64 {
+	groupBy := `k8s_src_owner_name, k8s_src_namespace, k8s_dst_owner_name, k8s_dst_namespace`
+	query := beylaRateQuery(groupBy, s.flowMetricName(), opts.Namespace, `, direction="response"`)
+	result, err := s.query(ctx, query)
+	if err != nil || result == nil {
+		// Received bytes are an enrichment; without them edges still draw.
+		return nil
+	}
+
+	received := make(map[pairKey]int64, len(result.Series))
+	for _, series := range result.Series {
+		if len(series.DataPoints) == 0 {
+			continue
+		}
+		val := series.DataPoints[0].Value
+		if val <= 0 {
+			continue
+		}
+		labels := series.Labels
+		respSrc := pickLabel(labels, "k8s_src_owner_name", "k8s_src_name")
+		respDst := pickLabel(labels, "k8s_dst_owner_name", "k8s_dst_name")
+		if respSrc == "" || respDst == "" {
+			continue
+		}
+		// Invert: the response's destination is the forward edge's source.
+		key := pairKey{
+			srcNs: labels["k8s_dst_namespace"], srcName: respDst,
+			dstNs: labels["k8s_src_namespace"], dstName: respSrc,
+		}
+		received[key] += int64(val * beylaRateWindowSeconds)
+	}
+	return received
+}
+
+// queryL7Detail reads mean latency and 5xx rate per destination and port. Both are
+// enrichments: a failure leaves the fields unset rather than blocking the edges.
+func (s *BeylaSource) queryL7Detail(ctx context.Context, opts FlowOptions) (latency, errors map[dstPortKey]float64) {
+	read := func(query string) map[dstPortKey]float64 {
+		out := make(map[dstPortKey]float64)
+		result, err := s.query(ctx, query)
+		if err != nil || result == nil {
+			return out
+		}
+		for _, series := range result.Series {
+			if len(series.DataPoints) == 0 {
+				continue
+			}
+			val := series.DataPoints[0].Value
+			if val <= 0 || math.IsNaN(val) || math.IsInf(val, 0) {
+				continue
+			}
+			name := series.Labels["k8s_owner_name"]
+			if name == "" {
+				continue
+			}
+			key := dstPortKey{series.Labels["k8s_namespace_name"], name, parseIntLabel(series.Labels["server_port"])}
+			out[key] = val
+		}
+		return out
+	}
+	return read(beylaL7LatencyQuery(opts.Namespace)), read(beylaL7ErrorQuery(opts.Namespace))
+}
+
 func (s *BeylaSource) queryL7(ctx context.Context, opts FlowOptions) ([]Flow, error) {
 	query := beylaL7RateQuery(opts.Namespace)
 	result, err := s.query(ctx, query)
@@ -702,7 +843,12 @@ func (s *BeylaSource) parseL4Flows(result *prom.QueryResult) (map[l4Key]*Flow, l
 			Verdict:     "forwarded",
 			LastSeen:    time.Now(),
 			BytesSent:   int64(val * beylaRateWindowSeconds),
-			Connections: 1,
+			// Deliberately not set here. Beyla exports rates, not connection counts,
+			// so there is no number to put in it — Hubble's `Connections: 1` means
+			// "one observed event" and sums to a real count, which does not carry
+			// over to a source that emits one series per aggregate. Where HTTP data
+			// exists the merge below fills it with the request rate, the way Istio
+			// does; where it does not, it stays zero rather than claiming one.
 		}
 
 		if flow.Source.Namespace == "" && flow.Source.Name != "" {
@@ -765,7 +911,6 @@ func (s *BeylaSource) parseL7Flows(result *prom.QueryResult) []Flow {
 			// connection count; Connections here is only a non-zero weight for
 			// downstream aggregation.
 			RequestRate: val,
-			Connections: max(int64(val*beylaRateWindowSeconds), 1),
 		}
 
 		flows = append(flows, flow)

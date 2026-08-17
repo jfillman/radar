@@ -402,12 +402,14 @@ function DetailsPanel({
   selection,
   onClose,
   flows,
-  isIstio,
+  isRateBased,
 }: {
   selection: Selection
   onClose: () => void
   flows: AggregatedFlow[]
-  isIstio: boolean
+  // True for sources that measure a rate rather than counting connections —
+  // Istio and Beyla both do. Changes the wording and the /s suffix.
+  isRateBased: boolean
 }) {
   if (!selection) return null
 
@@ -550,8 +552,8 @@ function DetailsPanel({
               )}
               {nodeData.totalConnections && (
                 <div className="text-xs text-theme-text-secondary">
-                  {isIstio ? 'Total request rate' : 'Total connections'}: <span className="text-theme-text-primary font-medium">
-                    {formatConnections(nodeData.totalConnections)}{isIstio ? '/s' : ''}
+                  {isRateBased ? 'Total request rate' : 'Total connections'}: <span className="text-theme-text-primary font-medium">
+                    {formatConnections(nodeData.totalConnections)}{isRateBased ? '/s' : ''}
                   </span>
                 </div>
               )}
@@ -682,7 +684,7 @@ function DetailsPanel({
                           {flow.protocol || 'tcp'}
                         </span>
                         <span className="text-theme-text-secondary">
-                          {formatConnections(flow.connections)} {isIstio ? 'req/s' : 'conn'}
+                          {formatConnections(flow.connections)} {isRateBased ? 'req/s' : 'conn'}
                         </span>
                         {(flow.bytesSent > 0 || flow.bytesRecv > 0) && (
                           <span className="text-theme-text-tertiary">
@@ -726,7 +728,7 @@ function DetailsPanel({
                           {flow.protocol || 'tcp'}
                         </span>
                         <span className="text-theme-text-secondary">
-                          {formatConnections(flow.connections)} {isIstio ? 'req/s' : 'conn'}
+                          {formatConnections(flow.connections)} {isRateBased ? 'req/s' : 'conn'}
                         </span>
                         {(flow.bytesSent > 0 || flow.bytesRecv > 0) && (
                           <span className="text-theme-text-tertiary">
@@ -773,9 +775,9 @@ function DetailsPanel({
                   </div>
                 </div>
                 <div className="p-2 rounded bg-theme-elevated">
-                  <div className="text-theme-text-tertiary">{isIstio ? 'Request Rate' : 'Connections'}</div>
+                  <div className="text-theme-text-tertiary">{isRateBased ? 'Request Rate' : 'Connections'}</div>
                   <div className="text-theme-text-primary font-medium">
-                    {formatConnections(edgeData.connections)}{isIstio ? '/s' : ''}
+                    {formatConnections(edgeData.connections)}{isRateBased ? '/s' : ''}
                   </div>
                 </div>
                 {edgeData.flow && (edgeData.flow.bytesSent > 0 || edgeData.flow.bytesRecv > 0) && (
@@ -999,8 +1001,10 @@ function FitViewOnChange({
 }
 
 export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups = false, serviceCategories, addonMode = 'show', trafficSource = '', onSelectionChange }: TrafficGraphProps) {
-  const isIstio = trafficSource === 'istio'
-  const connLabel = isIstio ? 'req/s' : 'conn'
+  // Beyla is rate-based too: its Connections field carries requests per second,
+  // not a connection count, so it needs the same label Istio gets.
+  const isRateBased = trafficSource === 'istio' || trafficSource === 'beyla'
+  const connLabel = isRateBased ? 'req/s' : 'conn'
   const [layoutedNodes, setLayoutedNodes] = useState<Node<TrafficNodeData>[]>([])
   const [layoutedEdges, setLayoutedEdges] = useState<Edge[]>([])
   const [selection, setSelection] = useState<Selection | null>(null)
@@ -1218,7 +1222,7 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
       const strokeWidth = getEdgeWidth(flow.connections)
 
       // Phase 2.2: Edge label - connection count with unit suffix + L7 details
-      const connStr = isIstio
+      const connStr = isRateBased
         ? `${formatConnections(flow.connections)}/s`
         : formatConnections(flow.connections)
       const l7Label = flow.l7Protocol ? `${flow.l7Protocol} · ` : ''
@@ -1264,7 +1268,7 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
       addonGroupEdge, // Pass this for adding after group is created
       addonGroupOutEdge, // Pass this for adding group → kubernetes edge
     }
-  }, [flows, hotPathThreshold, showNamespaceGroups, serviceCategories, addonMode, isIstio, connLabel])
+  }, [flows, hotPathThreshold, showNamespaceGroups, serviceCategories, addonMode, isRateBased, connLabel])
 
   // Apply ELK layout
   const applyLayout = useCallback(async () => {
@@ -1556,7 +1560,7 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
           selection={selection}
           onClose={() => setSelection(null)}
           flows={flows}
-          isIstio={isIstio}
+          isRateBased={isRateBased}
         />
       )}
     </div>

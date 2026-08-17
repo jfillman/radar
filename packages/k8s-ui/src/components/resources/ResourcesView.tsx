@@ -174,7 +174,7 @@ import { CAPIClusterCell, CAPIMachineCell, CAPIMachineDeploymentCell, CAPIMachin
 import { AWSManagedControlPlaneCell, AWSManagedMachinePoolCell, AWSMachineCell, AWSMachineTemplateCell, AWSManagedClusterCell } from './renderers/aws-capi-cells'
 import { GCPManagedControlPlaneCell, GCPManagedMachinePoolCell, GCPMachineCell, GCPMachineTemplateCell, GCPManagedClusterCell } from './renderers/gcp-capi-cells'
 import { AzureManagedControlPlaneCell, AzureManagedMachinePoolCell, AzureMachineCell, AzureMachineTemplateCell, AzureManagedClusterCell } from './renderers/azure-capi-cells'
-import { CalicoPolicyCell } from './renderers/calico-cells'
+import { CalicoInfraCell, CalicoPolicyCell } from './renderers/calico-cells'
 import { isCalicoPolicyResource, isCoreNetworkPolicyKind } from './resource-utils-calico'
 import { useRegisterShortcut, useRegisterShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { ResourcesSidebar } from './ResourcesSidebar'
@@ -992,6 +992,31 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
     { key: 'stagedAction', label: 'Staged Action', width: 'w-32' },
     { key: 'types', label: 'Types', width: 'w-28' },
     { key: 'rules', label: 'Rules', width: 'w-24', tooltip: 'Ingress / Egress rule count' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  calicoippools: [
+    { key: 'name', label: 'Name' },
+    { key: 'cidr', label: 'CIDR', width: 'w-44' },
+    { key: 'blockSize', label: 'Block Size', width: 'w-28' },
+    { key: 'encapsulation', label: 'Encapsulation', width: 'w-36' },
+    { key: 'natOutgoing', label: 'NAT Outgoing', width: 'w-32' },
+    { key: 'disabled', label: 'Disabled', width: 'w-28' },
+    { key: 'allowedUses', label: 'Allowed Uses', width: 'w-40', defaultVisible: false },
+    { key: 'nodeSelector', label: 'Node Selector', width: 'w-48', defaultVisible: false },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  calicohostendpoints: [
+    { key: 'name', label: 'Name' },
+    { key: 'node', label: 'Node', width: 'w-48' },
+    { key: 'interfaceName', label: 'Interface', width: 'w-32' },
+    { key: 'expectedIPs', label: 'Expected IPs', width: 'w-48' },
+    { key: 'profiles', label: 'Profiles', width: 'w-48', defaultVisible: false },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  calicotiers: [
+    { key: 'name', label: 'Name' },
+    { key: 'order', label: 'Order', width: 'w-24' },
+    { key: 'defaultAction', label: 'Default Action', width: 'w-36' },
     { key: 'age', label: 'Age', width: 'w-24' },
   ],
   calicostagedkubernetesnetworkpolicies: [
@@ -2083,6 +2108,18 @@ const GROUP_QUALIFIED_COLUMN_KEYS: Record<string, Record<string, string>> = {
   imagecatalogs: { 'postgresql.cnpg.io': 'cnpgimagecatalogs' },
   clusterimagecatalogs: { 'postgresql.cnpg.io': 'cnpgclusterimagecatalogs' },
   objectstores: { 'barmancloud.cnpg.io': 'barmanobjectstores' },
+  ippools: {
+    'projectcalico.org': 'calicoippools',
+    'crd.projectcalico.org': 'calicoippools',
+  },
+  hostendpoints: {
+    'projectcalico.org': 'calicohostendpoints',
+    'crd.projectcalico.org': 'calicohostendpoints',
+  },
+  tiers: {
+    'projectcalico.org': 'calicotiers',
+    'crd.projectcalico.org': 'calicotiers',
+  },
   globalnetworkpolicies: {
     'projectcalico.org': 'calicoglobalnetworkpolicies',
     'crd.projectcalico.org': 'calicoglobalnetworkpolicies',
@@ -2119,6 +2156,9 @@ const GROUP_QUALIFIED_COLUMN_KEYS: Record<string, Record<string, string>> = {
 
 const GROUP_QUALIFIED_ONLY_COLUMN_KEYS = new Set([
   'networkpolicy', 'networkpolicies',
+  // Other projects serve their own IPPool CRD, so only a Calico group earns the
+  // Calico columns.
+  'ippool', 'ippools',
   'globalnetworkpolicy', 'globalnetworkpolicies',
   'stagednetworkpolicy', 'stagednetworkpolicies',
   'stagedglobalnetworkpolicy', 'stagedglobalnetworkpolicies',
@@ -5989,6 +6029,10 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
         return <GenericCell resource={resource} column={column} />
       }
       return <NetworkPolicyCell resource={resource} column={column} />
+    case 'calicoippools':
+    case 'calicohostendpoints':
+    case 'calicotiers':
+      return <CalicoInfraCell resource={resource} column={column} />
     case 'caliconetworkpolicies':
     case 'calicoglobalnetworkpolicies':
     case 'calicostagednetworkpolicies':

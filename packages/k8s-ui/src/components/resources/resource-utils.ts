@@ -16,7 +16,7 @@ import { getBackupStatus as _getBackupStatus, getRestoreStatus as _getRestoreSta
 import { getExternalSecretStatus as _getExternalSecretStatus, getClusterExternalSecretStatus as _getClusterExternalSecretStatus, getSecretStoreStatus as _getSecretStoreStatus, getClusterSecretStoreStatus as _getClusterSecretStoreStatus, getSecretStoreProviderType as _getSecretStoreProviderType } from './resource-utils-eso'
 import { getHPATableState, hpaStatusFromState } from './resource-utils-hpa'
 import { getCNPGClusterStatus as _getCNPGClusterStatus, getCNPGBackupStatus as _getCNPGBackupStatus, getCNPGScheduledBackupStatus as _getCNPGScheduledBackupStatus, getCNPGPoolerStatus as _getCNPGPoolerStatus, isApiGroup as _isApiGroup, CNPG_GROUP as _CNPG_GROUP } from './resource-utils-cnpg'
-import { getCalicoPolicyNamespaceSelector, getCalicoPolicyRuleCount, getCalicoPolicySelector, getCalicoPolicyServiceAccountSelector, getCalicoPolicyTypes, isCalicoPolicyResource } from './resource-utils-calico'
+import { getCalicoPolicyNamespaceSelector, getCalicoPolicyRuleCount, getCalicoPolicySelector, getCalicoPolicyServiceAccountSelector, getCalicoPolicyTypes, isCalicoApiVersion, isCalicoPolicyResource } from './resource-utils-calico'
 
 // ============================================================================
 // STATUS & HEALTH UTILITIES
@@ -2216,6 +2216,25 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
     case 'tier':
       if (isCalicoPolicyResource(resource)) return String(resource.spec?.tier ?? 'default')
       break
+    case 'cidr':
+      if (isCalicoApiVersion(resource?.apiVersion)) return String(resource.spec?.cidr ?? '')
+      break
+    case 'encapsulation':
+      if (isCalicoApiVersion(resource?.apiVersion)) {
+        const ipip = String(resource.spec?.ipipMode ?? 'Never')
+        const vxlan = String(resource.spec?.vxlanMode ?? 'Never')
+        return ipip !== 'Never' ? `IPIP ${ipip}` : vxlan !== 'Never' ? `VXLAN ${vxlan}` : 'None'
+      }
+      break
+    case 'disabled':
+      if (isCalicoApiVersion(resource?.apiVersion)) return resource.spec?.disabled === true ? 'Disabled' : 'No'
+      break
+    case 'interfaceName':
+      if (isCalicoApiVersion(resource?.apiVersion)) return String(resource.spec?.interfaceName ?? '')
+      break
+    case 'defaultAction':
+      if (isCalicoApiVersion(resource?.apiVersion)) return String(resource.spec?.defaultAction ?? 'Deny')
+      break
     case 'order':
       if (isCalicoPolicyResource(resource) && resource.spec?.order !== undefined) return String(resource.spec.order)
       break
@@ -2229,6 +2248,8 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
       }
       break
     case 'node':
+      // A Calico HostEndpoint names its node in spec.node; a Pod uses spec.nodeName.
+      if (isCalicoApiVersion(resource?.apiVersion)) return String(resource.spec?.node ?? '')
       return resource.spec?.nodeName || ''
     case 'version':
       if (kindLower === 'nodes') return getNodeVersion(resource)

@@ -53,6 +53,13 @@ type FlowOptions struct {
 	Since     time.Duration // Look back period (default: 5 minutes)
 	Follow    bool          // Stream new flows
 	Limit     int           // Max flows to return (0 = no limit)
+	// ResultWillBeFiltered tells the source that the caller is going to narrow the
+	// flows it returns — the server does this for a user whose RBAC allows several
+	// namespaces, since Namespace above can only carry one. A source must not then
+	// make claims about traffic it can see but the caller will remove, because that
+	// traffic is not the user's to be told about. Claims about how the source
+	// itself is configured are unaffected.
+	ResultWillBeFiltered bool
 }
 
 // FlowsResponse contains the flows and metadata.

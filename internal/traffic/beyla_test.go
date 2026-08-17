@@ -1128,3 +1128,99 @@ func TestBeylaSource_GetFlows_PortedEdgesWinOverThePortZeroLeftover(t *testing.T
 		t.Errorf("the port-0 leftover must not also carry the rate, got %v", byPort[0])
 	}
 }
+
+func TestBeylaSource_GetFlows_PortedDestinationCountsEvenWhenItsCallerIsNameless(t *testing.T) {
+	// A destination's port-bearing traffic can come entirely from a caller Beyla
+	// cannot name — an external client — so that series is dropped and no surviving
+	// edge carries the port. The destination still has a real port, and the port-0
+	// leftover must not be handed the destination's HTTP data: that traffic belongs
+	// to the caller who was dropped, not to the named one.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
+		if strings.Contains(query, "beyla_network_flow_bytes_total") {
+			return promResult("vector",
+				promSeries(map[string]string{
+					// external caller Beyla cannot name: dropped, but :8080 is real
+					"k8s_dst_owner_name": "api", "k8s_dst_namespace": "demo",
+					"dst_port": "8080", "transport": "TCP",
+				}, 30.0),
+				promSeries(map[string]string{
+					// same destination, leftover series from before dst.port was selected
+					"k8s_src_owner_name": "worker", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "api", "k8s_dst_namespace": "demo",
+				}, 5.0),
+			), nil
+		}
+		return promResult("vector", promSeries(map[string]string{
+			"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "8080",
+			"http_request_method": "GET", "http_route": "/v1/items", "http_response_status_code": "200",
+		}, 9.0)), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Flows) != 1 {
+		t.Fatalf("expected 1 flow (the nameless caller is dropped), got %d", len(resp.Flows))
+	}
+	f := resp.Flows[0]
+	assertEq(t, "source", f.Source.Name, "worker")
+	if f.L7Protocol != "" || f.RequestRate != 0 {
+		t.Errorf("the :8080 HTTP traffic belongs to the dropped external caller, not to worker; got l7=%q rate=%v",
+			f.L7Protocol, f.RequestRate)
+	}
+}
+
+func TestBeylaSource_GetFlows_ScopesTheTrafficClaimToWhatTheUserSees(t *testing.T) {
+	// A user whose RBAC allows several namespaces gets a cluster-wide query and
+	// server-side filtering, so the unorientable-traffic probe cannot be scoped to
+	// what they may see. Reporting it anyway would describe traffic in a namespace
+	// they have no access to. The missing-attribute half describes Beyla's own
+	// configuration and stays either way.
+	var probes int
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			probes++
+			return promResult("vector", promSeries(map[string]string{}, 3)), nil
+		}
+		if strings.Contains(query, "beyla_network_flow_bytes_total") {
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+				"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+			}, 11.0)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{ResultWillBeFiltered: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if probes != 0 {
+		t.Errorf("the probe cannot be scoped to this user's namespaces, so it should not run; ran %d time(s)", probes)
+	}
+	if strings.Contains(resp.Warning, "direction=unknown") {
+		t.Errorf("must not report traffic the user may not see, got: %q", resp.Warning)
+	}
+	if !strings.Contains(resp.Warning, "not exporting") {
+		t.Errorf("the configuration half of the warning still applies, got: %q", resp.Warning)
+	}
+
+	// A single namespace means the query was scoped to it, so the claim is in scope.
+	probes = 0
+	scoped, err := src.GetFlows(context.Background(), FlowOptions{Namespace: "demo", ResultWillBeFiltered: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if probes != 1 {
+		t.Errorf("a namespace-scoped query can report on its own namespace; probes = %d", probes)
+	}
+	if !strings.Contains(scoped.Warning, "direction=unknown") {
+		t.Errorf("expected the traffic claim when it is in scope, got: %q", scoped.Warning)
+	}
+}

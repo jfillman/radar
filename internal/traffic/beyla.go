@@ -278,9 +278,16 @@ type dstPortKey struct {
 type l4LabelPresence struct {
 	// metric is the flow metric this cluster exposes, carried so the warning can
 	// name the right attributes.select key rather than assuming Beyla's spelling.
-	metric    string
-	port      bool
-	transport bool
+	metric string
+	// portedDsts are the destinations Beyla reported a real port for, recorded
+	// before nameless series are dropped. A destination's only port-bearing
+	// traffic can come from a caller Beyla cannot name — an external client — and
+	// that series never becomes a flow. Judging "does this destination have ports"
+	// from the surviving flows alone would miss it, and the port-0 leftover would
+	// then be handed HTTP data that belongs to the caller who was dropped.
+	portedDsts map[dstKey]bool
+	port       bool
+	transport  bool
 	// hiddenUDP is set when the cluster has traffic Beyla could not orient — UDP,
 	// which it reports as direction="unknown" in both directions and which the
 	// direction filter therefore drops. Recorded so the graph can say the traffic
@@ -380,12 +387,11 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 	// destination they are authoritative, and the port-0 bucket is a leftover — so
 	// it must not also receive the destination-wide aggregate, or the same HTTP
 	// rate lands on two edges.
-	portedDsts := make(map[dstKey]bool)
-	for key := range byDstPort {
-		if key.port != 0 {
-			portedDsts[dstKey{key.dstNs, key.dstName}] = true
-		}
-	}
+	//
+	// presence.portedDsts is used rather than the surviving buckets because a
+	// destination's port-bearing traffic can come entirely from a caller Beyla
+	// could not name, in which case no bucket carries that port at all.
+	portedDsts := presence.portedDsts
 
 	perPort, perDst := l7ByPortAndDestination(l7Flows)
 	for key, edges := range byDstPort {
@@ -569,7 +575,12 @@ func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions, withDiagnos
 	}
 	flows, presence := s.parseL4Flows(result)
 	presence.metric = s.flowMetricName()
-	if withDiagnostics {
+	// The unorientable-traffic probe is cluster-wide unless a single namespace was
+	// given, so when the caller is about to narrow the result it cannot be scoped
+	// to what the user may see. Skipped rather than reported out of scope. The
+	// missing-attribute part of the warning is unaffected: that describes Beyla's
+	// configuration, which is the same whichever namespaces you can read.
+	if withDiagnostics && !(opts.ResultWillBeFiltered && opts.Namespace == "") {
 		presence.hiddenUDP = s.hasUnorientableTraffic(ctx, opts)
 	}
 	return flows, presence, nil
@@ -666,6 +677,16 @@ func (s *BeylaSource) parseL4Flows(result *prom.QueryResult) (map[l4Key]*Flow, l
 		dstNs := labels["k8s_dst_namespace"]
 		dstType := pickLabel(labels, "k8s_dst_owner_type", "k8s_dst_type")
 		port := parseIntLabel(labels["dst_port"])
+
+		// Recorded before the drop below: a destination's real ports are a fact
+		// about the destination, and the series that carries one may have an
+		// unnameable source that never becomes a flow.
+		if dstName != "" && port != 0 {
+			if presence.portedDsts == nil {
+				presence.portedDsts = make(map[dstKey]bool)
+			}
+			presence.portedDsts[dstKey{dstNs, dstName}] = true
+		}
 
 		// A nameless endpoint renders as an anonymous node the UI can't resolve
 		// or navigate to, so drop the series rather than emit a phantom.

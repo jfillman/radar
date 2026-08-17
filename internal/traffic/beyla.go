@@ -25,6 +25,12 @@ const (
 	// Rate window in the PromQL queries; used to turn per-second rates back
 	// into absolute counts for the window.
 	beylaRateWindowSeconds = 300
+
+	// Grafana's Beyla vendors upstream OBI and renames the flow metric back to
+	// beyla_*; OBI itself emits obi_*. Both distributions are current, so the
+	// prefix is resolved once in Detect rather than assumed.
+	beylaFlowMetric = "beyla_network_flow_bytes_total"
+	obiFlowMetric   = "obi_network_flow_bytes_total"
 )
 
 // beylaJobSelector returns the PromQL job-label matcher fragment (e.g.
@@ -43,6 +49,10 @@ type promQueryFunc func(ctx context.Context, query string) (*prom.QueryResult, e
 type BeylaSource struct {
 	k8sClient kubernetes.Interface
 	queryFn   promQueryFunc
+	// flowMetric is the network-flow metric name this cluster actually exposes,
+	// resolved by Detect. Empty until then; flowMetricName falls back to the
+	// Beyla spelling so a GetFlows before Detect still queries something valid.
+	flowMetric string
 }
 
 // NewBeylaSource creates a new Beyla traffic source wired to the shared Prometheus client.
@@ -53,6 +63,13 @@ func NewBeylaSource(client kubernetes.Interface) *BeylaSource {
 }
 
 func (s *BeylaSource) Name() string { return "beyla" }
+
+func (s *BeylaSource) flowMetricName() string {
+	if s.flowMetric != "" {
+		return s.flowMetric
+	}
+	return beylaFlowMetric
+}
 
 func (s *BeylaSource) defaultQuery(ctx context.Context, query string) (*prom.QueryResult, error) {
 	client := promclient.GetClient()
@@ -90,22 +107,45 @@ func (s *BeylaSource) Close() error { return nil }
 func (s *BeylaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 	result := &DetectionResult{Available: false}
 
-	// Phase 1: metric probe via Prometheus. Scoped to the same jobs the flow
-	// queries read, so detection can't succeed on metrics GetFlows won't see.
-	qr, err := s.query(ctx, fmt.Sprintf(`count(beyla_network_flow_bytes_total{%s})`, beylaJobSelector()))
-	if err == nil && qr != nil && len(qr.Series) > 0 {
+	// Probe each prefix in turn and remember which answered. Deliberately not a
+	// single regex union of the two names: a cluster part-way through migrating
+	// from Beyla to OBI would run both, and summing them would double every edge.
+	for _, metric := range []string{beylaFlowMetric, obiFlowMetric} {
+		qr, err := s.query(ctx, fmt.Sprintf(`count(%s{%s})`, metric, beylaJobSelector()))
+		if err != nil || qr == nil || len(qr.Series) == 0 {
+			continue
+		}
+		s.flowMetric = metric
 		result.Available = true
 		result.Native = false
-		result.Message = "Beyla detected via Prometheus metrics"
+		result.Message = fmt.Sprintf("Beyla detected via Prometheus metrics (%s)", metric)
 		result.Version = s.detectVersion(ctx)
 		return result, nil
 	}
 
-	// Phase 2: pod label fallback
+	// No flow metric anywhere. build_info survives when the network feature is
+	// off — it is opt-in via OTEL_EBPF_METRICS_FEATURES and off by default — so
+	// it is what separates "Beyla is here but not watching the network" from
+	// "Beyla is not installed". Pod labels cannot make that distinction:
+	// app.kubernetes.io/name=alloy matches every Alloy install, and most Alloy
+	// installs carry no Beyla at all. Reporting Available on that basis wins the
+	// source priority order in manager.go and then renders a permanently empty
+	// graph with nothing to explain it, which is why availability now requires
+	// data, the same way the Caretta source validates its backend really holds
+	// Caretta metrics before claiming it.
+	if version := s.detectVersion(ctx); version != "" {
+		result.Version = version
+		result.Message = "Beyla is running but exposes no network flow metrics. " +
+			`Add "network" to OTEL_EBPF_METRICS_FEATURES to enable them.`
+		return result, nil
+	}
+
+	// Pods are a diagnostic only, never a reason to claim availability: if
+	// something Beyla-shaped is running but Prometheus holds nothing for it, the
+	// useful thing to say is that the scrape or the job selector is the problem.
 	if pods := s.countBeylaPods(ctx); pods > 0 {
-		result.Available = true
-		result.Native = false
-		result.Message = fmt.Sprintf("Beyla detected via %d running pod(s) (Alloy or standalone)", pods)
+		result.Message = fmt.Sprintf("Found %d running Alloy or Beyla pod(s), but Prometheus holds no Beyla metrics. "+
+			"Check that Prometheus scrapes Beyla, and that --beyla-job-selector matches its job label.", pods)
 		return result, nil
 	}
 
@@ -113,17 +153,25 @@ func (s *BeylaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 	return result, nil
 }
 
+// detectVersion reads the version out of build_info, which is present whenever
+// Beyla is running regardless of which metric features are enabled.
+//
+// obi_build_info is inferred from the flow-metric prefix rather than observed —
+// upstream OBI was not available to scrape. A wrong guess is harmless: the query
+// returns no series and the next candidate is tried.
 func (s *BeylaSource) detectVersion(ctx context.Context) string {
-	qr, err := s.query(ctx, `beyla_build_info`)
-	if err != nil {
-		return ""
-	}
-	for _, series := range qr.Series {
-		if v := series.Labels["version"]; v != "" {
-			return v
+	for _, metric := range []string{"beyla_build_info", "obi_build_info"} {
+		qr, err := s.query(ctx, metric)
+		if err != nil || qr == nil {
+			continue
 		}
-		if v := series.Labels["beyla_version"]; v != "" {
-			return v
+		for _, series := range qr.Series {
+			if v := series.Labels["version"]; v != "" {
+				return v
+			}
+			if v := series.Labels["beyla_version"]; v != "" {
+				return v
+			}
 		}
 	}
 	return ""
@@ -146,38 +194,93 @@ func (s *BeylaSource) countBeylaPods(ctx context.Context) int {
 	return count
 }
 
-// l4Key uniquely identifies an L4 flow for dedup. Must include every label
-// beylaL4GroupBy groups by (dst_port, transport) — otherwise distinct series
-// (e.g. TCP and UDP to the same endpoint/port) collide and one is dropped.
+// l4Key identifies one conversation for dedup. It covers every label
+// beylaL4GroupBy groups by except the two owner types, which are excluded
+// deliberately — see preferL4. transport is the raw label rather than the mapped
+// protocol, since mapBeylaTransport collapses everything that is not TCP or UDP
+// into "tcp" and would merge genuinely distinct series.
 type l4Key struct {
 	srcNs, srcName string
 	dstNs, dstName string
 	dstPort        int
-	protocol       string
+	transport      string
 }
 
-// dstKey identifies a destination workload only. Beyla's HTTP server-duration
-// metric is recorded server-side and carries no source labels at all — it
-// can't be paired by (src, dst) the way the network-flow metric can — so L7
-// results are matched onto L4 flows by destination alone.
-type dstKey struct {
+// dstPortKey identifies a destination workload and the port it was served on.
+// The HTTP server-duration metric carries server_port, so L7 results join to the
+// exact L4 port rather than being matched by destination and guessed at.
+type dstPortKey struct {
 	dstNs, dstName string
+	port           int
+}
+
+// l4LabelPresence records which of the optional network attributes the scrape
+// actually carried. dst_port and transport are Default:false in Beyla's
+// attribute registry, so a stock install exports neither and every flow arrives
+// with no port and no protocol. That is worth telling the user about rather than
+// silently rendering port 0 and calling everything TCP.
+type l4LabelPresence struct {
+	port      bool
+	transport bool
+	// hiddenUDP is set when the cluster has traffic Beyla could not orient — UDP,
+	// which it reports as direction="unknown" in both directions and which the
+	// direction filter therefore drops. Recorded so the graph can say the traffic
+	// exists but is not shown, rather than appearing to be complete.
+	hiddenUDP bool
 }
 
 func (s *BeylaSource) GetFlows(ctx context.Context, opts FlowOptions) (*FlowsResponse, error) {
-	flows, err := s.getFlowsInternal(ctx, opts)
+	flows, presence, err := s.getFlowsInternal(ctx, opts)
 	if err != nil {
 		log.Printf("[beyla] Error fetching flows: %v", err)
 		return &FlowsResponse{Source: "beyla", Timestamp: time.Now(), Flows: []Flow{},
 			Warning: fmt.Sprintf("Failed to query Beyla metrics: %v", err)}, nil
 	}
-	return &FlowsResponse{Source: "beyla", Timestamp: time.Now(), Flows: flows}, nil
+	response := &FlowsResponse{Source: "beyla", Timestamp: time.Now(), Flows: flows}
+	if warning := presence.warning(len(flows)); warning != "" {
+		response.Warning = warning
+	}
+	return response, nil
 }
 
-func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([]Flow, error) {
-	l4Flows, dstPorts, err := s.queryL4(ctx, opts)
+// warning explains missing optional attributes in the terms an operator can act
+// on. Only raised once there are flows to qualify: with no flows at all the
+// absent labels are not the interesting fact.
+func (p l4LabelPresence) warning(flowCount int) string {
+	var parts []string
+
+	if flowCount > 0 {
+		var missing []string
+		if !p.port {
+			missing = append(missing, "dst.port")
+		}
+		if !p.transport {
+			missing = append(missing, "transport")
+		}
+		if len(missing) > 0 {
+			parts = append(parts, fmt.Sprintf("Beyla is not exporting %s, so these edges have no port or "+
+				"protocol detail (they are shown as port 0 over TCP). Both are opt-in attributes: add them "+
+				"to attributes.select for beyla_network_flow_bytes to see per-port edges.",
+				strings.Join(missing, " and ")))
+		}
+	}
+
+	// Stated whether or not there are flows: with no TCP traffic at all, "Beyla
+	// sees UDP but cannot place it" is the only honest explanation for an empty
+	// graph.
+	if p.hiddenUDP {
+		parts = append(parts, "UDP traffic (DNS, for example) is not shown: Beyla reports it as "+
+			"direction=unknown on both sides of the conversation, so which end initiated it cannot be "+
+			"determined and drawing it would invent an arrow.")
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([]Flow, l4LabelPresence, error) {
+	l4Map, presence, err := s.queryL4(ctx, opts)
 	if err != nil {
-		return nil, fmt.Errorf("L4 query: %w", err)
+		return nil, presence, fmt.Errorf("L4 query: %w", err)
 	}
 
 	l7Flows, err := s.queryL7(ctx, opts)
@@ -186,49 +289,40 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([
 		l7Flows = nil
 	}
 
-	l4Map := make(map[l4Key]*Flow, len(l4Flows))
-	byDst := make(map[dstKey][]*Flow, len(l4Flows))
-	for i := range l4Flows {
-		f := &l4Flows[i]
-		l4Map[l4FlowKey(f)] = f
-		dst := dstKey{f.Destination.Namespace, f.Destination.Name}
-		byDst[dst] = append(byDst[dst], f)
+	byDstPort := make(map[dstPortKey][]*Flow, len(l4Map))
+	for _, f := range l4Map {
+		key := dstPortKey{f.Destination.Namespace, f.Destination.Name, f.Port}
+		byDstPort[key] = append(byDstPort[key], f)
 	}
 
-	// Merge L7 into L4 by destination only: the HTTP server-duration metric is
-	// recorded on the serving side and has no source labels, so there's no way
-	// to attribute a request to a particular caller. A destination may have
-	// several L4 edges (different callers/ports); each gets a share of the
-	// destination's total HTTP metadata. L7 series with no matching L4
-	// destination are dropped — without a source there's no edge to draw.
-	for _, l7 := range busiestL7PerDst(l7Flows) {
-		dst := dstKey{l7.Destination.Namespace, l7.Destination.Name}
-		existing, ok := byDst[dst]
-		if !ok {
+	// Merge L7 into L4 on destination and port. server_port on the HTTP metric
+	// names the port the requests were served on, so there is no need to work out
+	// which of a destination's ports is the HTTP one.
+	for _, l7 := range busiestL7PerDstPort(l7Flows) {
+		dst := dstPortKey{l7.Destination.Namespace, l7.Destination.Name, l7.Port}
+		edges := byDstPort[dst]
+		if len(edges) == 0 {
+			// dst_port is opt-in and absent by default, in which case every L4
+			// edge carries port 0 and a destination's whole conversation with a
+			// given caller has already collapsed into one edge. Attaching the
+			// destination's HTTP metadata to that bucket is unambiguous, because
+			// there is only one port's worth of edges to attach it to. When
+			// dst_port is selected the exact match above applies instead.
+			edges = byDstPort[dstPortKey{l7.Destination.Namespace, l7.Destination.Name, 0}]
+		}
+		if len(edges) == 0 {
 			continue
 		}
-		// The HTTP metric has no port label, so if this destination fans out
-		// over more than one distinct L4 port there's no way to tell which one
-		// is actually HTTP (e.g. an app port alongside a raw-TCP DB port) —
-		// skip rather than mislabel every port as HTTP. Checked against
-		// dstPorts (every port Beyla reported for this destination) rather
-		// than len(existing): a port can be dropped from existing/l4Map for
-		// having an unresolved (e.g. external) source name while still being
-		// the real HTTP port, and existing's remaining single port would
-		// otherwise look unambiguous.
-		if len(dstPorts[dst]) != 1 {
-			continue
-		}
-		// l7.RequestRate describes the whole destination, so it must be split
-		// across its L4 edges rather than copied onto each one — otherwise
-		// aggregation overcounts by the number of edges. Weight the split by
-		// each edge's L4 byte volume as the best available proxy for its share
-		// of the destination's request traffic.
+		// The HTTP metric is recorded server-side and carries no source labels at
+		// all, so a destination's request rate still has to be divided across the
+		// callers that reached it on this port rather than copied onto each one.
+		// Weight by L4 byte volume as the best available proxy for each caller's
+		// share; server_port fixes which port, not which caller.
 		var totalBytes int64
-		for _, f := range existing {
+		for _, f := range edges {
 			totalBytes += f.BytesSent + f.BytesRecv
 		}
-		for _, f := range existing {
+		for _, f := range edges {
 			f.L7Protocol = l7.L7Protocol
 			f.HTTPMethod = l7.HTTPMethod
 			f.HTTPPath = l7.HTTPPath
@@ -237,7 +331,7 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([
 				share := float64(f.BytesSent+f.BytesRecv) / float64(totalBytes)
 				f.RequestRate = l7.RequestRate * share
 			} else {
-				f.RequestRate = l7.RequestRate / float64(len(existing))
+				f.RequestRate = l7.RequestRate / float64(len(edges))
 			}
 		}
 	}
@@ -246,21 +340,22 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([
 	for _, f := range l4Map {
 		result = append(result, *f)
 	}
-	return result, nil
+	return result, presence, nil
 }
 
-func busiestL7PerDst(l7Flows []Flow) []Flow {
-	best := make(map[dstKey]Flow, len(l7Flows))
-	topRate := make(map[dstKey]float64, len(l7Flows))
+// busiestL7PerDstPort collapses the HTTP series for one destination and port into
+// a single record: rates summed, and the route, method and status taken from the
+// busiest individual series so the edge label describes real traffic.
+func busiestL7PerDstPort(l7Flows []Flow) []Flow {
+	best := make(map[dstPortKey]Flow, len(l7Flows))
+	topRate := make(map[dstPortKey]float64, len(l7Flows))
 	for _, f := range l7Flows {
-		dst := dstKey{f.Destination.Namespace, f.Destination.Name}
+		dst := dstPortKey{f.Destination.Namespace, f.Destination.Name, f.Port}
 		cur, ok := best[dst]
 		if !ok {
 			best[dst], topRate[dst] = f, f.RequestRate
 			continue
 		}
-		// Rates cover the whole destination; the route/method/status shown is
-		// the busiest single series.
 		if f.RequestRate > topRate[dst] {
 			topRate[dst] = f.RequestRate
 			cur.HTTPMethod, cur.HTTPPath, cur.HTTPStatus = f.HTTPMethod, f.HTTPPath, f.HTTPStatus
@@ -275,35 +370,74 @@ func busiestL7PerDst(l7Flows []Flow) []Flow {
 	return out
 }
 
-func l4FlowKey(f *Flow) l4Key {
-	return l4Key{
-		srcNs: f.Source.Namespace, srcName: f.Source.Name,
-		dstNs: f.Destination.Namespace, dstName: f.Destination.Name,
-		dstPort: f.Port, protocol: f.Protocol,
+// preferL4 chooses between two series that describe the same conversation.
+//
+// Beyla reports a Service-routed conversation twice — once attributed to the
+// destination workload and once to the Service in front of it — with byte
+// identical values. Both carry the same source, destination name, port and
+// transport, so they land on the same l4Key and one has to win. Keeping both
+// would double the traffic on every Service-routed edge, which is most of them;
+// letting Prometheus result order decide makes the rendered Kind arbitrary.
+// Radar's graph navigates to workloads, so the workload attribution wins.
+func preferL4(incumbent, candidate *Flow) *Flow {
+	if serviceEndpoints(candidate) < serviceEndpoints(incumbent) {
+		return candidate
 	}
+	return incumbent
+}
+
+func serviceEndpoints(f *Flow) int {
+	count := 0
+	if f.Source.Kind == "Service" {
+		count++
+	}
+	if f.Destination.Kind == "Service" {
+		count++
+	}
+	return count
 }
 
 const (
 	beylaL4GroupBy = `k8s_src_owner_name, k8s_src_namespace, k8s_src_owner_type, k8s_dst_owner_name, k8s_dst_namespace, k8s_dst_owner_type, dst_port, transport`
+	// beylaL4DirectionFilter drops the response half of every conversation.
+	// Beyla emits both directions with source and destination swapped, so without
+	// this each edge gains a mirror twin pointing the wrong way — and once
+	// dst.port is selected each response series carries the client's ephemeral
+	// port, turning one conversation into hundreds of series.
+	//
+	// It requires "request" rather than merely excluding "response" because there
+	// is a third value, "unknown", which is where UDP lands — and Beyla labels
+	// *both* directions of a UDP conversation "unknown". Keeping them means every
+	// DNS conversation draws a mirrored pair, and once dst.port is selected the
+	// reverse half carries the client's ephemeral port: on a 4-pod cluster that
+	// alone produced 287 spurious coredns edges out of 289 flows. Nothing in the
+	// labels can orient an "unknown" pair, since after filtering it is
+	// indistinguishable from two services genuinely calling each other.
+	//
+	// The cost is that UDP traffic does not appear in the graph at all. That is
+	// surfaced to the user rather than left implicit — see l4LabelPresence.
+	beylaL4DirectionFilter = `, direction="request"`
+	// beylaUnknownDirectionProbe counts the series excluded by the filter above,
+	// so the absence of UDP can be stated instead of silently rendering nothing.
+	beylaUnknownDirectionProbe = `, direction="unknown"`
 	// beylaL7Metric is Beyla's OTel-aligned HTTP server histogram; there is no
-	// millisecond variant, and it carries no source-side labels at all (see
-	// beylaL7GroupBy below).
+	// millisecond variant.
 	beylaL7Metric = "http_server_request_duration_seconds_count"
-	// beylaL7GroupBy labels come from http_server_request_duration_seconds,
-	// which is recorded server-side only. k8s_owner_name is Beyla's own
-	// resolved owner (Deployment/ReplicaSet/StatefulSet/DaemonSet, whichever
-	// applies) — the same concept as k8s_dst_owner_name on the L4 metric, so
-	// destinations from both metrics line up. No caller/source labels exist
-	// on this metric at all, unlike beyla_network_flow_bytes_total.
-	beylaL7GroupBy = `k8s_namespace_name, k8s_owner_name, k8s_pod_name, http_request_method, http_route, http_response_status_code`
+	// beylaL7GroupBy labels come from http_server_request_duration_seconds, which
+	// is recorded server-side only. k8s_owner_name is Beyla's own resolved owner,
+	// the same concept as k8s_dst_owner_name on the L4 metric, so destinations
+	// from both metrics line up. server_port names the port the requests were
+	// served on, which is what lets L7 join to a specific L4 edge. No caller or
+	// source labels exist on this metric at all.
+	beylaL7GroupBy = `k8s_namespace_name, k8s_owner_name, k8s_pod_name, server_port, http_request_method, http_route, http_response_status_code`
 )
 
-// beylaRateQuery builds `sum by (groupBy) (rate(metric{job=~...}[5m]))`. A
+// beylaRateQuery builds `sum by (groupBy) (rate(metric{job=~...,extra}[5m]))`. A
 // namespace filter has to become two OR'd selectors: PromQL cannot express
 // "src OR dst namespace matches" inside a single label selector.
-func beylaRateQuery(groupBy, metric, namespace string) string {
-	sum := func(extra string) string {
-		return fmt.Sprintf(`sum by (%s) (rate(%s{%s%s}[5m]))`, groupBy, metric, beylaJobSelector(), extra)
+func beylaRateQuery(groupBy, metric, namespace, extra string) string {
+	sum := func(more string) string {
+		return fmt.Sprintf(`sum by (%s) (rate(%s{%s%s%s}[5m]))`, groupBy, metric, beylaJobSelector(), extra, more)
 	}
 	if namespace == "" {
 		return sum("")
@@ -323,14 +457,37 @@ func beylaL7RateQuery(namespace string) string {
 	return fmt.Sprintf(`sum by (%s) (rate(%s{%s%s}[5m]))`, beylaL7GroupBy, beylaL7Metric, beylaJobSelector(), extra)
 }
 
-func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions) ([]Flow, map[dstKey]map[int]struct{}, error) {
-	query := beylaRateQuery(beylaL4GroupBy, "beyla_network_flow_bytes_total", opts.Namespace)
+func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions) (map[l4Key]*Flow, l4LabelPresence, error) {
+	query := beylaRateQuery(beylaL4GroupBy, s.flowMetricName(), opts.Namespace, beylaL4DirectionFilter)
 	result, err := s.query(ctx, query)
 	if err != nil {
-		return nil, nil, err
+		return nil, l4LabelPresence{}, err
 	}
-	flows, dstPorts := s.parseL4Flows(result)
-	return flows, dstPorts, nil
+	flows, presence := s.parseL4Flows(result)
+	presence.hiddenUDP = s.hasUnorientableTraffic(ctx, opts)
+	return flows, presence, nil
+}
+
+// hasUnorientableTraffic reports whether the cluster has traffic the direction
+// filter excluded. A cheap instant count, not a rate: it only decides whether to
+// explain an absence, so a failed probe stays silent rather than guessing.
+func (s *BeylaSource) hasUnorientableTraffic(ctx context.Context, opts FlowOptions) bool {
+	selector := beylaJobSelector() + beylaUnknownDirectionProbe
+	if opts.Namespace != "" {
+		selector += fmt.Sprintf(`, k8s_src_namespace=%q`, opts.Namespace)
+	}
+	qr, err := s.query(ctx, fmt.Sprintf(`count(%s{%s})`, s.flowMetricName(), selector))
+	if err != nil || qr == nil {
+		return false
+	}
+	for _, series := range qr.Series {
+		for _, point := range series.DataPoints {
+			if point.Value > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *BeylaSource) queryL7(ctx context.Context, opts FlowOptions) ([]Flow, error) {
@@ -342,20 +499,16 @@ func (s *BeylaSource) queryL7(ctx context.Context, opts FlowOptions) ([]Flow, er
 	return s.parseL7Flows(result), nil
 }
 
-// parseL4Flows returns the L4 flows plus, separately, every distinct
-// destination port Beyla reported traffic on for each destination —
-// including ports whose flow got dropped below for an unresolved source
-// name. Callers that need to know whether a destination is unambiguously
-// single-port (e.g. before trusting L7 HTTP metadata has the right target)
-// must use the latter, not the port set of the returned flows: a real HTTP
-// port can be the one that gets dropped (external caller, no owner name),
-// leaving a surviving non-HTTP port that would otherwise look unambiguous.
-func (s *BeylaSource) parseL4Flows(result *prom.QueryResult) ([]Flow, map[dstKey]map[int]struct{}) {
+// parseL4Flows turns network-flow series into deduplicated flows, keyed while the
+// labels are still in hand — the raw transport value and the owner types needed
+// to resolve a collision are not carried on Flow. It also reports which optional
+// attributes the scrape included.
+func (s *BeylaSource) parseL4Flows(result *prom.QueryResult) (map[l4Key]*Flow, l4LabelPresence) {
+	flows := make(map[l4Key]*Flow)
+	var presence l4LabelPresence
 	if result == nil {
-		return nil, nil
+		return flows, presence
 	}
-	flows := make([]Flow, 0, len(result.Series))
-	dstPorts := make(map[dstKey]map[int]struct{})
 	for _, series := range result.Series {
 		labels := series.Labels
 		if len(series.DataPoints) == 0 {
@@ -366,6 +519,13 @@ func (s *BeylaSource) parseL4Flows(result *prom.QueryResult) ([]Flow, map[dstKey
 			continue
 		}
 
+		if labels["dst_port"] != "" {
+			presence.port = true
+		}
+		if labels["transport"] != "" {
+			presence.transport = true
+		}
+
 		srcName := pickLabel(labels, "k8s_src_owner_name", "k8s_src_name")
 		srcNs := labels["k8s_src_namespace"]
 		srcType := pickLabel(labels, "k8s_src_owner_type", "k8s_src_type")
@@ -374,21 +534,13 @@ func (s *BeylaSource) parseL4Flows(result *prom.QueryResult) ([]Flow, map[dstKey
 		dstType := pickLabel(labels, "k8s_dst_owner_type", "k8s_dst_type")
 		port := parseIntLabel(labels["dst_port"])
 
-		if dstName != "" {
-			dst := dstKey{dstNs, dstName}
-			if dstPorts[dst] == nil {
-				dstPorts[dst] = make(map[int]struct{})
-			}
-			dstPorts[dst][port] = struct{}{}
-		}
-
 		// A nameless endpoint renders as an anonymous node the UI can't resolve
 		// or navigate to, so drop the series rather than emit a phantom.
 		if srcName == "" || dstName == "" {
 			continue
 		}
 
-		flow := Flow{
+		flow := &Flow{
 			Source:      Endpoint{Name: srcName, Namespace: srcNs, Kind: mapBeylaKind(srcType), Workload: srcName},
 			Destination: Endpoint{Name: dstName, Namespace: dstNs, Kind: mapBeylaKind(dstType), Workload: dstName, Port: port},
 			Protocol:    mapBeylaTransport(labels["transport"]),
@@ -406,14 +558,24 @@ func (s *BeylaSource) parseL4Flows(result *prom.QueryResult) ([]Flow, map[dstKey
 			flow.Destination.Kind = "External"
 		}
 
-		flows = append(flows, flow)
+		key := l4Key{
+			srcNs: srcNs, srcName: srcName,
+			dstNs: dstNs, dstName: dstName,
+			dstPort: port, transport: labels["transport"],
+		}
+		if existing, ok := flows[key]; ok {
+			flows[key] = preferL4(existing, flow)
+			continue
+		}
+		flows[key] = flow
 	}
-	return flows, dstPorts
+	return flows, presence
 }
 
 // parseL7Flows reads http_server_request_duration_seconds_count series. The
 // metric is server-side only, so Source is left empty here — getFlowsInternal
-// attaches the caller identity from the matching L4 flow(s) instead.
+// attaches the caller identity from the matching L4 flow(s) instead. Port comes
+// from server_port and is what the join keys on.
 func (s *BeylaSource) parseL7Flows(result *prom.QueryResult) []Flow {
 	if result == nil {
 		return nil
@@ -434,9 +596,11 @@ func (s *BeylaSource) parseL7Flows(result *prom.QueryResult) []Flow {
 		if dstName == "" {
 			continue
 		}
+		port := parseIntLabel(labels["server_port"])
 
 		flow := Flow{
-			Destination: Endpoint{Name: dstName, Namespace: dstNs, Kind: dstKind, Workload: dstName},
+			Destination: Endpoint{Name: dstName, Namespace: dstNs, Kind: dstKind, Workload: dstName, Port: port},
+			Port:        port,
 			L7Protocol:  "HTTP",
 			HTTPMethod:  labels["http_request_method"],
 			HTTPPath:    labels["http_route"],
@@ -457,9 +621,9 @@ func (s *BeylaSource) parseL7Flows(result *prom.QueryResult) []Flow {
 
 // pickBeylaOwner resolves the destination workload name Beyla attached to an
 // HTTP server-duration series. k8s_owner_name is Beyla's own resolved owner —
-// the same value beyla_network_flow_bytes_total exposes as k8s_dst_owner_name
-// — so L7 results line up with L4 destinations for the same workload; a bare
-// Pod (no owner) falls back to its pod name.
+// the same value the network-flow metric exposes as k8s_dst_owner_name — so L7
+// results line up with L4 destinations for the same workload; a bare Pod (no
+// owner) falls back to its pod name.
 func pickBeylaOwner(labels map[string]string) (name, kind string) {
 	switch {
 	case labels["k8s_owner_name"] != "":

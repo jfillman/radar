@@ -408,6 +408,7 @@ Visualize live network traffic between services using Hubble, Caretta, Istio, or
 
 - Auto-detects Hubble (Cilium), Istio, Caretta, or Grafana Beyla as traffic data sources
 - Beyla (standalone or via Grafana Alloy) provides eBPF L4 + HTTP visibility with no service mesh, read from Prometheus
+- Beyla needs its `network` feature enabled, and per-port edges additionally need `dst.port` and `transport` named in `attributes.select` — both are off by default, and Radar says so in the Traffic view rather than showing partial edges silently
 - Animated flow graph showing requests per second between services
 - Filter by namespace, protocol, or status code
 - Setup wizard to install a traffic source if none is detected

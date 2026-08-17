@@ -250,6 +250,20 @@ cnpg-demo-status:
 cnpg-demo-live:
 	./scripts/cnpg-demo.sh live
 
+# Grafana Beyla on kind: eBPF loaded, a minimal Prometheus scraping it, and two
+# conversations to observe. Which labels Beyla exports depends on configuration —
+# dst_port and transport are off by default, direction is on and doubles every
+# edge — so read scripts/beyla-demo/README.md before changing the Beyla source.
+# `attrs` and `no-network` switch between the three configurations that matter.
+beyla-demo:
+	./scripts/beyla-demo.sh up
+
+beyla-demo-down:
+	./scripts/beyla-demo.sh down
+
+beyla-demo-status:
+	./scripts/beyla-demo.sh status
+
 # Run linter
 lint:
 	go vet ./...
@@ -370,6 +384,7 @@ help:
 	@echo "  make kyverno-demo     - Live Kyverno policy + report fixtures"
 	@echo "  make cnpg-demo        - Frozen CNPG rendering fixtures"
 	@echo "  make cnpg-demo-live   - CNPG fixtures with the operator running"
+	@echo "  make beyla-demo       - Grafana Beyla eBPF traffic fixtures"
 	@echo ""
 	@echo "Desktop:"
 	@echo "  make desktop                - Build desktop app (frontend + Wails binary)"

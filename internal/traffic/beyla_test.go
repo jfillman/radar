@@ -40,7 +40,33 @@ func TestBeylaSource_Detect_MetricProbe(t *testing.T) {
 	}
 }
 
-func TestBeylaSource_Detect_LabelFallback_Alloy(t *testing.T) {
+func TestBeylaSource_Detect_OBIMetricPrefix(t *testing.T) {
+	// Grafana's Beyla renames the flow metric to beyla_*; upstream OBI emits
+	// obi_*. Both distributions are current, so either name means available, and
+	// the one that answered is what GetFlows must go on to query.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, "obi_network_flow_bytes_total") {
+			return promResult("vector", promSeries(map[string]string{}, 7)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	result, err := src.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Available {
+		t.Fatal("expected available=true for the obi_ prefix")
+	}
+	assertEq(t, "resolved flow metric", src.flowMetricName(), obiFlowMetric)
+}
+
+func TestBeylaSource_Detect_AlloyPodsAloneAreNotAvailable(t *testing.T) {
+	// app.kubernetes.io/name=alloy matches every Alloy install, and most carry no
+	// Beyla. Claiming availability on that basis wins the source priority order
+	// and then renders a permanently empty graph, so pods must not imply
+	// availability — the message should point at the scrape instead.
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "alloy-abc",
@@ -58,31 +84,36 @@ func TestBeylaSource_Detect_LabelFallback_Alloy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Available {
-		t.Fatal("expected available=true via label fallback")
+	if result.Available {
+		t.Fatal("expected available=false: running Alloy pods are not evidence of Beyla metrics")
+	}
+	if !strings.Contains(result.Message, "Prometheus holds no Beyla metrics") {
+		t.Errorf("message should name the actual problem, got: %q", result.Message)
 	}
 }
 
-func TestBeylaSource_Detect_LabelFallback_Beyla(t *testing.T) {
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "beyla-xyz",
-			Namespace: "default",
-			Labels:    map[string]string{"app.kubernetes.io/name": "beyla"},
-		},
-		Status: corev1.PodStatus{Phase: corev1.PodRunning},
-	}
-	src := &BeylaSource{k8sClient: fake.NewSimpleClientset(pod)}
-	src.queryFn = func(_ context.Context, _ string) (*prom.QueryResult, error) {
-		return nil, fmt.Errorf("prometheus not available")
+func TestBeylaSource_Detect_BuildInfoWithoutNetworkFeature(t *testing.T) {
+	// The network feature is opt-in and off by default, so a stock Beyla install
+	// exposes build_info but no flow metric at all. That has to read as "installed
+	// but not watching the network", not as "no traffic yet".
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, "beyla_build_info") {
+			return promResult("vector", promSeries(map[string]string{"version": "v3.25.0"}, 1)), nil
+		}
+		return emptyResult(), nil
 	}
 
 	result, err := src.Detect(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Available {
-		t.Fatal("expected available=true via standalone beyla label fallback")
+	if result.Available {
+		t.Fatal("expected available=false: no network flow metric means no flows to draw")
+	}
+	assertEq(t, "version", result.Version, "v3.25.0")
+	if !strings.Contains(result.Message, "OTEL_EBPF_METRICS_FEATURES") {
+		t.Errorf("message should tell the operator how to enable network metrics, got: %q", result.Message)
 	}
 }
 
@@ -172,7 +203,7 @@ func TestBeylaSource_GetFlows_L4PlusL7(t *testing.T) {
 			}, 10.0)), nil
 		}
 		return promResult("vector", promSeries(map[string]string{
-			"k8s_namespace_name": "api", "k8s_owner_name": "backend",
+			"k8s_namespace_name": "api", "k8s_owner_name": "backend", "server_port": "8080",
 			"http_request_method": "POST", "http_route": "/api/orders", "http_response_status_code": "201",
 		}, 5.0)), nil
 	}
@@ -193,10 +224,11 @@ func TestBeylaSource_GetFlows_L4PlusL7(t *testing.T) {
 	assertEq(t, "source name", f.Source.Name, "frontend")
 }
 
-func TestBeylaSource_GetFlows_L7SkippedWhenDestinationHasMultiplePorts(t *testing.T) {
-	// http_server_request_duration_seconds carries no port label, so a
-	// destination fanning out over 2 L4 ports (e.g. an app port plus a raw-TCP
-	// DB port) can't be safely tagged with HTTP metadata on either edge.
+func TestBeylaSource_GetFlows_L7LandsOnTheServedPortOnly(t *testing.T) {
+	// http_server_request_duration_seconds carries server_port, so a destination
+	// serving HTTP on 8080 alongside raw TCP on 5432 gets its HTTP metadata on the
+	// 8080 edge and nothing on the 5432 edge. No inference, no all-or-nothing
+	// guard.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
 		if strings.Contains(query, "beyla_network_flow_bytes_total") {
@@ -214,7 +246,7 @@ func TestBeylaSource_GetFlows_L7SkippedWhenDestinationHasMultiplePorts(t *testin
 			), nil
 		}
 		return promResult("vector", promSeries(map[string]string{
-			"k8s_namespace_name": "api", "k8s_owner_name": "backend",
+			"k8s_namespace_name": "api", "k8s_owner_name": "backend", "server_port": "8080",
 			"http_request_method": "POST", "http_route": "/api/orders", "http_response_status_code": "201",
 		}, 5.0)), nil
 	}
@@ -224,11 +256,22 @@ func TestBeylaSource_GetFlows_L7SkippedWhenDestinationHasMultiplePorts(t *testin
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(resp.Flows) != 2 {
-		t.Fatalf("expected 2 L4-only flows, got %d", len(resp.Flows))
+		t.Fatalf("expected 2 flows, got %d", len(resp.Flows))
 	}
 	for _, f := range resp.Flows {
-		if f.L7Protocol != "" {
-			t.Errorf("port %d: expected no HTTP metadata attached, got L7Protocol=%q", f.Port, f.L7Protocol)
+		switch f.Port {
+		case 8080:
+			assertEq(t, "8080 l7Protocol", f.L7Protocol, "HTTP")
+			assertEq(t, "8080 httpPath", f.HTTPPath, "/api/orders")
+			if f.RequestRate != 5.0 {
+				t.Errorf("8080 requestRate = %v, want 5 (sole caller on this port takes the whole rate)", f.RequestRate)
+			}
+		case 5432:
+			if f.L7Protocol != "" {
+				t.Errorf("5432 should carry no HTTP metadata, got L7Protocol=%q path=%q", f.L7Protocol, f.HTTPPath)
+			}
+		default:
+			t.Errorf("unexpected port %d", f.Port)
 		}
 	}
 }
@@ -271,12 +314,11 @@ func TestBeylaSource_GetFlows_TCPAndUDPSameEndpointBothSurvive(t *testing.T) {
 	}
 }
 
-func TestBeylaSource_GetFlows_L7SkippedWhenRealHTTPPortDroppedForUnnamedSource(t *testing.T) {
-	// The destination has HTTP traffic on 8080 from an external caller Beyla
-	// can't name (dropped from l4Map/byDst), plus unrelated in-cluster TCP
-	// traffic on 5432. Only port 5432 survives into byDst, but the port-count
-	// guard must still see 2 real ports for this destination and skip
-	// attaching HTTP metadata to the surviving non-HTTP port.
+func TestBeylaSource_GetFlows_L7NotAttachedWhenItsPortHasNoNamedCaller(t *testing.T) {
+	// The destination serves HTTP on 8080, but its only caller there is an
+	// external one Beyla can't name, so that edge is dropped. Unrelated TCP
+	// traffic on 5432 survives. The HTTP metadata belongs to 8080 and must not
+	// land on 5432 just because 5432 is what's left.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
 		if strings.Contains(query, "beyla_network_flow_bytes_total") {
@@ -294,7 +336,7 @@ func TestBeylaSource_GetFlows_L7SkippedWhenRealHTTPPortDroppedForUnnamedSource(t
 			), nil
 		}
 		return promResult("vector", promSeries(map[string]string{
-			"k8s_namespace_name": "api", "k8s_owner_name": "backend",
+			"k8s_namespace_name": "api", "k8s_owner_name": "backend", "server_port": "8080",
 			"http_request_method": "GET", "http_route": "/health", "http_response_status_code": "200",
 		}, 5.0)), nil
 	}
@@ -309,6 +351,152 @@ func TestBeylaSource_GetFlows_L7SkippedWhenRealHTTPPortDroppedForUnnamedSource(t
 	if resp.Flows[0].L7Protocol != "" {
 		t.Errorf("port %d: expected no HTTP metadata attached to the non-HTTP port, got L7Protocol=%q",
 			resp.Flows[0].Port, resp.Flows[0].L7Protocol)
+	}
+}
+
+func TestBeylaSource_QueryL4_KeepsOnlyTheRequestDirection(t *testing.T) {
+	// Beyla emits both directions of every conversation with src and dst swapped,
+	// so an unfiltered query gives every edge a mirror twin pointing the wrong
+	// way. UDP is worse: it is labelled "unknown" on both sides, and once dst.port
+	// is selected the reverse half carries the client's ephemeral port, so a
+	// single DNS conversation becomes hundreds of edges. Only "request" is
+	// orientable.
+	var rateQuery string
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, "network_flow_bytes_total") && strings.Contains(query, "rate(") {
+			rateQuery = query
+		}
+		return emptyResult(), nil
+	}
+
+	if _, err := src.GetFlows(context.Background(), FlowOptions{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(rateQuery, `direction="request"`) {
+		t.Errorf("L4 query must keep only the request direction, got: %s", rateQuery)
+	}
+	if strings.Contains(beylaL4GroupBy, "direction") {
+		t.Error("direction must stay out of the group-by so it cannot split one conversation across two keys")
+	}
+}
+
+func TestBeylaSource_GetFlows_SaysSoWhenUDPIsHidden(t *testing.T) {
+	// The direction filter drops UDP entirely. An empty or partial graph with no
+	// explanation reads as "there is no traffic", which is not what happened.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			return promResult("vector", promSeries(map[string]string{}, 4)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Flows) != 0 {
+		t.Fatalf("expected 0 flows, got %d", len(resp.Flows))
+	}
+	if !strings.Contains(resp.Warning, "UDP") {
+		t.Errorf("an empty graph with UDP present must explain itself, got: %q", resp.Warning)
+	}
+}
+
+func TestBeylaSource_GetFlows_ServiceAndWorkloadDuplicateCollapsesToWorkload(t *testing.T) {
+	// A Service-routed conversation is reported twice with byte-identical values,
+	// once attributed to the destination workload and once to the Service in front
+	// of it. Emitting both would double the traffic on most edges; letting result
+	// order decide would make the rendered Kind arbitrary. The workload wins.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, "beyla_network_flow_bytes_total") {
+			return promResult("vector",
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_src_owner_type": "Deployment",
+					"k8s_dst_owner_name": "db", "k8s_dst_namespace": "demo",
+					"k8s_dst_owner_type": "Service",
+					"dst_port":           "6379", "transport": "TCP",
+				}, 7.0),
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_src_owner_type": "Deployment",
+					"k8s_dst_owner_name": "db", "k8s_dst_namespace": "demo",
+					"k8s_dst_owner_type": "Deployment",
+					"dst_port":           "6379", "transport": "TCP",
+				}, 7.0),
+			), nil
+		}
+		return emptyResult(), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Flows) != 1 {
+		t.Fatalf("expected the duplicate pair to collapse to 1 flow, got %d (traffic would be double counted)", len(resp.Flows))
+	}
+	assertEq(t, "dest kind", resp.Flows[0].Destination.Kind, "Workload")
+}
+
+func TestBeylaSource_GetFlows_WarnsWhenPortAndTransportAreNotExported(t *testing.T) {
+	// dst.port and transport are Default:false in Beyla's attribute registry, so a
+	// stock install exports neither and every edge arrives with no port and no
+	// protocol. Rendering port 0 over TCP without saying so is the dishonest part.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, "beyla_network_flow_bytes_total") {
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+				"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+				// no dst_port, no transport: the default install
+			}, 12.0)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Flows) != 1 {
+		t.Fatalf("expected 1 flow, got %d", len(resp.Flows))
+	}
+	if resp.Warning == "" {
+		t.Fatal("expected a warning naming the missing attributes")
+	}
+	for _, want := range []string{"dst.port", "transport", "attributes.select"} {
+		if !strings.Contains(resp.Warning, want) {
+			t.Errorf("warning should mention %q so the operator can act on it, got: %q", want, resp.Warning)
+		}
+	}
+}
+
+func TestBeylaSource_GetFlows_NoWarningWhenAttributesArePresent(t *testing.T) {
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
+		if strings.Contains(query, "beyla_network_flow_bytes_total") {
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+				"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+				"dst_port": "80", "transport": "TCP",
+			}, 12.0)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Warning != "" {
+		t.Errorf("expected no warning when both attributes are exported, got: %q", resp.Warning)
 	}
 }
 
@@ -423,7 +611,7 @@ func TestManager_DetectSources_IncludesBeyla(t *testing.T) {
 }
 
 func TestBeylaSource_QueryL4_NamespaceFilterIsValidPromQL(t *testing.T) {
-	q := beylaRateQuery(beylaL4GroupBy, "beyla_network_flow_bytes_total", "test-ns")
+	q := beylaRateQuery(beylaL4GroupBy, beylaFlowMetric, "test-ns", beylaL4DirectionFilter)
 	if !strings.Contains(q, `k8s_src_namespace="test-ns"}`) || !strings.Contains(q, `k8s_dst_namespace="test-ns"}`) {
 		t.Errorf("namespace matchers must live inside the label selector, got: %s", q)
 	}

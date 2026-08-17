@@ -10,7 +10,7 @@ import { Loader2, Filter, Plug, ChevronDown, List, Activity, AlertTriangle } fro
 import { clsx } from 'clsx'
 import { useQueryClient } from '@tanstack/react-query'
 import { useDock } from '../dock'
-import { EmptyState, PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
+import { AlertBanner, EmptyState, PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
 import { useConnection } from '../../context/ConnectionContext'
 import { Tooltip } from '../ui/Tooltip'
 
@@ -1166,11 +1166,12 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
           ) : finalFlows.length > 0 ? (
             <>
               {flowsData?.warning && warningIsPermanent && (
-                <div className="absolute top-2 left-1/2 z-10 -translate-x-1/2 px-3">
-                  <div className="card-inner flex max-w-2xl items-start gap-2 border-amber-500/30 bg-amber-500/10">
-                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
-                    <span className="text-xs text-theme-text-secondary">{flowsData.warning}</span>
-                  </div>
+                <div className="absolute top-2 left-1/2 z-10 w-full max-w-2xl -translate-x-1/2 px-3">
+                  <AlertBanner
+                    variant="warning"
+                    title="Some traffic isn't shown"
+                    message={flowsData.warning}
+                  />
                 </div>
               )}
               <TrafficGraph

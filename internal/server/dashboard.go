@@ -1575,34 +1575,20 @@ type npSelector struct {
 type dashboardCalicoPolicy struct {
 	policy     *unstructured.Unstructured
 	matcher    *topology.CalicoPolicyMatcher
-	kind       string
-	namespaced bool
-	staged     bool
+	definition topology.CalicoPolicyKind
 	// previewsProtection is false for the staged actions that describe removing
 	// or ignoring a policy rather than adding one.
 	previewsProtection bool
 }
 
 // stagedPolicyTarget identifies the enforced policy a staged one refers to.
+// A StagedKubernetesNetworkPolicy stages a change to a policy in
+// networking.k8s.io, so the family has to be part of the identity.
 type stagedPolicyTarget struct {
-	kind      string
-	namespace string
-	name      string
-}
-
-// enforcedKindForStagedKind maps a staged Calico kind to the enforced kind it
-// stages a change to. A StagedKubernetesNetworkPolicy stages a change to a core
-// Kubernetes NetworkPolicy, not to a Calico one.
-func enforcedKindForStagedKind(kind string) string {
-	switch kind {
-	case "StagedNetworkPolicy":
-		return "NetworkPolicy"
-	case "StagedGlobalNetworkPolicy":
-		return "GlobalNetworkPolicy"
-	case "StagedKubernetesNetworkPolicy":
-		return "KubernetesNetworkPolicy"
-	}
-	return ""
+	kubernetesFamily bool
+	kind             string
+	namespace        string
+	name             string
 }
 
 type dashboardPolicyWorkload struct {
@@ -1626,6 +1612,40 @@ func (s *Server) dashboardPolicyReadScope(r *http.Request, namespaces []string, 
 		}
 	}
 	return false, readable
+}
+
+// calicoSelectorLabels returns the namespace and service-account labels Calico
+// selectors are evaluated against, including the labels Calico adds itself.
+func calicoSelectorLabels(cache *k8s.ResourceCache) (namespaceLabels, serviceAccountLabels map[string]map[string]string) {
+	namespaceLabels = make(map[string]map[string]string)
+	serviceAccountLabels = make(map[string]map[string]string)
+	if namespaceLister := cache.Namespaces(); namespaceLister != nil {
+		if items, err := namespaceLister.List(labels.Everything()); err == nil {
+			for _, namespace := range items {
+				itemLabels := make(map[string]string, len(namespace.Labels)+2)
+				for key, value := range namespace.Labels {
+					itemLabels[key] = value
+				}
+				itemLabels["kubernetes.io/metadata.name"] = namespace.Name
+				itemLabels["projectcalico.org/name"] = namespace.Name
+				namespaceLabels[namespace.Name] = itemLabels
+			}
+		}
+	}
+	if serviceAccountLister := cache.ServiceAccounts(); serviceAccountLister != nil {
+		if items, err := serviceAccountLister.List(labels.Everything()); err == nil {
+			for _, account := range items {
+				itemLabels := make(map[string]string, len(account.Labels)+2)
+				for key, value := range account.Labels {
+					itemLabels[key] = value
+				}
+				itemLabels["projectcalico.org/name"] = account.Name
+				itemLabels["kubernetes.io/service-account.name"] = account.Name
+				serviceAccountLabels[account.Namespace+"/"+account.Name] = itemLabels
+			}
+		}
+	}
+	return namespaceLabels, serviceAccountLabels
 }
 
 func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.ResourceCache, namespaces []string) *DashboardNetworkPolicyCoverage {
@@ -1703,26 +1723,16 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 				}
 			}
 
-			calicoDefinitions := []struct {
-				kind       string
-				namespaced bool
-				staged     bool
-			}{
-				{kind: "NetworkPolicy", namespaced: true},
-				{kind: "GlobalNetworkPolicy"},
-				{kind: "StagedNetworkPolicy", namespaced: true, staged: true},
-				{kind: "StagedGlobalNetworkPolicy", staged: true},
-				{kind: "StagedKubernetesNetworkPolicy", namespaced: true, staged: true},
-			}
-			for _, group := range []string{"projectcalico.org", "crd.projectcalico.org"} {
+			calicoDefinitions := topology.CalicoPolicyKinds()
+			for _, group := range topology.CalicoAPIGroups() {
 				for _, definition := range calicoDefinitions {
-					gvr, ok := discovery.GetGVRWithGroup(definition.kind, group)
+					gvr, ok := discovery.GetGVRWithGroup(definition.Kind, group)
 					if !ok {
 						continue
 					}
 					var policies []*unstructured.Unstructured
 					var err error
-					if definition.namespaced {
+					if definition.Namespaced {
 						clusterWide, readableNamespaces := s.dashboardPolicyReadScope(r, namespaces, group, gvr.Resource)
 						if clusterWide {
 							policies, err = dynamicCache.List(gvr, "")
@@ -1738,7 +1748,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 						continue
 					}
 					for _, policy := range policies {
-						identity := definition.kind + "\x00" + policy.GetNamespace() + "\x00" + policy.GetName()
+						identity := definition.Kind + "\x00" + policy.GetNamespace() + "\x00" + policy.GetName()
 						if _, seen := seenCalicoPolicies[identity]; seen {
 							continue
 						}
@@ -1746,10 +1756,8 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 						calicoPolicies = append(calicoPolicies, dashboardCalicoPolicy{
 							policy:             policy,
 							matcher:            topology.CompileCalicoPolicyMatcher(policy),
-							kind:               definition.kind,
-							namespaced:         definition.namespaced,
-							staged:             definition.staged,
-							previewsProtection: !definition.staged || topology.CalicoStagedActionPreviewsProtection(policy),
+							definition:         definition,
+							previewsProtection: !definition.Staged || topology.CalicoStagedActionPreviewsProtection(policy),
 						})
 					}
 				}
@@ -1820,50 +1828,28 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 
 	covered := make(map[string]bool)
 	coveredIfStaged := make(map[string]bool)
+	// Both label maps exist only to evaluate Calico's namespace and
+	// service-account selectors. On a cluster without Calico policies, building
+	// them walks every namespace and every ServiceAccount for nothing, on a
+	// request the dashboard makes constantly.
 	namespaceLabels := make(map[string]map[string]string)
-	if namespaceLister := cache.Namespaces(); namespaceLister != nil {
-		if items, err := namespaceLister.List(labels.Everything()); err == nil {
-			for _, namespace := range items {
-				itemLabels := make(map[string]string, len(namespace.Labels)+2)
-				for key, value := range namespace.Labels {
-					itemLabels[key] = value
-				}
-				itemLabels["kubernetes.io/metadata.name"] = namespace.Name
-				itemLabels["projectcalico.org/name"] = namespace.Name
-				namespaceLabels[namespace.Name] = itemLabels
-			}
-		}
-	}
 	serviceAccountLabels := make(map[string]map[string]string)
-	if serviceAccountLister := cache.ServiceAccounts(); serviceAccountLister != nil {
-		if items, err := serviceAccountLister.List(labels.Everything()); err == nil {
-			for _, account := range items {
-				itemLabels := make(map[string]string, len(account.Labels)+2)
-				for key, value := range account.Labels {
-					itemLabels[key] = value
-				}
-				itemLabels["projectcalico.org/name"] = account.Name
-				itemLabels["kubernetes.io/service-account.name"] = account.Name
-				serviceAccountLabels[account.Namespace+"/"+account.Name] = itemLabels
-			}
-		}
+	if len(calicoPolicies) > 0 {
+		namespaceLabels, serviceAccountLabels = calicoSelectorLabels(cache)
 	}
 
 	// A staged deletion is a preview of protection going away, so the enforced
 	// policy it names must not count towards the projected coverage.
 	stagedForDeletion := make(map[stagedPolicyTarget]bool)
 	for _, policy := range calicoPolicies {
-		if !policy.staged || policy.previewsProtection {
-			continue
-		}
-		enforcedKind := enforcedKindForStagedKind(policy.kind)
-		if enforcedKind == "" {
+		if !policy.definition.Staged || policy.previewsProtection || policy.definition.Stages == "" {
 			continue
 		}
 		stagedForDeletion[stagedPolicyTarget{
-			kind:      enforcedKind,
-			namespace: policy.policy.GetNamespace(),
-			name:      policy.policy.GetName(),
+			kubernetesFamily: policy.definition.Kubernetes,
+			kind:             policy.definition.Stages,
+			namespace:        policy.policy.GetNamespace(),
+			name:             policy.policy.GetName(),
 		}] = true
 	}
 
@@ -1878,17 +1864,17 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 				continue
 			}
 			covered[workload.key] = true
-			if !stagedForDeletion[stagedPolicyTarget{kind: "KubernetesNetworkPolicy", namespace: np.namespace, name: np.name}] {
+			if !stagedForDeletion[stagedPolicyTarget{kubernetesFamily: true, kind: "NetworkPolicy", namespace: np.namespace, name: np.name}] {
 				coveredIfStaged[workload.key] = true
 			}
 		}
 		calicoEndpointLabels := topology.CalicoEndpointLabels(workload.namespace, workload.labels)
 		for _, policy := range calicoPolicies {
-			if policy.namespaced && policy.policy.GetNamespace() != workload.namespace {
+			if policy.definition.Namespaced && policy.policy.GetNamespace() != workload.namespace {
 				continue
 			}
 			policyLabels := calicoEndpointLabels
-			if strings.EqualFold(policy.kind, "StagedKubernetesNetworkPolicy") {
+			if policy.definition.Kubernetes {
 				policyLabels = workload.labels
 			}
 			matched, valid := policy.matcher.Matches(
@@ -1900,14 +1886,14 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 			if !valid || !matched {
 				continue
 			}
-			if policy.staged {
+			if policy.definition.Staged {
 				if policy.previewsProtection {
 					coveredIfStaged[workload.key] = true
 				}
 				continue
 			}
 			covered[workload.key] = true
-			if !stagedForDeletion[stagedPolicyTarget{kind: policy.kind, namespace: policy.policy.GetNamespace(), name: policy.policy.GetName()}] {
+			if !stagedForDeletion[stagedPolicyTarget{kind: policy.definition.Kind, namespace: policy.policy.GetNamespace(), name: policy.policy.GetName()}] {
 				coveredIfStaged[workload.key] = true
 			}
 		}
@@ -1915,7 +1901,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 
 	stagedPolicies := 0
 	for _, policy := range calicoPolicies {
-		if policy.staged {
+		if policy.definition.Staged {
 			stagedPolicies++
 		}
 	}

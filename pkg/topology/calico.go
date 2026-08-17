@@ -27,17 +27,62 @@ type calicoPolicyDefinition struct {
 	namespaced bool
 	staged     bool
 	kubernetes bool
+	// stages names the enforced kind a staged policy stages a change to.
+	// Empty for the enforced kinds themselves.
+	stages string
 }
 
 var calicoPolicyDefinitions = []calicoPolicyDefinition{
 	{kind: "NetworkPolicy", nodeKind: KindCalicoNetworkPolicy, resource: "networkpolicies", namespaced: true},
 	{kind: "GlobalNetworkPolicy", nodeKind: KindCalicoGlobalNetworkPolicy, resource: "globalnetworkpolicies"},
-	{kind: "StagedNetworkPolicy", nodeKind: KindCalicoStagedNetworkPolicy, resource: "stagednetworkpolicies", namespaced: true, staged: true},
-	{kind: "StagedGlobalNetworkPolicy", nodeKind: KindCalicoStagedGlobalNetworkPolicy, resource: "stagedglobalnetworkpolicies", staged: true},
-	{kind: "StagedKubernetesNetworkPolicy", nodeKind: KindCalicoStagedKubernetesNetworkPolicy, resource: "stagedkubernetesnetworkpolicies", namespaced: true, staged: true, kubernetes: true},
+	{kind: "StagedNetworkPolicy", nodeKind: KindCalicoStagedNetworkPolicy, resource: "stagednetworkpolicies", namespaced: true, staged: true, stages: "NetworkPolicy"},
+	{kind: "StagedGlobalNetworkPolicy", nodeKind: KindCalicoStagedGlobalNetworkPolicy, resource: "stagedglobalnetworkpolicies", staged: true, stages: "GlobalNetworkPolicy"},
+	{kind: "StagedKubernetesNetworkPolicy", nodeKind: KindCalicoStagedKubernetesNetworkPolicy, resource: "stagedkubernetesnetworkpolicies", namespaced: true, staged: true, kubernetes: true, stages: "NetworkPolicy"},
 }
 
 var calicoPolicyGroups = []string{calicoProjectGroup, calicoCRDGroup}
+
+func isCalicoAPIGroup(group string) bool {
+	return group == calicoProjectGroup || group == calicoCRDGroup
+}
+
+// CalicoPolicyKind describes one Calico policy API. Callers outside this
+// package read it rather than keeping a second copy of the list, which would
+// have to be found and updated whenever Calico adds a policy kind.
+type CalicoPolicyKind struct {
+	Kind       string
+	Resource   string
+	Namespaced bool
+	Staged     bool
+	// Kubernetes marks a staged policy carrying the Kubernetes NetworkPolicy
+	// spec shape rather than Calico's, so it stages a change to a policy in
+	// networking.k8s.io rather than to a Calico one.
+	Kubernetes bool
+	// Stages names the enforced kind a staged policy stages a change to.
+	Stages string
+}
+
+// CalicoPolicyKinds returns the Calico policy APIs Radar reads.
+func CalicoPolicyKinds() []CalicoPolicyKind {
+	kinds := make([]CalicoPolicyKind, 0, len(calicoPolicyDefinitions))
+	for _, definition := range calicoPolicyDefinitions {
+		kinds = append(kinds, CalicoPolicyKind{
+			Kind:       definition.kind,
+			Resource:   definition.resource,
+			Namespaced: definition.namespaced,
+			Staged:     definition.staged,
+			Kubernetes: definition.kubernetes,
+			Stages:     definition.stages,
+		})
+	}
+	return kinds
+}
+
+// CalicoAPIGroups returns the API groups Calico policies are served under, in
+// the order they are preferred when both serve the same object.
+func CalicoAPIGroups() []string {
+	return append([]string(nil), calicoPolicyGroups...)
+}
 
 // IsCalicoPolicyKind reports whether kind is one of the topology's Calico
 // policy pseudo-kinds. Core NetworkPolicy deliberately does not match.
@@ -95,7 +140,7 @@ func CalicoPolicyRBACTuples(node *Node) ([]SARTuple, bool) {
 	var tuples []SARTuple
 	for _, group := range calicoNodeAPIGroups(node) {
 		group = strings.ToLower(group)
-		if group != calicoProjectGroup && group != calicoCRDGroup || seen[group] {
+		if !isCalicoAPIGroup(group) || seen[group] {
 			continue
 		}
 		seen[group] = true
@@ -114,7 +159,7 @@ func CalicoPolicyRBACTuples(node *Node) ([]SARTuple, bool) {
 // isCalicoPolicyGVR reports whether a watched resource is one of the Calico
 // policy kinds the builder renders explicitly.
 func isCalicoPolicyGVR(gvr schema.GroupVersionResource) bool {
-	if gvr.Group != calicoProjectGroup && gvr.Group != calicoCRDGroup {
+	if !isCalicoAPIGroup(gvr.Group) {
 		return false
 	}
 	for _, definition := range calicoPolicyDefinitions {

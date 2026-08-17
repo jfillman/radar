@@ -89,9 +89,21 @@ func TestDetectSources_CarriesWhyAnUnavailableSourceIsUnavailable(t *testing.T) 
 		}
 	}
 
-	// Nothing here is usable, so the recommendation must still fire — a not_found
-	// entry in Detected must not read as "something is available".
-	if response.Recommended == nil && response.Active != "" {
-		t.Error("a not_found status must not make a source look active")
+	// The point of putting it in Detected is that it must not read as usable. Both
+	// halves are checked on their own: an AND of the two would pass whenever either
+	// held, which is every run of this test.
+	if response.Active != "" {
+		t.Errorf("a not_found status must not make a source active, got %q", response.Active)
+	}
+	for _, s := range response.Detected {
+		if s.Status == "available" {
+			t.Errorf("%s is not available and must not be listed as such", s.Name)
+		}
+	}
+	// generateRecommendation returns nil as soon as anything looks available, and
+	// falls through to Caretta otherwise. Nothing here is available, so a nil
+	// recommendation would mean not_found had been read as available.
+	if response.Recommended == nil {
+		t.Error("no source is usable, so a recommendation must still be offered")
 	}
 }

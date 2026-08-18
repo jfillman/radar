@@ -68,7 +68,9 @@ describe('what a storage location holds', () => {
         ]}
       />,
     )
-    expect(html).toContain('2 completed backups are stored here')
+    // Counts what `restorable` counts: an expired Completed backup is stored
+    // here too, so "completed backups stored here" described a larger set.
+    expect(html).toContain('2 backups here are complete and still inside their retention')
     expect(html).toContain('they are not something')
   })
 
@@ -97,7 +99,7 @@ describe('what a storage location holds', () => {
         ]}
       />,
     )
-    expect(html).toContain('1 completed backup is stored here')
+    expect(html).toContain('1 backup here is complete and still inside its retention')
   })
 
   // The second thing a phase cannot see. Velero deletes expired backups, so one
@@ -123,7 +125,7 @@ describe('what a storage location holds', () => {
         storedBackups={[{ ...completed('fresh', '2026-08-14T01:00:00Z'), expiration: future }]}
       />,
     )
-    expect(html).toContain('1 completed backup is stored here')
+    expect(html).toContain('1 backup here is complete and still inside its retention')
     expect(html).not.toContain('passed its retention')
   })
 
@@ -290,8 +292,9 @@ describe('the sentences at a count of one', () => {
 
   it('reads correctly when a single backup sits on an unvalidated location', () => {
     const html = oneOf('', [{ namespace: 'velero', name: 'only', phase: 'Completed' }])
-    expect(html).toContain('whether this backup is restorable')
-    expect(html).not.toContain('whether these is')
+    expect(html).toContain('whether the backup still inside its retention can be restored from')
+    // The plural form must not leak into the singular sentence.
+    expect(html).not.toContain('backups still inside their retention')
   })
 })
 

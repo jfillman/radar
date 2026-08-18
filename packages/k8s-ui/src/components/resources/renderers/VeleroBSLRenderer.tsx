@@ -153,12 +153,16 @@ export function VeleroBSLRenderer({ data, storedBackups, storedTotal, restorable
                   missing data into a statement about the bucket. */}
               {bslStatus.level === 'unhealthy' && restorable > 0 && (
                 <div className="text-xs text-warning-text mb-2">
-                  {`${restorable} completed ${restorable === 1 ? 'backup is' : 'backups are'} stored here. While this location is ${bslStatus.text}, ${restorable === 1 ? 'it is' : 'they are'} not something you can restore from.`}
+                  {/* Counts what `restorable` counts. "completed backups stored
+                      here" described a larger set — expired backups completed
+                      too — so the sentence and the number disagreed whenever a
+                      location held both. */}
+                  {`${restorable} ${restorable === 1 ? 'backup' : 'backups'} here ${restorable === 1 ? 'is' : 'are'} complete and still inside ${restorable === 1 ? 'its' : 'their'} retention. While this location is ${bslStatus.text}, ${restorable === 1 ? 'it is' : 'they are'} not something you can restore from.`}
                 </div>
               )}
               {bslStatus.level === 'unknown' && restorable > 0 && (
                 <div className="text-xs text-theme-text-secondary mb-2">
-                  {`Velero has not reported a phase for this location, so whether ${restorable === 1 ? 'this backup is' : 'these backups are'} restorable right now is not established here.`}
+                  {`Velero has not reported a phase for this location, so whether ${restorable === 1 ? 'the backup still inside its retention' : `the ${restorable} backups still inside their retention`} can be restored from right now is not established here.`}
                 </div>
               )}
                 {/* Stands on its own. "Not counted above" referred to a line that

@@ -49,10 +49,13 @@ UDP — DNS here — reports `unknown`, and it does so on **both** ends of the
 conversation. That leaves no way to tell which side initiated it, so excluding only
 `response` keeps a mirrored pair for every UDP conversation, and with `dst.port`
 selected the reverse half carries ephemeral ports: 287 spurious coredns edges out
-of 289 flows, measured. Radar therefore keeps `direction="request"` only, which
-drops UDP entirely, and says so in the Traffic view rather than letting the
-absence look like an absence of traffic. Orienting `unknown` pairs by port range
-is possible and deliberately not done — see the draft PR's open questions.
+of 289 flows, measured.
+
+Radar keeps `direction="request"` for the edges it can orient, and reads the
+`unknown` conversations separately, collapsing each pair into a single edge drawn
+without an arrowhead. The traffic is real; only its direction is not known. That
+also disposes of the cardinality problem, since the pair is grouped without
+`dst_port` and the ephemeral ports fold together instead of multiplying.
 
 **Selecting `dst.port` makes the mirror explode.** Response-direction series carry
 the *client's* ephemeral port, so one client-to-server conversation became 2
@@ -69,6 +72,12 @@ pick the workload attribution deliberately.
 **The HTTP metric carries `server_port` and `server_address` by default.** So L7
 data can be joined to a specific L4 port. Nothing needs to infer which of a
 destination's ports serves HTTP.
+
+**Both halves of a UDP conversation are reported, and neither can be called the
+request.** That is why those edges are drawn without an arrowhead rather than
+oriented arbitrarily or dropped. A pair is also reported twice when a Service
+fronts the destination, once per owner type with identical values, so anything
+summing across attributions doubles it — see the note on `Service` above.
 
 **With the network feature off, `beyla_build_info` survives.** That is the only
 signal that separates "Beyla is installed but not watching the network" from
@@ -90,7 +99,9 @@ Namespace `demo`:
 - `client` — busybox loop making HTTP requests to `web` and TCP connections to
   `db`, plus DNS lookups. The DNS traffic is the only UDP in the cluster and the
   only source of `direction="unknown"`.
-- `web` — nginx on :80. Serves the HTTP metric, including `server_port`.
+- `web` — nginx on :80. Serves the HTTP metric, including `server_port`. `/` returns
+  200 and `/boom` returns 500, so the 5xx path has something to report — an error
+  rate of zero proves nothing about whether the code reads it.
 - `db` — redis on :6379. Non-HTTP, so it exercises a destination with no L7 data.
 
 Both `web` and `db` are fronted by Services, which is what produces the duplicate

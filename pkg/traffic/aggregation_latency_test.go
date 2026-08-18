@@ -2,10 +2,10 @@ package traffic
 
 import "testing"
 
-// The latency gate used to require Hubble's L7Type == "RESPONSE", which excluded
-// any source that measures latency without emitting Hubble's record types — the
-// raw flow showed a value while every aggregated latency field stayed empty, so
-// the graph's edge label never rendered one.
+// A source that measures latency without emitting L7 record types must still
+// reach the aggregate. Gating on the record type alone leaves the raw flow showing
+// a value while every aggregated latency field stays empty, so the graph's edge
+// label renders nothing.
 func TestAggregateFlowsRecordsLatencyFromAnySourceThatMeasuredIt(t *testing.T) {
 	flows := []Flow{{
 		Source:      Endpoint{Namespace: "demo", Name: "client"},
@@ -62,5 +62,43 @@ func TestAggregateFlowsRecordsPerPathLatencyWithoutARecordType(t *testing.T) {
 	}
 	if got := agg[0].TopHTTPPaths[0].AvgMs; got != 3 {
 		t.Errorf("path AvgMs = %v, want 3 — the same measurement the edge latency uses", got)
+	}
+}
+
+// The graph reads directionUnknown off the aggregated edge, so this propagation is
+// the only thing standing between the source marking a conversation unoriented and
+// the arrowhead disappearing.
+//
+// An edge is unoriented only when nothing contributing to it established a
+// direction. Unorientable flows carry port 0, which is also the port every edge
+// carries in a Beyla install without dst.port, so they share an aggregation key
+// with ordinary traffic — the opposite rule would let one stray UDP conversation
+// strip the arrow off a destination's HTTP edge.
+func TestAggregateFlowsMarksAnEdgeUnorientedOnlyWhenNothingOrientedIt(t *testing.T) {
+	pair := func(unknown bool) Flow {
+		return Flow{
+			Source:           Endpoint{Namespace: "demo", Name: "client"},
+			Destination:      Endpoint{Namespace: "kube-system", Name: "coredns"},
+			Port:             0,
+			DirectionUnknown: unknown,
+		}
+	}
+
+	allUnknown := AggregateFlows([]Flow{pair(true), pair(true)})
+	if len(allUnknown) != 1 {
+		t.Fatalf("expected 1 aggregated edge, got %d", len(allUnknown))
+	}
+	if !allUnknown[0].DirectionUnknown {
+		t.Error("nothing established a direction, so the edge must not claim one")
+	}
+
+	mixed := AggregateFlows([]Flow{pair(true), pair(false)})
+	if mixed[0].DirectionUnknown {
+		t.Error("one contributor established the direction, so the arrow is justified")
+	}
+
+	oriented := AggregateFlows([]Flow{pair(false), pair(false)})
+	if oriented[0].DirectionUnknown {
+		t.Error("an edge whose contributors are all oriented must keep its arrowhead")
 	}
 }

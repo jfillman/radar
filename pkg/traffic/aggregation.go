@@ -11,18 +11,19 @@ import (
 // flowAccumulator collects per-flow L7 details during aggregation.
 type flowAccumulator struct {
 	agg         *AggregatedFlow
-	latencies   []float64        // from RESPONSE flows only (ms)
+	latencies   []float64        // measured latencies, excluding request records (ms)
 	statusCount map[string]int64 // "2xx", "3xx", "4xx", "5xx"
 	pathStats   map[string]*pathAcc
 	dnsStats    map[string]*dnsAcc
 	verdicts    map[string]int64
 	dropReasons map[string]int64
 	l7Votes     map[string]int64
+	anyOriented bool // at least one contributing flow established a direction
 }
 
 type pathAcc struct {
 	count        int64
-	latencyCount int64 // only RESPONSE flows with latency
+	latencyCount int64 // flows carrying a measured latency
 	latencySumMs float64
 	errors       int64 // 4xx + 5xx
 }
@@ -65,16 +66,22 @@ func AggregateFlows(flows []Flow) []AggregatedFlow {
 
 		agg := acc.agg
 		agg.FlowCount++
-		// One unorientable flow makes the whole edge unorientable: the arrowhead
-		// would be claiming something none of its contributors established.
-		if f.DirectionUnknown {
-			agg.DirectionUnknown = true
+		// The edge is unoriented only if nothing contributing to it established a
+		// direction. One flow that did is enough to justify the arrow — and since
+		// unorientable flows carry port 0, the same key as every edge in a default
+		// install, the opposite rule would let a stray UDP conversation strip the
+		// arrow off a destination's HTTP traffic.
+		if !f.DirectionUnknown {
+			acc.anyOriented = true
 		}
 		agg.BytesSent += f.BytesSent
 		agg.BytesRecv += f.BytesRecv
 		agg.Connections += f.Connections
 		agg.RequestCount += RoundRate(f.RequestRate)
-		agg.ErrorCount += RoundRate(f.ErrorRate)
+		// Not RoundRate: its floor exists so a low-traffic service is not invisible,
+		// which makes sense for a request count. Applied to errors it turns a rate of
+		// 0.002/s into "1 error", and the graph reds the edge and renders the ratio.
+		agg.ErrorCount += int64(math.Round(f.ErrorRate))
 		if f.LastSeen.After(agg.LastSeen) {
 			agg.LastSeen = f.LastSeen
 		}
@@ -88,13 +95,11 @@ func AggregateFlows(flows []Flow) []AggregatedFlow {
 			acc.l7Votes[f.L7Protocol] += weight
 		}
 
-		// Latency, from any source that measured it. This used to require
-		// L7Type == "RESPONSE", which is Hubble's record type and a stand-in for
-		// "this flow carries a measurement" — Hubble only ever sets LatencyNs on a
-		// response. A metric-based source measures the same thing without emitting
-		// record types, and was silently excluded from every aggregated latency
-		// field while the raw flow still showed a value.
-		if f.LatencyNs > 0 {
+		// Latency from any flow that carries a measurement, excluding request
+		// records: for a source that emits L7 records, the latency belongs to the
+		// response. A metric-based source reports a measured duration without
+		// emitting record types at all, and must not be excluded for that.
+		if f.LatencyNs > 0 && f.L7Type != "REQUEST" {
 			acc.latencies = append(acc.latencies, float64(f.LatencyNs)/1e6)
 		}
 
@@ -113,10 +118,8 @@ func AggregateFlows(flows []Flow) []AggregatedFlow {
 				acc.pathStats[pathKey] = pa
 			}
 			pa.count++
-			// Same gate as the edge latency above, and for the same reason: the
-			// record type is Hubble's, and testing it excludes any source that
-			// measured a latency without emitting one.
-			if f.LatencyNs > 0 {
+			// Same rule as the edge latency above.
+			if f.LatencyNs > 0 && f.L7Type != "REQUEST" {
 				pa.latencySumMs += float64(f.LatencyNs) / 1e6
 				pa.latencyCount++
 			}
@@ -152,6 +155,7 @@ func AggregateFlows(flows []Flow) []AggregatedFlow {
 	result := make([]AggregatedFlow, 0, len(accumulators))
 	for _, acc := range accumulators {
 		agg := acc.agg
+		agg.DirectionUnknown = !acc.anyOriented
 
 		// L7 protocol majority vote
 		if len(acc.l7Votes) > 0 {

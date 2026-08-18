@@ -340,6 +340,19 @@ function TrafficLegend() {
           <span className="text-theme-text-secondary">HTTP / gRPC</span>
         </div>
         <div className="flex items-center gap-2">
+          <svg width="24" height="8" className="shrink-0" aria-hidden="true">
+            <line x1="0" y1="4" x2="20" y2="4" stroke="currentColor" strokeWidth="2" className="text-theme-text-tertiary" />
+            <polygon points="20,1 24,4 20,7" className="fill-theme-text-tertiary" />
+          </svg>
+          <span className="text-theme-text-secondary">Arrow = who opened it</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <svg width="24" height="8" className="shrink-0" aria-hidden="true">
+            <line x1="0" y1="4" x2="24" y2="4" stroke="currentColor" strokeWidth="2" className="text-theme-text-tertiary" />
+          </svg>
+          <span className="text-theme-text-secondary">No arrow = direction unknown</span>
+        </div>
+        <div className="flex items-center gap-2">
           <svg width="24" height="8" className="shrink-0">
             <line x1="0" y1="4" x2="24" y2="4" stroke="#06b6d4" strokeWidth="2" />
           </svg>
@@ -1230,7 +1243,13 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
       const errorLabel = hasErrors
         ? ` · ${formatConnections(flow.errorCount ?? 0)} err`
         : ''
-      const edgeLabel = `${l7Label}${connStr}${latencyLabel}${errorLabel}`
+      // A source that measures rates has no count for an edge with no requests on
+      // it — a plain TCP conversation, or one whose direction is unknown. Printing
+      // "0/s" there reads as no traffic, on an edge that may be carrying megabytes.
+      const countLabel = isRateBased && !flow.connections ? '' : connStr
+      const edgeLabel = [l7Label + countLabel, latencyLabel, errorLabel]
+        .join('')
+        .replace(/^ · /, '')
 
       edgeList.push({
         id: edgeId,

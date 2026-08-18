@@ -1204,6 +1204,9 @@ export interface TrafficFlow {
   bytesSent: number
   bytesRecv: number
   connections: number
+  /** The conversation's initiator could not be established, so source and
+   *  destination are ordered arbitrarily rather than describing a caller. */
+  directionUnknown?: boolean
   verdict: string // forwarded, dropped, error
   lastSeen: string // ISO date string
 }

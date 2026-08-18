@@ -718,6 +718,12 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
         if (flow.errorCount) {
           existing.errorCount = (existing.errorCount || 0) + flow.errorCount
         }
+        // Matches the rule the backend aggregation applies: one unoriented
+        // contributor makes the merged edge unoriented, because an arrowhead would
+        // then be claiming a direction none of them established.
+        if (flow.directionUnknown) {
+          existing.directionUnknown = true
+        }
       } else {
         // Create new aggregated flow with modified names
         aggregatedMap.set(key, {
@@ -761,6 +767,9 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
           existing.bytesSent += flow.bytesSent
           existing.bytesRecv += flow.bytesRecv
           existing.flowCount += flow.flowCount
+          if (flow.directionUnknown) {
+            existing.directionUnknown = true
+          }
         } else {
           // Create new "Internet" → destination flow
           internetFlowsMap.set(destKey, {

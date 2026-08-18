@@ -18,9 +18,9 @@ import (
 func TestBeylaSource_Detect_MetricProbe(t *testing.T) {
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -54,9 +54,9 @@ func TestBeylaSource_Detect_OBIMetricPrefix(t *testing.T) {
 	// the one that answered is what GetFlows must go on to query.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -112,9 +112,9 @@ func TestBeylaSource_Detect_BuildInfoWithoutNetworkFeature(t *testing.T) {
 	// but not watching the network", not as "no traffic yet".
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -160,9 +160,9 @@ func TestBeylaSource_Detect_NotAvailable(t *testing.T) {
 func TestBeylaSource_GetFlows_OwnerLevel(t *testing.T) {
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -195,8 +195,8 @@ func TestBeylaSource_GetFlows_OwnerLevel(t *testing.T) {
 	assertEq(t, "protocol", f.Protocol, "tcp")
 	assertEq(t, "verdict", f.Verdict, "forwarded")
 	// No HTTP data on this edge, so there is no rate to report. Beyla exports no
-	// connection count at all, and the old behaviour of writing 1 here invented a
-	// number that then drove edge thickness and the node totals.
+	// connection count at all, and a placeholder here would drive edge thickness
+	// and the node totals from a number nothing measured.
 	if f.Connections != 0 {
 		t.Errorf("connections = %d, want 0: nothing here counts connections", f.Connections)
 	}
@@ -208,9 +208,9 @@ func TestBeylaSource_GetFlows_L7OnlyDroppedWithoutL4Match(t *testing.T) {
 	// must be dropped rather than emitted as a sourceless flow.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -235,9 +235,9 @@ func TestBeylaSource_GetFlows_L7OnlyDroppedWithoutL4Match(t *testing.T) {
 func TestBeylaSource_GetFlows_L4PlusL7(t *testing.T) {
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -277,9 +277,9 @@ func TestBeylaSource_GetFlows_L7LandsOnTheServedPortOnly(t *testing.T) {
 	// guard.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -419,9 +419,9 @@ func TestBeylaSource_GetFlows_L7NotAttachedWhenItsPortHasNoNamedCaller(t *testin
 	// land on 5432 just because 5432 is what's left.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -468,9 +468,9 @@ func TestBeylaSource_QueryL4_KeepsOnlyTheRequestDirection(t *testing.T) {
 	var queries []string
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -509,9 +509,9 @@ func TestBeylaSource_GetFlows_ServiceAndWorkloadDuplicateCollapsesToWorkload(t *
 	// order decide would make the rendered Kind arbitrary. The workload wins.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -552,9 +552,9 @@ func TestBeylaSource_GetFlows_WarnsWhenPortAndTransportAreNotExported(t *testing
 	// protocol. Rendering port 0 over TCP without saying so is the dishonest part.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -644,9 +644,9 @@ func TestBeylaSource_GetFlows_NamespaceFilter(t *testing.T) {
 	var capturedQuery string
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -666,9 +666,9 @@ func TestBeylaSource_GetFlows_NamespaceFilter(t *testing.T) {
 func TestBeylaSource_GetFlows_FallbackToOwner(t *testing.T) {
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
-		// The diagnostics probe shares the metric name with the L4 query, so a stub
-		// that matched on the name alone would answer it with flow data and set a
-		// partial-data warning this test never asked for.
+		// The unorientable query shares the metric name with the edge query, so a
+		// stub matching on the name alone would answer it with oriented flow data
+		// and invent edges this test never asked for.
 		if strings.Contains(query, `direction="unknown"`) {
 			return emptyResult(), nil
 		}
@@ -845,16 +845,16 @@ func TestBeylaSource_Detect_JobSelectorMismatchIsNotReportedAsFeatureOff(t *test
 	}
 }
 
-func TestBeylaSource_DiagnosticsProbe_ScopesNamespaceOnEitherEnd(t *testing.T) {
+func TestBeylaSource_UnorientableQuery_ScopesNamespaceOnEitherEnd(t *testing.T) {
 	// beylaRateQuery treats a namespace filter as "either end of the conversation",
-	// so the probe behind the warning has to match. Filtering on the source alone
-	// would miss inbound UDP and would report UDP from namespaces the user is not
-	// looking at.
-	var probe string
+	// so the unorientable query has to match. Filtering on the source alone would
+	// miss inbound traffic and would surface conversations from namespaces the user
+	// is not looking at.
+	var unorientableQuery string
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
 		if strings.Contains(query, `direction="unknown"`) {
-			probe = query
+			unorientableQuery = query
 		}
 		return emptyResult(), nil
 	}
@@ -862,8 +862,8 @@ func TestBeylaSource_DiagnosticsProbe_ScopesNamespaceOnEitherEnd(t *testing.T) {
 	if _, err := src.GetFlows(context.Background(), FlowOptions{Namespace: "demo"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(probe, `k8s_src_namespace="demo"`) || !strings.Contains(probe, `k8s_dst_namespace="demo"`) {
-		t.Errorf("probe must scope on either end, got: %s", probe)
+	if !strings.Contains(unorientableQuery, `k8s_src_namespace="demo"`) || !strings.Contains(unorientableQuery, `k8s_dst_namespace="demo"`) {
+		t.Errorf("query must scope on either end, got: %s", unorientableQuery)
 	}
 }
 
@@ -1048,8 +1048,8 @@ func TestBeylaSource_GetFlows_PortedDestinationCountsEvenWhenItsCallerIsNameless
 func TestBeylaSource_GetFlows_ConnectionsCarryTheRequestRate(t *testing.T) {
 	// Beyla measures rates, not connections — the same position Istio is in, which
 	// puts its rate in Connections and lets the graph label it req/s. An edge with
-	// HTTP traffic reports that rate; an edge without reports nothing rather than a
-	// fabricated 1, which is what previously made every edge the same thickness.
+	// HTTP traffic reports that rate; an edge without reports nothing, because a
+	// placeholder would make every edge the same thickness.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
 		if strings.Contains(query, `direction="unknown"`) || strings.Contains(query, `direction="response"`) {
@@ -1083,8 +1083,11 @@ func TestBeylaSource_GetFlows_ConnectionsCarryTheRequestRate(t *testing.T) {
 	for _, f := range resp.Flows {
 		got[f.Destination.Name] = f.Connections
 	}
-	if got["web"] != 4 {
-		t.Errorf("web connections = %d, want 4 (4.75 req/s truncated, as istio does)", got["web"])
+	// RoundRate is what the aggregation uses to turn the same rate into
+	// RequestCount, so using it here keeps the graph's edge label and the details
+	// panel from reporting two different numbers for one measurement.
+	if got["web"] != RoundRate(4.75) || got["web"] != 5 {
+		t.Errorf("web connections = %d, want %d — the package's own rate conversion", got["web"], RoundRate(4.75))
 	}
 	if got["db"] != 0 {
 		t.Errorf("db connections = %d, want 0: no HTTP data means no rate to report", got["db"])
@@ -1122,9 +1125,9 @@ func TestBeylaSource_GetFlows_FractionalRateStillCountsAsTraffic(t *testing.T) {
 }
 
 func TestBeylaSource_GetFlows_FillsLatencyAndErrorRateLikeTheOtherSources(t *testing.T) {
-	// Hubble fills LatencyNs and Istio fills ErrorRate; Beyla exports the data for
-	// both and previously used neither, so the flow list's Latency column read "—"
-	// on every row and the graph's "Errors (5xx)" legend could never light up.
+	// Hubble fills LatencyNs and Istio fills ErrorRate, and Beyla exports the data
+	// for both. Without them the flow list's Latency column reads "—" on every row
+	// and the graph's "Errors (5xx)" legend can never light up.
 	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
 	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
 		switch {
@@ -1263,8 +1266,10 @@ func TestBeylaSource_GetFlows_UnorientableConversationBecomesOneUndirectedEdge(t
 		t.Errorf("bytes = %d/%d, want %d/%d — both halves belong to the one edge",
 			f.BytesSent, f.BytesRecv, 10*beylaRateWindowSeconds, 25*beylaRateWindowSeconds)
 	}
-	if f.Connections != 0 {
-		t.Errorf("connections = %d, want 0: Beyla reports no count for these", f.Connections)
+	// Beyla reports no request count for an unorientable conversation, and the
+	// graph omits the label rather than printing a zero.
+	if f.Connections != 0 || f.RequestRate != 0 {
+		t.Errorf("connections/rate = %d/%v, want 0/0: nothing here counts requests", f.Connections, f.RequestRate)
 	}
 }
 
@@ -1416,5 +1421,129 @@ func TestBeylaSource_GetFlows_MultiPortLatencyAndErrorsFollowTheSamePathAsTheRat
 	// Latencies are means, so the edge takes the worst rather than summing them.
 	if f.LatencyNs != uint64(0.004*float64(time.Second)) {
 		t.Errorf("latencyNs = %d, want %d (the slower of the two ports)", f.LatencyNs, uint64(0.004*float64(time.Second)))
+	}
+}
+
+func TestBeylaSource_GetFlows_PortedEdgesTakeTheirOwnPortsFigures(t *testing.T) {
+	// With dst.port selected each edge has a real port, so latency and errors must
+	// come from that port rather than from the destination-wide figure. Every other
+	// ported fixture has a single port, where the two are equal and indistinguishable.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		switch {
+		case strings.Contains(query, `direction="unknown"`), strings.Contains(query, `direction="response"`):
+			return emptyResult(), nil
+		case strings.Contains(query, "beyla_network_flow_bytes_total"):
+			return promResult("vector",
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "api", "k8s_dst_namespace": "demo",
+					"dst_port": "80", "transport": "TCP",
+				}, 10.0),
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "api", "k8s_dst_namespace": "demo",
+					"dst_port": "8080", "transport": "TCP",
+				}, 10.0),
+			), nil
+		case strings.Contains(query, `http_response_status_code=~"5.."`):
+			return promResult("vector",
+				promSeries(map[string]string{"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "80"}, 0.1),
+				promSeries(map[string]string{"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "8080"}, 0.9),
+			), nil
+		case strings.Contains(query, "http_server_request_duration_seconds_sum"):
+			return promResult("vector",
+				promSeries(map[string]string{"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "80"}, 0.001),
+				promSeries(map[string]string{"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "8080"}, 0.009),
+			), nil
+		}
+		return promResult("vector",
+			promSeries(map[string]string{
+				"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "80",
+				"http_request_method": "GET", "http_route": "/a", "http_response_status_code": "200",
+			}, 4.0),
+			promSeries(map[string]string{
+				"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "8080",
+				"http_request_method": "GET", "http_route": "/b", "http_response_status_code": "200",
+			}, 4.0),
+		), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	byPort := map[int]Flow{}
+	for _, f := range resp.Flows {
+		byPort[f.Port] = f
+	}
+	if len(byPort) != 2 {
+		t.Fatalf("expected an edge per port, got %d", len(byPort))
+	}
+	if got := byPort[80].LatencyNs; got != uint64(0.001*float64(time.Second)) {
+		t.Errorf(":80 latency = %d, want %d — its own port's figure, not the destination's worst",
+			got, uint64(0.001*float64(time.Second)))
+	}
+	if got := byPort[8080].LatencyNs; got != uint64(0.009*float64(time.Second)) {
+		t.Errorf(":8080 latency = %d, want %d", got, uint64(0.009*float64(time.Second)))
+	}
+	if byPort[80].ErrorRate != 0.1 || byPort[8080].ErrorRate != 0.9 {
+		t.Errorf("error rates = %v/%v, want 0.1/0.9 per port", byPort[80].ErrorRate, byPort[8080].ErrorRate)
+	}
+}
+
+func TestBeylaSource_GetFlows_DestinationFiguresSplitBetweenCallers(t *testing.T) {
+	// The HTTP metric has no caller labels, so everything derived from it is the
+	// destination's and must be divided the same way between its callers. Splitting
+	// the request rate while copying the error rate whole lets an edge report more
+	// errors than requests, which the graph renders as a percentage above 100.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		switch {
+		case strings.Contains(query, `direction="unknown"`), strings.Contains(query, `direction="response"`):
+			return emptyResult(), nil
+		case strings.Contains(query, "beyla_network_flow_bytes_total"):
+			// Two callers, three-to-one by volume.
+			return promResult("vector",
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "busy", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "api", "k8s_dst_namespace": "demo",
+				}, 30.0),
+				promSeries(map[string]string{
+					"k8s_src_owner_name": "quiet", "k8s_src_namespace": "demo",
+					"k8s_dst_owner_name": "api", "k8s_dst_namespace": "demo",
+				}, 10.0),
+			), nil
+		case strings.Contains(query, `http_response_status_code=~"5.."`):
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "80",
+			}, 4.0)), nil
+		case strings.Contains(query, "http_server_request_duration_seconds_sum"):
+			return emptyResult(), nil
+		}
+		return promResult("vector", promSeries(map[string]string{
+			"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "80",
+			"http_request_method": "GET", "http_route": "/", "http_response_status_code": "500",
+		}, 8.0)), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var rate, errRate float64
+	for _, f := range resp.Flows {
+		rate += f.RequestRate
+		errRate += f.ErrorRate
+		if f.ErrorRate > f.RequestRate {
+			t.Errorf("%s: errorRate %v exceeds requestRate %v — that renders above 100%%",
+				f.Source.Name, f.ErrorRate, f.RequestRate)
+		}
+	}
+	if rate != 8.0 {
+		t.Errorf("request rates sum to %v, want 8 — the destination's rate, divided not duplicated", rate)
+	}
+	if errRate != 4.0 {
+		t.Errorf("error rates sum to %v, want 4 — divided on the same basis as the requests", errRate)
 	}
 }

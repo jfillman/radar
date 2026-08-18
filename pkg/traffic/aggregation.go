@@ -113,7 +113,10 @@ func AggregateFlows(flows []Flow) []AggregatedFlow {
 				acc.pathStats[pathKey] = pa
 			}
 			pa.count++
-			if f.LatencyNs > 0 && f.L7Type == "RESPONSE" {
+			// Same gate as the edge latency above, and for the same reason: the
+			// record type is Hubble's, and testing it excludes any source that
+			// measured a latency without emitting one.
+			if f.LatencyNs > 0 {
 				pa.latencySumMs += float64(f.LatencyNs) / 1e6
 				pa.latencyCount++
 			}

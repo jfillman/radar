@@ -42,3 +42,25 @@ func TestAggregateFlowsIgnoresFlowsWithNoMeasuredLatency(t *testing.T) {
 		t.Errorf("latencyP50Ms = %v, want 0", agg[0].LatencyP50Ms)
 	}
 }
+
+// The per-path latency in Top Paths had the same gate as the edge latency, so
+// fixing only the first left Top Paths empty for a metric-based source while the
+// edge percentiles filled in.
+func TestAggregateFlowsRecordsPerPathLatencyWithoutARecordType(t *testing.T) {
+	flows := []Flow{{
+		Source:      Endpoint{Namespace: "demo", Name: "client"},
+		Destination: Endpoint{Namespace: "demo", Name: "web"},
+		Port:        80,
+		HTTPMethod:  "GET",
+		HTTPPath:    "/",
+		LatencyNs:   3_000_000, // 3ms, no L7Type
+	}}
+
+	agg := AggregateFlows(flows)
+	if len(agg) != 1 || len(agg[0].TopHTTPPaths) != 1 {
+		t.Fatalf("expected one aggregated flow with one path, got %+v", agg)
+	}
+	if got := agg[0].TopHTTPPaths[0].AvgMs; got != 3 {
+		t.Errorf("path AvgMs = %v, want 3 — the same measurement the edge latency uses", got)
+	}
+}

@@ -14,9 +14,14 @@ import {
 } from '../resource-utils-velero'
 import { VeleroPhaseValue } from './velero-cells'
 
-/** Past its TTL. Velero's garbage collector removes these, so one still listed
- *  is either awaiting collection or waiting on a controller that is not running —
- *  either way it is not a restore point. */
+/** Past its TTL.
+ *
+ *  Not the same as unrestorable: Velero's restore controller does not check
+ *  expiration, so until the garbage collector creates the DeleteBackupRequest
+ *  the data is still in the bucket and a restore from it would work. What is
+ *  true is that Velero intends to delete it, on a schedule nothing here can
+ *  see — so it is not something to plan a recovery around, and the wording
+ *  below says that rather than claiming it is already gone. */
 function veleroExpired(b: { expiration?: string }): boolean {
   if (!b.expiration) return false
   const at = Date.parse(b.expiration)
@@ -162,8 +167,8 @@ export function VeleroBSLRenderer({ data, storedBackups, storedTotal, restorable
                     nothing. */}
               {expired > 0 && (
                 <div className="text-xs text-theme-text-secondary mb-2">
-                  {`${expired} stored ${expired === 1 ? 'backup has' : 'backups have'} passed ${expired === 1 ? 'its' : 'their'} retention and ${expired === 1 ? 'is' : 'are'} no longer a restore point.`}
-                  {restorable === 0 && ' Nothing stored here can be restored from.'}
+                  {`${expired} stored ${expired === 1 ? 'backup has' : 'backups have'} passed ${expired === 1 ? 'its' : 'their'} retention. Velero deletes ${expired === 1 ? 'it' : 'them'} when its garbage collector next runs, so ${expired === 1 ? 'it is' : 'they are'} not something to plan a recovery around.`}
+                  {restorable === 0 && ' Nothing stored here is still inside its retention.'}
                 </div>
               )}
               {/* The list below is everything stored here, and its count is the

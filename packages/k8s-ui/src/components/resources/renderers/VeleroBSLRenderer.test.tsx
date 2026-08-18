@@ -140,7 +140,10 @@ describe('what a storage location holds', () => {
         ]}
       />,
     )
-    expect(html).toContain('no longer a restore point')
+    expect(html).toContain('not something to plan a recovery around')
+    // Not "cannot be restored": Velero would still restore it until the
+    // collector removes it, so the panel states the intent, not a false absence.
+    expect(html).not.toContain('no longer a restore point')
     expect(html).not.toContain('not counted above')
   })
 
@@ -154,7 +157,7 @@ describe('what a storage location holds', () => {
         storedBackups={[{ ...completed('stale', '2026-01-01T00:00:00Z'), expiration: past }]}
       />,
     )
-    expect(html).toContain('Nothing stored here can be restored from')
+    expect(html).toContain('Nothing stored here is still inside its retention')
   })
 
   // The distinction the whole feature rests on: not having looked is not the

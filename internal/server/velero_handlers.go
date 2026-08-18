@@ -47,9 +47,14 @@ type VeleroStoredBackupsResponse struct {
 	// reads as the whole location.
 	Truncated bool `json:"truncated,omitempty"`
 	// Restorable counts the backups that reached Completed AND have not passed
-	// their expiration. Velero deletes expired backups, so a Completed one that
-	// has aged out is not a restore point — and while its controller is down
-	// they sit here looking finished long after the data behind them went.
+	// their expiration.
+	//
+	// Expiry is not the same as unrestorable — Velero's restore controller does
+	// not check it, so an aged-out backup the collector has not reached yet
+	// would still restore. It is excluded because this number answers "what can
+	// I plan a recovery around", and a backup Velero intends to delete is not
+	// that. The panel reading it says so in those terms rather than claiming
+	// the data is already gone.
 	//
 	// Counted over the whole location, like Stored and unlike Backups. A reader
 	// recomputing it from the capped list would undercount every location big

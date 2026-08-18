@@ -171,6 +171,7 @@ import {
   VeleroRestoreRenderer,
   VeleroScheduleRenderer,
   VeleroBSLRenderer,
+  VeleroBackupRepositoryRenderer,
   VeleroVSLRenderer,
   CNPGClusterRenderer,
   CNPGBackupRenderer,
@@ -427,6 +428,7 @@ const KNOWN_KINDS = new Set([
   'infraassessmentreports', 'clusterinfraassessmentreports',
   'verticalpodautoscalers',
   'backups', 'restores', 'schedules', 'backupstoragelocations', 'volumesnapshotlocations',
+  'backuprepositories',
   'externalsecrets', 'clusterexternalsecrets', 'secretstores', 'clustersecretstores',
   'clusters', 'scheduledbackups', 'poolers', 'objectstores',
   'globalcontextentries', 'updaterequests', 'ephemeralreports', 'clusterephemeralreports',
@@ -602,6 +604,7 @@ export function ResourceRendererDispatch({
   const isVeleroCollisionGatedKind =
     kind === 'restores' || kind === 'schedules'
     || kind === 'backupstoragelocations' || kind === 'volumesnapshotlocations'
+    || kind === 'backuprepositories'
   const veleroCollisionFallthrough = isVeleroCollisionGatedKind && !isVeleroResource(data)
 
   // Same rule as the Crossplane block above, for the plurals shared by two
@@ -785,6 +788,7 @@ export function ResourceRendererDispatch({
         {kind === 'restores' && isVeleroResource(data) && <VeleroRestoreComp data={data} onNavigate={onNavigate} />}
         {kind === 'schedules' && isVeleroResource(data) && <VeleroScheduleRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'backupstoragelocations' && isVeleroResource(data) && <VeleroBSLComp data={data} onNavigate={onNavigate} />}
+        {kind === 'backuprepositories' && isVeleroResource(data) && <VeleroBackupRepositoryRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'volumesnapshotlocations' && isVeleroResource(data) && <VeleroVSLRenderer data={data} />}
         {kind === 'externalsecrets' && <ExternalSecretRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'clusterexternalsecrets' && <ClusterExternalSecretRenderer data={data} onNavigate={onNavigate} />}

@@ -499,3 +499,31 @@ export function getBackupRepositoryStatus(resource: any): StatusBadge {
 export function getBackupRepositoryType(resource: any): string {
   return resource.spec?.repositoryType || '-'
 }
+
+// The namespace whose volumes this repository holds. One repository per
+// (namespace, location, type) is how Velero partitions them, so this is what
+// the repository is *for* rather than where the object lives.
+export function getBackupRepositoryVolumeNamespace(resource: any): string {
+  return resource.spec?.volumeNamespace || '-'
+}
+
+export function getBackupRepositoryLocation(resource: any): string {
+  return resource.spec?.backupStorageLocation || '-'
+}
+
+export function getBackupRepositoryMaintenanceFrequency(resource: any): string {
+  return resource.spec?.maintenanceFrequency || '-'
+}
+
+export function getBackupRepositoryLastMaintenance(resource: any): string {
+  const at = resource.status?.lastMaintenanceTime
+  if (!at) return '-'
+  return formatAge(at)
+}
+
+// Why the repository is not ready, in the controller's own words. Velero writes
+// it on the object and nowhere else, so without it the phase is the whole story
+// a reader gets.
+export function getBackupRepositoryMessage(resource: any): string {
+  return resource.status?.message || ''
+}

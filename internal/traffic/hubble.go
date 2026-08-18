@@ -108,8 +108,7 @@ func (h *HubbleSource) Detect(ctx context.Context) (*DetectionResult, error) {
 	// Step 2: Find the hubble-relay service in the same namespace
 	relaySvc, err := h.k8sClient.CoreV1().Services(relayNamespace).Get(ctx, hubbleRelayService, metav1.GetOptions{})
 	if err != nil {
-		result.Message = fmt.Sprintf("Hubble Relay pods are running in %s but the hubble-relay Service is missing. "+
-			"Check it with: kubectl -n %s get svc hubble-relay", relayNamespace, relayNamespace)
+		result.Message = fmt.Sprintf("Hubble Relay pods running but service not found in namespace %s", relayNamespace)
 		return result, nil
 	}
 
@@ -124,8 +123,7 @@ func (h *HubbleSource) Detect(ctx context.Context) (*DetectionResult, error) {
 
 	// Port 443 typically means TLS is required
 	if servicePort == 443 && !useTLS {
-		result.Message = fmt.Sprintf("Hubble Relay requires TLS (port 443) but the client certificates are not in secret %s/%s. "+
-			"Reinstall or upgrade Cilium with Hubble Relay TLS enabled to recreate them.", relayNamespace, hubbleRelayCertSecret)
+		result.Message = fmt.Sprintf("Hubble Relay requires TLS (port 443) but client certs not found in secret %s/%s", relayNamespace, hubbleRelayCertSecret)
 		return result, nil
 	}
 
@@ -537,7 +535,7 @@ func (h *HubbleSource) GetFlows(ctx context.Context, opts FlowOptions) (*FlowsRe
 			Source:    "hubble",
 			Timestamp: time.Now(),
 			Flows:     []Flow{},
-			Warning:   "Not connected to Hubble Relay. Open the Traffic view to connect.",
+			Warning:   "Not connected to Hubble Relay. Call Connect() first or use the Traffic view to establish connection.",
 		}, nil
 	}
 
@@ -872,28 +870,21 @@ func (h *HubbleSource) Close() error {
 func (h *HubbleSource) GetPortForwardInstructions() string {
 	h.mu.RLock()
 	namespace := h.relayNamespace
-	// Detect found the Service's real port, which is 443 on a TLS-enabled install.
-	// Printing a command hardcoded to :80 hands those clusters something that
-	// cannot work, and the whole point of this text is to be pasted verbatim.
-	port := h.servicePort
 	h.mu.RUnlock()
 
 	if namespace == "" {
 		namespace = "kube-system"
 	}
-	if port == 0 {
-		port = 80
-	}
 
 	return fmt.Sprintf(`To access Hubble flows directly, run:
 
 # Port-forward Hubble Relay (gRPC API)
-kubectl -n %s port-forward svc/hubble-relay 4245:%d
+kubectl -n %s port-forward svc/hubble-relay 4245:80
 
 # Then use Hubble CLI:
 hubble observe --server localhost:4245
 
 # Or port-forward Hubble UI (if installed):
 kubectl -n %s port-forward svc/hubble-ui 12000:80
-# Then open http://localhost:12000`, namespace, port, namespace)
+# Then open http://localhost:12000`, namespace, namespace)
 }

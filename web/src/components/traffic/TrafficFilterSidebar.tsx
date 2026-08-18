@@ -317,7 +317,7 @@ export const TrafficFilterSidebar = memo(function TrafficFilterSidebar({
             />
             <ToggleOption
               label="Identify by Port"
-              description="Label well-known ports (27017→MongoDB, 6379→Redis). Guessed from the port number, so it can be wrong for non-standard setups."
+              description="Label well-known ports (27017→MongoDB, 6379→Redis). Heuristic-based."
               enabled={detectServices}
               onToggle={() => setDetectServices(!detectServices)}
               icon={Cpu}

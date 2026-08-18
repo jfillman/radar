@@ -190,8 +190,7 @@ func (c *CarettaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 				return result, nil
 			}
 
-			result.Message = fmt.Sprintf("Caretta DaemonSet found in %s but no pods are ready. "+
-				"Check them with: kubectl -n %s get pods -l app.kubernetes.io/name=caretta", ns, ns)
+			result.Message = fmt.Sprintf("Caretta DaemonSet found in %s but no pods are ready", ns)
 			return result, nil
 		}
 	}
@@ -909,7 +908,7 @@ func (c *CarettaSource) Connect(ctx context.Context, contextName string) (*portf
 		}
 		return &portforward.ConnectionInfo{
 			Connected: false,
-			Error:     fmt.Sprintf("The --prometheus-url value %s is not reachable. Check the URL and that the service is running.", addr),
+			Error:     fmt.Sprintf("Manual metrics URL %s is not reachable. Check the URL and ensure the service is running.", addr),
 		}, nil
 	}
 

@@ -503,7 +503,7 @@ function DetailsPanel({
             <Activity className="h-4 w-4 text-green-500" />
           )}
           <span className="text-sm font-medium text-theme-text-primary">
-            {isNode ? (nodeData?.kind === 'Internet' ? 'Internet Traffic' : nodeData?.kind === 'Addon' ? 'Cluster Addons' : 'Service Details') : 'Connection Details'}
+            {isNode ? (nodeData?.kind === 'Internet' || nodeData?.kind === 'AddonInternet' ? 'Internet Traffic' : nodeData?.kind === 'Addon' ? 'Cluster Addons' : 'Service Details') : 'Connection Details'}
           </span>
         </div>
         <button
@@ -536,7 +536,7 @@ function DetailsPanel({
                       : nodeData.kind.toLowerCase() === 'external'
                         ? 'bg-yellow-500/20 text-yellow-400'
                         : 'bg-blue-500/20 text-blue-400'
-                )}>{nodeData.kind === 'Addon' ? 'Cluster Addons' : nodeData.kind}</span>
+                )}>{nodeData.kind === 'Addon' ? 'Cluster Addons' : nodeData.kind === 'AddonInternet' ? 'Internet' : nodeData.kind}</span>
               </div>
               {nodeData.workload && nodeData.workload !== nodeData.label && (
                 <div className="text-xs text-theme-text-secondary">
@@ -899,7 +899,7 @@ function DetailsPanel({
                     <div className="mt-1 space-y-0.5">
                       {Object.entries(edgeData.flow.dropReasons).map(([reason, count]) => (
                         <div key={reason} className={clsx('text-[9px] pl-1', SEVERITY_TEXT.error)}>
-                          {reason}: {count}
+                          {reason.replace(/_/g, ' ').toLowerCase()}: {count}
                         </div>
                       ))}
                     </div>

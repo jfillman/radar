@@ -212,7 +212,10 @@ func (s *IstioSource) queryHTTPFlows(ctx context.Context, client *promclient.Cli
 			continue
 		}
 
-		connections := int64(val)
+		// RoundRate, not a truncation: the aggregate derives its request count from
+		// the same rate with RoundRate, so truncating here makes the edge label and
+		// the panel beside it disagree about one edge — 4/s against 5/s at 4.75.
+		connections := RoundRate(val)
 		if connections == 0 {
 			connections = 1 // fractional rate (< 1 req/s) still means traffic exists
 		}
@@ -368,7 +371,7 @@ func (s *IstioSource) queryTCPFlows(ctx context.Context, client *promclient.Clie
 			continue
 		}
 
-		connections := int64(val)
+		connections := RoundRate(val)
 		if connections == 0 {
 			connections = 1
 		}

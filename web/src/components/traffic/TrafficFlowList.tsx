@@ -196,7 +196,7 @@ export function TrafficFlowList({ flows }: TrafficFlowListProps) {
                         <Tooltip content={flow.httpPath ?? ''} wrapperClassName="min-w-0">
                         <span className="truncate text-theme-text-secondary">{flow.httpPath}</span>
                         </Tooltip>
-                        {flow.l7Type === 'REQUEST' && <span className={clsx('shrink-0 text-[9px]', SEVERITY_TEXT.warning)}>no response</span>}
+                        {flow.l7Type === 'REQUEST' && <span className={clsx('shrink-0 text-[9px]', SEVERITY_TEXT.warning)}>response not captured</span>}
                       </>
                     )}
                     {isDNS && (
@@ -399,7 +399,7 @@ function PolicyCorrelation({ flow }: { flow: TrafficFlow }) {
     <div className="pt-1 border-t border-theme-border/50">
       <div className="flex items-center gap-1 text-theme-text-tertiary">
         <ShieldCheck className="w-3 h-3" />
-        <span className="text-[10px]">No NetworkPolicy selects this destination</span>
+        <span className="text-[10px]">No NetworkPolicy selects this {direction === 'egress' ? 'source' : 'destination'}</span>
       </div>
     </div>
   )

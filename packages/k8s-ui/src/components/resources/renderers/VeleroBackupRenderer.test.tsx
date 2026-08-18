@@ -102,11 +102,13 @@ describe('a backup that names no location', () => {
     expect(html).toContain('nothing here to restore from')
   })
 
-  // A host that does not resolve gets Velero's by-name fallback, which is right
-  // on every install that did not rename it.
-  it('falls back to the conventional name when the host does not resolve', () => {
+  // Replaced the by-name fallback assertion: it checked for the substring
+  // "default", which the "Velero's default location, not yet resolved" sentence
+  // also contains — so it passed while documenting the opposite of what the
+  // renderer now does. A host that does not resolve gets no asserted name.
+  it('asserts no location name when the host does not resolve one', () => {
     const html = renderToString(<VeleroBackupRenderer data={unset} onNavigate={() => {}} />)
-    expect(html).toContain('default')
+    expect(html).toContain('not yet resolved')
   })
 })
 
@@ -175,5 +177,45 @@ describe('what the page claims before the location lookup answers', () => {
     ))
     expect(present).toContain('<button')
     expect(missing).not.toContain('<button')
+  })
+})
+
+/**
+ * Where the name came from changes what can be said about it. A backup that
+ * names its own location and cannot find it has named something missing. A
+ * backup that names nothing has not — the name was produced by Velero's
+ * fallback rule, and blaming the object for it invents a claim.
+ */
+describe('a location that cannot be found', () => {
+  const named = {
+    metadata: { name: 'nightly', namespace: 'velero' },
+    spec: { storageLocation: 'dr-replica' },
+    status: { phase: 'Completed' },
+  }
+  const unset = {
+    metadata: { name: 'nightly', namespace: 'velero' },
+    spec: {},
+    status: { phase: 'Completed' },
+  }
+
+  it('blames the backup only when the backup named it', () => {
+    const html = renderToString(
+      <VeleroBackupRenderer data={named} storageLocationName="dr-replica" storageLocationMissing />,
+    )
+    expect(html).toContain('names a storage location that no longer exists')
+    expect(html).toContain('Not found')
+  })
+
+  // The fallback resolved to the literal "default" because nothing carries
+  // spec.default. Saying the backup "names" that is attributing an invented
+  // name to the object.
+  it('says the namespace has no default when the backup named nothing', () => {
+    const html = renderToString(
+      <VeleroBackupRenderer data={unset} storageLocationName="default" storageLocationMissing />,
+    )
+    expect(html).toContain('names no storage location')
+    expect(html).toContain('this namespace has none')
+    expect(html).toContain('No default location')
+    expect(html).not.toContain('names a storage location that no longer exists')
   })
 })

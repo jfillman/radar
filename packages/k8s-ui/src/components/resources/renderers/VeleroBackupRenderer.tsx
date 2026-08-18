@@ -270,7 +270,9 @@ export function VeleroBackupRenderer({ data, storageLocationPhase, storageLocati
                     />
                   )}
                   {storageLocationMissing && (
-                    <span className={clsx('badge', HEALTH_BADGE_COLORS.unhealthy)}>Not found</span>
+                    <span className={clsx('badge', HEALTH_BADGE_COLORS.unhealthy)}>
+                      {declared ? 'Not found' : 'No default location'}
+                    </span>
                   )}
                   {storageLocationPhase && storageLocationPhase !== 'Available' && (
                     <span className={clsx('badge', HEALTH_BADGE_COLORS.unhealthy)}>{storageLocationPhase}</span>
@@ -281,11 +283,15 @@ export function VeleroBackupRenderer({ data, storageLocationPhase, storageLocati
           />
           {/* A location that is gone is not a location that is unhealthy, and
               Velero writes no phase for one that does not exist — so without
-              this the backup renders exactly as it would on a healthy bucket. */}
+              this the backup renders exactly as it would on a healthy bucket.
+              Worded from where the name came from: a backup that names nothing
+              has not "named a location that no longer exists", and saying so
+              would attribute to the object a name the fallback invented. */}
           {storageLocationMissing && (
             <div className="text-xs text-warning-text">
-              This backup names a storage location that no longer exists in this namespace. Velero restores from the
-              location recorded on the backup, so there is nothing here to restore from until it is recreated.
+              {data?.spec?.storageLocation
+                ? 'This backup names a storage location that no longer exists in this namespace. Velero restores from the location recorded on the backup, so there is nothing here to restore from until it is recreated.'
+                : 'This backup names no storage location, which Velero resolves to the one marked default — and this namespace has none. Which location holds it cannot be determined here.'}
             </div>
           )}
           {/* Only when it changes the answer. On a healthy location this would be

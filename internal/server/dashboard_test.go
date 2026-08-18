@@ -245,7 +245,7 @@ func TestDashboardTopologySummaryFiltersRBACWithoutMutatingCache(t *testing.T) {
 			{Source: deniedCalicoID, Target: workloadID, Type: topology.EdgeProtects},
 			{Source: deniedNodeID, Target: workloadID, Type: topology.EdgeConfigures},
 		},
-	})
+	}, server.broadcaster.topoEpoch.Load())
 
 	got := server.getDashboardTopologySummary(requestWithUser("GET", "/", &auth.User{Username: "alice"}), nil)
 	if got.NodeCount != 2 || got.EdgeCount != 1 {

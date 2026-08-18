@@ -473,7 +473,7 @@ func (m *Manager) GetFlows(ctx context.Context, opts FlowOptions) (*FlowsRespons
 	m.mu.RUnlock()
 
 	if source == nil {
-		return nil, fmt.Errorf("no traffic source is active — detect and select one in the Traffic view")
+		return nil, fmt.Errorf("no traffic source available")
 	}
 
 	return source.GetFlows(ctx, opts)
@@ -486,7 +486,7 @@ func (m *Manager) StreamFlows(ctx context.Context, opts FlowOptions) (<-chan Flo
 	m.mu.RUnlock()
 
 	if source == nil {
-		return nil, fmt.Errorf("no traffic source is active — detect and select one in the Traffic view")
+		return nil, fmt.Errorf("no traffic source available")
 	}
 
 	return source.StreamFlows(ctx, opts)
@@ -592,7 +592,7 @@ func (m *Manager) Connect(ctx context.Context) (*portforward.ConnectionInfo, err
 	if source == nil {
 		return &portforward.ConnectionInfo{
 			Connected: false,
-			Error:     "No traffic source is active — detect and select one in the Traffic view",
+			Error:     "No traffic source available",
 		}, nil
 	}
 

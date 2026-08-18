@@ -194,6 +194,20 @@ describe('derived policy types', () => {
     expect(getCalicoPolicyTypes(policy({}))).toEqual(['Ingress'])
   })
 
+  it('follows the Kubernetes rule for the Kubernetes-shaped staged kind', () => {
+    // Kubernetes: every policy affects ingress, egress only when an egress
+    // section exists. Calico leaves policyTypes empty on this kind, so the
+    // derivation below is what the UI renders.
+    const staged = (spec: any) => ({
+      apiVersion: 'projectcalico.org/v3',
+      kind: 'StagedKubernetesNetworkPolicy',
+      spec: { podSelector: { matchLabels: { app: 'x' } }, stagedAction: 'Set', ...spec },
+    })
+    expect(getCalicoPolicyTypes(staged({ egress: [{ to: [] }] }))).toEqual(['Ingress', 'Egress'])
+    expect(getCalicoPolicyTypes(staged({ ingress: [{ from: [] }] }))).toEqual(['Ingress'])
+    expect(getCalicoPolicyTypes(staged({}))).toEqual(['Ingress'])
+  })
+
   it('prefers what the policy actually declares', () => {
     expect(getCalicoPolicyTypes(policy({ types: ['Egress'], ingress: [{ action: 'Allow' }] }))).toEqual(['Egress'])
     expect(getCalicoPolicyTypes({ spec: undefined })).toEqual([])

@@ -11,8 +11,8 @@ import (
 // flowAccumulator collects per-flow L7 details during aggregation.
 type flowAccumulator struct {
 	agg         *AggregatedFlow
-	latencies   []float64          // from RESPONSE flows only (ms)
-	statusCount map[string]int64   // "2xx", "3xx", "4xx", "5xx"
+	latencies   []float64        // from RESPONSE flows only (ms)
+	statusCount map[string]int64 // "2xx", "3xx", "4xx", "5xx"
 	pathStats   map[string]*pathAcc
 	dnsStats    map[string]*dnsAcc
 	verdicts    map[string]int64
@@ -22,7 +22,7 @@ type flowAccumulator struct {
 
 type pathAcc struct {
 	count        int64
-	latencyCount int64   // only RESPONSE flows with latency
+	latencyCount int64 // only RESPONSE flows with latency
 	latencySumMs float64
 	errors       int64 // 4xx + 5xx
 }
@@ -88,8 +88,13 @@ func AggregateFlows(flows []Flow) []AggregatedFlow {
 			acc.l7Votes[f.L7Protocol] += weight
 		}
 
-		// Latency (only from RESPONSE flows where Hubble measured it)
-		if f.L7Type == "RESPONSE" && f.LatencyNs > 0 {
+		// Latency, from any source that measured it. This used to require
+		// L7Type == "RESPONSE", which is Hubble's record type and a stand-in for
+		// "this flow carries a measurement" — Hubble only ever sets LatencyNs on a
+		// response. A metric-based source measures the same thing without emitting
+		// record types, and was silently excluded from every aggregated latency
+		// field while the raw flow still showed a value.
+		if f.LatencyNs > 0 {
 			acc.latencies = append(acc.latencies, float64(f.LatencyNs)/1e6)
 		}
 

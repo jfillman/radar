@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1355,5 +1356,65 @@ func TestBeylaSource_GetFlows_ReceivedBytesSplitAcrossAPairsEdges(t *testing.T) 
 	}
 	if byPort[80] <= byPort[8080] {
 		t.Errorf("the busier port should take the larger share, got %d on :80 and %d on :8080", byPort[80], byPort[8080])
+	}
+}
+
+func TestBeylaSource_GetFlows_MultiPortLatencyAndErrorsFollowTheSamePathAsTheRate(t *testing.T) {
+	// Without dst_port every edge carries port 0, so a destination's HTTP traffic
+	// from all its ports lands on one edge and the rate is summed across them.
+	// Latency and 5xx rate were still being looked up for a single port, so a
+	// multi-port destination under-reported its errors.
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		switch {
+		case strings.Contains(query, `direction="unknown"`), strings.Contains(query, `direction="response"`):
+			return emptyResult(), nil
+		case strings.Contains(query, "beyla_network_flow_bytes_total"):
+			// No dst_port: the default install.
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+				"k8s_dst_owner_name": "api", "k8s_dst_namespace": "demo",
+			}, 50.0)), nil
+		case strings.Contains(query, `http_response_status_code=~"5.."`):
+			return promResult("vector",
+				promSeries(map[string]string{"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "80"}, 0.2),
+				promSeries(map[string]string{"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "8080"}, 0.5),
+			), nil
+		case strings.Contains(query, "http_server_request_duration_seconds_sum"):
+			return promResult("vector",
+				promSeries(map[string]string{"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "80"}, 0.001),
+				promSeries(map[string]string{"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "8080"}, 0.004),
+			), nil
+		}
+		return promResult("vector",
+			promSeries(map[string]string{
+				"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "80",
+				"http_request_method": "GET", "http_route": "/a", "http_response_status_code": "200",
+			}, 3.0),
+			promSeries(map[string]string{
+				"k8s_namespace_name": "demo", "k8s_owner_name": "api", "server_port": "8080",
+				"http_request_method": "GET", "http_route": "/b", "http_response_status_code": "200",
+			}, 7.0),
+		), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Flows) != 1 {
+		t.Fatalf("expected 1 flow, got %d", len(resp.Flows))
+	}
+	f := resp.Flows[0]
+	if f.RequestRate != 10 {
+		t.Errorf("requestRate = %v, want 10 (3 + 7 across both ports)", f.RequestRate)
+	}
+	// Both ports' errors belong to this edge, since both ports' traffic does.
+	if f.ErrorRate != 0.7 {
+		t.Errorf("errorRate = %v, want 0.7 (0.2 + 0.5); a single port's figure under-reports", f.ErrorRate)
+	}
+	// Latencies are means, so the edge takes the worst rather than summing them.
+	if f.LatencyNs != uint64(0.004*float64(time.Second)) {
+		t.Errorf("latencyNs = %d, want %d (the slower of the two ports)", f.LatencyNs, uint64(0.004*float64(time.Second)))
 	}
 }

@@ -428,7 +428,9 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([
 	perPort, perDst := l7ByPortAndDestination(l7Flows)
 	for key, edges := range byDstPort {
 		l7, ok := perPort[key]
+		portless := false
 		if !ok && key.port == 0 && !portedDsts[dstKey{key.dstNs, key.dstName}] {
+			portless = true
 			// These edges carry no port information and this destination has no
 			// port-bearing edges either, so every port's HTTP traffic for it belongs
 			// to them. Use the destination-wide aggregate, which has summed the
@@ -469,10 +471,10 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([
 			// Latency and errors describe the destination and port, so they apply
 			// whole to each caller rather than being split the way the rate is.
 			detailKey := dstPortKey{l7.Destination.Namespace, l7.Destination.Name, l7.Port}
-			if seconds, ok := latency[detailKey]; ok {
+			if seconds, ok := latency.forEdge(detailKey, portless); ok {
 				f.LatencyNs = uint64(seconds * float64(time.Second))
 			}
-			if rate, ok := errorRates[detailKey]; ok {
+			if rate, ok := errorRates.forEdge(detailKey, portless); ok {
 				f.ErrorRate = rate
 				// Istio marks the flow itself as errored once any 5xx is present, and
 				// the graph colours the edge from the verdict.
@@ -792,9 +794,9 @@ func (s *BeylaSource) queryUnorientable(ctx context.Context, opts FlowOptions) [
 
 // queryL7Detail reads mean latency and 5xx rate per destination and port. Both are
 // enrichments: a failure leaves the fields unset rather than blocking the edges.
-func (s *BeylaSource) queryL7Detail(ctx context.Context, opts FlowOptions) (latency, errors map[dstPortKey]float64) {
-	read := func(query string) map[dstPortKey]float64 {
-		out := make(map[dstPortKey]float64)
+func (s *BeylaSource) queryL7Detail(ctx context.Context, opts FlowOptions) (latency, errors l7Detail) {
+	read := func(query string, combine func(a, b float64) float64) l7Detail {
+		out := l7Detail{perPort: map[dstPortKey]float64{}, perDst: map[dstKey]float64{}}
 		result, err := s.query(ctx, query)
 		if err != nil || result == nil {
 			return out
@@ -811,12 +813,42 @@ func (s *BeylaSource) queryL7Detail(ctx context.Context, opts FlowOptions) (late
 			if name == "" {
 				continue
 			}
-			key := dstPortKey{series.Labels["k8s_namespace_name"], name, parseIntLabel(series.Labels["server_port"])}
-			out[key] = val
+			ns := series.Labels["k8s_namespace_name"]
+			out.perPort[dstPortKey{ns, name, parseIntLabel(series.Labels["server_port"])}] = val
+			dst := dstKey{ns, name}
+			if existing, ok := out.perDst[dst]; ok {
+				out.perDst[dst] = combine(existing, val)
+			} else {
+				out.perDst[dst] = val
+			}
 		}
 		return out
 	}
-	return read(beylaL7LatencyQuery(opts.Namespace)), read(beylaL7ErrorQuery(opts.Namespace))
+	// Error rates add up across a destination's ports; latencies are means, so the
+	// destination-wide figure is the largest of them rather than their sum — an
+	// average of averages would need per-port request counts to weight it, and
+	// overstating the worst port is safer than understating it.
+	return read(beylaL7LatencyQuery(opts.Namespace), math.Max),
+		read(beylaL7ErrorQuery(opts.Namespace), func(a, b float64) float64 { return a + b })
+}
+
+// l7Detail holds a per-port measurement and its destination-wide equivalent, for
+// the case where the L4 edges carry no port and everything for a destination lands
+// on the same edge.
+type l7Detail struct {
+	perPort map[dstPortKey]float64
+	perDst  map[dstKey]float64
+}
+
+// forEdge picks the figure matching how the L7 record was chosen: an exact port
+// when the edges have one, the destination-wide figure when they do not.
+func (d l7Detail) forEdge(key dstPortKey, portless bool) (float64, bool) {
+	if portless {
+		v, ok := d.perDst[dstKey{key.dstNs, key.dstName}]
+		return v, ok
+	}
+	v, ok := d.perPort[key]
+	return v, ok
 }
 
 func (s *BeylaSource) queryL7(ctx context.Context, opts FlowOptions) ([]Flow, error) {

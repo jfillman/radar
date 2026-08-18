@@ -321,7 +321,11 @@ func fetchVeleroResults(ctx context.Context, rawURL string) (VeleroRunMessagesRe
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return out, err
+		// url.Parse above rejects the same inputs, so nothing is known to reach
+		// here — but this is the last path in the function that could return an
+		// error carrying the URL, and the guarantee is worth more than the one
+		// line it costs. NewRequest wraps its parse failure in *url.Error.
+		return out, errMalformedURL
 	}
 	client := &http.Client{
 		Timeout: 30 * time.Second,

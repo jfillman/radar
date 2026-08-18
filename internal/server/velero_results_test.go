@@ -358,8 +358,14 @@ func TestVeleroRunMessagesRoutesEachFailureToItsOwnAnswer(t *testing.T) {
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d, want 503", rec.Code)
 		}
-		if body := rec.Body.String(); !strings.Contains(body, "could not read it") {
+		body := rec.Body.String()
+		// The store refused it, so the reader is sent to the store and to the
+		// signing window — not to the Velero controller, which answered fine.
+		if !strings.Contains(body, "the object store refused it") {
 			t.Errorf("body = %s, want the object store named rather than the controller", body)
+		}
+		if strings.Contains(body, "controller") {
+			t.Errorf("body = %s, blames the controller for a failure it had no part in", body)
 		}
 	})
 
@@ -399,4 +405,44 @@ func TestVeleroRunMessagesRoutesEachFailureToItsOwnAnswer(t *testing.T) {
 			t.Errorf("status = %d, want 400", rec.Code)
 		}
 	})
+}
+
+// A pre-signed URL is a bearer credential: anything holding it can read the
+// results file until the signature expires. Go wraps transport failures in
+// *url.Error, whose message embeds the whole URL — so the natural thing to do
+// with a fetch error, returning it, publishes the credential to whoever can
+// read a response body or a log line.
+func TestVeleroResultsErrorsNeverCarryTheSignedURL(t *testing.T) {
+	const signature = "deadbeefcafe"
+	signed := "https://bucket.s3.example.invalid:1/backups/nightly/nightly-results.gz" +
+		"?X-Amz-Credential=AKIAEXAMPLE&X-Amz-Signature=" + signature
+
+	// Unreachable host: the transport error is the one that embeds the URL.
+	_, err := fetchVeleroResults(context.Background(), signed)
+	if err == nil {
+		t.Fatal("want a transport failure against an invalid host")
+	}
+	for _, secret := range []string{signature, "X-Amz-Signature", "AKIAEXAMPLE", "nightly-results.gz"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error %q carries %q from the signed URL", err, secret)
+		}
+	}
+	if !errors.Is(err, errStorageUnreachable) {
+		t.Errorf("err = %v, want it to classify as unreachable so the handler can route it", err)
+	}
+	// The message shown to the reader is built from the sentinel, so it cannot
+	// carry the URL either.
+	if msg := veleroFetchMessage(err); strings.Contains(msg, signature) {
+		t.Errorf("message %q carries the signature", msg)
+	}
+
+	// Same guarantee when the store answers, but with the wrong bytes.
+	plain := serveResults(t, []byte("not gzip"))
+	_, err = fetchVeleroResults(context.Background(), plain.URL+"?X-Amz-Signature="+signature)
+	if err == nil || strings.Contains(err.Error(), signature) {
+		t.Errorf("err = %v, want a classified error with no signature in it", err)
+	}
+	if !errors.Is(err, errNotAResultsFile) {
+		t.Errorf("err = %v, want errNotAResultsFile", err)
+	}
 }

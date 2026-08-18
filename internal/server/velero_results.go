@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -75,6 +76,33 @@ type veleroResults struct {
 	Velero     []string            `json:"velero"`
 	Cluster    []string            `json:"cluster"`
 	Namespaces map[string][]string `json:"namespaces"`
+}
+
+// The failure modes of reading the results file, as sentinels rather than
+// strings. The reader is sent somewhere different by each one, and the handler
+// needs to distinguish them without matching on error text.
+var (
+	errStorageUnreachable = errors.New("the object store did not answer")
+	errStorageRefused     = errors.New("the object store refused the request")
+	errStorageRedirected  = errors.New("the object store redirected, which is not followed")
+	errNotAResultsFile    = errors.New("what came back is not a Velero results file")
+	errMalformedURL       = errors.New("Velero returned a URL that cannot be parsed")
+)
+
+// urlSafeCause strips the URL out of an HTTP client error.
+//
+// The URL here is Velero's pre-signed one, and a pre-signed URL IS the
+// credential: anything holding it can read the results file until it expires.
+// Go wraps transport failures in *url.Error, whose Error() embeds the full URL
+// — so returning or logging that error as-is publishes the credential to
+// whoever can read a response body or a log line. Only the underlying cause
+// travels.
+func urlSafeCause(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.Err != nil {
+		return ue.Err
+	}
+	return err
 }
 
 const (
@@ -203,16 +231,39 @@ func (s *Server) handleVeleroRunMessages(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		log.Printf("[velero] Failed to fetch results for %s %s/%s: %v",
 			target.kind, sanitizeForLog(namespace), sanitizeForLog(name), err)
-		// Deliberately not "storage did not answer": the fetch also fails when
-		// storage answered with a redirect, a 403, or something that is not the
-		// gzipped results file. Naming the wrong cause sends the reader to the
-		// wrong place, so the specific reason travels with it.
-		s.writeError(w, http.StatusServiceUnavailable,
-			"Velero returned a link to the messages, but Radar could not read it: "+err.Error()+
-				". Radar reaches the object store directly, so it has to be reachable from wherever Radar runs.")
+		// Which failure it was decides where the reader goes, so they are
+		// distinguished — but from sentinels, never by pasting the error in.
+		// The error can carry Velero's pre-signed URL, which is a credential
+		// for the results file, and a response body is not a place to publish
+		// one.
+		s.writeError(w, http.StatusServiceUnavailable, veleroFetchMessage(err))
 		return
 	}
 	s.writeJSON(w, results)
+}
+
+// veleroFetchMessage turns a results-fetch failure into what the reader should
+// do about it. Each branch sends them somewhere different: the object store is
+// a different thing to check from the Velero controller, and a store that
+// answered with the wrong bytes is different again.
+func veleroFetchMessage(err error) string {
+	const reach = "Radar reaches the object store directly, so it has to be reachable from wherever Radar runs."
+	switch {
+	case errors.Is(err, errStorageUnreachable):
+		return "Velero returned a link to the messages, but the object store did not answer. " + reach
+	case errors.Is(err, errStorageRefused):
+		return "Velero returned a link to the messages, but the object store refused it. " +
+			"A pre-signed link is only valid for a short window, and the credentials Velero signed it with must still be valid."
+	case errors.Is(err, errStorageRedirected):
+		return "Velero returned a link to the messages, but the object store redirected it. " +
+			"Radar does not follow redirects on a signed link, because that is how a link reaches a host nobody named."
+	case errors.Is(err, errNotAResultsFile):
+		return "Velero returned a link to the messages, but what came back is not a results file."
+	case errors.Is(err, errMalformedURL):
+		return "Velero returned a link to the messages that Radar could not parse."
+	default:
+		return "Velero returned a link to the messages, but Radar could not read it. " + reach
+	}
 }
 
 // awaitDownloadURL polls the DownloadRequest until the controller fills in the
@@ -261,7 +312,8 @@ func fetchVeleroResults(ctx context.Context, rawURL string) (VeleroRunMessagesRe
 
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return out, fmt.Errorf("unparseable download URL: %w", err)
+		// Deliberately not wrapping err: url.Parse embeds the URL it failed on.
+		return out, errMalformedURL
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return out, fmt.Errorf("refusing to fetch a %q URL", parsed.Scheme)
@@ -279,25 +331,27 @@ func fetchVeleroResults(ctx context.Context, rawURL string) (VeleroRunMessagesRe
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return out, err
+		return out, fmt.Errorf("%w: %v", errStorageUnreachable, urlSafeCause(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		return out, fmt.Errorf("object storage redirected to %q, which is not followed", resp.Header.Get("Location"))
+		// The Location is not repeated: a redirect target can itself be a signed
+		// URL, and it is chosen by whatever answered rather than by us.
+		return out, errStorageRedirected
 	}
 	if resp.StatusCode != http.StatusOK {
-		return out, fmt.Errorf("object storage returned %s", resp.Status)
+		return out, fmt.Errorf("%w: %s", errStorageRefused, resp.Status)
 	}
 
 	gz, err := gzip.NewReader(io.LimitReader(resp.Body, maxResultsBytes))
 	if err != nil {
-		return out, fmt.Errorf("results file is not gzip: %w", err)
+		return out, fmt.Errorf("%w: not gzip", errNotAResultsFile)
 	}
 	defer gz.Close()
 
 	var raw map[string]veleroResults
 	if err := json.NewDecoder(io.LimitReader(gz, maxResultsBytes)).Decode(&raw); err != nil {
-		return out, fmt.Errorf("unreadable results file: %w", err)
+		return out, fmt.Errorf("%w: unreadable", errNotAResultsFile)
 	}
 
 	out.Warnings, out.Truncated = flattenVeleroResult(raw["warnings"])

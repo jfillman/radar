@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -15,8 +16,11 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
+
+	"github.com/skyhook-io/radar/internal/k8s"
 )
 
 // The shape below is copied from a file Velero actually wrote on a kind cluster,
@@ -275,6 +279,124 @@ func TestAwaitDownloadURL(t *testing.T) {
 		if _, err := awaitDownloadURL(ctx, client(req(map[string]interface{}{"phase": "New"})),
 			"velero", "backup-abc", time.Minute); !errors.Is(err, context.Canceled) {
 			t.Errorf("err = %v, want context.Canceled", err)
+		}
+	})
+}
+
+// The handler end to end, over a fake controller. What is being pinned is the
+// routing: each failure mode sends the reader somewhere different, and telling
+// someone their Velero controller is down when the truth is a denied read or an
+// unreachable bucket costs them the time it takes to check the wrong thing.
+func TestVeleroRunMessagesRoutesEachFailureToItsOwnAnswer(t *testing.T) {
+	downloadRequest := func(status map[string]interface{}) *unstructured.Unstructured {
+		obj := map[string]interface{}{
+			"apiVersion": "velero.io/v1",
+			"kind":       "DownloadRequest",
+			"metadata":   map[string]interface{}{"name": "nightly-x", "namespace": "velero"},
+		}
+		if status != nil {
+			obj["status"] = status
+		}
+		return &unstructured.Unstructured{Object: obj}
+	}
+
+	// The controller's half of the exchange: Velero fills status.downloadURL in
+	// on the object Radar just created, so the fake answers every get with a
+	// ready one.
+	answerWith := func(t *testing.T, url string) *dynamicfake.FakeDynamicClient {
+		t.Helper()
+		dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+			map[schema.GroupVersionResource]string{downloadRequestGVR: "DownloadRequestList"})
+		dyn.PrependReactor("get", "downloadrequests", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, downloadRequest(map[string]interface{}{"downloadURL": url, "phase": "Processed"}), nil
+		})
+		return dyn
+	}
+
+	post := func(t *testing.T, dyn dynamic.Interface, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		// Sets the package-level dynamic client, which is what
+		// getDynamicClientForRequest falls back to when auth is off.
+		if err := k8s.InitTestDynamicResourceCache(dyn, []k8s.APIResource{{
+			Group: veleroGroup, Version: "v1", Kind: "DownloadRequest",
+			Name: "downloadrequests", Namespaced: true, IsCRD: true,
+			Verbs: []string{"get", "create", "delete"},
+		}}); err != nil {
+			t.Fatalf("seed download requests: %v", err)
+		}
+		t.Cleanup(k8s.ResetTestDynamicState)
+		srv := New(Config{DevMode: true})
+		t.Cleanup(srv.Stop)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		return rec
+	}
+
+	t.Run("returns the messages Velero wrote", func(t *testing.T) {
+		store := serveResults(t, gzipped(t, realResultsJSON))
+		rec := post(t, answerWith(t, store.URL), "/api/velero/backups/velero/nightly/messages")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+		var got VeleroRunMessagesResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(got.Warnings) != 2 {
+			t.Errorf("warnings = %d, want the 2 the results file holds", len(got.Warnings))
+		}
+	})
+
+	// Storage answered, but not with a results file. Blaming the controller here
+	// sends the reader to a controller that is running fine.
+	t.Run("names the object store when the fetch fails", func(t *testing.T) {
+		broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		t.Cleanup(broken.Close)
+		rec := post(t, answerWith(t, broken.URL), "/api/velero/backups/velero/nightly/messages")
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "could not read it") {
+			t.Errorf("body = %s, want the object store named rather than the controller", body)
+		}
+	})
+
+	// A cluster with no DownloadRequest CRD has no Velero, which is a different
+	// answer from a Velero that is not responding.
+	t.Run("separates no Velero from a silent Velero", func(t *testing.T) {
+		dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+			map[schema.GroupVersionResource]string{downloadRequestGVR: "DownloadRequestList"})
+		dyn.PrependReactor("create", "downloadrequests", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewNotFound(
+				schema.GroupResource{Group: veleroGroup, Resource: "downloadrequests"}, "")
+		})
+		rec := post(t, dyn, "/api/velero/backups/velero/nightly/messages")
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 for a cluster with no Velero", rec.Code)
+		}
+	})
+
+	t.Run("passes a denial back as a denial", func(t *testing.T) {
+		dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+			map[schema.GroupVersionResource]string{downloadRequestGVR: "DownloadRequestList"})
+		dyn.PrependReactor("create", "downloadrequests", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewForbidden(
+				schema.GroupResource{Group: veleroGroup, Resource: "downloadrequests"}, "", errors.New("nope"))
+		})
+		rec := post(t, dyn, "/api/velero/backups/velero/nightly/messages")
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("status = %d, want 403", rec.Code)
+		}
+	})
+
+	// Only Backups and Restores have a results target. A Schedule has none, and
+	// answering with an empty list would read as "this ran cleanly".
+	t.Run("refuses a kind that has no results", func(t *testing.T) {
+		rec := post(t, answerWith(t, "http://unused"), "/api/velero/schedules/velero/nightly/messages")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", rec.Code)
 		}
 	})
 }

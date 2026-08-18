@@ -189,9 +189,13 @@ func (s *Server) handleVeleroRunMessages(w http.ResponseWriter, r *http.Request)
 		}
 		// 503 rather than 500: nothing is wrong with the request, something in
 		// the cluster is not answering, and the message says which.
+		// The namespace is worth naming and the workload is not: the run's own
+		// namespace is where Velero is installed, but the controller's name
+		// varies by distribution (OADP does not call it `velero`), so pointing
+		// at one would be a guess dressed as a fact.
 		s.writeError(w, http.StatusServiceUnavailable,
-			fmt.Sprintf("Velero did not answer within %s. These messages are served by the Velero controller — check that it is running.",
-				downloadRequestTimeout))
+			fmt.Sprintf("Velero did not answer within %s. These messages are served by the Velero controller in namespace %s — check that it is running.",
+				downloadRequestTimeout, namespace))
 		return
 	}
 

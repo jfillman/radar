@@ -447,3 +447,37 @@ func TestVeleroDurationWordingCoversEveryScale(t *testing.T) {
 		t.Errorf("message = %q, want both the elapsed time and the budget", msg)
 	}
 }
+
+// The boundary both stall paths share. It was previously written inline at each
+// call site against a time.Since result, which is why it went untested: a test
+// cannot construct "exactly the budget" out of wall-clock arithmetic. As a
+// predicate over two durations it is ordinary to check.
+func TestVeleroPastBudgetIsPastNotAt(t *testing.T) {
+	const budget = 4 * time.Hour
+	for _, c := range []struct {
+		name string
+		age  time.Duration
+		want bool
+	}{
+		{"well inside", 30 * time.Minute, false},
+		// A run that has used exactly the time it was allowed has not outlived
+		// it. Velero is entitled to the whole budget.
+		{"exactly the budget", budget, false},
+		{"a nanosecond past", budget + 1, true},
+		{"well past", 9 * time.Hour, true},
+	} {
+		if got := veleroPastBudget(c.age, budget); got != c.want {
+			t.Errorf("%s: veleroPastBudget(%s, %s) = %v, want %v", c.name, c.age, budget, got, c.want)
+		}
+	}
+
+	// A zero budget would report every in-flight run as stalled the instant it
+	// started. veleroInFlightBudget is what keeps one from reaching here.
+	if veleroPastBudget(0, 0) {
+		t.Error("a zero age against a zero budget must not read as stalled")
+	}
+	// The guard that keeps a zero budget from ever reaching the comparison.
+	if got, _ := veleroInFlightBudget(veleroObj{itemOperationTimeout: "0s"}.build("Backup")); got <= 0 {
+		t.Errorf("veleroInFlightBudget = %s, want the built-in rather than zero", got)
+	}
+}

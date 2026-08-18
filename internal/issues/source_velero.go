@@ -152,10 +152,21 @@ func veleroStalledFor(u *unstructured.Unstructured) (time.Duration, bool) {
 	}
 	budget, _ := veleroInFlightBudget(u)
 	age := time.Since(started)
-	if age <= budget {
+	if !veleroPastBudget(age, budget) {
 		return 0, false
 	}
 	return age, true
+}
+
+// veleroPastBudget is the comparison both stall paths make, in one place so
+// they cannot disagree about the boundary.
+//
+// Past the budget, not at it: a run that has used exactly the time it was
+// allowed has not yet outlived it. Taking the durations as arguments is what
+// makes that boundary testable at all — derived from time.Since at the call
+// sites, "exactly the budget" is not a value a test can construct.
+func veleroPastBudget(age, budget time.Duration) bool {
+	return age > budget
 }
 
 // veleroInFlightBudget returns the budget and whether it came from the object.
@@ -280,15 +291,7 @@ func veleroStalledRunIssues(gvr schema.GroupVersionResource, kind string, items 
 		}
 		budget, fromSpec := veleroInFlightBudget(u)
 		age := time.Since(started)
-		// Past the budget, not at it: a run that has used exactly its budget has
-		// not yet outlived it.
-		//
-		// The equality case is not covered by a test. These durations come from
-		// wall-clock time against a timestamp, so a test cannot construct "exactly
-		// the budget" without a clock seam this package does not have and no other
-		// issues source needs. Mutation testing confirms every other branch here is
-		// covered; this one boundary is knowingly not.
-		if age <= budget {
+		if !veleroPastBudget(age, budget) {
 			continue
 		}
 		// Say where the number came from. Unset means Velero's built-in applies —

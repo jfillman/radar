@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from 'vitest'
 import {
   CALICO_SELECTOR_NOT_APPLICABLE,
   getCalicoApiGroup,
@@ -13,156 +13,164 @@ import {
   isCalicoStagedDeletion,
   isCalicoStagedKubernetesNetworkPolicyKind,
   isCoreNetworkPolicyKind,
-} from "./resource-utils-calico";
+} from './resource-utils-calico'
 
-describe("Calico API group matching", () => {
-  it("extracts only supported Calico API groups", () => {
-    expect(getCalicoApiGroup("projectcalico.org/v3")).toBe("projectcalico.org");
-    expect(getCalicoApiGroup("crd.projectcalico.org/v1")).toBe(
-      "crd.projectcalico.org",
-    );
-    expect(getCalicoApiGroup("extension.projectcalico.org/v1")).toBeUndefined();
-  });
+describe('Calico API group matching', () => {
+  it('extracts only supported Calico API groups', () => {
+    expect(getCalicoApiGroup('projectcalico.org/v3')).toBe('projectcalico.org')
+    expect(getCalicoApiGroup('crd.projectcalico.org/v1')).toBe(
+      'crd.projectcalico.org',
+    )
+    expect(getCalicoApiGroup('extension.projectcalico.org/v1')).toBeUndefined()
+  })
 
-  it("builds a cluster-scoped Tier reference with the policy API group", () => {
+  it('builds a cluster-scoped Tier reference with the policy API group', () => {
     expect(
       getCalicoTierRef({
-        apiVersion: "crd.projectcalico.org/v1",
-        spec: { tier: "security" },
+        apiVersion: 'crd.projectcalico.org/v1',
+        spec: { tier: 'security' },
       }),
     ).toEqual({
-      kind: "Tier",
-      namespace: "",
-      name: "security",
-      group: "crd.projectcalico.org",
-    });
-  });
+      kind: 'Tier',
+      namespace: '',
+      name: 'security',
+      group: 'crd.projectcalico.org',
+    })
+  })
 
-  it.each(["projectcalico.org/v3", "crd.projectcalico.org/v1"])(
-    "accepts the exact Calico group: %s",
+  it.each(['projectcalico.org/v3', 'crd.projectcalico.org/v1'])(
+    'accepts the exact Calico group: %s',
     (apiVersion) => {
-      expect(isCalicoApiVersion(apiVersion)).toBe(true);
+      expect(isCalicoApiVersion(apiVersion)).toBe(true)
       expect(
-        isCalicoPolicyResource({ apiVersion, kind: "NetworkPolicy" }),
-      ).toBe(true);
+        isCalicoPolicyResource({ apiVersion, kind: 'NetworkPolicy' }),
+      ).toBe(true)
     },
-  );
+  )
 
-  it.each(["projectcalico.org/v3", "crd.projectcalico.org/v1"])(
-    "recognizes staged Kubernetes network policies in %s",
+  it.each(['projectcalico.org/v3', 'crd.projectcalico.org/v1'])(
+    'recognizes staged Kubernetes network policies in %s',
     (apiVersion) => {
       const policy = {
         apiVersion,
-        kind: "StagedKubernetesNetworkPolicy",
+        kind: 'StagedKubernetesNetworkPolicy',
         spec: {
-          podSelector: { matchLabels: { app: "frontend" } },
-          policyTypes: ["Ingress"],
+          podSelector: { matchLabels: { app: 'frontend' } },
+          policyTypes: ['Ingress'],
         },
-      };
-      expect(isCalicoStagedKubernetesNetworkPolicyKind(policy.kind)).toBe(true);
-      expect(isCalicoPolicyResource(policy)).toBe(true);
-      expect(getCalicoPolicySelector(policy)).toBe("app=frontend");
+      }
+      expect(isCalicoStagedKubernetesNetworkPolicyKind(policy.kind)).toBe(true)
+      expect(isCalicoPolicyResource(policy)).toBe(true)
+      expect(getCalicoPolicySelector(policy)).toBe('app=frontend')
       expect(getCalicoPolicyKindLabel(policy.kind)).toBe(
-        "CalicoStagedKubernetesNetworkPolicy",
-      );
+        'CalicoStagedKubernetesNetworkPolicy',
+      )
     },
-  );
+  )
 
   it.each([
-    "extension.projectcalico.org/v1",
-    "projectcalico.org.evil/v1",
-    "networking.example.io/v1",
-    "v1",
-  ])("rejects a non-Calico group: %s", (apiVersion) => {
-    expect(isCalicoApiVersion(apiVersion)).toBe(false);
-    expect(isCalicoPolicyResource({ apiVersion, kind: "NetworkPolicy" })).toBe(
+    'extension.projectcalico.org/v1',
+    'projectcalico.org.evil/v1',
+    'networking.example.io/v1',
+    'v1',
+  ])('rejects a non-Calico group: %s', (apiVersion) => {
+    expect(isCalicoApiVersion(apiVersion)).toBe(false)
+    expect(isCalicoPolicyResource({ apiVersion, kind: 'NetworkPolicy' })).toBe(
       false,
-    );
-  });
+    )
+  })
 
-  it("recognizes only the core networking.k8s.io policy", () => {
+  it('recognizes only the core networking.k8s.io policy', () => {
     expect(
-      isCoreNetworkPolicyKind("NetworkPolicy", "networking.k8s.io/v1"),
-    ).toBe(true);
+      isCoreNetworkPolicyKind('NetworkPolicy', 'networking.k8s.io/v1'),
+    ).toBe(true)
     expect(
-      isCoreNetworkPolicyKind("NetworkPolicy", "projectcalico.org/v3"),
-    ).toBe(false);
+      isCoreNetworkPolicyKind('NetworkPolicy', 'projectcalico.org/v3'),
+    ).toBe(false)
     expect(
-      isCoreNetworkPolicyKind("NetworkPolicy", "other.example.io/v1"),
-    ).toBe(false);
-    expect(isCoreNetworkPolicyKind("NetworkPolicy", undefined)).toBe(true);
+      isCoreNetworkPolicyKind('NetworkPolicy', 'other.example.io/v1'),
+    ).toBe(false)
+    expect(isCoreNetworkPolicyKind('NetworkPolicy', undefined)).toBe(true)
     expect(
-      isCoreNetworkPolicyKind("NetworkPolicy", undefined, "networking.k8s.io"),
-    ).toBe(true);
+      isCoreNetworkPolicyKind('NetworkPolicy', undefined, 'networking.k8s.io'),
+    ).toBe(true)
     expect(
-      isCoreNetworkPolicyKind("NetworkPolicy", undefined, "other.example.io"),
-    ).toBe(false);
-  });
+      isCoreNetworkPolicyKind('NetworkPolicy', undefined, 'other.example.io'),
+    ).toBe(false)
+  })
 
-  it("does not let the exact core fallback classify foreign kinds", () => {
+  it('does not let the exact core fallback classify foreign kinds', () => {
     expect(
-      isCoreNetworkPolicyKind("GlobalNetworkPolicy", "networking.k8s.io/v1"),
-    ).toBe(false);
-    expect(isCoreNetworkPolicyKind("Widget", undefined)).toBe(false);
-  });
-});
+      isCoreNetworkPolicyKind('GlobalNetworkPolicy', 'networking.k8s.io/v1'),
+    ).toBe(false)
+    expect(isCoreNetworkPolicyKind('Widget', undefined)).toBe(false)
+  })
+})
 
-describe("staged deletions", () => {
+describe('staged deletions', () => {
   const deletion = {
-    apiVersion: "projectcalico.org/v3",
-    kind: "StagedNetworkPolicy",
-    metadata: { name: "retire-frontend", namespace: "demo" },
+    apiVersion: 'projectcalico.org/v3',
+    kind: 'StagedNetworkPolicy',
+    metadata: { name: 'retire-frontend', namespace: 'demo' },
     // The Calico API rejects any other spec field alongside a Delete action.
-    spec: { stagedAction: "Delete", tier: "default" },
-  };
+    spec: { stagedAction: 'Delete', tier: 'default' },
+  }
 
-  it("does not read an absent selector as every workload", () => {
-    expect(isCalicoStagedDeletion(deletion)).toBe(true);
+  it('does not read an absent selector as every workload', () => {
+    expect(isCalicoStagedDeletion(deletion)).toBe(true)
     expect(getCalicoPolicySelector(deletion)).toBe(
       CALICO_SELECTOR_NOT_APPLICABLE,
-    );
-  });
+    )
+  })
 
-  it("leaves a staged Set reading its real selector", () => {
+  it('leaves a staged Set reading its real selector', () => {
     const set = {
-      apiVersion: "projectcalico.org/v3",
-      kind: "StagedNetworkPolicy",
-      metadata: { name: "tighten", namespace: "demo" },
-      spec: { stagedAction: "Set", selector: "app == 'web'" },
-    };
-    expect(isCalicoStagedDeletion(set)).toBe(false);
-    expect(getCalicoPolicySelector(set)).toBe("app == 'web'");
-  });
+      apiVersion: 'projectcalico.org/v3',
+      kind: 'StagedNetworkPolicy',
+      metadata: { name: 'tighten', namespace: 'demo' },
+      spec: { stagedAction: 'Set', selector: "app == 'web'" },
+    }
+    expect(isCalicoStagedDeletion(set)).toBe(false)
+    expect(getCalicoPolicySelector(set)).toBe("app == 'web'")
+  })
 
-  it("still reads an enforced policy with no selector as every workload", () => {
+  it('still reads an enforced policy with no selector as every workload', () => {
     const enforced = {
-      apiVersion: "projectcalico.org/v3",
-      kind: "NetworkPolicy",
-      metadata: { name: "catch-all", namespace: "demo" },
+      apiVersion: 'projectcalico.org/v3',
+      kind: 'NetworkPolicy',
+      metadata: { name: 'catch-all', namespace: 'demo' },
       spec: {},
-    };
-    expect(getCalicoPolicySelector(enforced)).toBe("all workloads");
-  });
-});
+    }
+    expect(getCalicoPolicySelector(enforced)).toBe('all workloads')
+  })
+})
 
-describe("IPPool derivations", () => {
+describe('IPPool derivations', () => {
   it("applies Calico's block size default per address family", () => {
-    expect(getCalicoIPPoolBlockSize({ spec: { cidr: "192.168.0.0/16" } })).toBe(26);
-    expect(getCalicoIPPoolBlockSize({ spec: { cidr: "fd00::/48" } })).toBe(122);
-    expect(getCalicoIPPoolBlockSize({ spec: { cidr: "10.0.0.0/8", blockSize: 24 } })).toBe(24);
-    expect(getCalicoIPPoolBlockSize({ spec: {} })).toBeUndefined();
-  });
+    expect(getCalicoIPPoolBlockSize({ spec: { cidr: '192.168.0.0/16' } })).toBe(
+      26,
+    )
+    expect(getCalicoIPPoolBlockSize({ spec: { cidr: 'fd00::/48' } })).toBe(122)
+    expect(
+      getCalicoIPPoolBlockSize({ spec: { cidr: '10.0.0.0/8', blockSize: 24 } }),
+    ).toBe(24)
+    expect(getCalicoIPPoolBlockSize({ spec: {} })).toBeUndefined()
+  })
 
-  it("names the tunnel a pool encapsulates through", () => {
-    expect(getCalicoIPPoolEncapsulation({ spec: {} })).toBe("None");
-    expect(getCalicoIPPoolEncapsulation({ spec: { ipipMode: "Always" } })).toBe("IPIP Always");
-    expect(getCalicoIPPoolEncapsulation({ spec: { vxlanMode: "CrossSubnet" } })).toBe(
-      "VXLAN CrossSubnet",
-    );
-  });
+  it('names the tunnel a pool encapsulates through', () => {
+    expect(getCalicoIPPoolEncapsulation({ spec: {} })).toBe('None')
+    expect(getCalicoIPPoolEncapsulation({ spec: { ipipMode: 'Always' } })).toBe(
+      'IPIP Always',
+    )
+    expect(
+      getCalicoIPPoolEncapsulation({ spec: { vxlanMode: 'CrossSubnet' } }),
+    ).toBe('VXLAN CrossSubnet')
+  })
 
   it("falls back to Calico's default allowed uses", () => {
-    expect(getCalicoIPPoolAllowedUses({ spec: {} })).toBe("Workload, Tunnel");
-    expect(getCalicoIPPoolAllowedUses({ spec: { allowedUses: ["Tunnel"] } })).toBe("Tunnel");
-  });
-});
+    expect(getCalicoIPPoolAllowedUses({ spec: {} })).toBe('Workload, Tunnel')
+    expect(
+      getCalicoIPPoolAllowedUses({ spec: { allowedUses: ['Tunnel'] } }),
+    ).toBe('Tunnel')
+  })
+})

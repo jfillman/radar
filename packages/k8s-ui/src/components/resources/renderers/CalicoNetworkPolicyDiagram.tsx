@@ -1,36 +1,36 @@
-import { useId } from "react";
-import { clsx } from "clsx";
-import { Badge, type BadgeSeverity } from "../../ui/Badge";
-import { Tooltip } from "../../ui/Tooltip";
+import { useId } from 'react'
+import { clsx } from 'clsx'
+import { Badge, type BadgeSeverity } from '../../ui/Badge'
+import { Tooltip } from '../../ui/Tooltip'
 import {
   formatKubernetesLabelSelector,
   getCalicoPolicyTypes,
-} from "../resource-utils-calico";
+} from '../resource-utils-calico'
 import {
   NETWORK_POLICY_PEER_DOTS,
   NETWORK_POLICY_PEER_STYLES,
   type NetworkPolicyPeerType,
-} from "./network-policy-peer-styles";
+} from './network-policy-peer-styles'
 
 interface CalicoNetworkPolicyDiagramProps {
-  spec: any;
-  staged?: boolean;
+  spec: any
+  staged?: boolean
 }
 
-type Direction = "ingress" | "egress";
+type Direction = 'ingress' | 'egress'
 
 interface EntityField {
-  label: string;
-  values: string[];
-  negative?: boolean;
+  label: string
+  values: string[]
+  negative?: boolean
 }
 
 const ACTION_SEVERITY: Record<string, BadgeSeverity> = {
-  allow: "success",
-  deny: "error",
-  log: "warning",
-  pass: "info",
-};
+  allow: 'success',
+  deny: 'error',
+  log: 'warning',
+  pass: 'info',
+}
 
 export function CalicoNetworkPolicyDiagram({
   spec,
@@ -38,30 +38,30 @@ export function CalicoNetworkPolicyDiagram({
 }: CalicoNetworkPolicyDiagramProps) {
   const policyTypes = getCalicoPolicyTypes({ spec }).map((type) =>
     type.toLowerCase(),
-  );
+  )
   const directions = [
     {
-      direction: "ingress" as const,
-      label: "Ingress",
+      direction: 'ingress' as const,
+      label: 'Ingress',
       enabled:
         policyTypes.length > 0
-          ? policyTypes.includes("ingress")
+          ? policyTypes.includes('ingress')
           : Array.isArray(spec?.ingress),
     },
     {
-      direction: "egress" as const,
-      label: "Egress",
+      direction: 'egress' as const,
+      label: 'Egress',
       enabled:
         policyTypes.length > 0
-          ? policyTypes.includes("egress")
+          ? policyTypes.includes('egress')
           : Array.isArray(spec?.egress),
     },
-  ].filter((entry) => entry.enabled);
+  ].filter((entry) => entry.enabled)
   const target = {
     selector: spec?.selector,
     namespaceSelector: spec?.namespaceSelector,
     serviceAccountSelector: spec?.serviceAccountSelector,
-  };
+  }
 
   return (
     <div className="card-inner-lg space-y-3">
@@ -91,7 +91,7 @@ export function CalicoNetworkPolicyDiagram({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 function DirectionSection({
@@ -101,25 +101,25 @@ function DirectionSection({
   target,
   staged,
 }: {
-  direction: Direction;
-  label: string;
-  rules: any[];
-  target: any;
-  staged: boolean;
+  direction: Direction
+  label: string
+  rules: any[]
+  target: any
+  staged: boolean
 }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-1.5">
         <span
           className={clsx(
-            "h-1.5 w-1.5 rounded-full",
-            direction === "ingress" ? "bg-blue-500" : "bg-purple-500",
+            'h-1.5 w-1.5 rounded-full',
+            direction === 'ingress' ? 'bg-blue-500' : 'bg-purple-500',
           )}
         />
         <span
           className={clsx(
-            "text-[10px] font-semibold uppercase tracking-wider",
-            direction === "ingress" ? "text-blue-400" : "text-purple-400",
+            'text-[10px] font-semibold uppercase tracking-wider',
+            direction === 'ingress' ? 'text-blue-400' : 'text-purple-400',
           )}
         >
           {label}
@@ -144,7 +144,7 @@ function DirectionSection({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 function FlowRow({
@@ -153,34 +153,32 @@ function FlowRow({
   target,
   staged,
 }: {
-  direction: Direction;
-  rule: any;
-  target: any;
-  staged: boolean;
+  direction: Direction
+  rule: any
+  target: any
+  staged: boolean
 }) {
-  const action = String(rule?.action ?? "Allow");
-  const protocol = rule?.protocol;
-  const notProtocol = rule?.notProtocol;
-  const isIngress = direction === "ingress";
-  const constraints = pathConstraints(rule);
+  const action = String(rule?.action ?? 'Allow')
+  const protocol = rule?.protocol
+  const notProtocol = rule?.notProtocol
+  const isIngress = direction === 'ingress'
+  const constraints = pathConstraints(rule)
   const flowConstraints =
     constraints.length > 0
       ? constraints
       : protocol !== undefined
         ? [`${formatProtocol(protocol).toUpperCase()}/*`]
-        : [];
-  const leftEntities = isIngress
-    ? [rule?.source]
-    : [target, rule?.source];
+        : []
+  const leftEntities = isIngress ? [rule?.source] : [target, rule?.source]
   const rightEntities = isIngress
     ? [target, rule?.destination]
-    : [rule?.destination];
+    : [rule?.destination]
 
   return (
     <div className="space-y-2 px-2 py-2">
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge
-          severity={ACTION_SEVERITY[action.toLowerCase()] ?? "neutral"}
+          severity={ACTION_SEVERITY[action.toLowerCase()] ?? 'neutral'}
           size="sm"
         >
           {action}
@@ -195,7 +193,7 @@ function FlowRow({
       <div className="grid grid-cols-[minmax(0,1fr)_3.5rem_minmax(0,1fr)] items-center gap-1">
         <Endpoint
           entities={leftEntities}
-          emptyText={isIngress ? "Any source" : "All workloads"}
+          emptyText={isIngress ? 'Any source' : 'All workloads'}
           target={!isIngress}
         />
         <FlowArrow
@@ -206,12 +204,12 @@ function FlowRow({
         />
         <Endpoint
           entities={rightEntities}
-          emptyText={isIngress ? "All workloads" : "Any destination"}
+          emptyText={isIngress ? 'All workloads' : 'Any destination'}
           target={isIngress}
         />
       </div>
     </div>
-  );
+  )
 }
 
 function FlowArrow({
@@ -220,14 +218,14 @@ function FlowArrow({
   staged,
   constraints,
 }: {
-  action: string;
-  direction: Direction;
-  staged: boolean;
-  constraints: string[];
+  action: string
+  direction: Direction
+  staged: boolean
+  constraints: string[]
 }) {
-  const markerId = useId().replace(/:/g, "");
-  const color = arrowColor(action, direction);
-  const dashed = staged || action.toLowerCase() !== "allow";
+  const markerId = useId().replace(/:/g, '')
+  const color = arrowColor(action, direction)
+  const dashed = staged || action.toLowerCase() !== 'allow'
 
   return (
     <div className="flex min-w-0 flex-col items-center justify-center">
@@ -262,15 +260,18 @@ function FlowArrow({
           y2="9"
           stroke={color}
           strokeWidth="1.5"
-          strokeDasharray={dashed ? "4 3" : undefined}
+          strokeDasharray={dashed ? '4 3' : undefined}
           markerEnd={`url(#${markerId})`}
         />
       </svg>
       {constraints.length > 0 && (
-        <Tooltip content={constraints.join("\n")} position="top">
+        <Tooltip content={constraints.join('\n')} position="top">
           <span className="flex flex-col items-center gap-0.5 font-mono text-[8px] leading-none text-theme-text-tertiary">
             {constraints.map((constraint, index) => (
-              <span key={`${constraint}-${index}`} className="whitespace-nowrap">
+              <span
+                key={`${constraint}-${index}`}
+                className="whitespace-nowrap"
+              >
                 {constraint}
               </span>
             ))}
@@ -278,7 +279,7 @@ function FlowArrow({
         </Tooltip>
       )}
     </div>
-  );
+  )
 }
 
 function Endpoint({
@@ -286,46 +287,48 @@ function Endpoint({
   emptyText,
   target = false,
 }: {
-  entities: any[];
-  emptyText: string;
-  target?: boolean;
+  entities: any[]
+  emptyText: string
+  target?: boolean
 }) {
-  const fields = entities.flatMap(entityFields);
-  const peerType = classifyPeer(fields);
+  const fields = entities.flatMap(entityFields)
+  const peerType = classifyPeer(fields)
   const tooltip = fields.length
     ? fields
-        .map((field) => `${field.label}: ${field.values.join(", ")}`)
-        .join("\n")
-    : emptyText;
+        .map((field) => `${field.label}: ${field.values.join(', ')}`)
+        .join('\n')
+    : emptyText
 
   return (
     <Tooltip content={tooltip} position="top">
       <div
-          className={clsx(
-            "min-w-0 overflow-hidden rounded-md border px-2 py-1.5",
-            target
-              ? "border-indigo-500/30 bg-indigo-500/8"
-              : NETWORK_POLICY_PEER_STYLES[peerType],
+        className={clsx(
+          'min-w-0 overflow-hidden rounded-md border px-2 py-1.5',
+          target
+            ? 'border-indigo-500/30 bg-indigo-500/8'
+            : NETWORK_POLICY_PEER_STYLES[peerType],
         )}
       >
         <div className="flex min-w-0 items-start gap-1.5">
           <span
             className={clsx(
-              "mt-1 h-1.5 w-1.5 shrink-0 rounded-full",
-              target ? "bg-indigo-500" : NETWORK_POLICY_PEER_DOTS[peerType],
+              'mt-1 h-1.5 w-1.5 shrink-0 rounded-full',
+              target ? 'bg-indigo-500' : NETWORK_POLICY_PEER_DOTS[peerType],
             )}
           />
           <div className="min-w-0 flex-1">
             {fields.length > 0 ? (
               <EntityFields fields={fields} />
             ) : (
-              <div className="truncate text-[11px] font-medium">{emptyText}</div>
+              <div className="truncate text-[11px] font-medium">
+                {emptyText}
+              </div>
             )}
           </div>
         </div>
       </div>
     </Tooltip>
-  );
+  )
 }
 
 function EntityFields({ fields }: { fields: EntityField[] }) {
@@ -338,87 +341,87 @@ function EntityFields({ fields }: { fields: EntityField[] }) {
         >
           <span
             className={clsx(
-              "shrink-0 text-theme-text-tertiary",
-              field.negative && "text-warning-text",
+              'shrink-0 text-theme-text-tertiary',
+              field.negative && 'text-warning-text',
             )}
           >
             {field.label}
           </span>
           <span
             className={clsx(
-              "min-w-0 truncate font-mono text-[10px] text-theme-text-primary",
-              field.negative && "line-through",
+              'min-w-0 truncate font-mono text-[10px] text-theme-text-primary',
+              field.negative && 'line-through',
             )}
           >
-            {field.values.join(", ")}
+            {field.values.join(', ')}
           </span>
         </div>
       ))}
     </div>
-  );
+  )
 }
 
 function classifyPeer(fields: EntityField[]): NetworkPolicyPeerType {
-  const labels = new Set(fields.map((field) => field.label));
+  const labels = new Set(fields.map((field) => field.label))
   const hasPodMatch = [
-    "Selector",
-    "Pod selector",
-    "Not selector",
-    "Service account",
-    "Service accounts",
-    "Not service accounts",
-  ].some((label) => labels.has(label));
-  const hasNamespaceMatch = ["Namespace", "Not namespace"].some((label) =>
+    'Selector',
+    'Pod selector',
+    'Not selector',
+    'Service account',
+    'Service accounts',
+    'Not service accounts',
+  ].some((label) => labels.has(label))
+  const hasNamespaceMatch = ['Namespace', 'Not namespace'].some((label) =>
     labels.has(label),
-  );
-  const hasNetworkMatch = ["Nets", "Not Nets", "IP block"].some((label) =>
+  )
+  const hasNetworkMatch = ['Nets', 'Not Nets', 'IP block'].some((label) =>
     labels.has(label),
-  );
+  )
 
-  if (hasPodMatch && hasNamespaceMatch) return "combined";
-  if (hasPodMatch) return "pod";
-  if (hasNamespaceMatch) return "namespace";
-  if (hasNetworkMatch) return "cidr";
-  return "all";
+  if (hasPodMatch && hasNamespaceMatch) return 'combined'
+  if (hasPodMatch) return 'pod'
+  if (hasNamespaceMatch) return 'namespace'
+  if (hasNetworkMatch) return 'cidr'
+  return 'all'
 }
 
 function entityFields(entity: any): EntityField[] {
-  if (!entity || typeof entity !== "object") return [];
+  if (!entity || typeof entity !== 'object') return []
 
-  const fields: EntityField[] = [];
-  addField(fields, "Selector", entity.selector);
+  const fields: EntityField[] = []
+  addField(fields, 'Selector', entity.selector)
   addField(
     fields,
-    "Pod selector",
+    'Pod selector',
     entity.podSelector === undefined
       ? undefined
       : formatKubernetesLabelSelector(entity.podSelector),
-  );
-  addField(fields, "Not selector", entity.notSelector, true);
+  )
+  addField(fields, 'Not selector', entity.notSelector, true)
   addField(
     fields,
-    "Namespace",
-    entity.namespaceSelector && typeof entity.namespaceSelector === "object"
+    'Namespace',
+    entity.namespaceSelector && typeof entity.namespaceSelector === 'object'
       ? formatKubernetesLabelSelector(entity.namespaceSelector)
       : entity.namespaceSelector,
-  );
-  addField(fields, "Not namespace", entity.notNamespaceSelector, true);
-  addField(fields, "Service account", entity.serviceAccountSelector);
-  addField(fields, "Nets", entity.nets);
-  addField(fields, "IP block", entity.ipBlock);
-  addField(fields, "Not Nets", entity.notNets, true);
+  )
+  addField(fields, 'Not namespace', entity.notNamespaceSelector, true)
+  addField(fields, 'Service account', entity.serviceAccountSelector)
+  addField(fields, 'Nets', entity.nets)
+  addField(fields, 'IP block', entity.ipBlock)
+  addField(fields, 'Not Nets', entity.notNets, true)
   addField(
     fields,
-    "Service accounts",
+    'Service accounts',
     serviceAccountValues(entity.serviceAccounts),
-  );
+  )
   addField(
     fields,
-    "Not service accounts",
+    'Not service accounts',
     serviceAccountValues(entity.notServiceAccounts),
     true,
-  );
-  return fields;
+  )
+  return fields
 }
 
 function addField(
@@ -429,106 +432,106 @@ function addField(
 ) {
   const values = valuesFor(value)
     .map(formatValue)
-    .filter((item) => item !== "");
-  if (values.length === 0) return;
-  fields.push({ label, values, negative });
+    .filter((item) => item !== '')
+  if (values.length === 0) return
+  fields.push({ label, values, negative })
 }
 
 function valuesFor(value: any): any[] {
-  if (value === undefined || value === null || value === "") return [];
-  return Array.isArray(value) ? value : [value];
+  if (value === undefined || value === null || value === '') return []
+  return Array.isArray(value) ? value : [value]
 }
 
 function serviceAccountValues(value: any): string[] {
-  if (!value || typeof value !== "object") return [];
+  if (!value || typeof value !== 'object') return []
   return [
     ...(Array.isArray(value.names) ? value.names.map(String) : []),
     ...(value.selector !== undefined
       ? [`selector: ${String(value.selector)}`]
       : []),
-  ];
+  ]
 }
 
 function pathConstraints(rule: any): string[] {
   const sourcePorts = valuesFor(rule?.source?.ports).map((port) =>
     formatPort(port, rule?.protocol),
-  );
+  )
   const notSourcePorts = valuesFor(rule?.source?.notPorts).map((port) =>
     formatPort(port, rule?.protocol),
-  );
+  )
   const destinationPorts = valuesFor(rule?.destination?.ports).map((port) =>
     formatPort(port, rule?.protocol),
-  );
-  const notDestinationPorts = valuesFor(rule?.destination?.notPorts).map((port) =>
-    formatPort(port, rule?.protocol),
-  );
+  )
+  const notDestinationPorts = valuesFor(rule?.destination?.notPorts).map(
+    (port) => formatPort(port, rule?.protocol),
+  )
   return [
     ...sourcePorts.map((port) => `src:${port}`),
     ...notSourcePorts.map((port) => `src:!${port}`),
     ...destinationPorts,
     ...notDestinationPorts.map((port) => `!${port}`),
-  ];
+  ]
 }
 
 function arrowColor(action: string, direction: Direction): string {
   switch (action.toLowerCase()) {
-    case "deny":
-      return "#ef4444";
-    case "log":
-      return "#f59e0b";
-    case "pass":
-      return "#3b82f6";
+    case 'deny':
+      return '#ef4444'
+    case 'log':
+      return '#f59e0b'
+    case 'pass':
+      return '#3b82f6'
     default:
-      return direction === "ingress" ? "#3b82f6" : "#a855f7";
+      return direction === 'ingress' ? '#3b82f6' : '#a855f7'
   }
 }
 
 function formatValue(value: any): string {
-  if (value && typeof value === "object") {
-    if ("port" in value) {
-      const protocol = value.protocol ? `${value.protocol}/` : "";
-      const endPort = value.endPort !== undefined ? `-${value.endPort}` : "";
-      return `${protocol}${value.port}${endPort}`;
+  if (value && typeof value === 'object') {
+    if ('port' in value) {
+      const protocol = value.protocol ? `${value.protocol}/` : ''
+      const endPort = value.endPort !== undefined ? `-${value.endPort}` : ''
+      return `${protocol}${value.port}${endPort}`
     }
-    if ("start" in value || "end" in value) {
-      return `${value.start ?? ""}-${value.end ?? ""}`;
+    if ('start' in value || 'end' in value) {
+      return `${value.start ?? ''}-${value.end ?? ''}`
     }
-    if ("strVal" in value) return String(value.strVal);
-    if ("intVal" in value) return String(value.intVal);
-    return JSON.stringify(value);
+    if ('strVal' in value) return String(value.strVal)
+    if ('intVal' in value) return String(value.intVal)
+    return JSON.stringify(value)
   }
-  return String(value);
+  return String(value)
 }
 
 function formatPort(value: any, ruleProtocol?: any): string {
-  if (value && typeof value === "object") {
+  if (value && typeof value === 'object') {
     const protocol = value.protocol
       ? formatProtocol(value.protocol).toUpperCase()
       : ruleProtocol !== undefined
         ? formatProtocol(ruleProtocol).toUpperCase()
-        : "TCP";
-    if ("port" in value) {
-      const endPort = value.endPort !== undefined ? `-${value.endPort}` : "";
-      return `${protocol}/${value.port}${endPort}`;
+        : 'TCP'
+    if ('port' in value) {
+      const endPort = value.endPort !== undefined ? `-${value.endPort}` : ''
+      return `${protocol}/${value.port}${endPort}`
     }
-    if ("start" in value || "end" in value) {
-      return `${protocol}/${value.start ?? ""}-${value.end ?? ""}`;
+    if ('start' in value || 'end' in value) {
+      return `${protocol}/${value.start ?? ''}-${value.end ?? ''}`
     }
-    if ("strVal" in value) return `${protocol}/${value.strVal}`;
-    if ("intVal" in value) return `${protocol}/${value.intVal}`;
+    if ('strVal' in value) return `${protocol}/${value.strVal}`
+    if ('intVal' in value) return `${protocol}/${value.intVal}`
   }
   const protocol =
     ruleProtocol !== undefined
       ? formatProtocol(ruleProtocol).toUpperCase()
-      : "TCP";
-  return `${protocol}/${formatValue(value)}`;
+      : 'TCP'
+  return `${protocol}/${formatValue(value)}`
 }
 
 function formatProtocol(value: any): string {
-  if (value && typeof value === "object") {
-    if (value.strVal !== undefined) return String(value.strVal);
-    if (value.intVal !== undefined) return String(value.intVal);
-    return JSON.stringify(value);
+  if (value && typeof value === 'object') {
+    if (value.strVal !== undefined) return String(value.strVal)
+    if (value.intVal !== undefined) return String(value.intVal)
+    return JSON.stringify(value)
   }
-  return String(value);
+  return String(value)
 }

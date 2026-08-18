@@ -3,15 +3,15 @@ import {
   ArrowUpFromLine,
   GitFork,
   ShieldCheck,
-} from "lucide-react";
-import { Badge, type BadgeSeverity } from "../../ui/Badge";
+} from 'lucide-react'
+import { Badge, type BadgeSeverity } from '../../ui/Badge'
 import {
   Property,
   PropertyList,
   ResourceRefBadge,
   Section,
-} from "../../ui/drawer-components";
-import type { ResourceRef } from "../../../types";
+} from '../../ui/drawer-components'
+import type { ResourceRef } from '../../../types'
 import {
   getCalicoTierRef,
   getCalicoPolicyKindLabel,
@@ -19,35 +19,35 @@ import {
   getCalicoPolicyTypes,
   formatKubernetesLabelSelector,
   isCalicoStagedDeletion,
-} from "../resource-utils-calico";
-import { CalicoNetworkPolicyDiagram } from "./CalicoNetworkPolicyDiagram";
+} from '../resource-utils-calico'
+import { CalicoNetworkPolicyDiagram } from './CalicoNetworkPolicyDiagram'
 
 interface CalicoNetworkPolicyRendererProps {
-  data: any;
-  onNavigate?: (ref: ResourceRef) => void;
+  data: any
+  onNavigate?: (ref: ResourceRef) => void
 }
 
 const ACTION_SEVERITY: Record<string, BadgeSeverity> = {
-  allow: "success",
-  deny: "error",
-  log: "warning",
-  pass: "info",
-};
+  allow: 'success',
+  deny: 'error',
+  log: 'warning',
+  pass: 'info',
+}
 
 export function CalicoNetworkPolicyRenderer({
   data,
   onNavigate,
 }: CalicoNetworkPolicyRendererProps) {
-  const spec = data?.spec ?? {};
-  const kindLabel = getCalicoPolicyKindLabel(data?.kind);
-  const staged = kindLabel.includes("Staged");
-  const ingress = Array.isArray(spec.ingress) ? spec.ingress : undefined;
-  const egress = Array.isArray(spec.egress) ? spec.egress : undefined;
-  const types = getCalicoPolicyTypes(data);
-  const tierRef = getCalicoTierRef(data);
+  const spec = data?.spec ?? {}
+  const kindLabel = getCalicoPolicyKindLabel(data?.kind)
+  const staged = kindLabel.includes('Staged')
+  const ingress = Array.isArray(spec.ingress) ? spec.ingress : undefined
+  const egress = Array.isArray(spec.egress) ? spec.egress : undefined
+  const types = getCalicoPolicyTypes(data)
+  const tierRef = getCalicoTierRef(data)
   // A staged deletion has no selector and no rules to draw — it stages the
   // removal of the enforced policy with the same name.
-  const stagedDeletion = isCalicoStagedDeletion(data);
+  const stagedDeletion = isCalicoStagedDeletion(data)
 
   return (
     <>
@@ -55,13 +55,15 @@ export function CalicoNetworkPolicyRenderer({
         {stagedDeletion ? (
           <div className="card-inner-lg flex flex-col gap-1.5">
             <div className="flex items-center gap-2 text-[11px] text-theme-text-tertiary">
-              <Badge severity="warning" size="sm">Staged deletion</Badge>
+              <Badge severity="warning" size="sm">
+                Staged deletion
+              </Badge>
               <span>Nothing is previewed as protected</span>
             </div>
             <span className="text-xs text-theme-text-secondary">
-              Promoting this removes {data?.metadata?.name ?? "the policy"} from the{" "}
-              {String(spec.tier ?? "default")} tier. Any workload protected only by that
-              policy loses its coverage.
+              Promoting this removes {data?.metadata?.name ?? 'the policy'} from
+              the {String(spec.tier ?? 'default')} tier. Any workload protected
+              only by that policy loses its coverage.
             </span>
           </div>
         ) : (
@@ -77,8 +79,10 @@ export function CalicoNetworkPolicyRenderer({
               label="Selector"
               value={
                 <SelectorValue
-                  value={stagedDeletion ? "" : getCalicoPolicySelector(data)}
-                  emptyText={stagedDeletion ? "not applicable" : "all workloads"}
+                  value={stagedDeletion ? '' : getCalicoPolicySelector(data)}
+                  emptyText={
+                    stagedDeletion ? 'not applicable' : 'all workloads'
+                  }
                 />
               }
             />
@@ -164,7 +168,7 @@ export function CalicoNetworkPolicyRenderer({
         />
       )}
     </>
-  );
+  )
 }
 
 function RuleSection({
@@ -173,10 +177,10 @@ function RuleSection({
   rules,
   direction,
 }: {
-  title: string;
-  icon: React.ComponentType<{ className?: string }>;
-  rules: any[];
-  direction: "ingress" | "egress";
+  title: string
+  icon: React.ComponentType<{ className?: string }>
+  rules: any[]
+  direction: 'ingress' | 'egress'
 }) {
   return (
     <Section title={title} icon={Icon} defaultExpanded>
@@ -190,29 +194,31 @@ function RuleSection({
         </div>
       )}
     </Section>
-  );
+  )
 }
 
 function CalicoRuleCard({
   rule,
   direction,
 }: {
-  rule: any;
-  direction: "ingress" | "egress";
+  rule: any
+  direction: 'ingress' | 'egress'
 }) {
-  const action = String(rule?.action ?? "Allow");
-  const protocol = rule?.protocol;
-  const notProtocol = rule?.notProtocol;
-  const hasPorts = hasCalicoPortConstraints(rule);
-  const primaryEntity = direction === "ingress" ? rule?.source : rule?.destination;
-  const secondaryEntity = direction === "ingress" ? rule?.destination : rule?.source;
-  const primaryLabel = direction === "ingress" ? "Source" : "Destination";
-  const secondaryLabel = direction === "ingress" ? "Destination" : "Source";
+  const action = String(rule?.action ?? 'Allow')
+  const protocol = rule?.protocol
+  const notProtocol = rule?.notProtocol
+  const hasPorts = hasCalicoPortConstraints(rule)
+  const primaryEntity =
+    direction === 'ingress' ? rule?.source : rule?.destination
+  const secondaryEntity =
+    direction === 'ingress' ? rule?.destination : rule?.source
+  const primaryLabel = direction === 'ingress' ? 'Source' : 'Destination'
+  const secondaryLabel = direction === 'ingress' ? 'Destination' : 'Source'
 
   return (
     <div className="card-inner-lg space-y-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <Badge severity={ACTION_SEVERITY[action.toLowerCase()] ?? "neutral"}>
+        <Badge severity={ACTION_SEVERITY[action.toLowerCase()] ?? 'neutral'}>
           {action}
         </Badge>
         {protocol !== undefined && !hasPorts && (
@@ -254,20 +260,20 @@ function CalicoRuleCard({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 interface EntityRuleField {
-  label: string;
-  value: React.ReactNode;
-  negative?: boolean;
+  label: string
+  value: React.ReactNode
+  negative?: boolean
 }
 
 function EntityRuleBlock({ label, entity }: { label: string; entity: any }) {
   const peers = (Array.isArray(entity) ? entity : [entity])
     .map(entityFields)
-    .filter((fields) => fields.length > 0);
-  if (peers.length === 0) return null;
+    .filter((fields) => fields.length > 0)
+  if (peers.length === 0) return null
 
   return (
     <div className="mb-2">
@@ -283,61 +289,61 @@ function EntityRuleBlock({ label, entity }: { label: string; entity: any }) {
                 <span
                   className={
                     field.negative
-                      ? "text-warning-text text-xs shrink-0"
-                      : "text-theme-text-secondary text-xs shrink-0"
+                      ? 'text-warning-text text-xs shrink-0'
+                      : 'text-theme-text-secondary text-xs shrink-0'
                   }
                 >
                   {field.label}:
                 </span>
-                <div className="flex flex-wrap gap-1 min-w-0">{field.value}</div>
+                <div className="flex flex-wrap gap-1 min-w-0">
+                  {field.value}
+                </div>
               </div>
             ))}
           </div>
         ))}
       </div>
     </div>
-  );
+  )
 }
 
-function entityFields(
-  entity: any,
-): EntityRuleField[] {
-  if (!entity || typeof entity !== "object") return [];
+function entityFields(entity: any): EntityRuleField[] {
+  if (!entity || typeof entity !== 'object') return []
 
-  const fields: EntityRuleField[] = [];
+  const fields: EntityRuleField[] = []
   addEntityField(
     fields,
-    "Pod Selector",
+    'Pod Selector',
     entity.podSelector === undefined
       ? undefined
       : formatKubernetesLabelSelector(entity.podSelector),
-  );
-  addEntityField(fields, "Selector", entity.selector);
-  addEntityField(fields, "Not Selector", entity.notSelector, true);
+  )
+  addEntityField(fields, 'Selector', entity.selector)
+  addEntityField(fields, 'Not Selector', entity.notSelector, true)
   addEntityField(
     fields,
-    "Namespace Selector",
-    entity.namespaceSelector && typeof entity.namespaceSelector === "object"
+    'Namespace Selector',
+    entity.namespaceSelector && typeof entity.namespaceSelector === 'object'
       ? formatKubernetesLabelSelector(entity.namespaceSelector)
       : entity.namespaceSelector,
-  );
-  addEntityField(fields, "IP Block", entity.ipBlock);
+  )
+  addEntityField(fields, 'IP Block', entity.ipBlock)
   addEntityField(
     fields,
-    "Not Namespace Selector",
+    'Not Namespace Selector',
     entity.notNamespaceSelector,
     true,
-  );
-  addEntityField(fields, "Nets", entity.nets);
-  addEntityField(fields, "Not Nets", entity.notNets, true);
-  addEntityField(fields, "Service Accounts", entity.serviceAccounts);
+  )
+  addEntityField(fields, 'Nets', entity.nets)
+  addEntityField(fields, 'Not Nets', entity.notNets, true)
+  addEntityField(fields, 'Service Accounts', entity.serviceAccounts)
   addEntityField(
     fields,
-    "Not Service Accounts",
+    'Not Service Accounts',
     entity.notServiceAccounts,
     true,
-  );
-  return fields;
+  )
+  return fields
 }
 
 function addEntityField(
@@ -349,11 +355,11 @@ function addEntityField(
   if (
     value === undefined ||
     value === null ||
-    value === "" ||
+    value === '' ||
     (Array.isArray(value) && value.length === 0)
   )
-    return;
-  fields.push({ label, value: renderEntityValue(value, negative), negative });
+    return
+  fields.push({ label, value: renderEntityValue(value, negative), negative })
 }
 
 function PortBlock({
@@ -361,9 +367,9 @@ function PortBlock({
   entity,
   ruleProtocol,
 }: {
-  label: string;
-  entity: any;
-  ruleProtocol: any;
+  label: string
+  entity: any
+  ruleProtocol: any
 }) {
   const entries = [
     ...valuesFor(entity?.ports).map((port) => ({
@@ -374,8 +380,8 @@ function PortBlock({
       value: formatPort(port, ruleProtocol),
       negative: true,
     })),
-  ];
-  if (entries.length === 0) return null;
+  ]
+  if (entries.length === 0) return null
 
   return (
     <div className="mb-2">
@@ -384,12 +390,12 @@ function PortBlock({
         {entries.map((entry, index) => (
           <Badge
             key={`${entry.value}-${index}`}
-            tone={entry.negative ? "note" : "structural"}
+            tone={entry.negative ? 'note' : 'structural'}
             size="sm"
             className={
               entry.negative
-                ? "font-mono whitespace-nowrap line-through"
-                : "font-mono whitespace-nowrap"
+                ? 'font-mono whitespace-nowrap line-through'
+                : 'font-mono whitespace-nowrap'
             }
           >
             {entry.negative ? `not ${entry.value}` : entry.value}
@@ -397,7 +403,7 @@ function PortBlock({
         ))}
       </div>
     </div>
-  );
+  )
 }
 
 function hasCalicoPortConstraints(rule: any): boolean {
@@ -406,46 +412,46 @@ function hasCalicoPortConstraints(rule: any): boolean {
     valuesFor(rule?.source?.notPorts).length > 0 ||
     valuesFor(rule?.destination?.ports).length > 0 ||
     valuesFor(rule?.destination?.notPorts).length > 0
-  );
+  )
 }
 
 function valuesFor(value: any): any[] {
-  if (value === undefined || value === null || value === "") return [];
-  return Array.isArray(value) ? value : [value];
+  if (value === undefined || value === null || value === '') return []
+  return Array.isArray(value) ? value : [value]
 }
 
 function formatPort(value: any, ruleProtocol?: any): string {
-  if (value && typeof value === "object") {
+  if (value && typeof value === 'object') {
     const protocol = value.protocol
       ? formatProtocol(value.protocol).toUpperCase()
       : ruleProtocol !== undefined
         ? formatProtocol(ruleProtocol).toUpperCase()
-        : "TCP";
-    if ("port" in value) {
-      const endPort = value.endPort !== undefined ? `-${value.endPort}` : "";
-      return `${protocol}/${value.port}${endPort}`;
+        : 'TCP'
+    if ('port' in value) {
+      const endPort = value.endPort !== undefined ? `-${value.endPort}` : ''
+      return `${protocol}/${value.port}${endPort}`
     }
-    if ("start" in value || "end" in value) {
-      return `${protocol}/${value.start ?? ""}-${value.end ?? ""}`;
+    if ('start' in value || 'end' in value) {
+      return `${protocol}/${value.start ?? ''}-${value.end ?? ''}`
     }
-    if ("strVal" in value) return `${protocol}/${value.strVal}`;
-    if ("intVal" in value) return `${protocol}/${value.intVal}`;
+    if ('strVal' in value) return `${protocol}/${value.strVal}`
+    if ('intVal' in value) return `${protocol}/${value.intVal}`
   }
   const protocol =
     ruleProtocol !== undefined
       ? formatProtocol(ruleProtocol).toUpperCase()
-      : "TCP";
-  return `${protocol}/${formatValue(value)}`;
+      : 'TCP'
+  return `${protocol}/${formatValue(value)}`
 }
 
 function renderEntityValue(value: any, negative = false): React.ReactNode {
   if (
     value &&
-    typeof value === "object" &&
+    typeof value === 'object' &&
     !Array.isArray(value) &&
-    ("selector" in value || "namespaces" in value || "names" in value)
+    ('selector' in value || 'namespaces' in value || 'names' in value)
   ) {
-    const items: React.ReactNode[] = [];
+    const items: React.ReactNode[] = []
     if (value.selector !== undefined)
       items.push(
         <SelectorValue
@@ -453,27 +459,27 @@ function renderEntityValue(value: any, negative = false): React.ReactNode {
           value={value.selector}
           negative={negative}
         />,
-      );
+      )
     for (const name of value.names ?? value.namespaces ?? []) {
       items.push(
         <ValueBadge key={String(name)} value={name} negative={negative} />,
-      );
+      )
     }
     return items.length > 0 ? (
       items
     ) : (
       <ValueBadge value={JSON.stringify(value)} negative={negative} />
-    );
+    )
   }
 
-  const values = Array.isArray(value) ? value : [value];
+  const values = Array.isArray(value) ? value : [value]
   return values.map((item, index) => (
     <ValueBadge
       key={`${String(item)}-${index}`}
       value={formatValue(item)}
       negative={negative}
     />
-  ));
+  ))
 }
 
 function HTTPMatch({ value }: { value: any }) {
@@ -503,7 +509,7 @@ function HTTPMatch({ value }: { value: any }) {
           <span className="text-theme-text-secondary">Any HTTP request</span>
         )}
     </div>
-  );
+  )
 }
 
 function ICMPMatch({
@@ -511,37 +517,37 @@ function ICMPMatch({
   value,
   negative = false,
 }: {
-  label: string;
-  value: any;
-  negative?: boolean;
+  label: string
+  value: any
+  negative?: boolean
 }) {
-  const fields = Array.isArray(value) ? value : [value];
+  const fields = Array.isArray(value) ? value : [value]
   return (
     <div className="card-inner text-xs">
       <div className="text-theme-text-tertiary mb-1">{label}</div>
       <div className="flex flex-wrap gap-1">
         {fields.map((field, index) => {
           const text =
-            field && typeof field === "object"
+            field && typeof field === 'object'
               ? [
                   field.family !== undefined && `family ${field.family}`,
                   field.type !== undefined && `type ${field.type}`,
                   field.code !== undefined && `code ${field.code}`,
                 ]
                   .filter(Boolean)
-                  .join(", ") || JSON.stringify(field)
-              : String(field);
+                  .join(', ') || JSON.stringify(field)
+              : String(field)
           return (
             <ValueBadge
               key={`${text}-${index}`}
-              value={text || "any"}
+              value={text || 'any'}
               negative={negative}
             />
-          );
+          )
         })}
       </div>
     </div>
-  );
+  )
 }
 
 function InlineField({
@@ -549,9 +555,9 @@ function InlineField({
   values,
   tone,
 }: {
-  label: string;
-  values: any[];
-  tone?: "note" | "accent1" | "structural";
+  label: string
+  values: any[]
+  tone?: 'note' | 'accent1' | 'structural'
 }) {
   return (
     <div className="flex flex-wrap items-center gap-1">
@@ -564,7 +570,7 @@ function InlineField({
         />
       ))}
     </div>
-  );
+  )
 }
 
 function SelectorValue({
@@ -572,16 +578,16 @@ function SelectorValue({
   emptyText,
   negative = false,
 }: {
-  value: any;
-  emptyText?: string;
-  negative?: boolean;
+  value: any
+  emptyText?: string
+  negative?: boolean
 }) {
-  if (value === undefined || value === null || value === "") {
+  if (value === undefined || value === null || value === '') {
     return (
-      <span className="text-theme-text-tertiary">{emptyText ?? "Any"}</span>
-    );
+      <span className="text-theme-text-tertiary">{emptyText ?? 'Any'}</span>
+    )
   }
-  return <ValueBadge value={value} negative={negative} />;
+  return <ValueBadge value={value} negative={negative} />
 }
 
 function ValueBadge({
@@ -589,27 +595,27 @@ function ValueBadge({
   negative = false,
   tone,
 }: {
-  value: any;
-  negative?: boolean;
-  tone?: "note" | "accent1" | "structural";
+  value: any
+  negative?: boolean
+  tone?: 'note' | 'accent1' | 'structural'
 }) {
   return (
     <Badge
-      tone={tone ?? (negative ? "note" : "structural")}
+      tone={tone ?? (negative ? 'note' : 'structural')}
       size="sm"
       className="font-mono whitespace-normal break-all"
     >
       {String(value)}
     </Badge>
-  );
+  )
 }
 
 function BadgeList({
   values,
-  tone = "structural",
+  tone = 'structural',
 }: {
-  values: any[];
-  tone?: "note" | "accent1" | "structural";
+  values: any[]
+  tone?: 'note' | 'accent1' | 'structural'
 }) {
   return (
     <span className="flex flex-wrap gap-1">
@@ -619,34 +625,34 @@ function BadgeList({
         </Badge>
       ))}
     </span>
-  );
+  )
 }
 
 function formatValue(value: any): string {
-  if (value && typeof value === "object") {
-    if ("port" in value) {
-      const protocol = value.protocol ? `${value.protocol}/` : "";
-      const end = value.endPort !== undefined ? `-${value.endPort}` : "";
-      return `${protocol}${value.port}${end}`;
+  if (value && typeof value === 'object') {
+    if ('port' in value) {
+      const protocol = value.protocol ? `${value.protocol}/` : ''
+      const end = value.endPort !== undefined ? `-${value.endPort}` : ''
+      return `${protocol}${value.port}${end}`
     }
-    if ("start" in value || "end" in value)
-      return `${value.start ?? ""}-${value.end ?? ""}`;
-    if ("strVal" in value) return String(value.strVal);
-    if ("intVal" in value) return String(value.intVal);
-    return JSON.stringify(value);
+    if ('start' in value || 'end' in value)
+      return `${value.start ?? ''}-${value.end ?? ''}`
+    if ('strVal' in value) return String(value.strVal)
+    if ('intVal' in value) return String(value.intVal)
+    return JSON.stringify(value)
   }
-  return String(value);
+  return String(value)
 }
 
 function yesNo(value: any): string {
-  return value ? "Yes" : "No";
+  return value ? 'Yes' : 'No'
 }
 
 function formatProtocol(value: any): string {
-  if (value && typeof value === "object") {
-    if (value.strVal !== undefined) return String(value.strVal);
-    if (value.intVal !== undefined) return String(value.intVal);
-    return JSON.stringify(value);
+  if (value && typeof value === 'object') {
+    if (value.strVal !== undefined) return String(value.strVal)
+    if (value.intVal !== undefined) return String(value.intVal)
+    return JSON.stringify(value)
   }
-  return String(value);
+  return String(value)
 }

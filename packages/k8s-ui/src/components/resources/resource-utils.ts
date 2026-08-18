@@ -16,7 +16,7 @@ import { getBackupStatus as _getBackupStatus, getRestoreStatus as _getRestoreSta
 import { getExternalSecretStatus as _getExternalSecretStatus, getClusterExternalSecretStatus as _getClusterExternalSecretStatus, getSecretStoreStatus as _getSecretStoreStatus, getClusterSecretStoreStatus as _getClusterSecretStoreStatus, getSecretStoreProviderType as _getSecretStoreProviderType } from './resource-utils-eso'
 import { getHPATableState, hpaStatusFromState } from './resource-utils-hpa'
 import { getCNPGClusterStatus as _getCNPGClusterStatus, getCNPGBackupStatus as _getCNPGBackupStatus, getCNPGScheduledBackupStatus as _getCNPGScheduledBackupStatus, getCNPGPoolerStatus as _getCNPGPoolerStatus, isApiGroup as _isApiGroup, CNPG_GROUP as _CNPG_GROUP } from './resource-utils-cnpg'
-import { getCalicoIPPoolEncapsulation, getCalicoPolicyNamespaceSelector, getCalicoPolicyRuleCount, getCalicoPolicySelector, getCalicoPolicyServiceAccountSelector, getCalicoPolicyTypes, isCalicoApiVersion, isCalicoPolicyResource } from './resource-utils-calico'
+import { getCalicoIPPoolAllowedUses, getCalicoIPPoolBlockSize, getCalicoIPPoolEncapsulation, getCalicoPolicyNamespaceSelector, getCalicoPolicyServiceAccountSelector, getCalicoPolicyTypes, isCalicoApiVersion, isCalicoPolicyResource } from './resource-utils-calico'
 
 // ============================================================================
 // STATUS & HEALTH UTILITIES
@@ -2204,9 +2204,6 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
     case 'types':
       if (isCalicoPolicyResource(resource)) return getCalicoPolicyTypes(resource).join(', ')
       break
-    case 'selector':
-      if (isCalicoPolicyResource(resource)) return getCalicoPolicySelector(resource)
-      break
     case 'namespaceSelector':
       if (isCalicoPolicyResource(resource)) return getCalicoPolicyNamespaceSelector(resource)
       break
@@ -2218,6 +2215,31 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
       break
     case 'cidr':
       if (isCalicoApiVersion(resource?.apiVersion)) return String(resource.spec?.cidr ?? '')
+      break
+    case 'blockSize':
+      if (isCalicoApiVersion(resource?.apiVersion)) {
+        const size = getCalicoIPPoolBlockSize(resource)
+        return size === undefined ? '' : String(size)
+      }
+      break
+    case 'natOutgoing':
+      if (isCalicoApiVersion(resource?.apiVersion)) return resource.spec?.natOutgoing ? 'Yes' : 'No'
+      break
+    case 'nodeSelector':
+      if (isCalicoApiVersion(resource?.apiVersion)) return String(resource.spec?.nodeSelector ?? 'all()')
+      break
+    case 'allowedUses':
+      if (isCalicoApiVersion(resource?.apiVersion)) return getCalicoIPPoolAllowedUses(resource)
+      break
+    case 'expectedIPs':
+      if (isCalicoApiVersion(resource?.apiVersion)) {
+        return Array.isArray(resource.spec?.expectedIPs) ? resource.spec.expectedIPs.map(String).join(', ') : ''
+      }
+      break
+    case 'profiles':
+      if (isCalicoApiVersion(resource?.apiVersion)) {
+        return Array.isArray(resource.spec?.profiles) ? resource.spec.profiles.map(String).join(', ') : ''
+      }
       break
     case 'encapsulation':
       if (isCalicoApiVersion(resource?.apiVersion)) return getCalicoIPPoolEncapsulation(resource)
@@ -2236,12 +2258,6 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
       break
     case 'stagedAction':
       if (isCalicoPolicyResource(resource)) return String(resource.spec?.stagedAction ?? '')
-      break
-    case 'rules':
-      if (isCalicoPolicyResource(resource)) {
-        const counts = getCalicoPolicyRuleCount(resource)
-        return `${counts.ingress}i / ${counts.egress}e`
-      }
       break
     case 'node':
       // A Calico HostEndpoint names its node in spec.node; a Pod uses spec.nodeName.

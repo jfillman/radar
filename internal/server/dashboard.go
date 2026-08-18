@@ -1570,6 +1570,10 @@ type npSelector struct {
 	namespace string
 	name      string
 	selector  labels.Selector
+	// cilium marks a CiliumNetworkPolicy sharing this list with the core
+	// networking.k8s.io policies. A staged Calico deletion names a policy in one
+	// family or the other, never both.
+	cilium bool
 }
 
 type dashboardCalicoPolicy struct {
@@ -1579,6 +1583,9 @@ type dashboardCalicoPolicy struct {
 	// previewsProtection is false for the staged actions that describe removing
 	// or ignoring a policy rather than adding one.
 	previewsProtection bool
+	// stagesRemoval is true only for a staged deletion. An ignored staged policy
+	// previews nothing, but it does not take the enforced policy away either.
+	stagesRemoval bool
 }
 
 // stagedPolicyTarget identifies the enforced policy a staged one refers to.
@@ -1666,7 +1673,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 				if err != nil {
 					continue
 				}
-				allNPs = append(allNPs, npSelector{np.Namespace, np.Name, sel})
+				allNPs = append(allNPs, npSelector{namespace: np.Namespace, name: np.Name, selector: sel})
 			}
 		} else {
 			for _, ns := range readableNamespaces {
@@ -1680,7 +1687,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 					if err != nil {
 						continue
 					}
-					allNPs = append(allNPs, npSelector{np.Namespace, np.Name, sel})
+					allNPs = append(allNPs, npSelector{namespace: np.Namespace, name: np.Name, selector: sel})
 				}
 			}
 		}
@@ -1707,7 +1714,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 						}
 						selectorMap, _, _ := unstructured.NestedMap(cnp.Object, "spec", "endpointSelector", "matchLabels")
 						if len(selectorMap) == 0 {
-							allNPs = append(allNPs, npSelector{ns, cnp.GetName(), labels.Everything()})
+							allNPs = append(allNPs, npSelector{namespace: ns, name: cnp.GetName(), selector: labels.Everything(), cilium: true})
 						} else {
 							selectorLabels := make(map[string]string)
 							for k, v := range selectorMap {
@@ -1716,7 +1723,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 								}
 							}
 							if sel, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: selectorLabels}); err == nil {
-								allNPs = append(allNPs, npSelector{ns, cnp.GetName(), sel})
+								allNPs = append(allNPs, npSelector{namespace: ns, name: cnp.GetName(), selector: sel, cilium: true})
 							}
 						}
 					}
@@ -1758,6 +1765,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 							matcher:            topology.CompileCalicoPolicyMatcher(policy),
 							definition:         definition,
 							previewsProtection: !definition.Staged || topology.CalicoStagedActionPreviewsProtection(policy),
+							stagesRemoval:      definition.Staged && topology.CalicoStagedActionStagesRemoval(policy),
 						})
 					}
 				}
@@ -1842,7 +1850,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 	// policy it names must not count towards the projected coverage.
 	stagedForDeletion := make(map[stagedPolicyTarget]bool)
 	for _, policy := range calicoPolicies {
-		if !policy.definition.Staged || policy.previewsProtection || policy.definition.Stages == "" {
+		if !policy.stagesRemoval || policy.definition.Stages == "" {
 			continue
 		}
 		stagedForDeletion[stagedPolicyTarget{
@@ -1864,7 +1872,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 				continue
 			}
 			covered[workload.key] = true
-			if !stagedForDeletion[stagedPolicyTarget{kubernetesFamily: true, kind: "NetworkPolicy", namespace: np.namespace, name: np.name}] {
+			if np.cilium || !stagedForDeletion[stagedPolicyTarget{kubernetesFamily: true, kind: "NetworkPolicy", namespace: np.namespace, name: np.name}] {
 				coveredIfStaged[workload.key] = true
 			}
 		}

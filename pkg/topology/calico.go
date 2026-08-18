@@ -281,24 +281,37 @@ func newCalicoWorkload(id, namespace string, workloadLabels map[string]string, s
 	}
 }
 
+func calicoStagedAction(policy *unstructured.Unstructured) string {
+	if policy == nil {
+		return ""
+	}
+	action, _, _ := unstructured.NestedString(policy.Object, "spec", "stagedAction")
+	return strings.ToLower(action)
+}
+
 // CalicoStagedActionPreviewsProtection reports whether a staged policy is a
 // preview of protection that would exist once promoted. Delete is not: it
 // previews removing a policy, and the Calico API requires its spec to be
 // otherwise empty, so its absent selector would otherwise read as "selects every
-// workload". Ignore means the staged policy is skipped altogether. Any other
-// action, including one Calico adds later, is treated as a preview — omitting a
-// real preview is the worse error.
+// workload". Ignore is not either: the staged policy is skipped, so it previews
+// nothing. Any other action, including one Calico adds later, is treated as a
+// preview — omitting a real preview is the worse error.
 func CalicoStagedActionPreviewsProtection(policy *unstructured.Unstructured) bool {
-	if policy == nil {
-		return false
-	}
-	action, _, _ := unstructured.NestedString(policy.Object, "spec", "stagedAction")
-	switch strings.ToLower(action) {
+	switch calicoStagedAction(policy) {
 	case "delete", "ignore":
 		return false
 	default:
-		return true
+		return policy != nil
 	}
+}
+
+// CalicoStagedActionStagesRemoval reports whether promoting a staged policy
+// would REMOVE the enforced policy it names. Only Delete does. This is a
+// different question from whether the staged policy previews protection —
+// Ignore answers no to both, and conflating them makes an ignored policy look
+// like it takes protection away.
+func CalicoStagedActionStagesRemoval(policy *unstructured.Unstructured) bool {
+	return calicoStagedAction(policy) == "delete"
 }
 
 // CalicoEndpointLabels returns the labels Calico exposes for a Kubernetes
@@ -788,14 +801,6 @@ func CalicoPolicyMatchesWorkload(policy *unstructured.Unstructured, workloadLabe
 
 func isStagedKubernetesNetworkPolicy(policy *unstructured.Unstructured) bool {
 	return policy != nil && strings.EqualFold(policy.GetKind(), "StagedKubernetesNetworkPolicy")
-}
-
-func calicoKubernetesPolicyMatchesWorkload(policy *unstructured.Unstructured, workloadLabels map[string]string) (bool, bool) {
-	selector, valid := calicoKubernetesPodSelector(policy)
-	if !valid {
-		return false, false
-	}
-	return selector.Matches(labels.Set(workloadLabels)), true
 }
 
 func calicoKubernetesPodSelector(policy *unstructured.Unstructured) (labels.Selector, bool) {

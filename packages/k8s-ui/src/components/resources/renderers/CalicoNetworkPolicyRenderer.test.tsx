@@ -16,7 +16,7 @@ describe("CalicoNetworkPolicyRenderer", () => {
             tier: "security",
             order: 100,
             types: ["Ingress", "Egress"],
-            stagedAction: "Deny",
+            stagedAction: "Set",
             preDNAT: true,
             applyOnForward: true,
             doNotTrack: false,
@@ -170,5 +170,28 @@ describe("CalicoNetworkPolicyRenderer", () => {
     expect(html).toMatch(/tier[\s\S]*security/);
     expect(html).toContain("security");
     expect(html).toContain("<button");
+  });
+});
+
+describe("CalicoNetworkPolicyRenderer staged deletions", () => {
+  it("says a deletion previews nothing instead of drawing a policy flow", () => {
+    const html = renderToString(
+      <CalicoNetworkPolicyRenderer
+        data={{
+          apiVersion: "projectcalico.org/v3",
+          kind: "StagedNetworkPolicy",
+          metadata: { name: "db-lockdown", namespace: "prod" },
+          // The Calico API rejects every other spec field alongside Delete.
+          spec: { stagedAction: "Delete", tier: "default" },
+        }}
+      />,
+    );
+
+    expect(html).toContain("Staged deletion");
+    expect(html).toContain("Nothing is previewed as protected");
+    expect(html).toContain("db-lockdown");
+    expect(html).not.toContain("all workloads");
+    // The flow diagram's own staged banner must not also render.
+    expect(html).not.toContain("Dashed paths are evaluated but not enforced");
   });
 });

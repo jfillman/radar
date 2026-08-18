@@ -77,8 +77,8 @@ export function CalicoNetworkPolicyRenderer({
               label="Selector"
               value={
                 <SelectorValue
-                  value={getCalicoPolicySelector(data)}
-                  emptyText="all workloads"
+                  value={stagedDeletion ? "" : getCalicoPolicySelector(data)}
+                  emptyText={stagedDeletion ? "not applicable" : "all workloads"}
                 />
               }
             />

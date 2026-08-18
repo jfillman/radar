@@ -121,7 +121,6 @@ describe("staged deletions", () => {
     expect(getCalicoPolicySelector(deletion)).toBe(
       CALICO_SELECTOR_NOT_APPLICABLE,
     );
-    expect(getCalicoPolicySelector(deletion)).not.toContain("all workloads");
   });
 
   it("leaves a staged Set reading its real selector", () => {

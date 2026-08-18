@@ -8267,8 +8267,9 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 		kindLower := strings.ToLower(kind)
 
 		// Skip if already processed or not a CRD. Calico's policy kinds are
-		// skipped by group rather than by name: other CNIs serve a CRD called
-		// NetworkPolicy under their own group and still need generic nodes.
+		// skipped by group rather than by name, so another CNI's CRD of the same
+		// name still reaches this path. It renders as a generic node like any
+		// other CRD — which is what it got before Calico was handled here.
 		if processedKinds[kindLower] {
 			continue
 		}

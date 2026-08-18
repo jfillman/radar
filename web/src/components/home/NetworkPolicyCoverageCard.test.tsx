@@ -33,8 +33,7 @@ describe("NetworkPolicyCoverageCard", () => {
     );
 
     expect(html).toContain("30%");
-    expect(html).toContain("50");
-    expect(html).toContain("% if staged applied)");
+    expect(html).toContain("(50% if staged applied)");
     expect(html).toContain("Covered workloads");
     expect(html).toContain("Covered if staged");
     expect(html).toContain("Uncovered workloads");

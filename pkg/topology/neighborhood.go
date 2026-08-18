@@ -573,7 +573,10 @@ func APIVersionGroup(apiVersion string) string {
 // crd.projectcalico.org, and is represented by a single node, so a reference
 // through either group has to resolve to it.
 func nodeMatchesAPIGroup(n *Node, group string) bool {
-	if n == nil || group == "" {
+	if n == nil {
+		return false
+	}
+	if group == "" {
 		return true
 	}
 	if nodeAPIGroupFromData(n) == group {

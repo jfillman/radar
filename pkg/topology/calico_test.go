@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -115,7 +116,7 @@ func calicoTestDynamicFor(group string) *calicoTestDynamic {
 		case "StagedNetworkPolicy":
 			d.resources[gvr] = []*unstructured.Unstructured{calicoTestObject(group, definition.version, definition.kind, "demo", "frontend-staged", map[string]any{
 				"selector":     "app == 'frontend'",
-				"stagedAction": "Deny",
+				"stagedAction": "Set",
 			})}
 		case "StagedGlobalNetworkPolicy":
 			d.resources[gvr] = []*unstructured.Unstructured{calicoTestObject(group, definition.version, definition.kind, "", "all-staged", map[string]any{
@@ -639,5 +640,176 @@ func TestCalicoStagedDeletionPreviewsNoProtection(t *testing.T) {
 		if edge.Source == deletionID {
 			t.Errorf("a staged deletion drew a protects edge to %s", edge.Target)
 		}
+	}
+
+	// A staged policy that DOES select something must still preview its edge, so
+	// the assertions above are about the action and not about staged policies in
+	// general.
+	previewing := calicoTestDynamicFor(calicoProjectGroup)
+	previewing.resources[previewing.gvrs[calicoProjectGroup+"\x00StagedNetworkPolicy"]] = []*unstructured.Unstructured{
+		calicoTestObject(calicoProjectGroup, "v3", "StagedNetworkPolicy", "demo", "tighten", map[string]any{
+			"stagedAction": "Set",
+			"selector":     "app == 'frontend'",
+		}),
+	}
+	previewTopo, err := NewBuilder(provider).WithDynamic(previewing).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+	preview := 0
+	for _, edge := range previewTopo.Edges {
+		if edge.Source == "calicostagednetworkpolicy/demo/tighten" && edge.Partial {
+			preview++
+		}
+	}
+	if preview != 1 {
+		t.Fatalf("staged Set preview edges = %d, want 1 — the deletion assertions must not pass by staged policies never drawing edges", preview)
+	}
+}
+
+// antreaTestDynamic serves a NetworkPolicy CRD under a non-Calico group, which
+// is what a cluster running a different CNI looks like.
+type antreaTestDynamic struct {
+	*calicoTestDynamic
+	antrea    schema.GroupVersionResource
+	resources []*unstructured.Unstructured
+}
+
+func (d *antreaTestDynamic) GetWatchedResources() []schema.GroupVersionResource {
+	return append(d.calicoTestDynamic.GetWatchedResources(), d.antrea)
+}
+
+func (d *antreaTestDynamic) ListNamespaces(gvr schema.GroupVersionResource, ns []string) ([]*unstructured.Unstructured, error) {
+	if gvr == d.antrea {
+		return d.resources, nil
+	}
+	return d.calicoTestDynamic.ListNamespaces(gvr, ns)
+}
+
+func (d *antreaTestDynamic) List(gvr schema.GroupVersionResource, ns string) ([]*unstructured.Unstructured, error) {
+	if gvr == d.antrea {
+		return d.resources, nil
+	}
+	return d.calicoTestDynamic.List(gvr, ns)
+}
+
+func (d *antreaTestDynamic) GetKindForGVR(gvr schema.GroupVersionResource) string {
+	if gvr == d.antrea {
+		return "NetworkPolicy"
+	}
+	return d.calicoTestDynamic.GetKindForGVR(gvr)
+}
+
+// Calico's policy kinds are skipped from the generic CRD path by API GROUP. A
+// name-based skip also swallows another CNI's identically-named CRD, which
+// silently disappears from the graph — the reason the skip is group-scoped.
+func TestForeignNetworkPolicyCRDStillRendersAsGenericNode(t *testing.T) {
+	antreaGVR := schema.GroupVersionResource{Group: "crd.antrea.io", Version: "v1alpha1", Resource: "networkpolicies"}
+	policy := calicoTestObject("crd.antrea.io", "v1alpha1", "NetworkPolicy", "demo", "antrea-policy", map[string]any{
+		"priority": int64(5),
+	})
+	policy.SetOwnerReferences([]metav1.OwnerReference{{Kind: "Deployment", Name: "frontend"}})
+
+	dynamic := &antreaTestDynamic{
+		calicoTestDynamic: calicoTestDynamicFor(calicoProjectGroup),
+		antrea:            antreaGVR,
+		resources:         []*unstructured.Unstructured{policy},
+	}
+	provider := &calicoTestProvider{mockProvider: &mockProvider{deployments: []*appsv1.Deployment{
+		{ObjectMeta: metav1.ObjectMeta{Name: "frontend", Namespace: "demo"}, Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "frontend"}}},
+		}},
+	}}}
+
+	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	var found *Node
+	for i := range topo.Nodes {
+		if topo.Nodes[i].Name == "antrea-policy" {
+			found = &topo.Nodes[i]
+		}
+	}
+	if found == nil {
+		var ids []string
+		for _, n := range topo.Nodes {
+			ids = append(ids, n.ID)
+		}
+		t.Fatalf("another CNI's NetworkPolicy CRD was dropped from the topology; nodes = %v", ids)
+	}
+	if group := nodeAPIGroupFromData(found); group != "crd.antrea.io" {
+		t.Errorf("foreign policy node API group = %q, want crd.antrea.io", group)
+	}
+	// The Calico policies from the same build must still be folded and present,
+	// so the group-scoped skip is doing its own job too.
+	calico := 0
+	for _, n := range topo.Nodes {
+		if IsCalicoPolicyKind(n.Kind) {
+			calico++
+		}
+	}
+	if calico == 0 {
+		t.Error("Calico policy nodes disappeared while making room for the foreign CRD")
+	}
+}
+
+func TestCalicoPolicyRBACTuplesSurviveAJSONRoundTrip(t *testing.T) {
+	// Node data is marshalled and decoded on the SSE and hub paths, which turns
+	// []string into []any. Failing to read that shape would fail closed and hide
+	// every dual-group policy on exactly those paths.
+	node := Node{
+		ID: "calicoglobalnetworkpolicy//shared", Kind: KindCalicoGlobalNetworkPolicy, Name: "shared",
+		Data: map[string]any{
+			"apiVersion": "projectcalico.org/v3",
+			"apiGroups":  []string{"projectcalico.org", "crd.projectcalico.org"},
+		},
+	}
+	encoded, err := json.Marshal(node)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded Node
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := decoded.Data["apiGroups"].([]any); !ok {
+		t.Fatalf("decoded apiGroups is %T, expected the []any shape this test exists for", decoded.Data["apiGroups"])
+	}
+	tuples, ok := CalicoPolicyRBACTuples(&decoded)
+	if !ok || len(tuples) != 2 {
+		t.Fatalf("tuples after a round trip = %+v (%v), want one per serving group", tuples, ok)
+	}
+}
+
+func TestCalicoMatcherRejectsUnusableOptionalSelectors(t *testing.T) {
+	workload := newCalicoWorkload("deployment/demo/frontend", "demo", map[string]string{"app": "frontend"}, "api-sa")
+	namespaceLabels := map[string]string{"env": "prod"}
+	serviceAccountLabels := map[string]string{"team": "payments"}
+
+	for _, test := range []struct {
+		name string
+		spec map[string]any
+		want bool
+	}{
+		{name: "usable namespace selector", spec: map[string]any{"selector": "app == 'frontend'", "namespaceSelector": "env == 'prod'"}, want: true},
+		{name: "unparseable namespace selector", spec: map[string]any{"selector": "app == 'frontend'", "namespaceSelector": "env ==="}},
+		{name: "usable service account selector", spec: map[string]any{"selector": "app == 'frontend'", "serviceAccountSelector": "team == 'payments'"}, want: true},
+		{name: "service account selector that does not match", spec: map[string]any{"selector": "app == 'frontend'", "serviceAccountSelector": "team == 'other'"}},
+		{name: "unparseable service account selector", spec: map[string]any{"selector": "app == 'frontend'", "serviceAccountSelector": "team ==="}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			policy := calicoTestObject(calicoProjectGroup, "v3", "NetworkPolicy", "demo", test.name, test.spec)
+			matched, valid := CompileCalicoPolicyMatcher(policy).Matches(
+				workload.endpointLabels, namespaceLabels, workload.serviceAccount, serviceAccountLabels,
+			)
+			if !valid {
+				t.Fatalf("endpoint selector reported invalid; only the endpoint selector may do that")
+			}
+			if matched != test.want {
+				t.Fatalf("matched = %v, want %v", matched, test.want)
+			}
+		})
 	}
 }

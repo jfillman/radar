@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -333,5 +335,76 @@ func TestDashboardStagedDeletionRemovesProjectedCoverage(t *testing.T) {
 	}
 	if got.CoveredWorkloadsIfStaged != 0 {
 		t.Fatalf("CoveredWorkloadsIfStaged = %d, want 0 once the policy is staged for deletion", got.CoveredWorkloadsIfStaged)
+	}
+}
+
+func TestDashboardStagedIgnoreLeavesCoverageAlone(t *testing.T) {
+	deployment := dashboardTestDeployment("ns-a", "frontend", "frontend")
+	core, err := k8score.NewResourceCache(k8score.CacheConfig{
+		Client:        kubernetesfake.NewSimpleClientset(deployment),
+		ResourceTypes: map[string]bool{k8score.Deployments: true},
+		DeferredTypes: map[string]bool{},
+		SyncTimeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache: %v", err)
+	}
+	t.Cleanup(core.Stop)
+	cache := &k8s.ResourceCache{ResourceCache: core}
+
+	networkPolicy := schema.GroupVersionResource{Group: "projectcalico.org", Version: "v3", Resource: "networkpolicies"}
+	stagedNetworkPolicy := schema.GroupVersionResource{Group: "projectcalico.org", Version: "v3", Resource: "stagednetworkpolicies"}
+	resources := []k8s.APIResource{
+		{Group: networkPolicy.Group, Version: networkPolicy.Version, Kind: "NetworkPolicy", Name: networkPolicy.Resource, Namespaced: true, IsCRD: true, Verbs: []string{"get", "list", "watch"}},
+		{Group: stagedNetworkPolicy.Group, Version: stagedNetworkPolicy.Version, Kind: "StagedNetworkPolicy", Name: stagedNetworkPolicy.Resource, Namespaced: true, IsCRD: true, Verbs: []string{"get", "list", "watch"}},
+	}
+	listKinds := map[schema.GroupVersionResource]string{
+		networkPolicy:       "NetworkPolicyList",
+		stagedNetworkPolicy: "StagedNetworkPolicyList",
+	}
+	objects := []runtime.Object{
+		dashboardTestCalicoPolicy(networkPolicy, "NetworkPolicy", "ns-a", "frontend-policy", map[string]any{"selector": "app == 'frontend'"}),
+		// Ignore means this staged policy is skipped. It previews no protection,
+		// but it does not take the enforced policy of the same name away either.
+		dashboardTestCalicoPolicy(stagedNetworkPolicy, "StagedNetworkPolicy", "ns-a", "frontend-policy", map[string]any{
+			"stagedAction": "Ignore",
+			"selector":     "app == 'frontend'",
+		}),
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, objects...)
+	if err := k8s.InitTestDynamicResourceCache(dyn, resources); err != nil {
+		t.Fatalf("InitTestDynamicResourceCache: %v", err)
+	}
+	t.Cleanup(k8s.ResetTestDynamicState)
+
+	dynamicCache := k8s.GetDynamicResourceCache()
+	for _, gvr := range []schema.GroupVersionResource{networkPolicy, stagedNetworkPolicy} {
+		if _, err := dynamicCache.List(gvr, ""); err != nil {
+			t.Fatalf("List(%v): %v", gvr, err)
+		}
+		if !dynamicCache.WaitForSync(gvr, 2*time.Second) {
+			t.Fatalf("%v informer did not sync", gvr)
+		}
+	}
+
+	got := (&Server{}).getDashboardNetworkPolicyCoverage(requestWithUser("GET", "/", nil), cache, nil)
+	if got == nil {
+		t.Fatal("coverage is nil")
+	}
+	if got.CoveredWorkloads != 1 || got.CoveredWorkloadsIfStaged != 1 {
+		t.Fatalf("coverage = %d/%d covered/projected, want 1/1 — an ignored staged policy removes nothing", got.CoveredWorkloads, got.CoveredWorkloadsIfStaged)
+	}
+}
+
+func TestDashboardCoverageProjectionSerializesWhenZero(t *testing.T) {
+	// The frontend falls back to the enforced figure when this field is absent,
+	// so an omitempty here would silently hide a projected drop to zero — the
+	// exact case the projection exists to show.
+	encoded, err := json.Marshal(DashboardNetworkPolicyCoverage{TotalPolicies: 1, CoveredWorkloads: 3, TotalWorkloads: 5})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"coveredWorkloadsIfStaged":0`) {
+		t.Fatalf("coverage JSON = %s, want an explicit zero projection", encoded)
 	}
 }

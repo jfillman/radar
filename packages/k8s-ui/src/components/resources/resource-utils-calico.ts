@@ -126,8 +126,15 @@ export function getCalicoPolicyKindLabel(kind: unknown): string {
 
 export function getCalicoPolicyTypes(policy: any): string[] {
   const raw = policy?.spec?.types ?? policy?.spec?.policyTypes;
-  if (Array.isArray(raw)) return raw.map(String);
-  return raw === undefined || raw === null || raw === "" ? [] : [String(raw)];
+  if (Array.isArray(raw) && raw.length > 0) return raw.map(String);
+  if (typeof raw === "string" && raw !== "") return [raw];
+  // Calico derives the types when the field is absent, so a policy with rules
+  // is enforcing them whether or not it says so.
+  const derived = ["Ingress"];
+  if (Array.isArray(policy?.spec?.egress) && policy.spec.egress.length > 0) {
+    derived.push("Egress");
+  }
+  return policy?.spec === undefined ? [] : derived;
 }
 
 export function getCalicoPolicyRuleCount(policy: any): {
@@ -229,7 +236,6 @@ export function getCalicoIPPoolEncapsulation(pool: any): string {
 
 export function getCalicoIPPoolAllowedUses(pool: any): string {
   const uses = pool?.spec?.allowedUses;
-  return Array.isArray(uses) && uses.length > 0
-    ? uses.map(String).join(", ")
-    : "Workload, Tunnel";
+  if (!Array.isArray(uses)) return "Workload, Tunnel";
+  return uses.length > 0 ? uses.map(String).join(", ") : "-";
 }

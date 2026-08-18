@@ -21,8 +21,11 @@ export function NetworkPolicyCoverageCard({ data, onNavigate }: NetworkPolicyCov
   const percentageIfStaged = data.totalWorkloads > 0
     ? Math.round((coveredIfStaged / data.totalWorkloads) * 100)
     : 0
-  const enforcedPercentage = Math.min(percentage, percentageIfStaged)
-  const stagedDeltaPercentage = Math.abs(percentageIfStaged - percentage)
+  const enforcedPercentage = hasStagedPolicies ? Math.min(percentage, percentageIfStaged) : percentage
+  // Gated on the same condition as the segment that draws it, so the three
+  // widths always sum to the full track even for a host that supplies a
+  // projection without any staged policies.
+  const stagedDeltaPercentage = hasStagedPolicies ? Math.abs(percentageIfStaged - percentage) : 0
   const hasPolicies = data.totalPolicies > 0
   const accentColor = !hasPolicies
     ? 'text-theme-text-tertiary'

@@ -42,6 +42,14 @@ interface VeleroBackupRendererProps {
    * screen away.
    */
   storageLocationPhase?: string
+  /**
+   * The location this backup is actually stored in, resolved by the host
+   * against the location list. An unset `spec.storageLocation` means "whichever
+   * location carries spec.default", which this component cannot see — so
+   * without it the link falls back to the literal name `default`, which does
+   * not exist on an install that renamed it.
+   */
+  storageLocationName?: string
   /** Wired by the host, which owns the fetch. Optional: a consumer that does
    *  not wire it gets the counts on their own, with no button. */
   messages?: VeleroRunMessagesFetch
@@ -50,7 +58,7 @@ interface VeleroBackupRendererProps {
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }
 
-export function VeleroBackupRenderer({ data, storageLocationPhase, messages, onNavigate }: VeleroBackupRendererProps) {
+export function VeleroBackupRenderer({ data, storageLocationPhase, storageLocationName, messages, onNavigate }: VeleroBackupRendererProps) {
   const status = data.status || {}
   const conditions = status.conditions || []
 
@@ -226,7 +234,7 @@ export function VeleroBackupRenderer({ data, storageLocationPhase, messages, onN
             value={
               <span className="flex items-center gap-2">
                 <ResourceLink
-                  name={getBackupStorageLocation(data)}
+                  name={storageLocationName || getBackupStorageLocation(data)}
                   kind="BackupStorageLocation"
                   namespace={data?.metadata?.namespace ?? ''}
                   group="velero.io"

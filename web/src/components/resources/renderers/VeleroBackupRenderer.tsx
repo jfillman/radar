@@ -1,6 +1,6 @@
 import { LookupFailureNote } from '@skyhook-io/k8s-ui/components/resources/renderers/LookupFailureNote'
 import { VeleroBackupRenderer as BaseVeleroBackupRenderer } from '@skyhook-io/k8s-ui/components/resources/renderers/VeleroBackupRenderer'
-import { getBackupStorageLocation } from '@skyhook-io/k8s-ui/components/resources/resource-utils-velero'
+import { resolveBackupStorageLocation } from '@skyhook-io/k8s-ui/components/resources/resource-utils-velero'
 import type { ResourceRef } from '@skyhook-io/k8s-ui'
 import { useResources } from '../../../api/client'
 import { useVeleroRunMessages } from '../../../api/policy'
@@ -23,11 +23,16 @@ import { useVeleroRunMessages } from '../../../api/policy'
 export function VeleroBackupRenderer({ data, onNavigate }: { data: any; onNavigate?: (ref: ResourceRef) => void }) {
   const messages = useRunMessages('backups', data)
   const namespace = data?.metadata?.namespace ?? ''
-  const wanted = getBackupStorageLocation(data)
 
   const locations = useResources<any>('backupstoragelocations', namespace, 'velero.io', {
-    enabled: !!namespace && !!wanted,
+    enabled: !!namespace,
   })
+
+  // Resolved against the list, not by name: an unset spec.storageLocation means
+  // whichever location carries spec.default. Matching the literal name
+  // "default" finds nothing on an install that renamed it, which silently costs
+  // both the unavailable-location warning and a working link.
+  const resolved = resolveBackupStorageLocation(data, locations.data)
 
   // Undefined until the lookup answers. A location we have not read is not a
   // healthy one, and rendering it as such is the failure this page is here to
@@ -35,12 +40,13 @@ export function VeleroBackupRenderer({ data, onNavigate }: { data: any; onNaviga
   const phase =
     locations.isLoading || locations.error
       ? undefined
-      : (locations.data ?? []).find((l: any) => l?.metadata?.name === wanted)?.status?.phase
+      : (locations.data ?? []).find((l: any) => l?.metadata?.name === resolved)?.status?.phase
 
   return (
     <BaseVeleroBackupRenderer
       data={data}
       storageLocationPhase={phase}
+      storageLocationName={resolved}
       messages={messages}
       onNavigate={onNavigate}
     />

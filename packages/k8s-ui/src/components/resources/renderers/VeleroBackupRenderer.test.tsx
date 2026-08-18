@@ -73,3 +73,39 @@ describe('a run Velero refused to start', () => {
     expect(html).toContain('dr-replica&quot; is unavailable')
   })
 })
+
+/**
+ * Velero resolves an unset spec.storageLocation to whichever location carries
+ * spec.default, which is a flag and not a name. An install that renamed its
+ * default location has no object called "default" at all, so resolving by name
+ * finds nothing: the unavailable-location warning never appears and the link
+ * points at something that does not exist.
+ */
+describe('a backup that names no location', () => {
+  const unset = {
+    metadata: { name: 'nightly', namespace: 'velero' },
+    spec: { ttl: '720h0m0s' },
+    status: { phase: 'Completed' },
+  }
+
+  it('links the location that actually holds it', () => {
+    const html = renderToString(
+      <VeleroBackupRenderer data={unset} storageLocationName="primary" onNavigate={() => {}} />,
+    )
+    expect(html).toContain('primary')
+  })
+
+  it('still warns when that location is the unavailable one', () => {
+    const html = renderToString(
+      <VeleroBackupRenderer data={unset} storageLocationName="primary" storageLocationPhase="Unavailable" />,
+    )
+    expect(html).toContain('nothing here to restore from')
+  })
+
+  // A host that does not resolve gets Velero's by-name fallback, which is right
+  // on every install that did not rename it.
+  it('falls back to the conventional name when the host does not resolve', () => {
+    const html = renderToString(<VeleroBackupRenderer data={unset} onNavigate={() => {}} />)
+    expect(html).toContain('default')
+  })
+})

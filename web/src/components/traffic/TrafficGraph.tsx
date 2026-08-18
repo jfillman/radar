@@ -772,7 +772,9 @@ function DetailsPanel({
                   // The graph omits the arrowhead on this edge because nothing
                   // established which end opened the conversation. An arrow here
                   // would assert exactly what the graph is declining to claim.
-                  <span className="text-theme-text-tertiary shrink-0" title="Direction unknown">&mdash;</span>
+                  <Tooltip content="Neither end was reported as the initiator">
+                    <span className="text-theme-text-tertiary shrink-0">&mdash;</span>
+                  </Tooltip>
                 ) : (
                   <ArrowRight className="h-4 w-4 text-theme-text-tertiary shrink-0" />
                 )}

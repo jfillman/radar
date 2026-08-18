@@ -28,25 +28,31 @@ export function VeleroBackupRenderer({ data, onNavigate }: { data: any; onNaviga
     enabled: !!namespace,
   })
 
-  // Resolved against the list, not by name: an unset spec.storageLocation means
-  // whichever location carries spec.default. Matching the literal name
-  // "default" finds nothing on an install that renamed it, which silently costs
-  // both the unavailable-location warning and a working link.
-  const resolved = resolveBackupStorageLocation(data, locations.data)
+  // Everything below is gated on the lookup having answered. A location we have
+  // not read is not a healthy one, and neither is a name we have not resolved:
+  // an unset spec.storageLocation means whichever location carries spec.default,
+  // so resolving it against a list that has not loaded produces the literal
+  // "default", which is wrong on any install that renamed it — and wrong
+  // permanently when the list errors rather than for a moment.
+  const answered = !locations.isLoading && !locations.error && locations.data !== undefined
+  const resolved = answered ? resolveBackupStorageLocation(data, locations.data) : undefined
 
-  // Undefined until the lookup answers. A location we have not read is not a
-  // healthy one, and rendering it as such is the failure this page is here to
-  // avoid.
-  const phase =
-    locations.isLoading || locations.error
-      ? undefined
-      : (locations.data ?? []).find((l: any) => l?.metadata?.name === resolved)?.status?.phase
+  const match = answered
+    ? (locations.data ?? []).find((l: any) => l?.metadata?.name === resolved)
+    : undefined
+  const phase = match?.status?.phase
+
+  // The location the backup names is gone. Velero restores from the location
+  // recorded on the backup, so this is not restorable — and it is invisible
+  // otherwise, because a location that does not exist has no phase to report.
+  const missing = answered && !!resolved && match === undefined
 
   return (
     <BaseVeleroBackupRenderer
       data={data}
       storageLocationPhase={phase}
       storageLocationName={resolved}
+      storageLocationMissing={missing}
       messages={messages}
       onNavigate={onNavigate}
     />

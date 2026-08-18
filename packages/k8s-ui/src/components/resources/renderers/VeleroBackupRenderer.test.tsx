@@ -109,3 +109,71 @@ describe('a backup that names no location', () => {
     expect(html).toContain('default')
   })
 })
+
+/**
+ * Three states, not two. The lookup can be unanswered, answered-and-found, or
+ * answered-and-the-location-is-gone — and the last one has no phase to report,
+ * so without saying it the backup renders exactly as it would on a healthy
+ * bucket.
+ */
+describe('what the page claims before the location lookup answers', () => {
+  const unset = {
+    metadata: { name: 'nightly', namespace: 'velero' },
+    spec: {},
+    status: { phase: 'Completed' },
+  }
+  const named = {
+    metadata: { name: 'nightly', namespace: 'velero' },
+    spec: { storageLocation: 'dr-replica' },
+    status: { phase: 'Completed' },
+  }
+
+  // Scoped to the Storage Location row: "default" is also the rendered value of
+  // two unset fields in Options, so a whole-document match proves nothing.
+  const storageCell = (html: string) => {
+    const i = html.indexOf('Storage Location')
+    if (i < 0) return ''
+    // Up to the end of this property row only. A fixed-width window runs into
+    // the next Section's header, which is itself a <button>, so every case
+    // matched a link whether or not one was rendered.
+    const end = html.indexOf('</div>', i)
+    return html.slice(i, end < 0 ? undefined : end)
+  }
+
+  // An unset location is only knowable from the list. Printing "default" before
+  // it answers is a guess that is wrong on any install that renamed it.
+  it('does not name a location it has not resolved', () => {
+    const cell = storageCell(renderToString(<VeleroBackupRenderer data={unset} onNavigate={() => {}} />))
+    expect(cell).toContain('not yet resolved')
+    expect(cell).not.toContain('>default<')
+  })
+
+  // A backup that names its own location is known regardless of the lookup.
+  it('still shows a location the backup names itself', () => {
+    const html = renderToString(<VeleroBackupRenderer data={named} onNavigate={() => {}} />)
+    expect(html).toContain('dr-replica')
+    expect(html).not.toContain('not yet resolved')
+  })
+
+  it('says so when the location it names is gone', () => {
+    const html = renderToString(
+      <VeleroBackupRenderer data={named} storageLocationName="dr-replica" storageLocationMissing onNavigate={() => {}} />,
+    )
+    expect(html).toContain('Not found')
+    expect(html).toContain('no longer exists')
+  })
+
+  // A link to an object that is not there is worse than plain text. Scoped to
+  // the cell: every collapsible Section header is itself a <button>, so the
+  // whole document always matches.
+  it('does not link a location that is gone', () => {
+    const missing = storageCell(renderToString(
+      <VeleroBackupRenderer data={named} storageLocationName="dr-replica" storageLocationMissing onNavigate={() => {}} />,
+    ))
+    const present = storageCell(renderToString(
+      <VeleroBackupRenderer data={named} storageLocationName="dr-replica" onNavigate={() => {}} />,
+    ))
+    expect(present).toContain('<button')
+    expect(missing).not.toContain('<button')
+  })
+})

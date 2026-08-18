@@ -5,7 +5,6 @@ import { HEALTH_BADGE_COLORS } from '../../../utils/badge-colors'
 import { Section, PropertyList, Property, ConditionsSection, AlertBanner, ResourceLink } from '../../ui/drawer-components'
 import {
   getBackupStatus,
-  getBackupStorageLocation,
   getBackupIncludedNamespaces,
   getBackupExcludedNamespaces,
   getBackupIncludedResources,
@@ -45,11 +44,20 @@ interface VeleroBackupRendererProps {
   /**
    * The location this backup is actually stored in, resolved by the host
    * against the location list. An unset `spec.storageLocation` means "whichever
-   * location carries spec.default", which this component cannot see — so
-   * without it the link falls back to the literal name `default`, which does
-   * not exist on an install that renamed it.
+   * location carries spec.default", which this component cannot see.
+   *
+   * Undefined means the lookup has not answered. A backup that names its own
+   * location is still known by name in that state; one that does not is not
+   * known at all, and this page says so rather than printing the conventional
+   * name as though it had been resolved.
    */
   storageLocationName?: string
+  /**
+   * The lookup answered and no location by that name exists. Distinct from an
+   * unresolved lookup: a backup whose storage location has been deleted cannot
+   * be restored from, and without this it renders exactly like a healthy one.
+   */
+  storageLocationMissing?: boolean
   /** Wired by the host, which owns the fetch. Optional: a consumer that does
    *  not wire it gets the counts on their own, with no button. */
   messages?: VeleroRunMessagesFetch
@@ -58,7 +66,7 @@ interface VeleroBackupRendererProps {
   onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }
 
-export function VeleroBackupRenderer({ data, storageLocationPhase, storageLocationName, messages, onNavigate }: VeleroBackupRendererProps) {
+export function VeleroBackupRenderer({ data, storageLocationPhase, storageLocationName, storageLocationMissing, messages, onNavigate }: VeleroBackupRendererProps) {
   const status = data.status || {}
   const conditions = status.conditions || []
 
@@ -229,23 +237,57 @@ export function VeleroBackupRenderer({ data, storageLocationPhase, storageLocati
       {/* Storage section */}
       <Section title="Storage" icon={HardDrive} defaultExpanded>
         <PropertyList>
+          {/* A backup that names its location is known by name whatever the
+              lookup is doing. One that does not is only known once the list
+              answers, because "unset" means whichever location carries
+              spec.default — so until then this says what the field says and
+              claims nothing further. */}
           <Property
             label="Storage Location"
-            value={
-              <span className="flex items-center gap-2">
-                <ResourceLink
-                  name={storageLocationName || getBackupStorageLocation(data)}
-                  kind="BackupStorageLocation"
-                  namespace={data?.metadata?.namespace ?? ''}
-                  group="velero.io"
-                  onNavigate={onNavigate}
-                />
-                {storageLocationPhase && storageLocationPhase !== 'Available' && (
-                  <span className={clsx('badge', HEALTH_BADGE_COLORS.unhealthy)}>{storageLocationPhase}</span>
-                )}
-              </span>
-            }
+            value={(() => {
+              const declared = data?.spec?.storageLocation as string | undefined
+              const name = storageLocationName || declared
+              if (!name) {
+                return (
+                  <span className="text-sm text-theme-text-tertiary">
+                    Velero&rsquo;s default location, not yet resolved
+                  </span>
+                )
+              }
+              return (
+                <span className="flex items-center gap-2">
+                  {/* Not a link when the object is not there: a link to nothing
+                      is worse than a name. */}
+                  {storageLocationMissing ? (
+                    <span className="text-sm font-mono text-theme-text-primary">{name}</span>
+                  ) : (
+                    <ResourceLink
+                      name={name}
+                      kind="BackupStorageLocation"
+                      namespace={data?.metadata?.namespace ?? ''}
+                      group="velero.io"
+                      onNavigate={onNavigate}
+                    />
+                  )}
+                  {storageLocationMissing && (
+                    <span className={clsx('badge', HEALTH_BADGE_COLORS.unhealthy)}>Not found</span>
+                  )}
+                  {storageLocationPhase && storageLocationPhase !== 'Available' && (
+                    <span className={clsx('badge', HEALTH_BADGE_COLORS.unhealthy)}>{storageLocationPhase}</span>
+                  )}
+                </span>
+              )
+            })()}
           />
+          {/* A location that is gone is not a location that is unhealthy, and
+              Velero writes no phase for one that does not exist — so without
+              this the backup renders exactly as it would on a healthy bucket. */}
+          {storageLocationMissing && (
+            <div className="text-xs text-warning-text">
+              This backup names a storage location that no longer exists in this namespace. Velero restores from the
+              location recorded on the backup, so there is nothing here to restore from until it is recreated.
+            </div>
+          )}
           {/* Only when it changes the answer. On a healthy location this would be
               a warning about nothing, on every backup in the cluster. */}
           {storageLocationPhase && storageLocationPhase !== 'Available' && (

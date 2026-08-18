@@ -768,7 +768,14 @@ function DetailsPanel({
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-sm">
                 <span className="text-theme-text-primary truncate">{edgeData.source.split('/').pop()}</span>
-                <ArrowRight className="h-4 w-4 text-theme-text-tertiary shrink-0" />
+                {edgeData.flow?.directionUnknown ? (
+                  // The graph omits the arrowhead on this edge because nothing
+                  // established which end opened the conversation. An arrow here
+                  // would assert exactly what the graph is declining to claim.
+                  <span className="text-theme-text-tertiary shrink-0" title="Direction unknown">&mdash;</span>
+                ) : (
+                  <ArrowRight className="h-4 w-4 text-theme-text-tertiary shrink-0" />
+                )}
                 <span className="text-theme-text-primary truncate">{edgeData.target.split('/').pop()}</span>
               </div>
 
@@ -787,12 +794,17 @@ function DetailsPanel({
                       : edgeData.protocol}
                   </div>
                 </div>
-                <div className="p-2 rounded bg-theme-elevated">
-                  <div className="text-theme-text-tertiary">{isRateBased ? 'Request Rate' : 'Connections'}</div>
-                  <div className="text-theme-text-primary font-medium">
-                    {formatConnections(edgeData.connections)}{isRateBased ? '/s' : ''}
+                {(!isRateBased || edgeData.connections > 0) && (
+                  // A rate-based source reports no request rate for traffic with no
+                  // HTTP, and "0/s" beside a data figure in megabytes reads as "no
+                  // traffic" rather than "not measured".
+                  <div className="p-2 rounded bg-theme-elevated">
+                    <div className="text-theme-text-tertiary">{isRateBased ? 'Request Rate' : 'Connections'}</div>
+                    <div className="text-theme-text-primary font-medium">
+                      {formatConnections(edgeData.connections)}{isRateBased ? '/s' : ''}
+                    </div>
                   </div>
-                </div>
+                )}
                 {edgeData.flow && (edgeData.flow.bytesSent > 0 || edgeData.flow.bytesRecv > 0) && (
                   <div className="p-2 rounded bg-theme-elevated">
                     <div className="text-theme-text-tertiary">Data</div>
@@ -925,17 +937,23 @@ function DetailsPanel({
               {edgeData.flow && (
                 <div className="space-y-1 pt-2 border-t border-theme-border">
                   <div className="text-xs text-theme-text-secondary">
-                    Source: <span className="text-theme-text-primary">{edgeData.flow.source.name}</span>
+                    {edgeData.flow.directionUnknown ? 'Endpoint' : 'Source'}: <span className="text-theme-text-primary">{edgeData.flow.source.name}</span>
                     {edgeData.flow.source.namespace && (
                       <span className="text-theme-text-tertiary"> ({edgeData.flow.source.namespace})</span>
                     )}
                   </div>
                   <div className="text-xs text-theme-text-secondary">
-                    Destination: <span className="text-theme-text-primary">{edgeData.flow.destination.name}</span>
+                    {edgeData.flow.directionUnknown ? 'Endpoint' : 'Destination'}: <span className="text-theme-text-primary">{edgeData.flow.destination.name}</span>
                     {edgeData.flow.destination.namespace && (
                       <span className="text-theme-text-tertiary"> ({edgeData.flow.destination.namespace})</span>
                     )}
                   </div>
+                  {edgeData.flow.directionUnknown && (
+                    <div className="text-xs text-theme-text-tertiary mt-1">
+                      Which endpoint opened this conversation was not reported, so the
+                      two are listed in a fixed order rather than as caller and callee.
+                    </div>
+                  )}
                   {edgeData.flow.destination.kind.toLowerCase() === 'external' && (
                     <div className="text-xs text-yellow-400 mt-1">
                       External service
@@ -1264,6 +1282,12 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
         id: edgeId,
         source: sourceId,
         target: destId,
+        // React Flow's default is "Edge from A to B", which states a direction this
+        // edge is deliberately drawn without. Assistive technology should hear the
+        // same uncertainty the missing arrowhead conveys.
+        ariaLabel: flow.directionUnknown
+          ? `Connection between ${sourceId} and ${destId}, direction unknown`
+          : `Edge from ${sourceId} to ${destId}`,
         type: 'smoothstep',
         animated: isHotEdge, // Animate hot paths
         label: edgeLabel,

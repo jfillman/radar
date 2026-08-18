@@ -303,7 +303,7 @@ function TrafficNode({ data }: { data: TrafficNodeData }) {
         </div>
       )}
       {/* Total connections (only if no ports shown, or all ports are 0) */}
-      {(!data.ports || data.ports.filter(p => p.port !== 0).length === 0) && data.totalConnections && data.totalConnections > 0 && (
+      {(!data.ports || data.ports.filter(p => p.port !== 0).length === 0) && data.totalConnections != null && data.totalConnections > 0 && (
         <div className="mt-1">
           <span className={clsx(
             'text-xs truncate',
@@ -563,7 +563,7 @@ function DetailsPanel({
                   Service: <span className="text-theme-text-primary capitalize">{nodeData.serviceCategory}</span>
                 </div>
               )}
-              {nodeData.totalConnections && (
+              {nodeData.totalConnections != null && nodeData.totalConnections > 0 && (
                 <div className="text-xs text-theme-text-secondary">
                   {isRateBased ? 'Total request rate' : 'Total connections'}: <span className="text-theme-text-primary font-medium">
                     {formatConnections(nodeData.totalConnections)}{isRateBased ? '/s' : ''}
@@ -704,7 +704,7 @@ function DetailsPanel({
                             {formatBytes(flow.bytesSent + flow.bytesRecv)}
                           </span>
                         )}
-                        {flow.errorCount && flow.errorCount > 0 && (
+                        {flow.errorCount != null && flow.errorCount > 0 && (
                           <span className="text-red-400">
                             {formatConnections(flow.errorCount)} err
                           </span>
@@ -748,7 +748,7 @@ function DetailsPanel({
                             {formatBytes(flow.bytesSent + flow.bytesRecv)}
                           </span>
                         )}
-                        {flow.errorCount && flow.errorCount > 0 && (
+                        {flow.errorCount != null && flow.errorCount > 0 && (
                           <span className="text-red-400">
                             {formatConnections(flow.errorCount)} err
                           </span>
@@ -801,7 +801,7 @@ function DetailsPanel({
                     </div>
                   </div>
                 )}
-                {edgeData.flow?.requestCount && edgeData.flow.requestCount > 0 && (
+                {edgeData.flow?.requestCount != null && edgeData.flow.requestCount > 0 && (
                   <div className="p-2 rounded bg-theme-elevated">
                     <div className="text-theme-text-tertiary">Requests</div>
                     <div className="text-theme-text-primary font-medium">
@@ -809,12 +809,12 @@ function DetailsPanel({
                     </div>
                   </div>
                 )}
-                {edgeData.flow?.errorCount && edgeData.flow.errorCount > 0 && (
+                {edgeData.flow?.errorCount != null && edgeData.flow.errorCount > 0 && (
                   <div className="p-2 rounded bg-red-500/10 border border-red-500/30">
                     <div className="text-red-400">Errors (5xx)</div>
                     <div className="text-red-400 font-medium">
                       {formatConnections(edgeData.flow.errorCount)}/s
-                      {edgeData.flow.requestCount && edgeData.flow.requestCount > 0 && (
+                      {edgeData.flow.requestCount != null && edgeData.flow.requestCount > 0 && (
                         <span className="text-red-300 ml-1">
                           ({((edgeData.flow.errorCount / edgeData.flow.requestCount) * 100).toFixed(1)}%)
                         </span>

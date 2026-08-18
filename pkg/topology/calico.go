@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"fmt"
 	"log"
 	"regexp"
 	"strings"
@@ -978,7 +979,7 @@ func (b *Builder) addCalicoPolicyNodes(
 				policies, err = b.dynamic.List(gvr, "")
 			}
 			if err != nil {
-				message := "Failed to list " + definition.kind + "s (" + group + "): " + err.Error()
+				message := fmt.Sprintf("Failed to list Calico %ss (%s): %v", definition.kind, group, err)
 				log.Printf("WARNING [topology] %s", message)
 				*warnings = append(*warnings, message)
 				continue

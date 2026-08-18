@@ -468,8 +468,12 @@ func veleroScheduleIssues(gvr schema.GroupVersionResource, kind string, items []
 			continue
 		}
 		validationErrors := veleroStringSlice(u, "status", "validationErrors")
-		// Velero leaves the phase empty on some validation failures and records
-		// only the errors, so the array is checked independently of the phase.
+		// Checked independently of the phase, defensively rather than because
+		// Velero is known to need it: in v1.18 the schedule controller writes
+		// the phase and the errors in one assignment, so an object carrying
+		// errors without FailedValidation is not a shape it produces. Older
+		// versions may differ and the check costs nothing, but it should not be
+		// read as documenting a behaviour anyone has observed.
 		if veleroPhase(u) != "FailedValidation" && len(validationErrors) == 0 {
 			continue
 		}

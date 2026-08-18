@@ -20,6 +20,12 @@ status:
   lastBackup: "@now-1870m"
   phase: Enabled
 ---
+# A synthetic shape, and deliberately so: Velero v1.18's schedule controller
+# writes status.phase and status.validationErrors in one assignment, so it does
+# not produce a schedule carrying errors without FailedValidation. This fixture
+# exists to exercise the detector's defensive branch — which is kept for older
+# versions — and nothing here should be read as Velero behaviour. The error text
+# is a cron parse failure because that is the only thing v1.18 validates.
 apiVersion: velero.io/v1
 kind: Schedule
 metadata:
@@ -32,7 +38,7 @@ spec:
       - default
 status:
   validationErrors:
-    - "storage location \"gone\" not found"
+    - "invalid schedule: expected exactly 5 fields, found 4: [0 4 * *]"
 ---
 apiVersion: velero.io/v1
 kind: Schedule

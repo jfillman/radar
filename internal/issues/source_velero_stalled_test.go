@@ -258,12 +258,14 @@ func TestVeleroStalledDoesNotInventALimitForInProgress(t *testing.T) {
 	if !strings.Contains(msg, "Velero sets no limit on this phase") {
 		t.Errorf("message = %q, want it to say the limit is not Velero's", msg)
 	}
-	// "past the Nh this run allows" would assert the operation budget governs
-	// the phase. It does not.
-	// The governed phrasing must not appear: it would assert the operation
-	// budget rules a phase Velero does not apply it to.
-	if !strings.Contains(msg, "Velero sets no limit on this phase") {
-		t.Errorf("message = %q applies the operation budget to a phase it does not govern", msg)
+	// Asserted as an absence, not by repeating the check above. A message that
+	// carried both sentences — the yardstick clause appended to the governed
+	// one — would satisfy a positive check while still claiming Velero bounds
+	// this phase.
+	for _, governed := range []string{"past the", "allows for a single operation,"} {
+		if strings.Contains(msg, governed) {
+			t.Errorf("message = %q applies the operation budget to a phase Velero does not govern", msg)
+		}
 	}
 	// The elapsed time is still the evidence, and still stated.
 	if !strings.Contains(msg, "nothing appears to be advancing it") {

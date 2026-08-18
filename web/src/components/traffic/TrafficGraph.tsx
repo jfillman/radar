@@ -23,6 +23,7 @@ import { isClusterAddon, type AddonMode } from './TrafficView'
 import { SEVERITY_BADGE, SEVERITY_DOT, SEVERITY_TEXT } from '@skyhook-io/k8s-ui/utils/badge-colors'
 import { getNamespaceColor } from '../../utils/traffic-colors'
 import { Tooltip } from '../ui/Tooltip'
+import { isRateBasedSource } from './trafficFilters'
 
 const elk = new ELK()
 
@@ -713,7 +714,7 @@ function DetailsPanel({
                         )}
                         {flow.errorCount != null && flow.errorCount > 0 && (
                           <span className="text-red-400">
-                            {formatConnections(flow.errorCount)} err
+                            {formatConnections(flow.errorCount)} err{isRateBased ? '/s' : ''}
                           </span>
                         )}
                       </div>
@@ -759,7 +760,7 @@ function DetailsPanel({
                         )}
                         {flow.errorCount != null && flow.errorCount > 0 && (
                           <span className="text-red-400">
-                            {formatConnections(flow.errorCount)} err
+                            {formatConnections(flow.errorCount)} err{isRateBased ? '/s' : ''}
                           </span>
                         )}
                       </div>
@@ -1054,7 +1055,7 @@ function trafficEdgeId(sourceId: string, destId: string, flow: AggregatedFlow): 
 export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups = false, serviceCategories, addonMode = 'show', trafficSource = '', onSelectionChange }: TrafficGraphProps) {
   // Beyla is rate-based too: its Connections field carries requests per second,
   // not a connection count, so it needs the same label Istio gets.
-  const isRateBased = trafficSource === 'istio' || trafficSource === 'beyla'
+  const isRateBased = isRateBasedSource(trafficSource)
   const connLabel = isRateBased ? 'req/s' : 'conn'
   const [layoutedNodes, setLayoutedNodes] = useState<Node<TrafficNodeData>[]>([])
   const [layoutedEdges, setLayoutedEdges] = useState<Edge[]>([])
@@ -1278,8 +1279,10 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
         : formatConnections(flow.connections)
       const l7Label = flow.l7Protocol ? `${flow.l7Protocol} · ` : ''
       const latencyLabel = flow.latencyP50Ms ? ` · ${formatLatency(flow.latencyP50Ms)}` : ''
+      // errorCount is a rate for a rate-based source, exactly like connections above.
+      // Without the suffix a destination failing once a second reads as one error.
       const errorLabel = hasErrors
-        ? ` · ${formatConnections(flow.errorCount ?? 0)} err`
+        ? ` · ${formatConnections(flow.errorCount ?? 0)} err${isRateBased ? '/s' : ''}`
         : ''
       // A source that measures rates has no count for an edge with no requests on
       // it — a plain TCP conversation, or one whose direction is unknown. Printing

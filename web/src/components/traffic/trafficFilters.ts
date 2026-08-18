@@ -36,3 +36,17 @@ export function bucketsFromStatus(httpStatus: number | undefined): string[] {
   if (!httpStatus) return []
   return [`${Math.floor(httpStatus / 100)}xx`]
 }
+
+/**
+ * Does this source measure rates rather than counting individual events?
+ *
+ * Beyla and Istio read counters out of Prometheus, so what they report per edge is
+ * a per-second rate: "connections" is really requests per second, and the error
+ * count is errors per second. Hubble and Caretta observe individual flows and
+ * report genuine counts. The distinction changes units, labels and the sensible
+ * scale of a volume filter, so it lives in one place rather than being re-derived
+ * wherever it is needed.
+ */
+export function isRateBasedSource(source: string | undefined): boolean {
+  return source === 'istio' || source === 'beyla'
+}

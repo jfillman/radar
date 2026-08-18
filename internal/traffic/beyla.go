@@ -193,7 +193,11 @@ func (s *BeylaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 		return result, nil
 	}
 
-	result.Message = "Beyla not detected. Install Alloy + Beyla for L7 traffic visibility."
+	// Says to enable the network feature up front. It is opt-in and off by default,
+	// so advice that stops at "install it" ends with an install that produces an
+	// empty map and a second message explaining why.
+	result.Message = `Beyla not detected. Install Alloy + Beyla for traffic visibility, ` +
+		`and include "network" in OTEL_EBPF_METRICS_FEATURES — the traffic map needs it and it is off by default.`
 	return result, nil
 }
 
@@ -341,26 +345,44 @@ func (p l4LabelPresence) warning(flowCount int) string {
 		if !p.transport {
 			missing = append(missing, "transport")
 		}
-		// Worth saying only when it actually costs something. A handful of unmeasured
-		// replies among thousands does not move the figure; most of them missing does.
+		// Worth saying only when it actually costs something: a handful of unmeasured
+		// replies among thousands does not move the figure. The wording tracks the
+		// measurement rather than sitting at its worst case — claiming "most" of a
+		// 15% loss would be its own inaccuracy.
 		if p.replyLossFraction > 0.1 {
-			parts = append(parts, fmt.Sprintf("Received-byte figures on these edges are far lower than the real "+
-				"traffic — most of the return traffic could not be measured. This is a side effect of exporting "+
-				"dst.port: replies are labelled with the client's short-lived port, which disappears before it can "+
-				"be measured. Bytes sent, request rate, errors and latency are not affected. Remove dst.port from "+
-				"attributes.select for %s if you need accurate received bytes.",
-				strings.TrimSuffix(p.metric, "_total")))
+			scale := "many"
+			if p.replyLossFraction > 0.5 {
+				scale = "most"
+			}
+			parts = append(parts, fmt.Sprintf("Received-byte figures on these edges are too low: %s replies could "+
+				"not be measured. Each reply is labelled with the client's short-lived port, and those come and go "+
+				"faster than they can be counted. Bytes sent, request rate, errors and latency are not affected. "+
+				"Remove dst.port from attributes.select for %s if you need accurate received bytes.",
+				scale, strings.TrimSuffix(p.metric, "_total")))
 		}
 
 		if len(missing) > 0 {
 			// Names the metric this cluster actually exposes: on an OBI install the
 			// attributes.select key is obi_network_flow_bytes, and advice pointing at
 			// the other spelling does not work.
-			parts = append(parts, fmt.Sprintf("Beyla is not exporting %s, so any edges here have no port or "+
-				"protocol detail (they appear as port 0 over TCP). Both are opt-in attributes: add them "+
-				"to attributes.select for %s to see per-port edges. Note that exporting dst.port also makes "+
-				"received-byte figures unreliable, because replies then carry short-lived client ports.",
-				strings.Join(missing, " and "), strings.TrimSuffix(p.metric, "_total")))
+			metric := strings.TrimSuffix(p.metric, "_total")
+			parts = append(parts, fmt.Sprintf("Beyla is not exporting %s, so edges here have no port or protocol "+
+				"detail: they appear as port 0, and UDP is shown as TCP. Both are opt-in, added under "+
+				"attributes.select for %s.",
+				strings.Join(missing, " and "), metric))
+
+			// The two are not equivalent and must not be recommended as a pair.
+			// Adding transport is free. Adding dst.port buys per-port edges and costs
+			// the received-byte figures, since replies then carry a port that changes
+			// every connection — which is the warning above, on clusters that already
+			// made that choice.
+			if !p.transport {
+				parts = append(parts, "Adding transport is safe and makes UDP show as UDP.")
+			}
+			if !p.port {
+				parts = append(parts, "Adding dst.port gives per-port edges, but makes received-byte figures "+
+					"unreliable for the same reason, so it is a trade rather than a fix.")
+			}
 		}
 	}
 

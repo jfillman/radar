@@ -13,7 +13,7 @@ import { useDock } from '../dock'
 import { AlertBanner, EmptyState, PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
 import { useConnection } from '../../context/ConnectionContext'
 import { Tooltip } from '../ui/Tooltip'
-import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus } from './trafficFilters'
+import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource } from './trafficFilters'
 
 // Addon types for filtering
 export type AddonMode = 'show' | 'group' | 'hide'
@@ -623,6 +623,39 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
     return flowsData.aggregated.some(f => f.l7Protocol || f.topHTTPPaths || f.topDNSQueries)
   }, [flowsData?.aggregated])
 
+  const isRateBased = isRateBasedSource(sourcesData?.active)
+
+  // Which L7 filters can return something, so the sidebar never offers a control
+  // that matches nothing. Sources differ in what they can report: a rate-based one
+  // measures a 5xx rate but no status distribution, and has no DNS query names at
+  // all, so offering 2xx or a DNS box would be a dead end.
+  const l7Capabilities = useMemo(() => {
+    const statuses = new Set<string>()
+    const verdicts = new Set<string>()
+    let hasDNSQueries = false
+    const methods = new Set<string>()
+    for (const f of flowsData?.aggregated ?? []) {
+      for (const [bucket, count] of Object.entries(f.httpStatusCounts ?? {})) {
+        if (count > 0) statuses.add(bucket)
+      }
+      // An error rate is a 5xx signal even where no status distribution exists.
+      if ((f.errorCount ?? 0) > 0) statuses.add('5xx')
+      for (const [verdict, count] of Object.entries(f.verdictCounts ?? {})) {
+        if (count > 0) verdicts.add(verdict)
+      }
+      if (f.topDNSQueries?.length) hasDNSQueries = true
+      for (const path of f.topHTTPPaths ?? []) {
+        if (path.method) methods.add(path.method)
+      }
+    }
+    return {
+      availableStatusRanges: ['2xx', '3xx', '4xx', '5xx'].filter(b => statuses.has(b)),
+      availableVerdicts: ['forwarded', 'dropped', 'error'].filter(v => verdicts.has(v)),
+      hasDNSQueries,
+      availableHTTPMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].filter(m => methods.has(m)),
+    }
+  }, [flowsData?.aggregated])
+
   // Toggle L7 filter helpers
   const toggleL7Method = useCallback((method: string) => {
     setL7Methods(prev => { const next = new Set(prev); if (next.has(method)) next.delete(method); else next.add(method); return next })
@@ -1041,7 +1074,12 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
         setDetectServices={setDetectServices}
         timeRange={timeRange}
         setTimeRange={setTimeRange}
-        isHubble={sourcesData?.active === 'hubble' && hasL7Data}
+        showL7Filters={hasL7Data}
+        availableStatusRanges={l7Capabilities.availableStatusRanges}
+        availableVerdicts={l7Capabilities.availableVerdicts}
+        hasDNSQueries={l7Capabilities.hasDNSQueries}
+        availableHTTPMethods={l7Capabilities.availableHTTPMethods}
+        isRateBased={isRateBased}
         l7Protocol={l7Protocol}
         setL7Protocol={setL7Protocol}
         l7Methods={l7Methods}

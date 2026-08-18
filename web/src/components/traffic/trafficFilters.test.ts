@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus } from './trafficFilters'
+import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource } from './trafficFilters'
 
 describe('matchesStatusRanges', () => {
   it('does not filter when nothing is selected', () => {
@@ -39,5 +39,16 @@ describe('matchesStatusRanges', () => {
 
   it('still matches a selected bucket when there are no errors', () => {
     expect(matchesStatusRanges(new Set(['2xx', '5xx']), bucketsFromStatus(204), false)).toBe(true)
+  })
+})
+
+describe('isRateBasedSource', () => {
+  it('knows which sources report rates rather than counts', () => {
+    expect(isRateBasedSource('beyla')).toBe(true)
+    expect(isRateBasedSource('istio')).toBe(true)
+    expect(isRateBasedSource('hubble')).toBe(false)
+    expect(isRateBasedSource('caretta')).toBe(false)
+    expect(isRateBasedSource(undefined)).toBe(false)
+    expect(isRateBasedSource('')).toBe(false)
   })
 })

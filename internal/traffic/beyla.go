@@ -256,14 +256,6 @@ type l4Key struct {
 	transport      string
 }
 
-// pairKey identifies a conversation by its two endpoints, ignoring port. Used to
-// match the response half of a conversation onto the request half: the response
-// series carry the client's ephemeral port, so port cannot take part in the match.
-type pairKey struct {
-	srcNs, srcName string
-	dstNs, dstName string
-}
-
 // dstKey identifies a destination workload, without a port. Needed because
 // dst_port is opt-in: when it is absent every L4 edge carries port 0, so a
 // destination's HTTP traffic has to be aggregated across ports.
@@ -368,12 +360,12 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([
 	// return traffic once per port.
 	received := s.queryReceivedBytes(ctx, opts)
 	if len(received) > 0 {
-		sentPerPair := make(map[pairKey]int64)
-		edgesPerPair := make(map[pairKey][]*Flow)
+		sentPerPair := make(map[flowKey]int64)
+		edgesPerPair := make(map[flowKey][]*Flow)
 		for _, f := range l4Map {
-			key := pairKey{
-				srcNs: f.Source.Namespace, srcName: f.Source.Name,
-				dstNs: f.Destination.Namespace, dstName: f.Destination.Name,
+			key := flowKey{
+				srcNs: f.Source.Namespace, srcWorkload: f.Source.Name,
+				dstNs: f.Destination.Namespace, dstWorkload: f.Destination.Name,
 			}
 			sentPerPair[key] += f.BytesSent
 			edgesPerPair[key] = append(edgesPerPair[key], f)
@@ -670,7 +662,7 @@ func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions) (map[l4Key]
 // Keyed by the forward edge: a response series runs destination-to-source, so its
 // endpoints are inverted here. Port is left out of the key because response series
 // carry the client's ephemeral port.
-func (s *BeylaSource) queryReceivedBytes(ctx context.Context, opts FlowOptions) map[pairKey]int64 {
+func (s *BeylaSource) queryReceivedBytes(ctx context.Context, opts FlowOptions) map[flowKey]int64 {
 	groupBy := `k8s_src_owner_name, k8s_src_namespace, k8s_dst_owner_name, k8s_dst_namespace`
 	query := beylaRateQuery(groupBy, s.flowMetricName(), opts.Namespace, `, direction="response"`)
 	result, err := s.query(ctx, query)
@@ -679,7 +671,7 @@ func (s *BeylaSource) queryReceivedBytes(ctx context.Context, opts FlowOptions) 
 		return nil
 	}
 
-	received := make(map[pairKey]int64, len(result.Series))
+	received := make(map[flowKey]int64, len(result.Series))
 	for _, series := range result.Series {
 		if len(series.DataPoints) == 0 {
 			continue
@@ -695,9 +687,11 @@ func (s *BeylaSource) queryReceivedBytes(ctx context.Context, opts FlowOptions) 
 			continue
 		}
 		// Invert: the response's destination is the forward edge's source.
-		key := pairKey{
-			srcNs: labels["k8s_dst_namespace"], srcName: respDst,
-			dstNs: labels["k8s_src_namespace"], dstName: respSrc,
+		// flowKey is the package's existing pair key, used the same way by the
+		// Istio source to join its byte and error queries onto its flows.
+		key := flowKey{
+			srcNs: labels["k8s_dst_namespace"], srcWorkload: respDst,
+			dstNs: labels["k8s_src_namespace"], dstWorkload: respSrc,
 		}
 		received[key] += int64(val * beylaRateWindowSeconds)
 	}
@@ -730,7 +724,7 @@ func (s *BeylaSource) queryUnorientable(ctx context.Context, opts FlowOptions) [
 		forward  int64
 		backward int64
 	}
-	pairs := make(map[pairKey]*halves)
+	pairs := make(map[flowKey]*halves)
 
 	for _, series := range result.Series {
 		if len(series.DataPoints) == 0 {
@@ -753,9 +747,9 @@ func (s *BeylaSource) queryUnorientable(ctx context.Context, opts FlowOptions) [
 		// Which end is "source" is arbitrary and the graph will not imply
 		// otherwise, but it has to be stable across polls or the edge would flip.
 		forward := aNs+"/"+aName < bNs+"/"+bName
-		key := pairKey{srcNs: aNs, srcName: aName, dstNs: bNs, dstName: bName}
+		key := flowKey{srcNs: aNs, srcWorkload: aName, dstNs: bNs, dstWorkload: bName}
 		if !forward {
-			key = pairKey{srcNs: bNs, srcName: bName, dstNs: aNs, dstName: aName}
+			key = flowKey{srcNs: bNs, srcWorkload: bName, dstNs: aNs, dstWorkload: aName}
 		}
 
 		p, ok := pairs[key]
@@ -765,8 +759,8 @@ func (s *BeylaSource) queryUnorientable(ctx context.Context, opts FlowOptions) [
 				srcType, dstType = bType, aType
 			}
 			p = &halves{flow: &Flow{
-				Source:      Endpoint{Name: key.srcName, Namespace: key.srcNs, Kind: mapBeylaKind(srcType), Workload: key.srcName},
-				Destination: Endpoint{Name: key.dstName, Namespace: key.dstNs, Kind: mapBeylaKind(dstType), Workload: key.dstName},
+				Source:      Endpoint{Name: key.srcWorkload, Namespace: key.srcNs, Kind: mapBeylaKind(srcType), Workload: key.srcWorkload},
+				Destination: Endpoint{Name: key.dstWorkload, Namespace: key.dstNs, Kind: mapBeylaKind(dstType), Workload: key.dstWorkload},
 				Protocol:    mapBeylaTransport(labels["transport"]),
 				Verdict:     "forwarded",
 				LastSeen:    time.Now(),

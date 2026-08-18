@@ -280,16 +280,21 @@ function TrafficNode({ data }: { data: TrafficNodeData }) {
               )}>
                 :{portInfo.port}
               </span>
-              <span className={clsx(
-                'truncate',
-                data.isHotPath
-                  ? 'text-orange-400'
-                  : (hasNamespaceColor || isAddonNode)
-                    ? 'text-white/60'
-                    : 'text-theme-text-tertiary'
-              )}>
-                {formatConnections(portInfo.connections)}
-              </span>
+              {/* A port serving traffic with no HTTP has no request rate to show, and
+                  "0" beside the port reads as an idle port rather than an unmeasured
+                  one. The port itself is still worth listing. */}
+              {portInfo.connections > 0 && (
+                <span className={clsx(
+                  'truncate',
+                  data.isHotPath
+                    ? 'text-orange-400'
+                    : (hasNamespaceColor || isAddonNode)
+                      ? 'text-white/60'
+                      : 'text-theme-text-tertiary'
+                )}>
+                  {formatConnections(portInfo.connections)}
+                </span>
+              )}
             </div>
           ))}
           {data.ports.filter(p => p.port !== 0).length > MAX_VISIBLE_PORTS && (
@@ -696,9 +701,11 @@ function DetailsPanel({
                         <span className="px-1 py-0.5 rounded bg-theme-bg text-theme-text-tertiary uppercase">
                           {flow.protocol || 'tcp'}
                         </span>
-                        <span className="text-theme-text-secondary">
-                          {formatConnections(flow.connections)} {isRateBased ? 'req/s' : 'conn'}
-                        </span>
+                        {flow.connections > 0 && (
+                          <span className="text-theme-text-secondary">
+                            {formatConnections(flow.connections)} {isRateBased ? 'req/s' : 'conn'}
+                          </span>
+                        )}
                         {(flow.bytesSent > 0 || flow.bytesRecv > 0) && (
                           <span className="text-theme-text-tertiary">
                             {formatBytes(flow.bytesSent + flow.bytesRecv)}
@@ -740,9 +747,11 @@ function DetailsPanel({
                         <span className="px-1 py-0.5 rounded bg-theme-bg text-theme-text-tertiary uppercase">
                           {flow.protocol || 'tcp'}
                         </span>
-                        <span className="text-theme-text-secondary">
-                          {formatConnections(flow.connections)} {isRateBased ? 'req/s' : 'conn'}
-                        </span>
+                        {flow.connections > 0 && (
+                          <span className="text-theme-text-secondary">
+                            {formatConnections(flow.connections)} {isRateBased ? 'req/s' : 'conn'}
+                          </span>
+                        )}
                         {(flow.bytesSent > 0 || flow.bytesRecv > 0) && (
                           <span className="text-theme-text-tertiary">
                             {formatBytes(flow.bytesSent + flow.bytesRecv)}

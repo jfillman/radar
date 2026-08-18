@@ -1180,7 +1180,12 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
                 >
                   <AlertBanner
                     variant="warning"
-                    title="This map is incomplete"
+                    // Not "incomplete": every warning that reaches here is about a
+                    // value on an edge that is shown being wrong or absent — a port
+                    // reported as 0, UDP reported as TCP, received bytes understated.
+                    // "Incomplete" sends the reader looking for workloads that are
+                    // missing, which is the one thing none of these mean.
+                    title="Some values on this map are unreliable"
                     message={flowsData.warning}
                   />
                 </div>

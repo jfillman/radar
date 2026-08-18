@@ -298,6 +298,14 @@ type l4LabelPresence struct {
 	portedDsts map[dstKey]bool
 	port       bool
 	transport  bool
+	// replyLossFraction is how much of the return traffic Prometheus could not
+	// measure, between 0 and 1. Exporting dst.port makes Beyla label each reply
+	// with the client's port, which is new for every connection and gone again
+	// within seconds, so most reply counters are never observed twice and no rate
+	// can be derived from them. How much that costs depends on the workload —
+	// long-lived connections keep a stable port and measure fine — so it is
+	// measured rather than assumed from the configuration.
+	replyLossFraction float64
 }
 
 func (s *BeylaSource) GetFlows(ctx context.Context, opts FlowOptions) (*FlowsResponse, error) {
@@ -333,13 +341,25 @@ func (p l4LabelPresence) warning(flowCount int) string {
 		if !p.transport {
 			missing = append(missing, "transport")
 		}
+		// Worth saying only when it actually costs something. A handful of unmeasured
+		// replies among thousands does not move the figure; most of them missing does.
+		if p.replyLossFraction > 0.1 {
+			parts = append(parts, fmt.Sprintf("Received-byte figures on these edges are far lower than the real "+
+				"traffic — most of the return traffic could not be measured. This is a side effect of exporting "+
+				"dst.port: replies are labelled with the client's short-lived port, which disappears before it can "+
+				"be measured. Bytes sent, request rate, errors and latency are not affected. Remove dst.port from "+
+				"attributes.select for %s if you need accurate received bytes.",
+				strings.TrimSuffix(p.metric, "_total")))
+		}
+
 		if len(missing) > 0 {
 			// Names the metric this cluster actually exposes: on an OBI install the
 			// attributes.select key is obi_network_flow_bytes, and advice pointing at
 			// the other spelling does not work.
 			parts = append(parts, fmt.Sprintf("Beyla is not exporting %s, so any edges here have no port or "+
 				"protocol detail (they appear as port 0 over TCP). Both are opt-in attributes: add them "+
-				"to attributes.select for %s to see per-port edges.",
+				"to attributes.select for %s to see per-port edges. Note that exporting dst.port also makes "+
+				"received-byte figures unreliable, because replies then carry short-lived client ports.",
 				strings.Join(missing, " and "), strings.TrimSuffix(p.metric, "_total")))
 		}
 	}
@@ -367,6 +387,12 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([
 	// pair's edges. Where a pair has several edges the total is divided between
 	// them by their share of bytes sent — copying it onto each would count the same
 	// return traffic once per port.
+	// Only when dst.port is exported: without it replies carry no port, so they
+	// aggregate into a handful of stable counters and nothing is lost.
+	if presence.port {
+		presence.replyLossFraction = s.replyLossFraction(ctx)
+	}
+
 	received := s.queryReceivedBytes(ctx, opts)
 	if len(received) > 0 {
 		sentPerPair := make(map[flowKey]int64)
@@ -713,6 +739,42 @@ func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions) (map[l4Key]
 // Keyed by the forward edge: a response series runs destination-to-source, so its
 // endpoints are inverted here. Port is left out of the key because response series
 // carry the client's ephemeral port.
+// replyLossFraction measures how much of the return traffic is present in
+// Prometheus but cannot be turned into a rate.
+//
+// Deriving a rate needs a counter observed at least twice. When dst.port is
+// exported, Beyla labels each reply with the client's port, so a new counter
+// appears per connection and is gone within seconds — usually seen once, or not at
+// all, between scrapes. Those bytes are dropped before any grouping this code
+// could change, which is why the figure is disclosed rather than corrected.
+//
+// Whether it matters depends on the workload: long-lived connections hold a stable
+// client port and measure normally. So this reports what was actually lost instead
+// of inferring severity from the configuration. Returns 0 when nothing is missing
+// or the probe cannot be answered — this drives a warning, and a warning invented
+// from a failed query is worse than none.
+func (s *BeylaSource) replyLossFraction(ctx context.Context) float64 {
+	metric := s.flowMetricName()
+	// Deliberately not scoped to the namespace filter. This measures whether the
+	// cluster's reply counters are measurable at all, which is a property of how
+	// Beyla is configured rather than of whichever namespaces are on screen, and
+	// scoping it would mean an `or` of two counts and no single value to read.
+	query := fmt.Sprintf(
+		`1 - ((count(rate(%s{%s, direction="response"}[5m]) > 0) or vector(0)) / (count(%s{%s, direction="response"}) or vector(1)))`,
+		metric, beylaJobSelector(), metric, beylaJobSelector())
+	result, err := s.query(ctx, query)
+	if err != nil || result == nil || len(result.Series) == 0 || len(result.Series[0].DataPoints) == 0 {
+		return 0
+	}
+	// A fraction outside (0, 1] is not an answer to the question asked, so treat it
+	// as no answer rather than scaling a warning by it.
+	val := result.Series[0].DataPoints[0].Value
+	if math.IsNaN(val) || math.IsInf(val, 0) || val <= 0 || val > 1 {
+		return 0
+	}
+	return val
+}
+
 func (s *BeylaSource) queryReceivedBytes(ctx context.Context, opts FlowOptions) map[flowKey]int64 {
 	// k8s_*_owner_type belongs in the group-by even though the key ignores it.
 	// Beyla reports a Service-routed conversation twice, once attributed to the

@@ -1645,3 +1645,67 @@ func TestQueryL7DetailCombinesReplicasOnOnePort(t *testing.T) {
 		t.Errorf("combined latency is the slowest replica, not a sum: got %v, want 0.040", lat)
 	}
 }
+
+// Exporting dst.port buys per-port edges and costs accurate received bytes: each
+// reply is labelled with the client's short-lived port, so most reply counters are
+// never observed twice and no rate can be derived from them. The figure still
+// renders, so the user has to be told it is understated.
+func TestGetFlowsWarnsWhenMostRepliesCannotBeMeasured(t *testing.T) {
+	// Nothing measured as lost, nothing to say.
+	silent := l4LabelPresence{metric: beylaFlowMetric, port: true, transport: true}
+	if w := silent.warning(3); strings.Contains(w, "far lower than the real traffic") {
+		t.Errorf("no measured loss must produce no warning, got: %s", w)
+	}
+
+	// Most replies unmeasurable: say so, say what is still trustworthy, and say
+	// what to change.
+	p := l4LabelPresence{metric: beylaFlowMetric, port: true, transport: true, replyLossFraction: 0.91}
+	w := p.warning(3)
+	for _, want := range []string{
+		"Received-byte figures",
+		"Bytes sent, request rate, errors and latency are not affected",
+		"Remove dst.port",
+	} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warning must contain %q, got: %s", want, w)
+		}
+	}
+
+	// A handful of unmeasurable replies among thousands does not move the figure.
+	quiet := l4LabelPresence{metric: beylaFlowMetric, port: true, transport: true, replyLossFraction: 0.02}
+	if strings.Contains(quiet.warning(3), "far lower than the real traffic") {
+		t.Error("a negligible loss must not raise a warning")
+	}
+
+	// And the advice to enable dst.port must state what it costs, so nobody is
+	// walked into this trade without being told.
+	missing := l4LabelPresence{metric: beylaFlowMetric}
+	if !strings.Contains(missing.warning(3), "received-byte figures unreliable") {
+		t.Errorf("recommending dst.port must state its cost, got: %s", missing.warning(3))
+	}
+}
+
+// The probe reads a fraction; anything outside (0,1] means the query was not
+// answered and must not drive a warning.
+func TestReplyLossFractionRejectsAnImpossibleFraction(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		val, want float64
+	}{
+		{"a byte rate, not a fraction", 15.5, 0},
+		{"exactly none lost", 0, 0},
+		{"negative", -0.5, 0},
+		{"most lost", 0.91, 0.91},
+		{"everything lost", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+			src.queryFn = func(_ context.Context, _ string) (*prom.QueryResult, error) {
+				return promResult("vector", promSeries(map[string]string{}, tc.val)), nil
+			}
+			if got := src.replyLossFraction(context.Background()); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

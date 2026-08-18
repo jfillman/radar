@@ -13,7 +13,7 @@ import { useDock } from '../dock'
 import { AlertBanner, EmptyState, PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
 import { useConnection } from '../../context/ConnectionContext'
 import { Tooltip } from '../ui/Tooltip'
-import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold } from './trafficFilters'
+import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold, volumeUnit, type VolumeUnit } from './trafficFilters'
 
 // Addon types for filtering
 export type AddonMode = 'show' | 'group' | 'hide'
@@ -346,6 +346,10 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
   const [hideSystem, setHideSystem] = useState(true)
   const [hideExternal, setHideExternal] = useState(false)
   const [minConnections, setMinConnections] = useState(0)
+  // The unit the threshold above was picked under. Stored because the number alone
+  // is ambiguous: 100 is a valid step in both scales and means something different
+  // in each.
+  const [minConnectionsUnit, setMinConnectionsUnit] = useState<VolumeUnit>('connections')
   const [showNamespaceGroups, setShowNamespaceGroups] = useState(true)
   const [aggregateExternal, setAggregateExternal] = useState(true)
   const [detectServices, setDetectServices] = useState(true)
@@ -505,7 +509,7 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
     () => keepAvailable(l7Verdicts, l7Capabilities.availableVerdicts),
     [l7Verdicts, l7Capabilities.availableVerdicts])
   const activeDnsPattern = l7Capabilities.hasDNSQueries ? dnsPattern : ''
-  const activeMinConnections = effectiveThreshold(minConnections, isRateBased)
+  const activeMinConnections = effectiveThreshold(minConnections, minConnectionsUnit, volumeUnit(isRateBased))
 
   const filteredFlows = useMemo<AggregatedFlow[]>(() => {
     if (!flowsData?.aggregated) return []
@@ -670,6 +674,13 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
       openFlowListDock()
     }
   }, [flowsData?.flows, openFlowListDock])
+
+  // Records which quantity the chosen threshold refers to, so it can be discarded
+  // rather than reinterpreted if the active source starts measuring the other one.
+  const chooseMinConnections = useCallback((value: number) => {
+    setMinConnections(value)
+    setMinConnectionsUnit(volumeUnit(isRateBased))
+  }, [isRateBased])
 
   // Toggle L7 filter helpers
   const toggleL7Method = useCallback((method: string) => {
@@ -1075,8 +1086,8 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
         setHideSystem={setHideSystem}
         hideExternal={hideExternal}
         setHideExternal={setHideExternal}
-        minConnections={minConnections}
-        setMinConnections={setMinConnections}
+        minConnections={activeMinConnections}
+        setMinConnections={chooseMinConnections}
         showNamespaceGroups={showNamespaceGroups}
         setShowNamespaceGroups={setShowNamespaceGroups}
         collapseInternet={collapseInternet}
@@ -1284,7 +1295,7 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
                       onClick={() => {
                         setHideSystem(false)
                         setHideExternal(false)
-                        setMinConnections(0)
+                        chooseMinConnections(0)
                       }}
                       className="badge badge-sm border border-theme-border bg-theme-elevated text-theme-text-primary hover:bg-theme-hover transition-colors"
                     >

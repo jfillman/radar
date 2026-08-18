@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold } from './trafficFilters'
+import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold, volumeUnit } from './trafficFilters'
 
 describe('matchesStatusRanges', () => {
   it('does not filter when nothing is selected', () => {
@@ -71,16 +71,33 @@ describe('keepAvailable', () => {
 })
 
 describe('effectiveThreshold', () => {
-  it('keeps a threshold the active source actually offers', () => {
-    expect(effectiveThreshold(100, false)).toBe(100)
-    expect(effectiveThreshold(10, true)).toBe(10)
-    expect(effectiveThreshold(0, true)).toBe(0)
+  it('keeps a threshold chosen under the unit still in use', () => {
+    expect(effectiveThreshold(100, 'connections', 'connections')).toBe(100)
+    expect(effectiveThreshold(10, 'rate', 'rate')).toBe(10)
+    expect(effectiveThreshold(0, 'rate', 'rate')).toBe(0)
   })
 
-  it('drops one carried over from the other unit', () => {
-    // 10000 connections against a rate source hides every edge; 1 req/s against a
-    // counting source is not even selectable.
-    expect(effectiveThreshold(10000, true)).toBe(0)
-    expect(effectiveThreshold(1, false)).toBe(0)
+  it('drops one chosen under the other unit', () => {
+    // 10000 connections against a rate source would hide every edge.
+    expect(effectiveThreshold(10000, 'connections', 'rate')).toBe(0)
+    expect(effectiveThreshold(1, 'rate', 'connections')).toBe(0)
+  })
+
+  // The load-bearing case: these numbers are steps in BOTH scales, so membership in
+  // the active list cannot tell them apart. "100+ connections" is a mild filter;
+  // reinterpreted as "100+ req/s" it empties a map whose busiest edge runs at 6/s,
+  // while the dropdown still shows a deliberate-looking selection.
+  it('drops a value that exists in both scales but was chosen under the other', () => {
+    expect(effectiveThreshold(100, 'connections', 'rate')).toBe(0)
+    expect(effectiveThreshold(1000, 'connections', 'rate')).toBe(0)
+    expect(effectiveThreshold(100, 'rate', 'connections')).toBe(0)
+  })
+})
+
+describe('volumeUnit', () => {
+  it('names the quantity each kind of source measures', () => {
+    expect(volumeUnit(true)).toBe('rate')
+    expect(volumeUnit(false)).toBe('connections')
+    expect(volumeUnit(undefined)).toBe('connections')
   })
 })

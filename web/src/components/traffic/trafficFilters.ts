@@ -97,13 +97,21 @@ export function volumeThresholds(isRateBased: boolean | undefined) {
   return isRateBased ? RATE_THRESHOLDS : CONNECTION_THRESHOLDS
 }
 
+/** Which quantity the volume filter is counting. */
+export type VolumeUnit = 'connections' | 'rate'
+
+export function volumeUnit(isRateBased: boolean | undefined): VolumeUnit {
+  return isRateBased ? 'rate' : 'connections'
+}
+
 /**
- * A threshold chosen against one source's scale is meaningless against the other's
- * — 10000 connections carried over to a rate source hides every edge, and 1 req/s
- * carried the other way is not even an option the dropdown can show as selected.
- * Falls back to no filtering rather than to some nearest neighbour, because the
- * unit changed and there is no honest translation.
+ * A volume threshold only means something alongside the unit it was chosen under.
+ * 100 appears in both scales — "100+ connections" and "100+ req/s" — so the number
+ * alone cannot say whether a stored choice still applies, and carrying it across a
+ * source change turns a mild connection filter into a rate filter that hides every
+ * edge while the dropdown still looks deliberately set. Falls back to no filtering
+ * when the unit has changed, because there is no honest conversion between them.
  */
-export function effectiveThreshold(value: number, isRateBased: boolean | undefined): number {
-  return volumeThresholds(isRateBased).some(t => t.value === value) ? value : 0
+export function effectiveThreshold(value: number, chosenUnit: VolumeUnit, currentUnit: VolumeUnit): number {
+  return chosenUnit === currentUnit ? value : 0
 }

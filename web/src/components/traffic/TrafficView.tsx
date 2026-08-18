@@ -13,6 +13,7 @@ import { useDock } from '../dock'
 import { AlertBanner, EmptyState, PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
 import { useConnection } from '../../context/ConnectionContext'
 import { Tooltip } from '../ui/Tooltip'
+import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus } from './trafficFilters'
 
 // Addon types for filtering
 export type AddonMode = 'show' | 'group' | 'hide'
@@ -519,15 +520,7 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
       if (l7Methods.size > 0) {
         if (!flow.topHTTPPaths?.some(p => l7Methods.has(p.method))) return false
       }
-      if (l7StatusRanges.size > 0) {
-        const matchesBucket = Array.from(l7StatusRanges).some(r => (flow.httpStatusCounts?.[r] ?? 0) > 0)
-        // A rate-based source reports failures as an error rate rather than a
-        // status distribution, so it has no 5xx bucket to match. Consulting the
-        // error signal too means asking for 5xx surfaces the edges that are
-        // actually failing, instead of hiding exactly those.
-        const matchesErrors = l7StatusRanges.has('5xx') && (flow.errorCount ?? 0) > 0
-        if (!matchesBucket && !matchesErrors) return false
-      }
+      if (!matchesStatusRanges(l7StatusRanges, bucketsFromCounts(flow.httpStatusCounts), (flow.errorCount ?? 0) > 0)) return false
       if (l7Verdicts.size > 0) {
         if (!flow.verdictCounts || !Array.from(l7Verdicts).some(v => (flow.verdictCounts?.[v] ?? 0) > 0)) return false
       }
@@ -574,11 +567,7 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
       if (l7Methods.size > 0) {
         if (!flow.httpMethod || !l7Methods.has(flow.httpMethod)) return false
       }
-      if (l7StatusRanges.size > 0) {
-        if (!flow.httpStatus) return false
-        const bucket = `${Math.floor(flow.httpStatus / 100)}xx`
-        if (!l7StatusRanges.has(bucket)) return false
-      }
+      if (!matchesStatusRanges(l7StatusRanges, bucketsFromStatus(flow.httpStatus), (flow.errorRate ?? 0) > 0)) return false
       if (l7Verdicts.size > 0) {
         if (!flow.verdict || !l7Verdicts.has(flow.verdict)) return false
       }

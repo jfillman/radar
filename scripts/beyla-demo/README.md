@@ -84,6 +84,18 @@ signal that separates "Beyla is installed but not watching the network" from
 "Beyla is not installed", and the network feature being opt-in makes the former
 the common case.
 
+**Selecting `dst.port` makes received bytes badly wrong.** Measured here:
+response-direction series carry the client's ephemeral port, so almost all of them
+live for less than the gap between two scrapes and `rate()` returns nothing for
+them. 2944 response series existed and 269 produced a rate — **91% of the bytes
+dropped inside `rate()`**, before any grouping a consumer could change. The
+`client -> web` edge then reported 51 bytes received per response, less than a bare
+TCP ACK. The request direction is unaffected, because its series are keyed by the
+server's stable port. So the two configurations trade off against each other: A has
+no port detail but truthful byte counts, B has exact ports and a received-byte
+figure that is roughly a tenth of the truth. Anything that recommends B for the
+sake of per-port edges should say what it costs.
+
 ## Metric names
 
 Grafana's Beyla emits `beyla_network_flow_bytes_total`; upstream OpenTelemetry
@@ -96,12 +108,21 @@ exercised.
 
 Namespace `demo`:
 
-- `client` — busybox loop making HTTP requests to `web` and TCP connections to
+- `client` — busybox loop making HTTP requests to `web:80` and TCP connections to
   `db`, plus DNS lookups. The DNS traffic is the only UDP in the cluster and the
   only source of `direction="unknown"`.
-- `web` — nginx on :80. Serves the HTTP metric, including `server_port`. `/` returns
-  200 and `/boom` returns 500, so the 5xx path has something to report — an error
-  rate of zero proves nothing about whether the code reads it.
+- `worker` — a second, much quieter caller, reaching `web:8080`. It exists because
+  the HTTP metric carries no caller labels, so a destination's request rate has to
+  be divided between the callers that reached it. With one caller that division is
+  the identity and proves nothing; the volumes are lopsided on purpose so a rate
+  copied to both callers is obvious rather than plausible.
+- `web` — nginx on **:80 and :8080**, **two replicas**. Serves the HTTP metric,
+  including `server_port`. Each port has a failing route (`/boom` on :80, `/bad` on
+  :8080) alongside a 200, so the 5xx path has something to report — an error rate of
+  zero proves nothing about whether the code reads it. Two ports make the
+  destination genuinely multi-port rather than multi-port only by way of ephemeral
+  client ports, and two replicas make it report every L7 figure twice, since those
+  metrics are per pod.
 - `db` — redis on :6379. Non-HTTP, so it exercises a destination with no L7 data.
 
 Both `web` and `db` are fronted by Services, which is what produces the duplicate
@@ -110,11 +131,9 @@ owner-type series.
 ## Limits
 
 Single node, so node-spanning flows and two agents reporting the same
-conversation are not exercised. No SCTP or ICMP, so non-TCP/UDP transport
-handling is untested. No genuinely multi-port destination — `web` serves only
-:80, so a destination made multi-port by real service ports rather than ephemeral
-ones has not been seen. Upstream OBI is not installed. Alloy is not installed, so
-the Alloy-detection path is not exercised here.
+conversation are not exercised. No SCTP or ICMP, so non-TCP/UDP transport handling
+is untested. Upstream OBI is not installed, and neither is Alloy, so the
+Alloy-detection path is not exercised here.
 
 kind nodes do not mount bpffs, so Beyla logs a warning about pinned maps being
 unavailable. Network and HTTP metrics are unaffected; the warning is expected.

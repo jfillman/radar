@@ -1207,6 +1207,10 @@ export interface TrafficFlow {
   /** The conversation's initiator could not be established, so source and
    *  destination are ordered arbitrarily rather than describing a caller. */
   directionUnknown?: boolean
+  /** 5xx responses per second. How a rate-based source reports failures: it
+   *  measures a rate rather than observing individual responses, so it has a
+   *  status code for no single flow. */
+  errorRate?: number
   verdict: string // forwarded, dropped, error
   lastSeen: string // ISO date string
 }

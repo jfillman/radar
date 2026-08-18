@@ -355,7 +355,7 @@ func TestBeylaSource_ParseL4Flows_TransportSeparatesOtherwiseIdenticalSeries(t *
 		}, 20.0),
 	)
 
-	flows, presence := src.parseL4Flows(result)
+	flows, presence := src.parseL4Flows(result, beylaWindow(0))
 	if len(flows) != 2 {
 		t.Fatalf("expected 2 flows (TCP and UDP kept apart), got %d", len(flows))
 	}
@@ -738,7 +738,7 @@ func TestManager_DetectSources_IncludesBeyla(t *testing.T) {
 }
 
 func TestBeylaSource_QueryL4_NamespaceFilterIsValidPromQL(t *testing.T) {
-	q := beylaRateQuery(beylaL4GroupBy, beylaFlowMetric, "test-ns", beylaL4DirectionFilter)
+	q := beylaRateQuery(beylaL4GroupBy, beylaFlowMetric, "test-ns", beylaL4DirectionFilter, beylaWindow(0))
 	if !strings.Contains(q, `k8s_src_namespace="test-ns"}`) || !strings.Contains(q, `k8s_dst_namespace="test-ns"}`) {
 		t.Errorf("namespace matchers must live inside the label selector, got: %s", q)
 	}
@@ -748,7 +748,7 @@ func TestBeylaSource_QueryL4_NamespaceFilterIsValidPromQL(t *testing.T) {
 }
 
 func TestBeylaSource_QueryL7_UsesCorrectMetricAndLabels(t *testing.T) {
-	q := beylaL7RateQuery("test-ns")
+	q := beylaL7RateQuery("test-ns", beylaWindow(0))
 	if !strings.Contains(q, "http_server_request_duration_seconds_count") {
 		t.Errorf("expected the OTel-aligned Beyla HTTP server metric, got: %s", q)
 	}
@@ -1720,9 +1720,86 @@ func TestReplyLossFractionRejectsAnImpossibleFraction(t *testing.T) {
 			src.queryFn = func(_ context.Context, _ string) (*prom.QueryResult, error) {
 				return promResult("vector", promSeries(map[string]string{}, tc.val)), nil
 			}
-			if got := src.replyLossFraction(context.Background()); got != tc.want {
+			if got := src.replyLossFraction(context.Background(), beylaWindow(0)); got != tc.want {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// The traffic view's time range reaches the queries. It is a control the user sets
+// on every visit, and Beyla used to rate over a fixed five minutes whatever they
+// chose, so picking an hour changed nothing on screen.
+func TestBeylaWindowFollowsTheRequestedRange(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		since   time.Duration
+		promQL  string
+		seconds float64
+	}{
+		{"unset falls back to the view's own default", 0, "5m", 300},
+		// Prometheus needs two samples inside the window; at a 15s scrape a
+		// sub-minute span is a coin toss, so it is not offered as a real answer.
+		{"below a scrapeable span falls back", 30 * time.Second, "5m", 300},
+		{"a minute is the shortest honoured", time.Minute, "60s", 60},
+		{"quarter hour", 15 * time.Minute, "900s", 900},
+		{"an hour", time.Hour, "3600s", 3600},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := beylaWindow(tc.since)
+			if w.promQL != tc.promQL || w.seconds != tc.seconds {
+				t.Errorf("got %q/%v, want %q/%v", w.promQL, w.seconds, tc.promQL, tc.seconds)
+			}
+		})
+	}
+}
+
+// The window has to reach both halves: the rate query that measures, and the
+// multiplication that turns that rate back into a total for the window. Using one
+// window to measure and another to scale reports an hour of traffic as five
+// minutes of it.
+func TestGetFlowsRatesAndScalesOverTheRequestedWindow(t *testing.T) {
+	var queries []string
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		queries = append(queries, query)
+		if strings.Contains(query, `direction="unknown"`) {
+			return emptyResult(), nil
+		}
+		if strings.Contains(query, "beyla_network_flow_bytes_total") {
+			return promResult("vector", promSeries(map[string]string{
+				"k8s_src_owner_name": "client", "k8s_src_namespace": "demo",
+				"k8s_src_owner_type": "Deployment",
+				"k8s_dst_owner_name": "web", "k8s_dst_namespace": "demo",
+				"k8s_dst_owner_type": "Deployment",
+			}, 10.0)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	resp, err := src.GetFlows(context.Background(), FlowOptions{Since: time.Hour})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var rated bool
+	for _, q := range queries {
+		if strings.Contains(q, "[3600s]") {
+			rated = true
+		}
+		if strings.Contains(q, "[5m]") {
+			t.Errorf("a query still rates over a fixed five minutes: %s", q)
+		}
+	}
+	if !rated {
+		t.Error("no query rated over the requested hour")
+	}
+
+	if len(resp.Flows) != 1 {
+		t.Fatalf("expected 1 flow, got %d", len(resp.Flows))
+	}
+	// 10 B/s across an hour, not across the old fixed 300 seconds.
+	if got := resp.Flows[0].BytesSent; got != 36000 {
+		t.Errorf("bytes must be scaled by the requested window: got %d, want 36000", got)
 	}
 }

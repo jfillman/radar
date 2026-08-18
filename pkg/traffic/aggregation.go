@@ -18,7 +18,6 @@ type flowAccumulator struct {
 	verdicts    map[string]int64
 	dropReasons map[string]int64
 	l7Votes     map[string]int64
-	anyOriented bool // at least one contributing flow established a direction
 }
 
 type pathAcc struct {
@@ -39,20 +38,28 @@ func AggregateFlows(flows []Flow) []AggregatedFlow {
 	accumulators := make(map[string]*flowAccumulator)
 
 	for _, f := range flows {
-		key := fmt.Sprintf("%s/%s|%s/%s|%d",
+		// Whether the direction is known is part of the identity, not a property to
+		// be reconciled afterwards. A source that cannot orient some of its traffic
+		// reports it with port 0 — the same port every flow carries when the port
+		// attribute is absent — so oriented and unoriented traffic between one pair
+		// would otherwise land in a single aggregate, and any single answer about
+		// its direction is wrong for half of what it contains. Sources that always
+		// orient their flows contribute a constant here and are unaffected.
+		key := fmt.Sprintf("%s/%s|%s/%s|%d|%t",
 			f.Source.Namespace, f.Source.Name,
 			f.Destination.Namespace, f.Destination.Name,
-			f.Port)
+			f.Port, f.DirectionUnknown)
 
 		acc, ok := accumulators[key]
 		if !ok {
 			acc = &flowAccumulator{
 				agg: &AggregatedFlow{
-					Source:      f.Source,
-					Destination: f.Destination,
-					Protocol:    f.Protocol,
-					Port:        f.Port,
-					LastSeen:    f.LastSeen,
+					Source:           f.Source,
+					Destination:      f.Destination,
+					Protocol:         f.Protocol,
+					Port:             f.Port,
+					LastSeen:         f.LastSeen,
+					DirectionUnknown: f.DirectionUnknown,
 				},
 				statusCount: make(map[string]int64),
 				pathStats:   make(map[string]*pathAcc),
@@ -66,22 +73,16 @@ func AggregateFlows(flows []Flow) []AggregatedFlow {
 
 		agg := acc.agg
 		agg.FlowCount++
-		// The edge is unoriented only if nothing contributing to it established a
-		// direction. One flow that did is enough to justify the arrow — and since
-		// unorientable flows carry port 0, the same key as every edge in a default
-		// install, the opposite rule would let a stray UDP conversation strip the
-		// arrow off a destination's HTTP traffic.
-		if !f.DirectionUnknown {
-			acc.anyOriented = true
-		}
 		agg.BytesSent += f.BytesSent
 		agg.BytesRecv += f.BytesRecv
 		agg.Connections += f.Connections
 		agg.RequestCount += RoundRate(f.RequestRate)
-		// Not RoundRate: its floor exists so a low-traffic service is not invisible,
-		// which makes sense for a request count. Applied to errors it turns a rate of
-		// 0.002/s into "1 error", and the graph reds the edge and renders the ratio.
-		agg.ErrorCount += int64(math.Round(f.ErrorRate))
+		// RoundRate, not a bare round: it returns 0 for a zero rate, so it never
+		// invents an error, and its floor of 1 keeps a real but slow failure visible
+		// instead of rounding a genuine 5xx away to no error at all. It also rejects
+		// NaN, which a ratio of two rates produces at zero traffic and which has no
+		// defined conversion to int64.
+		agg.ErrorCount += RoundRate(f.ErrorRate)
 		if f.LastSeen.After(agg.LastSeen) {
 			agg.LastSeen = f.LastSeen
 		}
@@ -155,7 +156,6 @@ func AggregateFlows(flows []Flow) []AggregatedFlow {
 	result := make([]AggregatedFlow, 0, len(accumulators))
 	for _, acc := range accumulators {
 		agg := acc.agg
-		agg.DirectionUnknown = !acc.anyOriented
 
 		// L7 protocol majority vote
 		if len(acc.l7Votes) > 0 {

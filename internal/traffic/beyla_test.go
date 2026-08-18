@@ -3,6 +3,7 @@ package traffic
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -264,7 +265,11 @@ func TestBeylaSource_GetFlows_L4PlusL7(t *testing.T) {
 	f := resp.Flows[0]
 	assertEq(t, "httpMethod", f.HTTPMethod, "POST")
 	assertEq(t, "httpPath", f.HTTPPath, "/api/orders")
-	assertEq(t, "httpStatus", fmt.Sprintf("%d", f.HTTPStatus), "201")
+	// No status is claimed. This series is one of however many status codes the
+	// destination serves, so recording it would make the aggregated edge present a
+	// single class as the entire distribution — an all-2xx bar over a destination
+	// returning 5xx. Failures travel as the error rate instead.
+	assertEq(t, "httpStatus", fmt.Sprintf("%d", f.HTTPStatus), "0")
 	assertEq(t, "l7Protocol", f.L7Protocol, "HTTP")
 	assertEq(t, "port", fmt.Sprintf("%d", f.Port), "8080")
 	assertEq(t, "source name", f.Source.Name, "frontend")
@@ -1545,5 +1550,98 @@ func TestBeylaSource_GetFlows_DestinationFiguresSplitBetweenCallers(t *testing.T
 	}
 	if errRate != 4.0 {
 		t.Errorf("error rates sum to %v, want 4 — divided on the same basis as the requests", errRate)
+	}
+}
+
+// Two series colliding on an l4Key are attributions of one conversation, not two
+// conversations. Beyla reports a Service-routed conversation twice with identical
+// values — once for the workload, once for the Service — and the owner types are
+// deliberately absent from the key, so both land together. Adding them would
+// double every Service-routed edge, which is most of them.
+func TestPreferL4TreatsCollidingSeriesAsOneConversation(t *testing.T) {
+	flow := func(dstKind string, sent, recv int64) *Flow {
+		return &Flow{
+			Source:      Endpoint{Namespace: "demo", Name: "client", Kind: "Workload"},
+			Destination: Endpoint{Namespace: "demo", Name: "web", Kind: dstKind},
+			BytesSent:   sent,
+			BytesRecv:   recv,
+		}
+	}
+
+	workload := flow("Workload", 400, 900)
+	service := flow("Service", 400, 900)
+
+	won := preferL4(service, workload)
+	if won.Destination.Kind == "Service" {
+		t.Error("the workload attribution must win: the graph navigates to workloads")
+	}
+	if won.BytesSent != 400 {
+		t.Errorf("the conversation's bytes must not double: got %d, want 400", won.BytesSent)
+	}
+	if won.BytesRecv != 900 {
+		t.Errorf("received bytes must survive the swap: got %d, want 900", won.BytesRecv)
+	}
+
+	// Order must not change the answer — Prometheus returns series in no
+	// particular order, and an order-dependent rule renders differently per poll.
+	reversed := preferL4(flow("Workload", 400, 900), flow("Service", 400, 900))
+	if reversed.Destination.Kind == "Service" || reversed.BytesSent != 400 {
+		t.Errorf("result must not depend on arrival order: got kind=%q sent=%d",
+			reversed.Destination.Kind, reversed.BytesSent)
+	}
+
+	// Neither is a Service copy: still one conversation under two owner types,
+	// reported with the same values. Taking the larger keeps its real size.
+	tied := preferL4(flow("Workload", 400, 900), flow("Workload", 400, 900))
+	if tied.BytesSent != 400 {
+		t.Errorf("two attributions of one conversation must not sum: got %d, want 400", tied.BytesSent)
+	}
+	if tied.BytesRecv != 900 {
+		t.Errorf("received bytes must not sum either: got %d, want 900", tied.BytesRecv)
+	}
+}
+
+// The L7 detail queries group by pod, so a destination with several replicas
+// reports the same owner and port once per pod. Those have to combine: overwriting
+// reports one replica's figure as the whole destination's, and which replica wins
+// is whatever order Prometheus returned.
+func TestQueryL7DetailCombinesReplicasOnOnePort(t *testing.T) {
+	src := &BeylaSource{k8sClient: fake.NewSimpleClientset()}
+	src.queryFn = func(_ context.Context, query string) (*prom.QueryResult, error) {
+		replica := func(pod string, val float64) prom.Series {
+			return promSeries(map[string]string{
+				"k8s_namespace_name": "demo",
+				"k8s_owner_name":     "web",
+				"k8s_pod_name":       pod,
+				"server_port":        "80",
+			}, val)
+		}
+		if strings.Contains(query, `http_response_status_code=~"5.."`) {
+			return promResult("vector", replica("web-a", 0.5), replica("web-b", 0.25)), nil
+		}
+		if strings.Contains(query, "http_server_request_duration_seconds_sum") {
+			return promResult("vector", replica("web-a", 0.010), replica("web-b", 0.040)), nil
+		}
+		return emptyResult(), nil
+	}
+
+	latency, errors := src.queryL7Detail(context.Background(), FlowOptions{})
+	key := dstPortKey{"demo", "web", 80}
+
+	got, ok := errors.perPort[key]
+	if !ok {
+		t.Fatal("no per-port error rate recorded")
+	}
+	if math.Abs(got-0.75) > 1e-9 {
+		t.Errorf("both replicas' 5xx must count: got %v, want 0.75", got)
+	}
+
+	// Latencies are means, so they take the worst rather than adding.
+	lat, ok := latency.perPort[key]
+	if !ok {
+		t.Fatal("no per-port latency recorded")
+	}
+	if math.Abs(lat-0.040) > 1e-9 {
+		t.Errorf("combined latency is the slowest replica, not a sum: got %v, want 0.040", lat)
 	}
 }

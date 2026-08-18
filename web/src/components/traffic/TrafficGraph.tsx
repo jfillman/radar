@@ -1013,6 +1013,15 @@ function FitViewOnChange({
   return null
 }
 
+// A pair can carry both oriented and unoriented traffic at the same port, and the
+// backend keeps those as separate aggregates because no single answer about the
+// direction is right for both. Without the suffix they would share an edge id and
+// one would silently replace the other. Only unoriented edges are suffixed, so
+// every id a source that always orients its flows produces is unchanged.
+function trafficEdgeId(sourceId: string, destId: string, flow: AggregatedFlow): string {
+  return `${sourceId}->${destId}:${flow.port}${flow.directionUnknown ? ':unoriented' : ''}`
+}
+
 export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups = false, serviceCategories, addonMode = 'show', trafficSource = '', onSelectionChange }: TrafficGraphProps) {
   // Beyla is rate-based too: its Connections field carries requests per second,
   // not a connection count, so it needs the same label Istio gets.
@@ -1032,7 +1041,7 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
       const destId = flow.destination.namespace
         ? `${flow.destination.namespace}/${flow.destination.name}`
         : flow.destination.name
-      const edgeId = `${sourceId}->${destId}:${flow.port}`
+      const edgeId = trafficEdgeId(sourceId, destId, flow)
       map.set(edgeId, flow)
     })
     return map
@@ -1215,7 +1224,7 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
       }
 
       // Create edge with visual encoding (Phase 2.1, 2.2, 2.3)
-      const edgeId = `${sourceId}->${destId}:${flow.port}`
+      const edgeId = trafficEdgeId(sourceId, destId, flow)
       const isHotEdge = flow.connections >= hotPathThreshold && hotPathThreshold > 0
       const hasErrors = (flow.errorCount ?? 0) > 0
 

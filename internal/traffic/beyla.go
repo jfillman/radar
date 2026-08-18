@@ -459,7 +459,13 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([
 			f.L7Protocol = l7.L7Protocol
 			f.HTTPMethod = l7.HTTPMethod
 			f.HTTPPath = l7.HTTPPath
-			f.HTTPStatus = l7.HTTPStatus
+			// Deliberately no HTTPStatus. A destination's requests are spread across
+			// status codes and this is one series out of them, so recording it makes
+			// the aggregate report a single status class as the whole distribution —
+			// a destination serving 17% 5xx renders a confident all-2xx bar. The
+			// error rate below carries the failure signal, which is how the other
+			// rate-based source reports it: Istio queries 5xx separately and never
+			// claims a status distribution either.
 
 			// This caller's share of the destination's traffic. Everything the HTTP
 			// metric reports is per destination, not per caller, so every figure
@@ -574,11 +580,13 @@ func preferL4(incumbent, candidate *Flow) *Flow {
 	case serviceEndpoints(candidate) > serviceEndpoints(incumbent):
 		return incumbent
 	default:
-		// Neither is a Service copy of the other, so these are two genuinely
-		// different series that happen to share a key — the same workload resolved
-		// under two owner types, for instance. Their bytes add rather than one
-		// being discarded on whichever order Prometheus returned them in.
-		incumbent.BytesSent += candidate.BytesSent
+		// Neither is a Service copy of the other, so both are attributions of one
+		// conversation under two owner types — Beyla reports those with identical
+		// values, so adding them would double the edge. Taking the larger keeps the
+		// conversation's real size and, unlike keeping whichever arrived first, does
+		// not depend on the order Prometheus returned them in.
+		incumbent.BytesSent = max(incumbent.BytesSent, candidate.BytesSent)
+		incumbent.BytesRecv = max(incumbent.BytesRecv, candidate.BytesRecv)
 		return incumbent
 	}
 }
@@ -934,7 +942,16 @@ func (s *BeylaSource) queryL7Detail(ctx context.Context, opts FlowOptions) (late
 				continue
 			}
 			ns := series.Labels["k8s_namespace_name"]
-			out.perPort[dstPortKey{ns, name, parseIntLabel(series.Labels["server_port"])}] = val
+			// Series are grouped by pod, so a destination with more than one replica
+			// reports the same owner and port once per pod. They combine the same way
+			// a destination's ports do — overwriting would report a single replica's
+			// figure as the whole destination's.
+			port := dstPortKey{ns, name, parseIntLabel(series.Labels["server_port"])}
+			if existing, ok := out.perPort[port]; ok {
+				out.perPort[port] = combine(existing, val)
+			} else {
+				out.perPort[port] = val
+			}
 			dst := dstKey{ns, name}
 			if existing, ok := out.perDst[dst]; ok {
 				out.perDst[dst] = combine(existing, val)
@@ -944,10 +961,11 @@ func (s *BeylaSource) queryL7Detail(ctx context.Context, opts FlowOptions) (late
 		}
 		return out
 	}
-	// Error rates add up across a destination's ports; latencies are means, so the
-	// destination-wide figure is the largest of them rather than their sum — an
-	// average of averages would need per-port request counts to weight it, and
-	// overstating the worst port is safer than understating it.
+	// How two figures for one destination combine, whether they come from separate
+	// ports or separate replicas. Error rates add up. Latencies are means, so the
+	// combined figure is the largest of them rather than their sum — an average of
+	// averages would need per-series request counts to weight it, and overstating
+	// the worst port is safer than understating it.
 	return read(beylaL7LatencyQuery(opts.Namespace), math.Max),
 		read(beylaL7ErrorQuery(opts.Namespace), func(a, b float64) float64 { return a + b })
 }

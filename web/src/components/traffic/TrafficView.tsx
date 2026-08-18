@@ -520,7 +520,13 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
         if (!flow.topHTTPPaths?.some(p => l7Methods.has(p.method))) return false
       }
       if (l7StatusRanges.size > 0) {
-        if (!flow.httpStatusCounts || !Array.from(l7StatusRanges).some(r => (flow.httpStatusCounts?.[r] ?? 0) > 0)) return false
+        const matchesBucket = Array.from(l7StatusRanges).some(r => (flow.httpStatusCounts?.[r] ?? 0) > 0)
+        // A rate-based source reports failures as an error rate rather than a
+        // status distribution, so it has no 5xx bucket to match. Consulting the
+        // error signal too means asking for 5xx surfaces the edges that are
+        // actually failing, instead of hiding exactly those.
+        const matchesErrors = l7StatusRanges.has('5xx') && (flow.errorCount ?? 0) > 0
+        if (!matchesBucket && !matchesErrors) return false
       }
       if (l7Verdicts.size > 0) {
         if (!flow.verdictCounts || !Array.from(l7Verdicts).some(v => (flow.verdictCounts?.[v] ?? 0) > 0)) return false
@@ -702,8 +708,11 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
       const destKey = flow.destination.namespace
         ? `${flow.destination.namespace}/${destAgg.name}`
         : destAgg.name
-      // Group by service name, not by port (all MongoDB connections become one edge)
-      const key = `${sourceKey}->${destKey}`
+      // Group by service name, not by port (all MongoDB connections become one edge).
+      // Traffic whose direction is known is kept apart from traffic whose direction
+      // is not, the same way the backend aggregation keys it: merging them would
+      // give one edge a single arrowhead answer that is wrong for half its bytes.
+      const key = `${sourceKey}->${destKey}|${flow.directionUnknown ? 'u' : 'o'}`
 
       const existing = aggregatedMap.get(key)
       if (existing) {
@@ -718,12 +727,8 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
         if (flow.errorCount) {
           existing.errorCount = (existing.errorCount || 0) + flow.errorCount
         }
-        // Matches the rule the backend aggregation applies: one unoriented
-        // contributor makes the merged edge unoriented, because an arrowhead would
-        // then be claiming a direction none of them established.
-        if (flow.directionUnknown) {
-          existing.directionUnknown = true
-        }
+        // Everything merged here shares the key's direction-known state, so the
+        // flag is already correct on the entry that was created first.
       } else {
         // Create new aggregated flow with modified names
         aggregatedMap.set(key, {
@@ -755,10 +760,13 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
 
       // Only collapse external → internal flows (inbound internet traffic)
       if (sourceIsExternal && destIsInternal) {
-        // Create a key based on destination + port
+        // Key on destination + port, and on whether the direction is known: this
+        // collapse merges genuinely different external clients, so one of them
+        // arriving unoriented must not take the arrowhead off another's traffic.
+        const orientation = flow.directionUnknown ? '|u' : '|o'
         const destKey = flow.destination.namespace
-          ? `${flow.destination.namespace}/${flow.destination.name}:${flow.port}`
-          : `${flow.destination.name}:${flow.port}`
+          ? `${flow.destination.namespace}/${flow.destination.name}:${flow.port}${orientation}`
+          : `${flow.destination.name}:${flow.port}${orientation}`
 
         const existing = internetFlowsMap.get(destKey)
         if (existing) {
@@ -767,9 +775,6 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
           existing.bytesSent += flow.bytesSent
           existing.bytesRecv += flow.bytesRecv
           existing.flowCount += flow.flowCount
-          if (flow.directionUnknown) {
-            existing.directionUnknown = true
-          }
         } else {
           // Create new "Internet" → destination flow
           internetFlowsMap.set(destKey, {

@@ -883,3 +883,37 @@ func TestCalicoPolicyReadvertisedUnderAnAuthorizedGroup(t *testing.T) {
 		t.Fatalf("the original data map was mutated: %v", original["apiVersion"])
 	}
 }
+
+func TestReadvertiseCalicoPolicyNodesLeavesOtherKindsAlone(t *testing.T) {
+	// The neighborhood paths filter node by node rather than through
+	// StripCalicoPoliciesExcept, so they re-advertise separately. Only Calico
+	// policy nodes may be touched, and only their apiVersion.
+	nodes := []Node{
+		{ID: "calicoglobalnetworkpolicy//shared", Kind: KindCalicoGlobalNetworkPolicy, Name: "shared", Data: map[string]any{
+			"apiVersion":  "projectcalico.org/v3",
+			"apiVersions": []string{"projectcalico.org/v3", "crd.projectcalico.org/v1"},
+			"namespace":   "",
+		}},
+		{ID: "networkpolicy/demo/native", Kind: KindNetworkPolicy, Name: "native", Data: map[string]any{
+			"apiVersion": "networking.k8s.io/v1", "namespace": "demo",
+		}},
+	}
+
+	ReadvertiseCalicoPolicyNodes(nodes, func(tuple SARTuple) bool {
+		return tuple.Group == "crd.projectcalico.org"
+	})
+
+	if got := nodes[0].Data["apiVersion"]; got != "crd.projectcalico.org/v1" {
+		t.Fatalf("Calico node apiVersion = %v, want the group the caller holds", got)
+	}
+	if got := nodes[1].Data["apiVersion"]; got != "networking.k8s.io/v1" {
+		t.Fatalf("a native NetworkPolicy was rewritten to %v", got)
+	}
+
+	// A nil authorizer must change nothing rather than pick a group at random.
+	before := nodes[0].Data["apiVersion"]
+	ReadvertiseCalicoPolicyNodes(nodes, nil)
+	if nodes[0].Data["apiVersion"] != before {
+		t.Fatal("a missing authorizer rewrote the advertised group")
+	}
+}

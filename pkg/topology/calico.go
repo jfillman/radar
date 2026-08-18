@@ -243,17 +243,25 @@ func (t *Topology) StripCalicoPoliciesExcept(allowed map[SARTuple]bool) {
 			deny[node.ID] = true
 			continue
 		}
-		readvertiseCalicoPolicy(node, definitionResource(node), allowed)
+		readvertiseCalicoPolicy(node, func(tuple SARTuple) bool { return allowed[tuple] })
 	}
 	t.StripNodeIDs(deny)
 }
 
-func definitionResource(node *Node) string {
-	definition, ok := calicoPolicyDefinitionForNodeKind(node.Kind)
-	if !ok {
-		return ""
+// ReadvertiseCalicoPolicyNodes points every Calico policy node at an API group
+// the caller can address, given the same authorizer that admitted it. Callers
+// that filter node by node rather than through StripCalicoPoliciesExcept — the
+// neighborhood paths — need this too: a node the caller may read through one
+// serving group is useless if it advertises the other.
+func ReadvertiseCalicoPolicyNodes(nodes []Node, authorize func(SARTuple) bool) {
+	if authorize == nil {
+		return
 	}
-	return definition.resource
+	for i := range nodes {
+		if IsCalicoPolicyKind(nodes[i].Kind) {
+			readvertiseCalicoPolicy(&nodes[i], authorize)
+		}
+	}
 }
 
 // readvertiseCalicoPolicy points a surviving node at an API group the caller is
@@ -262,17 +270,25 @@ func definitionResource(node *Node) string {
 // other serving group would otherwise follow the node to a 403. The node's data
 // map is shared between per-user views of one build, so it is replaced rather
 // than written through.
-func readvertiseCalicoPolicy(node *Node, resource string, allowed map[SARTuple]bool) {
-	if resource == "" || node.Data == nil {
+func readvertiseCalicoPolicy(node *Node, authorize func(SARTuple) bool) {
+	definition, ok := calicoPolicyDefinitionForNodeKind(node.Kind)
+	if !ok || node.Data == nil {
 		return
 	}
 	namespace := nodeNamespaceFromData(node)
+	tupleFor := func(apiVersion string) SARTuple {
+		return SARTuple{
+			Group:     strings.ToLower(APIVersionGroup(apiVersion)),
+			Resource:  definition.resource,
+			Namespace: namespace,
+		}
+	}
 	current, _ := node.Data["apiVersion"].(string)
-	if allowed[SARTuple{Group: strings.ToLower(APIVersionGroup(current)), Resource: resource, Namespace: namespace}] {
+	if authorize(tupleFor(current)) {
 		return
 	}
 	for _, apiVersion := range calicoNodeAPIVersions(node) {
-		if !allowed[SARTuple{Group: strings.ToLower(APIVersionGroup(apiVersion)), Resource: resource, Namespace: namespace}] {
+		if !authorize(tupleFor(apiVersion)) {
 			continue
 		}
 		replacement := make(map[string]any, len(node.Data))

@@ -19,6 +19,7 @@ import {
   getCalicoPolicyTypes,
   formatKubernetesLabelSelector,
   isCalicoStagedDeletion,
+  isCalicoStagedIgnored,
 } from '../resource-utils-calico'
 import { CalicoNetworkPolicyDiagram } from './CalicoNetworkPolicyDiagram'
 
@@ -46,24 +47,35 @@ export function CalicoNetworkPolicyRenderer({
   const types = getCalicoPolicyTypes(data)
   const tierRef = getCalicoTierRef(data)
   // A staged deletion has no selector and no rules to draw — it stages the
-  // removal of the enforced policy with the same name.
+  // removal of the enforced policy with the same name. An ignored staged policy
+  // has rules, but Calico skips it, so they are not a preview of anything.
   const stagedDeletion = isCalicoStagedDeletion(data)
+  const stagedIgnored = isCalicoStagedIgnored(data)
 
   return (
     <>
       <Section title="Policy Flow" icon={GitFork} defaultExpanded>
-        {stagedDeletion ? (
+        {stagedDeletion || stagedIgnored ? (
           <div className="card-inner-lg flex flex-col gap-1.5">
             <div className="flex items-center gap-2 text-[11px] text-theme-text-tertiary">
               <Badge severity="warning" size="sm">
-                Staged deletion
+                {stagedDeletion ? 'Staged deletion' : 'Staged, ignored'}
               </Badge>
               <span>Nothing is previewed as protected</span>
             </div>
             <span className="text-xs text-theme-text-secondary">
-              Promoting this removes {data?.metadata?.name ?? 'the policy'} from
-              the {String(spec.tier ?? 'default')} tier. Any workload protected
-              only by that policy loses its coverage.
+              {stagedDeletion ? (
+                <>
+                  Promoting this removes {data?.metadata?.name ?? 'the policy'}{' '}
+                  from the {String(spec.tier ?? 'default')} tier. Any workload
+                  protected only by that policy loses its coverage.
+                </>
+              ) : (
+                <>
+                  Calico skips a staged policy whose action is Ignore, so
+                  promoting the staged set changes nothing here.
+                </>
+              )}
             </span>
           </div>
         ) : (

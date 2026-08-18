@@ -159,6 +159,15 @@ export function isCalicoStagedDeletion(policy: any): boolean {
   return getCalicoStagedAction(policy) === 'delete'
 }
 
+/**
+ * A staged policy Calico skips entirely. It previews nothing, so presenting its
+ * rules as a preview of protection is the same overstatement as reading a
+ * deletion's absent selector as "every workload".
+ */
+export function isCalicoStagedIgnored(policy: any): boolean {
+  return getCalicoStagedAction(policy) === 'ignore'
+}
+
 export const CALICO_SELECTOR_NOT_APPLICABLE = '-'
 
 export function getCalicoPolicySelector(policy: any): string {

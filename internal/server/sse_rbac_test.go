@@ -215,12 +215,12 @@ func TestAuthorizedCalicoPolicyTuplesFilterSSETopologyByExactGroup(t *testing.T)
 	legacyOnlyID := "calicoglobalnetworkpolicy//legacy-only"
 	topo := &topology.Topology{Nodes: []topology.Node{
 		{ID: sharedID, Kind: topology.KindCalicoGlobalNetworkPolicy, Name: "shared", Data: map[string]any{
-			"apiVersion": "projectcalico.org/v3",
-			"apiGroups":  []string{"projectcalico.org", "crd.projectcalico.org"},
+			"apiVersion":  "projectcalico.org/v3",
+			"apiVersions": []string{"projectcalico.org/v3", "crd.projectcalico.org/v1"},
 		}},
 		{ID: legacyOnlyID, Kind: topology.KindCalicoGlobalNetworkPolicy, Name: "legacy-only", Data: map[string]any{
-			"apiVersion": "crd.projectcalico.org/v1",
-			"apiGroups":  []string{"crd.projectcalico.org"},
+			"apiVersion":  "crd.projectcalico.org/v1",
+			"apiVersions": []string{"crd.projectcalico.org/v1"},
 		}},
 	}}
 
@@ -237,7 +237,7 @@ func TestAuthorizedCalicoPolicyTuplesFilterSSETopologyByExactGroup(t *testing.T)
 func TestAuthorizedCalicoPolicyTuplesFailClosedWithoutAnAuthorizer(t *testing.T) {
 	topo := &topology.Topology{Nodes: []topology.Node{{
 		ID: "calicoglobalnetworkpolicy//shared", Kind: topology.KindCalicoGlobalNetworkPolicy, Name: "shared",
-		Data: map[string]any{"apiVersion": "projectcalico.org/v3", "apiGroups": []string{"projectcalico.org"}},
+		Data: map[string]any{"apiVersion": "projectcalico.org/v3", "apiVersions": []string{"projectcalico.org/v3"}},
 	}}}
 
 	filtered := cloneTopology(topo)

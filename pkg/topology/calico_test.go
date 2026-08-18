@@ -388,16 +388,16 @@ func TestCalicoPolicyFilterUsesExactGroupAndPreservesNativePolicy(t *testing.T) 
 	topo := &Topology{
 		Nodes: []Node{
 			{ID: sharedID, Kind: KindCalicoGlobalNetworkPolicy, Name: "shared", Data: map[string]any{
-				"apiVersion": "projectcalico.org/v3",
-				"apiGroups":  []string{"projectcalico.org", "crd.projectcalico.org"},
+				"apiVersion":  "projectcalico.org/v3",
+				"apiVersions": []string{"projectcalico.org/v3", "crd.projectcalico.org/v1"},
 			}},
 			{ID: legacyOnlyID, Kind: KindCalicoGlobalNetworkPolicy, Name: "legacy-only", Data: map[string]any{
-				"apiVersion": "crd.projectcalico.org/v1",
-				"apiGroups":  []string{"crd.projectcalico.org"},
+				"apiVersion":  "crd.projectcalico.org/v1",
+				"apiVersions": []string{"crd.projectcalico.org/v1"},
 			}},
 			{ID: stagedID, Kind: KindCalicoStagedGlobalNetworkPolicy, Name: "preview", Data: map[string]any{
-				"apiVersion": "projectcalico.org/v3",
-				"apiGroups":  []string{"projectcalico.org"},
+				"apiVersion":  "projectcalico.org/v3",
+				"apiVersions": []string{"projectcalico.org/v3"},
 			}},
 			{ID: nativeID, Kind: KindNetworkPolicy, Name: "native", Data: map[string]any{"namespace": "demo", "apiVersion": "networking.k8s.io/v1"}},
 			{ID: workloadID, Kind: KindDeployment, Name: "web", Data: map[string]any{"namespace": "demo"}},
@@ -443,8 +443,8 @@ func TestCalicoPolicyVisibleThroughEitherServingGroup(t *testing.T) {
 			topo := &Topology{Nodes: []Node{{
 				ID: sharedID, Kind: KindCalicoGlobalNetworkPolicy, Name: "shared",
 				Data: map[string]any{
-					"apiVersion": "projectcalico.org/v3",
-					"apiGroups":  []string{"projectcalico.org", "crd.projectcalico.org"},
+					"apiVersion":  "projectcalico.org/v3",
+					"apiVersions": []string{"projectcalico.org/v3", "crd.projectcalico.org/v1"},
 				},
 			}}}
 			topo.StripCalicoPoliciesExcept(map[SARTuple]bool{
@@ -459,8 +459,8 @@ func TestCalicoPolicyVisibleThroughEitherServingGroup(t *testing.T) {
 	topo := &Topology{Nodes: []Node{{
 		ID: sharedID, Kind: KindCalicoGlobalNetworkPolicy, Name: "shared",
 		Data: map[string]any{
-			"apiVersion": "projectcalico.org/v3",
-			"apiGroups":  []string{"projectcalico.org", "crd.projectcalico.org"},
+			"apiVersion":  "projectcalico.org/v3",
+			"apiVersions": []string{"projectcalico.org/v3", "crd.projectcalico.org/v1"},
 		},
 	}}}
 	topo.StripCalicoPoliciesExcept(map[SARTuple]bool{})
@@ -500,9 +500,9 @@ func TestBuildNeighborhood_CalicoPolicyResolvesFromEitherGroup(t *testing.T) {
 	topo := &Topology{
 		Nodes: []Node{
 			{ID: policyID, Kind: KindCalicoNetworkPolicy, Name: "shared", Data: map[string]any{
-				"namespace":  "demo",
-				"apiVersion": "projectcalico.org/v3",
-				"apiGroups":  []string{"projectcalico.org", "crd.projectcalico.org"},
+				"namespace":   "demo",
+				"apiVersion":  "projectcalico.org/v3",
+				"apiVersions": []string{"projectcalico.org/v3", "crd.projectcalico.org/v1"},
 			}},
 			{ID: targetID, Kind: KindDeployment, Name: "web", Data: map[string]any{"namespace": "demo"}},
 		},
@@ -762,8 +762,8 @@ func TestCalicoPolicyRBACTuplesSurviveAJSONRoundTrip(t *testing.T) {
 	node := Node{
 		ID: "calicoglobalnetworkpolicy//shared", Kind: KindCalicoGlobalNetworkPolicy, Name: "shared",
 		Data: map[string]any{
-			"apiVersion": "projectcalico.org/v3",
-			"apiGroups":  []string{"projectcalico.org", "crd.projectcalico.org"},
+			"apiVersion":  "projectcalico.org/v3",
+			"apiVersions": []string{"projectcalico.org/v3", "crd.projectcalico.org/v1"},
 		},
 	}
 	encoded, err := json.Marshal(node)
@@ -774,8 +774,8 @@ func TestCalicoPolicyRBACTuplesSurviveAJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if _, ok := decoded.Data["apiGroups"].([]any); !ok {
-		t.Fatalf("decoded apiGroups is %T, expected the []any shape this test exists for", decoded.Data["apiGroups"])
+	if _, ok := decoded.Data["apiVersions"].([]any); !ok {
+		t.Fatalf("decoded apiGroups is %T, expected the []any shape this test exists for", decoded.Data["apiVersions"])
 	}
 	tuples, ok := CalicoPolicyRBACTuples(&decoded)
 	if !ok || len(tuples) != 2 {
@@ -811,5 +811,75 @@ func TestCalicoMatcherRejectsUnusableOptionalSelectors(t *testing.T) {
 				t.Fatalf("matched = %v, want %v", matched, test.want)
 			}
 		})
+	}
+}
+
+func TestCalicoNarrowedAllSelectorDoesNotClaimEveryWorkload(t *testing.T) {
+	// all() endpoints narrowed by a service-account selector covers whichever
+	// workloads use a matching ServiceAccount, not the whole namespace. The
+	// match-all shortcut skips the per-workload check, so claiming it here marks
+	// workloads protected that nothing protects.
+	for _, test := range []struct {
+		name string
+		spec map[string]any
+		want bool
+	}{
+		{name: "bare all()", spec: map[string]any{"selector": "all()"}, want: true},
+		{name: "no selector at all", spec: map[string]any{}, want: true},
+		{name: "all() with a service account selector", spec: map[string]any{"selector": "all()", "serviceAccountSelector": "team == 'payments'"}},
+		{name: "all() with a namespace selector", spec: map[string]any{"selector": "all()", "namespaceSelector": "env == 'prod'"}},
+		{name: "all() with all() selectors", spec: map[string]any{"selector": "all()", "namespaceSelector": "all()"}, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			policy := calicoTestObject(calicoProjectGroup, "v3", "NetworkPolicy", "demo", test.name, test.spec)
+			definition, _ := calicoPolicyDefinitionForNodeKind(KindCalicoNetworkPolicy)
+			if got := calicoPolicyMatchesAllWorkloads(policy, definition); got != test.want {
+				t.Fatalf("matchesAllWorkloads = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestCalicoPolicyReadvertisedUnderAnAuthorizedGroup(t *testing.T) {
+	// The node advertises one apiVersion and the UI builds its detail fetch from
+	// it. A caller who can read the policy only through the other serving group
+	// must not be pointed at the group it cannot address.
+	build := func() *Topology {
+		return &Topology{Nodes: []Node{{
+			ID: "calicoglobalnetworkpolicy//shared", Kind: KindCalicoGlobalNetworkPolicy, Name: "shared",
+			Data: map[string]any{
+				"apiVersion":  "projectcalico.org/v3",
+				"apiVersions": []string{"projectcalico.org/v3", "crd.projectcalico.org/v1"},
+			},
+		}}}
+	}
+
+	legacyOnly := build()
+	legacyOnly.StripCalicoPoliciesExcept(map[SARTuple]bool{
+		{Group: "crd.projectcalico.org", Resource: "globalnetworkpolicies"}: true,
+	})
+	if len(legacyOnly.Nodes) != 1 {
+		t.Fatal("policy readable through the legacy group was stripped")
+	}
+	if got := legacyOnly.Nodes[0].Data["apiVersion"]; got != "crd.projectcalico.org/v1" {
+		t.Fatalf("apiVersion = %v, want the group this caller can address", got)
+	}
+
+	preferred := build()
+	preferred.StripCalicoPoliciesExcept(map[SARTuple]bool{
+		{Group: "projectcalico.org", Resource: "globalnetworkpolicies"}: true,
+	})
+	if got := preferred.Nodes[0].Data["apiVersion"]; got != "projectcalico.org/v3" {
+		t.Fatalf("apiVersion = %v, want the preferred group left alone", got)
+	}
+
+	// The rewrite must not reach the shared build every other viewer reads.
+	shared := build()
+	original := shared.Nodes[0].Data
+	shared.StripCalicoPoliciesExcept(map[SARTuple]bool{
+		{Group: "crd.projectcalico.org", Resource: "globalnetworkpolicies"}: true,
+	})
+	if original["apiVersion"] != "projectcalico.org/v3" {
+		t.Fatalf("the original data map was mutated: %v", original["apiVersion"])
 	}
 }

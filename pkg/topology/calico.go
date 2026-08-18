@@ -96,30 +96,40 @@ func IsCalicoPolicyKind(kind NodeKind) bool {
 	return false
 }
 
-// calicoNodeAPIGroups returns every Calico API group that served a policy node.
-// A cluster running the Calico apiserver serves the same policy under both
-// groups; the node records all of them so authorization can consider each.
-// Node data survives a JSON round trip in some paths, so both the native and
-// the decoded shape have to be understood.
-func calicoNodeAPIGroups(node *Node) []string {
+// calicoNodeAPIVersions returns every apiVersion a policy node was served
+// under. A cluster running the Calico apiserver serves the same policy through
+// both groups, and the two are authorized independently, so the node records
+// all of them. Node data survives a JSON round trip on the SSE and hub paths,
+// so both the native and the decoded shape have to be understood.
+func calicoNodeAPIVersions(node *Node) []string {
 	if node == nil || node.Data == nil {
 		return nil
 	}
-	var groups []string
-	switch recorded := node.Data["apiGroups"].(type) {
+	var versions []string
+	switch recorded := node.Data["apiVersions"].(type) {
 	case []string:
-		groups = recorded
+		versions = recorded
 	case []any:
 		for _, value := range recorded {
-			if group, ok := value.(string); ok {
-				groups = append(groups, group)
+			if version, ok := value.(string); ok {
+				versions = append(versions, version)
 			}
 		}
 	}
-	if len(groups) == 0 {
-		apiVersion, _ := node.Data["apiVersion"].(string)
+	if len(versions) == 0 {
+		if apiVersion, _ := node.Data["apiVersion"].(string); apiVersion != "" {
+			versions = []string{apiVersion}
+		}
+	}
+	return versions
+}
+
+// calicoNodeAPIGroups returns every Calico API group that served a policy node.
+func calicoNodeAPIGroups(node *Node) []string {
+	var groups []string
+	for _, apiVersion := range calicoNodeAPIVersions(node) {
 		if group := APIVersionGroup(apiVersion); group != "" {
-			groups = []string{group}
+			groups = append(groups, group)
 		}
 	}
 	return groups
@@ -231,9 +241,48 @@ func (t *Topology) StripCalicoPoliciesExcept(allowed map[SARTuple]bool) {
 		}
 		if !authorized {
 			deny[node.ID] = true
+			continue
 		}
+		readvertiseCalicoPolicy(node, definitionResource(node), allowed)
 	}
 	t.StripNodeIDs(deny)
+}
+
+func definitionResource(node *Node) string {
+	definition, ok := calicoPolicyDefinitionForNodeKind(node.Kind)
+	if !ok {
+		return ""
+	}
+	return definition.resource
+}
+
+// readvertiseCalicoPolicy points a surviving node at an API group the caller is
+// authorized for. The node advertises one apiVersion and the UI builds its
+// detail fetch from it, so a caller who can read the policy only through the
+// other serving group would otherwise follow the node to a 403. The node's data
+// map is shared between per-user views of one build, so it is replaced rather
+// than written through.
+func readvertiseCalicoPolicy(node *Node, resource string, allowed map[SARTuple]bool) {
+	if resource == "" || node.Data == nil {
+		return
+	}
+	namespace := nodeNamespaceFromData(node)
+	current, _ := node.Data["apiVersion"].(string)
+	if allowed[SARTuple{Group: strings.ToLower(APIVersionGroup(current)), Resource: resource, Namespace: namespace}] {
+		return
+	}
+	for _, apiVersion := range calicoNodeAPIVersions(node) {
+		if !allowed[SARTuple{Group: strings.ToLower(APIVersionGroup(apiVersion)), Resource: resource, Namespace: namespace}] {
+			continue
+		}
+		replacement := make(map[string]any, len(node.Data))
+		for key, value := range node.Data {
+			replacement[key] = value
+		}
+		replacement["apiVersion"] = apiVersion
+		node.Data = replacement
+		return
+	}
 }
 
 func calicoPolicyNodeID(kind NodeKind, namespace, name string) string {
@@ -251,17 +300,17 @@ func calicoPolicyIdentity(kind NodeKind, namespace, name string) string {
 // stored object, so rendering one node per group would double every policy and
 // every edge it draws. The extra group is kept in node data because the two are
 // authorized independently.
-func recordCalicoPolicyGroup(node *Node, group string) {
+func recordCalicoPolicyGroup(node *Node, apiVersion string) {
 	if node.Data == nil {
 		node.Data = map[string]any{}
 	}
-	groups, _ := node.Data["apiGroups"].([]string)
-	for _, existing := range groups {
-		if existing == group {
+	versions, _ := node.Data["apiVersions"].([]string)
+	for _, existing := range versions {
+		if existing == apiVersion {
 			return
 		}
 	}
-	node.Data["apiGroups"] = append(groups, group)
+	node.Data["apiVersions"] = append(versions, apiVersion)
 }
 
 type calicoWorkload struct {
@@ -903,10 +952,21 @@ func calicoPolicySelectorValue(policy *unstructured.Unstructured, definition cal
 	return selector.String()
 }
 
+// calicoPolicyMatchesAllWorkloads reports whether a policy selects every
+// workload in its scope, which lets the builder record coverage without drawing
+// an edge per workload. A namespace or service-account selector narrows the
+// policy, so an all() endpoint selector alongside one covers a subset — the
+// per-workload match has to decide, not this shortcut.
 func calicoPolicyMatchesAllWorkloads(policy *unstructured.Unstructured, definition calicoPolicyDefinition) bool {
 	if definition.kubernetes {
 		selector, valid := calicoKubernetesPodSelector(policy)
 		return valid && selector.String() == ""
+	}
+	for _, field := range []string{"namespaceSelector", "serviceAccountSelector"} {
+		value, found, err := unstructured.NestedString(policy.Object, "spec", field)
+		if err != nil || (found && !isCalicoAllSelector(value)) {
+			return false
+		}
 	}
 	selector, found, err := unstructured.NestedString(policy.Object, "spec", "selector")
 	return err == nil && (!found || isCalicoAllSelector(selector))
@@ -1017,10 +1077,10 @@ func (b *Builder) addCalicoPolicyNodes(
 
 				identity := calicoPolicyIdentity(definition.nodeKind, namespace, policy.GetName())
 				if index, built := policyNodeIndex[identity]; built {
-					recordCalicoPolicyGroup(&nodes[index], group)
+					recordCalicoPolicyGroup(&nodes[index], apiVersion)
 					continue
 				}
-				nodeData["apiGroups"] = []string{group}
+				nodeData["apiVersions"] = []string{apiVersion}
 				nodeID := calicoPolicyNodeID(definition.nodeKind, namespace, policy.GetName())
 				policyNodeIndex[identity] = len(nodes)
 				status := StatusHealthy

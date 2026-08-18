@@ -195,3 +195,29 @@ describe('CalicoNetworkPolicyRenderer staged deletions', () => {
     expect(html).not.toContain('Dashed paths are evaluated but not enforced')
   })
 })
+
+describe('CalicoNetworkPolicyRenderer ignored staged policies', () => {
+  it('does not present an ignored staged policy as a preview of protection', () => {
+    const html = renderToString(
+      <CalicoNetworkPolicyRenderer
+        data={{
+          apiVersion: 'projectcalico.org/v3',
+          kind: 'StagedNetworkPolicy',
+          metadata: { name: 'parked', namespace: 'prod' },
+          // Ignore keeps its rules, but Calico skips the policy, so the rules
+          // preview nothing.
+          spec: {
+            stagedAction: 'Ignore',
+            selector: "app == 'web'",
+            types: ['Ingress'],
+            ingress: [{ action: 'Allow' }],
+          },
+        }}
+      />,
+    )
+
+    expect(html).toContain('Staged, ignored')
+    expect(html).toContain('Nothing is previewed as protected')
+    expect(html).not.toContain('Dashed paths are evaluated but not enforced')
+  })
+})

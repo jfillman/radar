@@ -25,6 +25,7 @@ export {
   getCalicoIPPoolEncapsulation,
   getCalicoStagedAction,
   isCalicoStagedDeletion,
+  isCalicoStagedIgnored,
   CALICO_SELECTOR_NOT_APPLICABLE,
   getCalicoPolicyNamespaceSelector,
   getCalicoPolicyServiceAccountSelector,

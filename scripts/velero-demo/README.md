@@ -107,14 +107,17 @@ than silently passing.
 |---|---|
 | `sched-enabled` | healthy baseline, valid cron, `lastBackup` set |
 | `sched-failedvalidation` | `FailedValidation` + an invalid cron (`not-a-cron`) |
-| `sched-errors-no-phase` | validation errors with **no phase set** — Velero leaves it empty on some failures; the row must still be filterable |
+| `sched-errors-no-phase` | validation errors with **no phase set** — synthetic (v1.18 always writes both), guarding the detector's defensive branch; the row must still be filterable |
 | `sched-paused` | paused and otherwise healthy |
 | `sched-paused-invalid` | **paused *and* rejected** — the row that used to read only "Paused" and gave no sign it was broken |
 
 `sched-errors-no-phase` is also the counter-example that stops "invalid cron"
 being derived from the status: it is rejected for a *missing storage location*
 while its cron is perfectly valid. Anything that reddens its cron cell is
-pointing at the wrong field.
+pointing at the wrong field. Both halves of it are shapes v1.18 does not
+produce — it validates only the cron, and always writes the phase alongside the
+errors — so treat this row as a test of Radar's rendering, not as a record of
+Velero behaviour.
 
 ### Storage and repositories
 

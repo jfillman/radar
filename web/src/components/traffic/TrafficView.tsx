@@ -1292,10 +1292,21 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
                   action={
                     <button
                       type="button"
+                      // Nine filters can empty this view; clearing three of them left
+                      // the user pressing a button that promised everything back and
+                      // changed nothing whenever the cause was a namespace, an addon
+                      // mode or an L7 choice.
                       onClick={() => {
                         setHideSystem(false)
                         setHideExternal(false)
                         chooseMinConnections(0)
+                        setHiddenNamespaces(new Set())
+                        setAddonMode('show')
+                        setL7Protocol('all')
+                        setL7Methods(new Set())
+                        setL7StatusRanges(new Set())
+                        setL7Verdicts(new Set())
+                        setDnsPattern('')
                       }}
                       className="badge badge-sm border border-theme-border bg-theme-elevated text-theme-text-primary hover:bg-theme-hover transition-colors"
                     >

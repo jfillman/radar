@@ -1680,8 +1680,25 @@ func TestGetFlowsWarnsWhenMostRepliesCannotBeMeasured(t *testing.T) {
 	// And the advice to enable dst.port must state what it costs, so nobody is
 	// walked into this trade without being told.
 	missing := l4LabelPresence{metric: beylaFlowMetric}
-	if !strings.Contains(missing.warning(3), "received-byte figures unreliable") {
+	if !strings.Contains(missing.warning(3), "received-byte figures would become unreliable") {
 		t.Errorf("recommending dst.port must state its cost, got: %s", missing.warning(3))
+	}
+
+	// Each attribute has its own consequence and either can be missing alone. Naming
+	// both regardless tells an operator who already fixed one that nothing changed.
+	portOnly := l4LabelPresence{metric: beylaFlowMetric, transport: true}
+	if w := portOnly.warning(3); strings.Contains(w, "UDP is shown as TCP") {
+		t.Errorf("transport is exported, so UDP is not shown as TCP: %s", w)
+	}
+	transportOnly := l4LabelPresence{metric: beylaFlowMetric, port: true}
+	if w := transportOnly.warning(3); strings.Contains(w, "port 0") {
+		t.Errorf("dst.port is exported, so edges are not on port 0: %s", w)
+	}
+
+	// The sentence explaining the loss only renders once dst.port is exported, and
+	// this advice only renders while it is not, so it cannot refer back to it.
+	if w := missing.warning(3); strings.Contains(w, "for the same reason") {
+		t.Errorf("advice must not point at an explanation the reader has not seen: %s", w)
 	}
 }
 

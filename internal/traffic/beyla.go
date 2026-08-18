@@ -375,23 +375,38 @@ func (p l4LabelPresence) warning(flowCount int) string {
 			// Names the metric this cluster actually exposes: on an OBI install the
 			// attributes.select key is obi_network_flow_bytes, and advice pointing at
 			// the other spelling does not work.
+			// Each attribute has its own consequence, and only one of them may be
+			// absent: advising transport on its own is deliberate, so a cluster that
+			// took that advice has ports missing and protocols correct. Naming both
+			// consequences either way would tell such an operator their change did
+			// nothing.
 			metric := strings.TrimSuffix(p.metric, "_total")
-			parts = append(parts, fmt.Sprintf("Beyla is not exporting %s, so edges here have no port or protocol "+
-				"detail: they appear as port 0, and UDP is shown as TCP. Both are opt-in, added under "+
-				"attributes.select for %s.",
-				strings.Join(missing, " and "), metric))
+			switch {
+			case !p.port && !p.transport:
+				parts = append(parts, fmt.Sprintf("Beyla is not exporting dst.port and transport, so edges here "+
+					"have no port or protocol detail: they appear as port 0, and UDP is shown as TCP. Both are "+
+					"opt-in, added under attributes.select for %s.", metric))
+			case !p.port:
+				parts = append(parts, fmt.Sprintf("Beyla is not exporting dst.port, so every edge here appears as "+
+					"port 0. It is opt-in, added under attributes.select for %s.", metric))
+			case !p.transport:
+				parts = append(parts, fmt.Sprintf("Beyla is not exporting transport, so UDP traffic here is shown "+
+					"as TCP. It is opt-in, added under attributes.select for %s.", metric))
+			}
 
 			// The two are not equivalent and must not be recommended as a pair.
 			// Adding transport is free. Adding dst.port buys per-port edges and costs
-			// the received-byte figures, since replies then carry a port that changes
-			// every connection — which is the warning above, on clusters that already
-			// made that choice.
+			// the received-byte figures.
 			if !p.transport {
 				parts = append(parts, "Adding transport is safe and makes UDP show as UDP.")
 			}
 			if !p.port {
-				parts = append(parts, "Adding dst.port gives per-port edges, but makes received-byte figures "+
-					"unreliable for the same reason, so it is a trade rather than a fix.")
+				// Self-contained on purpose: the warning that explains this loss only
+				// appears once dst.port is already exported, so a reader seeing this
+				// sentence has not seen that explanation and never will from here.
+				parts = append(parts, "Adding dst.port gives per-port edges, but replies would then carry the "+
+					"client's short-lived port, and most of the return traffic could no longer be measured — so "+
+					"received-byte figures would become unreliable. It is a trade rather than a fix.")
 			}
 		}
 	}

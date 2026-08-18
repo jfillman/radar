@@ -293,7 +293,7 @@ function TrafficNode({ data }: { data: TrafficNodeData }) {
                       ? 'text-white/60'
                       : 'text-theme-text-tertiary'
                 )}>
-                  {formatConnections(portInfo.connections)}
+                  {formatConnections(portInfo.connections)}{data.connLabel === 'req/s' ? '/s' : ''}
                 </span>
               )}
             </div>
@@ -524,7 +524,7 @@ function DetailsPanel({
             <Activity className="h-4 w-4 text-green-500" />
           )}
           <span className="text-sm font-medium text-theme-text-primary">
-            {isNode ? (nodeData?.kind === 'Internet' ? 'Internet Traffic' : nodeData?.kind === 'Addon' ? 'Cluster Addons' : 'Service Details') : 'Connection Details'}
+            {isNode ? (nodeData?.kind === 'Internet' || nodeData?.kind === 'AddonInternet' ? 'Internet Traffic' : nodeData?.kind === 'Addon' ? 'Cluster Addons' : 'Service Details') : 'Connection Details'}
           </span>
         </div>
         <button
@@ -557,7 +557,7 @@ function DetailsPanel({
                       : nodeData.kind.toLowerCase() === 'external'
                         ? 'bg-yellow-500/20 text-yellow-400'
                         : 'bg-blue-500/20 text-blue-400'
-                )}>{nodeData.kind === 'Addon' ? 'Cluster Addons' : nodeData.kind}</span>
+                )}>{nodeData.kind === 'Addon' ? 'Cluster Addons' : nodeData.kind === 'AddonInternet' ? 'Internet' : nodeData.kind}</span>
               </div>
               {nodeData.workload && nodeData.workload !== nodeData.label && (
                 <div className="text-xs text-theme-text-secondary">
@@ -626,7 +626,7 @@ function DetailsPanel({
                         .map(([proto, count]) => (
                           <span key={proto} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-theme-bg text-theme-text-secondary">
                             <span className="font-medium">{proto}</span>
-                            <span className="text-theme-text-tertiary">{formatConnections(count)}</span>
+                            <span className="text-theme-text-tertiary">{formatConnections(count)}{isRateBased ? '/s' : ''}</span>
                           </span>
                         ))}
                     </div>
@@ -693,7 +693,15 @@ function DetailsPanel({
                         <span className="text-theme-text-primary truncate flex-1">
                           {flow.source.name}
                         </span>
-                        <ArrowRight className="h-3 w-3 text-theme-text-tertiary shrink-0" />
+                        {/* Same rule as the canvas and the edge panel: an edge nobody
+                            could orient is not drawn with an arrow. */}
+                        {flow.directionUnknown ? (
+                          <Tooltip content="Neither end was reported as the initiator">
+                            <span className="text-theme-text-tertiary shrink-0">&mdash;</span>
+                          </Tooltip>
+                        ) : (
+                          <ArrowRight className="h-3 w-3 text-theme-text-tertiary shrink-0" />
+                        )}
                         {flow.port !== 0 && (
                           <span className="text-blue-400 font-mono">:{flow.port}</span>
                         )}
@@ -736,7 +744,13 @@ function DetailsPanel({
                     .map((flow, i) => (
                     <div key={i} className="text-xs p-2 rounded bg-theme-elevated space-y-1">
                       <div className="flex items-center gap-1.5">
-                        <ArrowRight className="h-3 w-3 text-theme-text-tertiary shrink-0" />
+                        {flow.directionUnknown ? (
+                          <Tooltip content="Neither end was reported as the initiator">
+                            <span className="text-theme-text-tertiary shrink-0">&mdash;</span>
+                          </Tooltip>
+                        ) : (
+                          <ArrowRight className="h-3 w-3 text-theme-text-tertiary shrink-0" />
+                        )}
                         <span className="text-theme-text-primary truncate flex-1">
                           {flow.destination.name}
                         </span>
@@ -938,7 +952,7 @@ function DetailsPanel({
                     <div className="mt-1 space-y-0.5">
                       {Object.entries(edgeData.flow.dropReasons).map(([reason, count]) => (
                         <div key={reason} className={clsx('text-[9px] pl-1', SEVERITY_TEXT.error)}>
-                          {reason}: {count}
+                          {reason.replace(/_/g, ' ').toLowerCase()}: {count}
                         </div>
                       ))}
                     </div>
@@ -1467,7 +1481,7 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
           target: 'addon-group',
           type: 'smoothstep',
           animated: isHotEdge,
-          label: formatConnections(connections),
+          label: isRateBased ? `${formatConnections(connections)}/s` : formatConnections(connections),
           labelBgStyle: {
             fill: '#581c87', // purple-900
             fillOpacity: 0.9,
@@ -1501,7 +1515,7 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
           target: targetId,
           type: 'smoothstep',
           animated: isHotEdge,
-          label: formatConnections(connections),
+          label: isRateBased ? `${formatConnections(connections)}/s` : formatConnections(connections),
           labelBgStyle: {
             fill: '#581c87', // purple-900
             fillOpacity: 0.9,
@@ -1540,7 +1554,7 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
       setLayoutedNodes(positionedNodes)
       setLayoutedEdges(rawEdges)
     }
-  }, [rawNodes, rawEdges, addonMode, addonGroupEdge, addonGroupOutEdge, hotPathThreshold])
+  }, [rawNodes, rawEdges, addonMode, addonGroupEdge, addonGroupOutEdge, hotPathThreshold, isRateBased])
 
   // Run layout when flows change
   useEffect(() => {

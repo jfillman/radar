@@ -46,7 +46,7 @@ func (s *Server) handleGetTrafficSources(w http.ResponseWriter, r *http.Request)
 
 	manager := traffic.GetManager()
 	if manager == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Traffic manager not initialized")
+		s.writeError(w, http.StatusServiceUnavailable, "Traffic monitoring is still starting up — retry in a moment")
 		return
 	}
 
@@ -67,7 +67,7 @@ func (s *Server) handleGetTrafficFlows(w http.ResponseWriter, r *http.Request) {
 
 	manager := traffic.GetManager()
 	if manager == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Traffic manager not initialized")
+		s.writeError(w, http.StatusServiceUnavailable, "Traffic monitoring is still starting up — retry in a moment")
 		return
 	}
 
@@ -88,7 +88,7 @@ func (s *Server) handleGetTrafficFlows(w http.ResponseWriter, r *http.Request) {
 	if sinceStr != "" {
 		duration, err := time.ParseDuration(sinceStr)
 		if err != nil {
-			s.writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'since' duration format: %s (expected format like '5m', '1h')", sinceStr))
+			s.writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid 'since' duration format: %s (expected something like '5m' or '1h')", sinceStr))
 			return
 		}
 		opts.Since = duration
@@ -159,7 +159,7 @@ func (s *Server) handleTrafficFlowsStream(w http.ResponseWriter, r *http.Request
 
 	manager := traffic.GetManager()
 	if manager == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Traffic manager not initialized")
+		s.writeError(w, http.StatusServiceUnavailable, "Traffic monitoring is still starting up — retry in a moment")
 		return
 	}
 
@@ -254,7 +254,7 @@ func (s *Server) handleTrafficFlowsStream(w http.ResponseWriter, r *http.Request
 func (s *Server) handleSetTrafficSource(w http.ResponseWriter, r *http.Request) {
 	manager := traffic.GetManager()
 	if manager == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Traffic manager not initialized")
+		s.writeError(w, http.StatusServiceUnavailable, "Traffic monitoring is still starting up — retry in a moment")
 		return
 	}
 
@@ -287,7 +287,7 @@ func (s *Server) handleSetTrafficSource(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleGetActiveTrafficSource(w http.ResponseWriter, r *http.Request) {
 	manager := traffic.GetManager()
 	if manager == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Traffic manager not initialized")
+		s.writeError(w, http.StatusServiceUnavailable, "Traffic monitoring is still starting up — retry in a moment")
 		return
 	}
 
@@ -306,7 +306,7 @@ func (s *Server) handleTrafficConnect(w http.ResponseWriter, r *http.Request) {
 
 	manager := traffic.GetManager()
 	if manager == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Traffic manager not initialized")
+		s.writeError(w, http.StatusServiceUnavailable, "Traffic monitoring is still starting up — retry in a moment")
 		return
 	}
 
@@ -325,7 +325,7 @@ func (s *Server) handleTrafficConnect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTrafficConnectionStatus(w http.ResponseWriter, r *http.Request) {
 	manager := traffic.GetManager()
 	if manager == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Traffic manager not initialized")
+		s.writeError(w, http.StatusServiceUnavailable, "Traffic monitoring is still starting up — retry in a moment")
 		return
 	}
 

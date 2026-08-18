@@ -108,9 +108,9 @@ export function CalicoInfraCell({
     case "cidr":
       return <MonoCell value={spec.cidr} />;
     case "blockSize":
-      return <PlainCell value={getCalicoIPPoolBlockSize(resource)} />;
+      return <TextCell value={getCalicoIPPoolBlockSize(resource)} />;
     case "encapsulation":
-      return <PlainCell value={getCalicoIPPoolEncapsulation(resource)} />;
+      return <TextCell value={getCalicoIPPoolEncapsulation(resource)} />;
     case "natOutgoing":
       return <YesNoCell value={spec.natOutgoing === true} />;
     case "disabled":
@@ -120,11 +120,11 @@ export function CalicoInfraCell({
         <span className="text-sm text-theme-text-secondary">No</span>
       );
     case "allowedUses":
-      return <PlainCell value={getCalicoIPPoolAllowedUses(resource)} />;
+      return <TextCell value={getCalicoIPPoolAllowedUses(resource)} />;
     case "nodeSelector":
       return <MonoCell value={spec.nodeSelector ?? "all()"} />;
     case "node":
-      return <PlainCell value={spec.node} />;
+      return <TextCell value={spec.node} />;
     case "interfaceName":
       return <MonoCell value={spec.interfaceName} />;
     case "expectedIPs":
@@ -135,20 +135,20 @@ export function CalicoInfraCell({
       );
     case "profiles":
       return (
-        <PlainCell
+        <TextCell
           value={Array.isArray(spec.profiles) ? spec.profiles.join(", ") : undefined}
         />
       );
     case "order":
-      return <PlainCell value={spec.order} />;
+      return <TextCell value={spec.order} />;
     case "defaultAction":
-      return <PlainCell value={spec.defaultAction ?? "Deny"} />;
+      return <TextCell value={spec.defaultAction ?? "Deny"} />;
     default:
       return <span className="text-sm text-theme-text-tertiary">-</span>;
   }
 }
 
-function PlainCell({ value }: { value: unknown }) {
+function TextCell({ value }: { value: unknown }) {
   if (value === undefined || value === null || value === "")
     return <span className="text-sm text-theme-text-tertiary">-</span>;
   return (

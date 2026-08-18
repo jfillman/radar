@@ -1,4 +1,5 @@
 import type { ResourceRef } from "../../types";
+import { isApiGroup } from "./resource-utils-cnpg";
 
 export const CALICO_GROUPS = [
   "projectcalico.org",
@@ -37,13 +38,6 @@ function apiGroup(apiVersion: unknown): string {
   if (typeof apiVersion !== "string") return "";
   const parts = apiVersion.split("/");
   return parts.length === 2 ? parts[0] : "";
-}
-
-export function isCalicoApiGroupVersion(
-  apiVersion: unknown,
-  group: string,
-): boolean {
-  return apiGroup(apiVersion) === group;
 }
 
 export function isCalicoApiGroup(group: unknown): group is CalicoApiGroup {
@@ -100,7 +94,7 @@ export function isCalicoPolicyResource(data: any): boolean {
 }
 
 export function isCoreNetworkPolicyApiVersion(apiVersion: unknown): boolean {
-  return isCalicoApiGroupVersion(apiVersion, "networking.k8s.io");
+  return isApiGroup(apiVersion, "networking.k8s.io");
 }
 
 export function isCoreNetworkPolicyResource(data: any): boolean {

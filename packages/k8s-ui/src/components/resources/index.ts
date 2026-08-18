@@ -7,7 +7,6 @@ export {
   CALICO_GROUPS,
   type CalicoApiGroup,
   isCalicoApiGroup,
-  isCalicoApiGroupVersion,
   isCalicoApiVersion,
   isCalicoPolicyKind,
   isCalicoNetworkPolicyKind,

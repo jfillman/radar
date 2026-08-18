@@ -320,6 +320,16 @@ func (s *BeylaSource) GetFlows(ctx context.Context, opts FlowOptions) (*FlowsRes
 			Warning:     fmt.Sprintf("Failed to query Beyla metrics: %v", err),
 			WarningKind: WarningTransient}, nil
 	}
+	// Measured here rather than inside getFlowsInternal because only this path
+	// builds a warning from it. StreamFlows shares that helper and discards the
+	// presence it returns, so probing there would query the response series on
+	// every poll and throw the answer away.
+	// Only when dst.port is exported: without it replies carry no port, so they
+	// aggregate into a handful of stable counters and nothing is lost.
+	if presence.port {
+		presence.replyLossFraction = s.replyLossFraction(ctx)
+	}
+
 	response := &FlowsResponse{Source: "beyla", Timestamp: time.Now(), Flows: flows}
 	if warning := presence.warning(len(flows)); warning != "" {
 		response.Warning = warning
@@ -409,12 +419,6 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([
 	// pair's edges. Where a pair has several edges the total is divided between
 	// them by their share of bytes sent — copying it onto each would count the same
 	// return traffic once per port.
-	// Only when dst.port is exported: without it replies carry no port, so they
-	// aggregate into a handful of stable counters and nothing is lost.
-	if presence.port {
-		presence.replyLossFraction = s.replyLossFraction(ctx)
-	}
-
 	received := s.queryReceivedBytes(ctx, opts)
 	if len(received) > 0 {
 		sentPerPair := make(map[flowKey]int64)

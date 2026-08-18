@@ -13,7 +13,7 @@ import { useDock } from '../dock'
 import { AlertBanner, EmptyState, PaneLoader, FreshnessControl } from '@skyhook-io/k8s-ui'
 import { useConnection } from '../../context/ConnectionContext'
 import { Tooltip } from '../ui/Tooltip'
-import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource } from './trafficFilters'
+import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold } from './trafficFilters'
 
 // Addon types for filtering
 export type AddonMode = 'show' | 'group' | 'hide'
@@ -453,6 +453,60 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
 
   // Filter flows based on user preferences
   // Note: namespace filtering is done server-side via the global namespace selector
+  // Show L7 filters only when flows actually contain L7 data
+  const hasL7Data = useMemo(() => {
+    if (!flowsData?.aggregated) return false
+    return flowsData.aggregated.some(f => f.l7Protocol || f.topHTTPPaths || f.topDNSQueries)
+  }, [flowsData?.aggregated])
+
+  const isRateBased = isRateBasedSource(sourcesData?.active)
+
+  // Which L7 filters can return something, so the sidebar never offers a control
+  // that matches nothing. Sources differ in what they can report: a rate-based one
+  // measures a 5xx rate but no status distribution, and has no DNS query names at
+  // all, so offering 2xx or a DNS box would be a dead end.
+  const l7Capabilities = useMemo(() => {
+    const statuses = new Set<string>()
+    const verdicts = new Set<string>()
+    let hasDNSQueries = false
+    const methods = new Set<string>()
+    for (const f of flowsData?.aggregated ?? []) {
+      for (const [bucket, count] of Object.entries(f.httpStatusCounts ?? {})) {
+        if (count > 0) statuses.add(bucket)
+      }
+      // An error rate is a 5xx signal even where no status distribution exists.
+      if ((f.errorCount ?? 0) > 0) statuses.add('5xx')
+      for (const [verdict, count] of Object.entries(f.verdictCounts ?? {})) {
+        if (count > 0) verdicts.add(verdict)
+      }
+      if (f.topDNSQueries?.length) hasDNSQueries = true
+      for (const path of f.topHTTPPaths ?? []) {
+        if (path.method) methods.add(path.method)
+      }
+    }
+    return {
+      availableStatusRanges: ['2xx', '3xx', '4xx', '5xx'].filter(b => statuses.has(b)),
+      availableVerdicts: ['forwarded', 'dropped', 'error'].filter(v => verdicts.has(v)),
+      hasDNSQueries,
+      availableHTTPMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].filter(m => methods.has(m)),
+    }
+  }, [flowsData?.aggregated])
+
+  // The controls are built from what the data contains, so a selection can outlive
+  // its button. These are what actually filter: a choice with no control left to
+  // clear it must not keep hiding traffic.
+  const activeStatusRanges = useMemo(
+    () => keepAvailable(l7StatusRanges, l7Capabilities.availableStatusRanges),
+    [l7StatusRanges, l7Capabilities.availableStatusRanges])
+  const activeMethods = useMemo(
+    () => keepAvailable(l7Methods, l7Capabilities.availableHTTPMethods),
+    [l7Methods, l7Capabilities.availableHTTPMethods])
+  const activeVerdicts = useMemo(
+    () => keepAvailable(l7Verdicts, l7Capabilities.availableVerdicts),
+    [l7Verdicts, l7Capabilities.availableVerdicts])
+  const activeDnsPattern = l7Capabilities.hasDNSQueries ? dnsPattern : ''
+  const activeMinConnections = effectiveThreshold(minConnections, isRateBased)
+
   const filteredFlows = useMemo<AggregatedFlow[]>(() => {
     if (!flowsData?.aggregated) return []
 
@@ -499,7 +553,7 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
       }
 
       // Connection threshold filter
-      if (flow.connections < minConnections) {
+      if (flow.connections < activeMinConnections) {
         return false
       }
 
@@ -517,21 +571,21 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
       if (l7Protocol === 'TCP' && flow.l7Protocol) return false // TCP = no L7
 
       // L7 sub-filters (only apply when active)
-      if (l7Methods.size > 0) {
-        if (!flow.topHTTPPaths?.some(p => l7Methods.has(p.method))) return false
+      if (activeMethods.size > 0) {
+        if (!flow.topHTTPPaths?.some(p => activeMethods.has(p.method))) return false
       }
-      if (!matchesStatusRanges(l7StatusRanges, bucketsFromCounts(flow.httpStatusCounts), (flow.errorCount ?? 0) > 0)) return false
-      if (l7Verdicts.size > 0) {
-        if (!flow.verdictCounts || !Array.from(l7Verdicts).some(v => (flow.verdictCounts?.[v] ?? 0) > 0)) return false
+      if (!matchesStatusRanges(activeStatusRanges, bucketsFromCounts(flow.httpStatusCounts), (flow.errorCount ?? 0) > 0)) return false
+      if (activeVerdicts.size > 0) {
+        if (!flow.verdictCounts || !Array.from(activeVerdicts).some(v => (flow.verdictCounts?.[v] ?? 0) > 0)) return false
       }
-      if (dnsPattern) {
-        const pattern = dnsPattern.toLowerCase()
+      if (activeDnsPattern) {
+        const pattern = activeDnsPattern.toLowerCase()
         if (!flow.topDNSQueries?.some(q => q.query.toLowerCase().includes(pattern))) return false
       }
 
       return true
     })
-  }, [flowsData?.aggregated, hideSystem, hideExternal, minConnections, hiddenNamespaces, addonMode, l7Protocol, l7Methods, l7StatusRanges, l7Verdicts, dnsPattern])
+  }, [flowsData?.aggregated, hideSystem, hideExternal, activeMinConnections, hiddenNamespaces, addonMode, l7Protocol, activeMethods, activeStatusRanges, activeVerdicts, activeDnsPattern])
 
   // Filter raw flows with the same base filters (for list view)
   const filteredRawFlows = useMemo(() => {
@@ -564,20 +618,20 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
       if (l7Protocol === 'TCP' && flow.l7Protocol) return false
 
       // L7 sub-filters on individual flow fields
-      if (l7Methods.size > 0) {
-        if (!flow.httpMethod || !l7Methods.has(flow.httpMethod)) return false
+      if (activeMethods.size > 0) {
+        if (!flow.httpMethod || !activeMethods.has(flow.httpMethod)) return false
       }
-      if (!matchesStatusRanges(l7StatusRanges, bucketsFromStatus(flow.httpStatus), (flow.errorRate ?? 0) > 0)) return false
-      if (l7Verdicts.size > 0) {
-        if (!flow.verdict || !l7Verdicts.has(flow.verdict)) return false
+      if (!matchesStatusRanges(activeStatusRanges, bucketsFromStatus(flow.httpStatus), (flow.errorRate ?? 0) > 0)) return false
+      if (activeVerdicts.size > 0) {
+        if (!flow.verdict || !activeVerdicts.has(flow.verdict)) return false
       }
-      if (dnsPattern) {
-        if (!flow.dnsQuery || !flow.dnsQuery.toLowerCase().includes(dnsPattern.toLowerCase())) return false
+      if (activeDnsPattern) {
+        if (!flow.dnsQuery || !flow.dnsQuery.toLowerCase().includes(activeDnsPattern.toLowerCase())) return false
       }
 
       return true
     })
-  }, [flowsData?.flows, hideSystem, hideExternal, hiddenNamespaces, addonMode, l7Protocol, l7Methods, l7StatusRanges, l7Verdicts, dnsPattern])
+  }, [flowsData?.flows, hideSystem, hideExternal, hiddenNamespaces, addonMode, l7Protocol, activeMethods, activeStatusRanges, activeVerdicts, activeDnsPattern])
 
   // Apply graph selection to filter raw flows for the list panel
   const listFlows = useMemo(() => {
@@ -616,45 +670,6 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
       openFlowListDock()
     }
   }, [flowsData?.flows, openFlowListDock])
-
-  // Show L7 filters only when flows actually contain L7 data
-  const hasL7Data = useMemo(() => {
-    if (!flowsData?.aggregated) return false
-    return flowsData.aggregated.some(f => f.l7Protocol || f.topHTTPPaths || f.topDNSQueries)
-  }, [flowsData?.aggregated])
-
-  const isRateBased = isRateBasedSource(sourcesData?.active)
-
-  // Which L7 filters can return something, so the sidebar never offers a control
-  // that matches nothing. Sources differ in what they can report: a rate-based one
-  // measures a 5xx rate but no status distribution, and has no DNS query names at
-  // all, so offering 2xx or a DNS box would be a dead end.
-  const l7Capabilities = useMemo(() => {
-    const statuses = new Set<string>()
-    const verdicts = new Set<string>()
-    let hasDNSQueries = false
-    const methods = new Set<string>()
-    for (const f of flowsData?.aggregated ?? []) {
-      for (const [bucket, count] of Object.entries(f.httpStatusCounts ?? {})) {
-        if (count > 0) statuses.add(bucket)
-      }
-      // An error rate is a 5xx signal even where no status distribution exists.
-      if ((f.errorCount ?? 0) > 0) statuses.add('5xx')
-      for (const [verdict, count] of Object.entries(f.verdictCounts ?? {})) {
-        if (count > 0) verdicts.add(verdict)
-      }
-      if (f.topDNSQueries?.length) hasDNSQueries = true
-      for (const path of f.topHTTPPaths ?? []) {
-        if (path.method) methods.add(path.method)
-      }
-    }
-    return {
-      availableStatusRanges: ['2xx', '3xx', '4xx', '5xx'].filter(b => statuses.has(b)),
-      availableVerdicts: ['forwarded', 'dropped', 'error'].filter(v => verdicts.has(v)),
-      hasDNSQueries,
-      availableHTTPMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].filter(m => methods.has(m)),
-    }
-  }, [flowsData?.aggregated])
 
   // Toggle L7 filter helpers
   const toggleL7Method = useCallback((method: string) => {
@@ -953,7 +968,7 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
         }
       }
 
-      if (flow.connections < minConnections) {
+      if (flow.connections < activeMinConnections) {
         return false
       }
 
@@ -981,7 +996,7 @@ export function TrafficView({ namespaces }: TrafficViewProps) {
       name,
       nodeCount: nodes.size,
     }))
-  }, [flowsData?.aggregated, hideSystem, hideExternal, minConnections])
+  }, [flowsData?.aggregated, hideSystem, hideExternal, activeMinConnections])
 
   // Determine wizard state based on sources detection
   useEffect(() => {

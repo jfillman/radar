@@ -17,28 +17,7 @@ import type { AddonMode } from './TrafficView'
 import { getNamespaceColor } from '../../utils/traffic-colors'
 import { Tooltip } from '../ui/Tooltip'
 import { Input } from '@skyhook-io/k8s-ui'
-
-// Volume thresholds for the noise filter. The field being compared holds a
-// connection count for an event-based source and a request rate for a rate-based
-// one, so both the wording and the scale have to follow: "100+ connections" is
-// wrong twice over against a rate, once because it is not a connection count and
-// again because a busy service runs at single-digit requests per second and every
-// option would filter the whole map away.
-const CONNECTION_THRESHOLDS = [
-  { value: 0, label: 'All traffic' },
-  { value: 100, label: '100+ connections' },
-  { value: 1000, label: '1K+ connections' },
-  { value: 10000, label: '10K+ connections' },
-  { value: 100000, label: '100K+ connections' },
-]
-
-const RATE_THRESHOLDS = [
-  { value: 0, label: 'All traffic' },
-  { value: 1, label: '1+ req/s' },
-  { value: 10, label: '10+ req/s' },
-  { value: 100, label: '100+ req/s' },
-  { value: 1000, label: '1K+ req/s' },
-]
+import { volumeThresholds } from './trafficFilters'
 
 // Time range options
 const TIME_RANGES = [
@@ -239,7 +218,7 @@ export const TrafficFilterSidebar = memo(function TrafficFilterSidebar({
               onChange={(e) => setMinConnections(Number(e.target.value))}
               className="flex-1 bg-theme-elevated text-theme-text-primary text-xs rounded px-2 py-1.5 border border-theme-border focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
-              {(isRateBased ? RATE_THRESHOLDS : CONNECTION_THRESHOLDS).map(({ value, label }) => (
+              {volumeThresholds(isRateBased).map(({ value, label }) => (
                 <option key={value} value={value}>{label}</option>
               ))}
             </select>

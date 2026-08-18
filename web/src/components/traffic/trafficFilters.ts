@@ -50,3 +50,60 @@ export function bucketsFromStatus(httpStatus: number | undefined): string[] {
 export function isRateBasedSource(source: string | undefined): boolean {
   return source === 'istio' || source === 'beyla'
 }
+
+/**
+ * Narrow a set of chosen filter values to the ones still offered.
+ *
+ * The filter controls are built from what the flows actually contain, so a choice
+ * can outlive its button: pick 5xx, let the errors stop, and the toggle disappears
+ * while the selection keeps filtering — a blank map with nothing left to clear it.
+ * Applying the intersection at the point of use rather than editing the stored
+ * selection means the choice is ignored while it is unavailable and takes effect
+ * again by itself if the traffic comes back.
+ */
+export function keepAvailable(selected: Set<string>, available: string[]): Set<string> {
+  if (selected.size === 0) return selected
+  const offered = new Set(available)
+  const kept = new Set<string>()
+  for (const value of selected) {
+    if (offered.has(value)) kept.add(value)
+  }
+  return kept
+}
+
+/** Volume-filter steps for a source that counts events. */
+export const CONNECTION_THRESHOLDS = [
+  { value: 0, label: 'All traffic' },
+  { value: 100, label: '100+ connections' },
+  { value: 1000, label: '1K+ connections' },
+  { value: 10000, label: '10K+ connections' },
+  { value: 100000, label: '100K+ connections' },
+]
+
+/**
+ * Volume-filter steps for a source that measures rates. Both the unit and the
+ * scale differ: a busy service runs at single-digit requests per second, so the
+ * connection steps above would filter the whole map away.
+ */
+export const RATE_THRESHOLDS = [
+  { value: 0, label: 'All traffic' },
+  { value: 1, label: '1+ req/s' },
+  { value: 10, label: '10+ req/s' },
+  { value: 100, label: '100+ req/s' },
+  { value: 1000, label: '1K+ req/s' },
+]
+
+export function volumeThresholds(isRateBased: boolean | undefined) {
+  return isRateBased ? RATE_THRESHOLDS : CONNECTION_THRESHOLDS
+}
+
+/**
+ * A threshold chosen against one source's scale is meaningless against the other's
+ * — 10000 connections carried over to a rate source hides every edge, and 1 req/s
+ * carried the other way is not even an option the dropdown can show as selected.
+ * Falls back to no filtering rather than to some nearest neighbour, because the
+ * unit changed and there is no honest translation.
+ */
+export function effectiveThreshold(value: number, isRateBased: boolean | undefined): number {
+  return volumeThresholds(isRateBased).some(t => t.value === value) ? value : 0
+}

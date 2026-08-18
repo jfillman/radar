@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource } from './trafficFilters'
+import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold } from './trafficFilters'
 
 describe('matchesStatusRanges', () => {
   it('does not filter when nothing is selected', () => {
@@ -50,5 +50,37 @@ describe('isRateBasedSource', () => {
     expect(isRateBasedSource('caretta')).toBe(false)
     expect(isRateBasedSource(undefined)).toBe(false)
     expect(isRateBasedSource('')).toBe(false)
+  })
+})
+
+describe('keepAvailable', () => {
+  it('drops a choice whose control is no longer offered', () => {
+    // The button is gone, so the selection must stop filtering — otherwise the map
+    // goes blank with nothing left to clear.
+    expect(keepAvailable(new Set(['5xx']), [])).toEqual(new Set())
+    expect(keepAvailable(new Set(['2xx', '5xx']), ['5xx'])).toEqual(new Set(['5xx']))
+  })
+
+  it('leaves an empty selection alone', () => {
+    expect(keepAvailable(new Set(), ['5xx'])).toEqual(new Set())
+  })
+
+  it('keeps everything still on offer', () => {
+    expect(keepAvailable(new Set(['GET', 'POST']), ['GET', 'POST', 'PUT'])).toEqual(new Set(['GET', 'POST']))
+  })
+})
+
+describe('effectiveThreshold', () => {
+  it('keeps a threshold the active source actually offers', () => {
+    expect(effectiveThreshold(100, false)).toBe(100)
+    expect(effectiveThreshold(10, true)).toBe(10)
+    expect(effectiveThreshold(0, true)).toBe(0)
+  })
+
+  it('drops one carried over from the other unit', () => {
+    // 10000 connections against a rate source hides every edge; 1 req/s against a
+    // counting source is not even selectable.
+    expect(effectiveThreshold(10000, true)).toBe(0)
+    expect(effectiveThreshold(1, false)).toBe(0)
   })
 })

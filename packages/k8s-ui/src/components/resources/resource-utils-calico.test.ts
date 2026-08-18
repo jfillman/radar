@@ -7,6 +7,7 @@ import {
   getCalicoIPPoolEncapsulation,
   getCalicoPolicyKindLabel,
   getCalicoPolicySelector,
+  getCalicoPolicyTypes,
   getCalicoTierRef,
   isCalicoApiVersion,
   isCalicoPolicyResource,
@@ -172,5 +173,29 @@ describe('IPPool derivations', () => {
     expect(
       getCalicoIPPoolAllowedUses({ spec: { allowedUses: ['Tunnel'] } }),
     ).toBe('Tunnel')
+  })
+})
+
+describe('derived policy types', () => {
+  // Verified against Calico v3.32.1: applying these without spec.types and
+  // reading them back yields exactly these values.
+  const policy = (spec: any) => ({
+    apiVersion: 'projectcalico.org/v3',
+    kind: 'NetworkPolicy',
+    spec: { selector: "app == 'x'", ...spec },
+  })
+
+  it('derives the types from which rule lists exist', () => {
+    expect(getCalicoPolicyTypes(policy({ egress: [{ action: 'Allow' }] }))).toEqual(['Egress'])
+    expect(getCalicoPolicyTypes(policy({ ingress: [{ action: 'Allow' }] }))).toEqual(['Ingress'])
+    expect(
+      getCalicoPolicyTypes(policy({ ingress: [{ action: 'Allow' }], egress: [{ action: 'Allow' }] })),
+    ).toEqual(['Ingress', 'Egress'])
+    expect(getCalicoPolicyTypes(policy({}))).toEqual(['Ingress'])
+  })
+
+  it('prefers what the policy actually declares', () => {
+    expect(getCalicoPolicyTypes(policy({ types: ['Egress'], ingress: [{ action: 'Allow' }] }))).toEqual(['Egress'])
+    expect(getCalicoPolicyTypes({ spec: undefined })).toEqual([])
   })
 })

@@ -123,13 +123,14 @@ export function getCalicoPolicyTypes(policy: any): string[] {
   const raw = policy?.spec?.types ?? policy?.spec?.policyTypes
   if (Array.isArray(raw) && raw.length > 0) return raw.map(String)
   if (typeof raw === 'string' && raw !== '') return [raw]
-  // Calico derives the types when the field is absent, so a policy with rules
-  // is enforcing them whether or not it says so.
-  const derived = ['Ingress']
-  if (Array.isArray(policy?.spec?.egress) && policy.spec.egress.length > 0) {
-    derived.push('Egress')
-  }
-  return policy?.spec === undefined ? [] : derived
+  // Calico derives the types from which rule lists exist, and stores the result:
+  // an egress-only policy reads back as ["Egress"], not ["Ingress","Egress"].
+  // A policy with no rules at all defaults to Ingress.
+  if (policy?.spec === undefined) return []
+  const hasIngress = Array.isArray(policy.spec.ingress) && policy.spec.ingress.length > 0
+  const hasEgress = Array.isArray(policy.spec.egress) && policy.spec.egress.length > 0
+  if (hasEgress && !hasIngress) return ['Egress']
+  return hasEgress ? ['Ingress', 'Egress'] : ['Ingress']
 }
 
 export function getCalicoPolicyRuleCount(policy: any): {

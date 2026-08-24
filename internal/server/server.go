@@ -660,6 +660,8 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			// Workload restart, scale, rollback
 			r.Post("/workloads/{kind}/{namespace}/{name}/restart", s.handleRestartWorkload)
 			r.Post("/workloads/{kind}/{namespace}/{name}/scale", s.handleScaleWorkload)
+			r.Get("/workloads/{kind}/{namespace}/{name}/images", s.handleGetWorkloadImages)
+			r.Post("/workloads/{kind}/{namespace}/{name}/images", s.handleSetWorkloadImages)
 			r.Get("/workloads/{kind}/{namespace}/{name}/revisions", s.handleWorkloadRevisions)
 			r.Post("/workloads/{kind}/{namespace}/{name}/rollback", s.handleRollbackWorkload)
 

@@ -51,6 +51,32 @@ var workloadRefTargets = map[string]workloadRefTarget{
 
 var specTemplatePath = []string{"spec", "template"}
 
+type TemplateTarget struct {
+	GVR          schema.GroupVersionResource
+	Name         string
+	TemplatePath []string
+}
+
+func ResolveTemplateTarget(ro *unstructured.Unstructured) (TemplateTarget, error) {
+	target := TemplateTarget{
+		GVR:          GVR,
+		Name:         ro.GetName(),
+		TemplatePath: specTemplatePath,
+	}
+	refKind, refName, ok := WorkloadRef(ro)
+	if !ok {
+		return target, nil
+	}
+	ref, supported := workloadRefTargets[refKind]
+	if !supported {
+		return TemplateTarget{}, fmt.Errorf("Rollout %s/%s references a %s: %w", ro.GetNamespace(), ro.GetName(), refKind, ErrWorkloadRefUnsupported)
+	}
+	target.GVR = ref.gvr
+	target.Name = refName
+	target.TemplatePath = ref.templatePath
+	return target, nil
+}
+
 // WorkloadRefResource returns the resource an undo will patch for a workloadRef
 // kind, so callers can authorize against the object actually being written.
 func WorkloadRefResource(kind string) (group, resource string, supported bool) {
@@ -157,17 +183,16 @@ func Undo(ctx context.Context, client dynamic.Interface, namespace, name string,
 	}
 	stripPodTemplateHash(template)
 
-	targetGVR, targetName, templatePath := GVR, name, specTemplatePath
+	templateTarget, err := ResolveTemplateTarget(ro)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	targetGVR, targetName, templatePath := templateTarget.GVR, templateTarget.Name, templateTarget.TemplatePath
 	live := ro
-	if refKind, refName, ok := WorkloadRef(ro); ok {
-		ref, supported := workloadRefTargets[refKind]
-		if !supported {
-			return OperationResult{}, fmt.Errorf("Rollout %s/%s references a %s: %w", namespace, name, refKind, ErrWorkloadRefUnsupported)
-		}
-		targetGVR, targetName, templatePath = ref.gvr, refName, ref.templatePath
+	if targetGVR != GVR || targetName != name {
 		// The unchanged check has to read the object being patched, not the Rollout.
-		if live, err = client.Resource(ref.gvr).Namespace(namespace).Get(ctx, refName, metav1.GetOptions{}); err != nil {
-			return OperationResult{}, fmt.Errorf("failed to get %s %s/%s referenced by Rollout %s: %w", refKind, namespace, refName, name, err)
+		if live, err = client.Resource(targetGVR).Namespace(namespace).Get(ctx, targetName, metav1.GetOptions{}); err != nil {
+			return OperationResult{}, fmt.Errorf("failed to get workload %s/%s referenced by Rollout %s: %w", namespace, targetName, name, err)
 		}
 	}
 

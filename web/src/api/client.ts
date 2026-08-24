@@ -11,6 +11,9 @@ import type {
   CapacityOverviewResponse,
   CapacityPoolDetailResponse,
   CapacityPoolListResponse,
+  SetWorkloadImagesResult,
+  WorkloadImageInventory,
+  WorkloadImageUpdate,
   YamlDocumentIdentity,
   YamlSchemaLoadResult,
 } from '@skyhook-io/k8s-ui'
@@ -53,7 +56,7 @@ import type {
 } from '../types'
 import type { GitOpsOperationResponse } from '../types/gitops'
 import { getApiBase, getAuthHeaders, getCredentialsMode, getBasename, routePath, stripBasename } from './config'
-import { pluralToKind } from '../utils/navigation'
+import { apiVersionToGroup, pluralToKind } from '../utils/navigation'
 
 // Auto-refresh cadences (ms) — named constants for each polled hook's
 // refetchInterval below, so the poll rate reads clearly at each call site.
@@ -4319,6 +4322,89 @@ export function useRestartWorkload() {
   });
 }
 
+export function fetchWorkloadImages(
+  kind: string,
+  namespace: string,
+  name: string,
+): Promise<WorkloadImageInventory> {
+  return fetchJSON(`/workloads/${kind}/${namespace}/${name}/images`);
+}
+
+export function setWorkloadImages(params: {
+  kind: string;
+  namespace: string;
+  name: string;
+  updates: WorkloadImageUpdate[];
+}): Promise<SetWorkloadImagesResult> {
+  return fetchJSON<SetWorkloadImagesResult>(
+    `/workloads/${params.kind}/${params.namespace}/${params.name}/images`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates: params.updates }),
+    },
+  );
+}
+
+export function useSetWorkloadImages() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (params: {
+      kind: string;
+      namespace: string;
+      name: string;
+      updates: WorkloadImageUpdate[];
+    }) => setWorkloadImages(params),
+    meta: {
+      successMessage: "Container images updated",
+    },
+    onSuccess: async (result, variables) => {
+      await queryClient.cancelQueries({
+        queryKey: ["resource", result.target.resource, result.target.namespace, result.target.name],
+      });
+      queryClient.setQueriesData<ResourceWithRelationships<Record<string, unknown>>>(
+        {
+          predicate: (query) => {
+            const [scope, resource, namespace, name, group] = query.queryKey;
+            return scope === "resource" &&
+              resource === result.target.resource &&
+              namespace === result.target.namespace &&
+              name === result.target.name &&
+              (group === result.target.group || group === undefined || group === "");
+          },
+        },
+        (current) => {
+          if (!current) return current;
+          const apiVersion = current.resource.apiVersion;
+          if (typeof apiVersion !== "string" || apiVersionToGroup(apiVersion) !== result.target.group) {
+            return current;
+          }
+          return { ...current, resource: result.object };
+        },
+      );
+      if (result.target.resource !== variables.kind || result.target.name !== variables.name) {
+        queryClient.invalidateQueries({
+          queryKey: ["resource", variables.kind, variables.namespace, variables.name],
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ["resources", variables.kind] });
+      if (result.target.resource !== variables.kind) {
+        queryClient.invalidateQueries({ queryKey: ["resources", result.target.resource] });
+      }
+      queryClient.invalidateQueries({
+        queryKey: [
+          "workload-revisions",
+          variables.kind,
+          variables.namespace,
+          variables.name,
+        ],
+      });
+      queryClient.invalidateQueries({ queryKey: ["topology"] });
+    },
+  });
+}
+
 // Scale a workload (Deployment, StatefulSet)
 export function useScaleWorkload() {
   const queryClient = useQueryClient();
@@ -4482,6 +4568,7 @@ export interface RolloutCapabilities {
   skipStep: boolean;
   rollback: boolean;
   restart: boolean;
+  setImage: boolean;
   strategy: string;
   terminating: boolean;
 }

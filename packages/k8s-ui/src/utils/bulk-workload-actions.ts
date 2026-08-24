@@ -9,6 +9,13 @@ export function canBulkRestartKind(
   kind: BulkWorkloadKindInfo | null | undefined,
   writes: WorkloadWritePermissions | undefined,
 ): boolean {
+  return canPatchWorkloadKind(kind, writes)
+}
+
+export function canPatchWorkloadKind(
+  kind: BulkWorkloadKindInfo | null | undefined,
+  writes: WorkloadWritePermissions | undefined,
+): boolean {
   switch (kind?.name.toLowerCase()) {
     case 'deployments':
       return kind.group === 'apps' && writes?.deployments === true

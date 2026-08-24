@@ -2455,7 +2455,7 @@ function CurrentStateCard({ resource, apiKind, readiness }: { resource: any; api
   const metadata = resource?.metadata || {}
   const templateSpec = getPodTemplateSpec(resource, apiKind)
   const containers = templateSpec?.containers ?? []
-  const image = containers[0]?.image
+  const images = containers.filter((container: any) => container?.name && container?.image)
   const k = apiKind.toLowerCase()
   const title = k === 'jobs' ? 'Execution state' : k === 'cronjobs' ? 'Schedule state' : 'Current state'
   const generation = metadata.generation
@@ -2482,7 +2482,21 @@ function CurrentStateCard({ resource, apiKind, readiness }: { resource: any; api
       <div className="mt-4 grid gap-2 border-t border-theme-border pt-3 text-sm sm:grid-cols-2">
         <InlineFact label="Kind" value={displayKindName(apiKind, resource?.kind)} />
         {templateSpec && <InlineFact label="Service account" value={templateSpec.serviceAccountName || 'default'} />}
-        {image && <InlineFact label="Image" value={<span className="font-mono text-xs">{image}</span>} />}
+        {images.length === 1 && <InlineFact label="Image" value={<span className="break-all font-mono text-xs">{images[0].image}</span>} />}
+        {images.length > 1 && (
+          <InlineFact
+            label="Images"
+            value={(
+              <span className="flex min-w-0 flex-col gap-1">
+                {images.map((container: any) => (
+                  <span key={container.name} className="min-w-0 break-all font-mono text-xs">
+                    <span className="text-theme-text-tertiary">{container.name}:</span> {container.image}
+                  </span>
+                ))}
+              </span>
+            )}
+          />
+        )}
       </div>
     </OverviewCard>
   )

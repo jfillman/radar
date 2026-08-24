@@ -23,6 +23,8 @@ import {
   getGitOpsResourceStatus,
   isDiagnoseKind,
   isRolloutKind,
+  canPatchWorkloadKind,
+  type ManagedImageSource,
 } from '@skyhook-io/k8s-ui'
 import type { ServicePortRenderProps } from '@skyhook-io/k8s-ui/components/resources/renderers/ServiceRenderer'
 import type { SelectedResource, ResourceRef, Relationships } from '../../types'
@@ -45,6 +47,8 @@ import {
   useSuspendCronJob,
   useResumeCronJob,
   useRestartWorkload,
+  fetchWorkloadImages,
+  useSetWorkloadImages,
   useWorkloadRevisions,
   useRollbackWorkload,
   useRolloutAction,
@@ -289,7 +293,8 @@ function useActionsBarProps(
   const openLogs = useOpenLogs()
   const openWorkloadLogs = useOpenWorkloadLogs()
   const openNodeTerminal = useOpenNodeTerminal()
-  const { canExec, canViewLogs, canPortForward } = useNamespacedCapabilities(namespace)
+  const { canExec, canViewLogs, canPortForward, workloadWrites, workloadWritesPending } = useNamespacedCapabilities(namespace)
+  const queryClient = useQueryClient()
   // Live forward when local+RBAC; otherwise (in-cluster/Cloud) still surface the
   // copy-paste kubectl command. The button picks live vs. copy by deployment mode.
   const isLocal = useIsLocalDeployment()
@@ -297,20 +302,34 @@ function useActionsBarProps(
 
   const deleteMutation = useDeleteResource()
   const restartWorkloadMutation = useRestartWorkload()
+  const setWorkloadImagesMutation = useSetWorkloadImages()
   const rollbackMutation = useRollbackWorkload()
   const rolloutActionMutation = useRolloutAction()
   const triggerCronJobMutation = useTriggerCronJob()
   const suspendCronJobMutation = useSuspendCronJob()
   const resumeCronJobMutation = useResumeCronJob()
 
-  const isRollbackKind = ['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(kind.toLowerCase())
-  const isRollout = isRolloutKind(kind)
-  const { data: rolloutCapabilities } = useRolloutCapabilities(namespace, name, isRollout)
+  const isRolloutShape = isRolloutKind(kind)
+  const isRollout = isRolloutShape && (group === undefined || group === 'argoproj.io')
+  const isRollbackKind = ['deployments', 'statefulsets', 'daemonsets'].includes(kind.toLowerCase()) || isRollout
+  const { data: rolloutCapabilities, isPending: rolloutCapabilitiesPending } = useRolloutCapabilities(namespace, name, isRollout)
   // Restart and Rollback are the generic workload buttons, so a Rollout has to
   // withhold the callback the way promote-full does. Permissive until the probe
   // answers — withholding while it loads would flicker the shared buttons.
   const rolloutAllows = (verb: 'restart' | 'rollback') =>
     !isRollout || !rolloutCapabilities || rolloutCapabilities[verb]
+  const canSetImages = isRolloutShape
+    ? group === 'argoproj.io' && !rolloutCapabilitiesPending && rolloutCapabilities?.setImage === true
+    : !workloadWritesPending && canPatchWorkloadKind({ name: kind, group }, workloadWrites)
+  const loadImages = useCallback(
+    (params: { kind: string; namespace: string; name: string }) =>
+      queryClient.fetchQuery({
+        queryKey: ['workload-images', params.kind, params.namespace, params.name],
+        queryFn: () => fetchWorkloadImages(params.kind, params.namespace, params.name),
+        staleTime: 0,
+      }),
+    [queryClient],
+  )
   const {
     data: revisionsList,
     isLoading: revisionsLoading,
@@ -381,6 +400,12 @@ function useActionsBarProps(
           restartWorkloadMutation.mutate(params)
       : undefined,
     isRestarting: restartWorkloadMutation.isPending,
+    onLoadImages: canSetImages ? loadImages : undefined,
+    onSetImages: canSetImages
+      ? (params: Parameters<typeof setWorkloadImagesMutation.mutateAsync>[0]) =>
+          setWorkloadImagesMutation.mutateAsync(params)
+      : undefined,
+    isSettingImages: setWorkloadImagesMutation.isPending,
     revisions: revisionsList,
     revisionsLoading,
     revisionsError: revisionsError ?? null,
@@ -768,11 +793,6 @@ export function WorkloadView({
     // pass one.
     group: effectiveGroup,
   })
-  const actionsBarProps = useMemo(
-    () => ({ ...baseActionsBarProps, onCompareTo, onCompareAcrossClusters }),
-    [baseActionsBarProps, onCompareTo, onCompareAcrossClusters],
-  )
-
   const handleUpdateResource = useCallback(
     async (params: Parameters<typeof updateResource.mutateAsync>[0]) => {
       await updateResource.mutateAsync(params)
@@ -822,6 +842,33 @@ export function WorkloadView({
       navigateRouter({ pathname: '/helm', search: params.toString() })
     },
     [navigateRouter, searchParams],
+  )
+  const managedImageSources = useMemo<ManagedImageSource[]>(() => {
+    const sources: ManagedImageSource[] = []
+    if (gitopsOwner) {
+      sources.push({
+        type: 'GitOps',
+        label: `${gitopsOwner.namespace}/${gitopsOwner.name}`,
+        onOpen: gitopsOwnerQuery.data ? () => handleOpenGitOpsResource(gitopsOwner) : undefined,
+      })
+    }
+    if (helmOwner) {
+      sources.push({
+        type: 'Helm',
+        label: `${helmOwner.namespace}/${helmOwner.name}`,
+        onOpen: () => handleOpenHelmRelease(helmOwner),
+      })
+    }
+    return sources
+  }, [gitopsOwner, gitopsOwnerQuery.data, handleOpenGitOpsResource, handleOpenHelmRelease, helmOwner])
+  const actionsBarProps = useMemo(
+    () => ({
+      ...baseActionsBarProps,
+      onCompareTo,
+      onCompareAcrossClusters,
+      managedImageSources,
+    }),
+    [baseActionsBarProps, managedImageSources, onCompareTo, onCompareAcrossClusters],
   )
   const handleOpenApplication = useCallback(
     (appKey: string) => {

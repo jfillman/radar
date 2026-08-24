@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   canBulkRestartKind,
   canBulkScaleKind,
+  canPatchWorkloadKind,
   intersectWorkloadWrites,
 } from './bulk-workload-actions'
 import type { Capabilities, WorkloadWritePermissions } from '../types/core'
@@ -26,6 +27,16 @@ describe('bulk workload action gating', () => {
     expect(canBulkRestartKind({ name: 'daemonsets', group: 'apps' }, all)).toBe(true)
     expect(canBulkRestartKind({ name: 'statefulsets', group: 'apps' }, all)).toBe(true)
     expect(canBulkRestartKind({ name: 'rollouts', group: 'argoproj.io' }, all)).toBe(true)
+  })
+
+  it('shares exact group and kind checks with detail patch actions', () => {
+    const all = writes({ deployments: true, daemonSets: true, statefulSets: true, rollouts: true })
+
+    expect(canPatchWorkloadKind({ name: 'deployments', group: 'apps' }, all)).toBe(true)
+    expect(canPatchWorkloadKind({ name: 'rollouts', group: 'argoproj.io' }, all)).toBe(true)
+    expect(canPatchWorkloadKind({ name: 'deployments', group: 'example.com' }, all)).toBe(false)
+    expect(canPatchWorkloadKind({ name: 'services', group: '' }, all)).toBe(false)
+    expect(canPatchWorkloadKind({ name: 'deployments', group: 'apps' }, undefined)).toBe(false)
   })
 
   it('requires the apps group for built-in workload restart', () => {

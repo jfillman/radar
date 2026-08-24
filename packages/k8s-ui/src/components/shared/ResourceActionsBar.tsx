@@ -26,6 +26,8 @@ import { DialogPortal } from '../ui/DialogPortal'
 import type { SelectedResource, WorkloadRevision } from '../../types'
 import { displayKindName } from '../ui/drawer-components'
 import { getDefaultContainerName } from '../resources/resource-utils'
+import { SetImageDialog, type ManagedImageSource } from './SetImageDialog'
+import type { WorkloadImageInventory, WorkloadImageUpdate } from '../../types/core'
 
 // ============================================================================
 // ACTIONS BAR - Interactive buttons that change based on resource kind
@@ -75,6 +77,11 @@ interface ResourceActionsBarProps {
   // Workload restart
   onRestart?: (params: { kind: string; namespace: string; name: string }, callbacks?: { onSuccess?: () => void; onError?: (err: unknown) => void }) => void
   isRestarting?: boolean
+
+  onLoadImages?: (params: { kind: string; namespace: string; name: string }) => Promise<WorkloadImageInventory>
+  onSetImages?: (params: { kind: string; namespace: string; name: string; updates: WorkloadImageUpdate[] }) => Promise<unknown>
+  isSettingImages?: boolean
+  managedImageSources?: ManagedImageSource[]
 
   // Rollback
   revisions?: WorkloadRevision[]
@@ -136,6 +143,7 @@ export function ResourceActionsBar({
   renderPortForward,
   onDelete, isDeleting, cascadeDependents, cascadeLoading, cascadeRootResolved,
   onRestart, isRestarting,
+  onLoadImages, onSetImages, isSettingImages, managedImageSources,
   revisions: revisionsList, revisionsLoading, revisionsError, onRollback, isRollingBack,
   onRolloutPromoteFull,
   onTriggerCronJob, isTriggeringCronJob,
@@ -173,6 +181,7 @@ export function ResourceActionsBar({
 
   // Rollback dialog state
   const [showRevisions, setShowRevisions] = useState(false)
+  const [showSetImage, setShowSetImage] = useState(false)
   const isRollbackKind = ['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(kind)
   const hasMultipleRevisions = (revisionsList?.length ?? 0) > 1
 
@@ -298,7 +307,7 @@ export function ResourceActionsBar({
           {canExec && onOpenNodeTerminal && (
             <button
               onClick={() => onOpenNodeTerminal({ nodeName: resource.name })}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand rounded-lg"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
             >
               <Terminal className="w-3.5 h-3.5" />
               Debug Shell
@@ -359,6 +368,15 @@ export function ResourceActionsBar({
       {/* Workload actions - restart, rollback, and logs */}
       {['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(kind) && (
         <>
+          {onLoadImages && onSetImages && !data?.metadata?.deletionTimestamp && (
+            <button
+              onClick={() => setShowSetImage(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand rounded-lg"
+            >
+              <Box className="w-3.5 h-3.5" />
+              Update image
+            </button>
+          )}
           {onRestart && (
             <button
               onClick={() => onRestart({
@@ -615,6 +633,20 @@ export function ResourceActionsBar({
         cascadeLoading={cascadeLoading}
         cascadeRootResolved={cascadeRootResolved}
       />
+
+      {onLoadImages && onSetImages && (
+        <SetImageDialog
+          open={showSetImage}
+          workloadLabel={`${displayKindName(resource.kind, data?.kind)} ${resource.namespace}/${resource.name}`}
+          workloadName={resource.name}
+          workloadResource={resource.kind}
+          managedSources={managedImageSources}
+          pending={isSettingImages}
+          onClose={() => setShowSetImage(false)}
+          onLoad={() => onLoadImages({ kind: resource.kind, namespace: resource.namespace, name: resource.name })}
+          onConfirm={(updates) => onSetImages({ kind: resource.kind, namespace: resource.namespace, name: resource.name, updates })}
+        />
+      )}
 
       {/* Node cordon confirmation */}
       <ConfirmDialog

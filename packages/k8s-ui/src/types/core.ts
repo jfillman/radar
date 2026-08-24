@@ -59,6 +59,55 @@ export interface WorkloadWritePermissions {
   rollouts: boolean
 }
 
+export type WorkloadContainerType = 'container' | 'initContainer'
+
+export interface WorkloadContainerImage {
+  type: WorkloadContainerType
+  name: string
+  image: string
+}
+
+export interface WorkloadImageTarget {
+  group: string
+  resource: string
+  kind: string
+  namespace: string
+  name: string
+}
+
+export type WorkloadUpdateBehaviorType =
+  | 'rolling'
+  | 'recreate'
+  | 'paused'
+  | 'onDelete'
+  | 'partitioned'
+  | 'canary'
+  | 'blueGreen'
+
+export interface WorkloadUpdateBehavior {
+  type: WorkloadUpdateBehaviorType
+  partition?: number
+  autoPromote?: boolean
+  gated?: boolean
+}
+
+export interface WorkloadImageInventory {
+  target: WorkloadImageTarget
+  containers: WorkloadContainerImage[]
+  behavior: WorkloadUpdateBehavior
+}
+
+export interface WorkloadImageUpdate {
+  type: WorkloadContainerType
+  name: string
+  previousImage: string
+  image: string
+}
+
+export interface SetWorkloadImagesResult extends WorkloadImageInventory {
+  object: Record<string, unknown>
+}
+
 export interface IntegrationCapability {
   state: CapacityIntegrationState
   reasonCode?: string

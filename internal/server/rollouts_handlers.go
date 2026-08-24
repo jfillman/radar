@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	"github.com/skyhook-io/radar/internal/auth"
+	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/rollouts"
 )
 
@@ -27,6 +28,7 @@ type RolloutCapabilities struct {
 	SkipStep    bool `json:"skipStep"`
 	Rollback    bool `json:"rollback"`
 	Restart     bool `json:"restart"`
+	SetImage    bool `json:"setImage"`
 	// Strategy lets the UI hide step-relative actions on blueGreen Rollouts.
 	Strategy string `json:"strategy"`
 	// Terminating suppresses every action; the Rollout is being deleted.
@@ -128,6 +130,10 @@ func (s *Server) handleRolloutCapabilities(w http.ResponseWriter, r *http.Reques
 	rbGroup, rbResource, rbSupported := rollbackAuthTarget(ro)
 	rollbackVerb := rbSupported && !terminating &&
 		s.canRead(r, rbGroup, rbResource, namespace, "patch")
+	imageGroup, imageResource, imageNeedsGet, imageSupported := k8score.WorkloadImageTargetForRollout(ro)
+	setImageVerb := imageSupported && !terminating &&
+		s.canRead(r, imageGroup, imageResource, namespace, "patch") &&
+		(!imageNeedsGet || s.canRead(r, imageGroup, imageResource, namespace, "get"))
 
 	s.writeJSON(w, RolloutCapabilities{
 		Abort:       statusVerb,
@@ -137,6 +143,7 @@ func (s *Server) handleRolloutCapabilities(w http.ResponseWriter, r *http.Reques
 		SkipStep:    stepVerb,
 		Rollback:    rollbackVerb,
 		Restart:     mainVerb,
+		SetImage:    setImageVerb,
 		Strategy:    string(strategy),
 		Terminating: terminating,
 	})

@@ -13,8 +13,10 @@ describe('workload image API', () => {
       containers: [{ type: 'container', name: 'app', image: 'repo/app:v1' }],
       behavior: { type: 'rolling' },
     }
-    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
-      Promise.resolve(new Response(JSON.stringify(inventory), { status: 200 })))
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      expect(input).toBe('/api/workloads/deployments/prod/web/images')
+      return Promise.resolve(new Response(JSON.stringify(inventory), { status: 200 }))
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(fetchWorkloadImages('deployments', 'prod', 'web')).resolves.toEqual(inventory)
@@ -22,10 +24,13 @@ describe('workload image API', () => {
   })
 
   it('posts compare-and-swap image updates and preserves conflict status', async () => {
-    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
-      Promise.resolve(new Response(JSON.stringify({
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      expect(input).toBe('/api/workloads/deployments/prod/web/images')
+      expect(init?.method).toBe('POST')
+      return Promise.resolve(new Response(JSON.stringify({
         error: 'image for container "app" changed; review the latest images before applying',
-      }), { status: 409, headers: { 'Content-Type': 'application/json' } })))
+      }), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     const promise = setWorkloadImages({

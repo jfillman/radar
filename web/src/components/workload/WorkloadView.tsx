@@ -25,9 +25,10 @@ import {
   isRolloutKind,
   canPatchWorkloadKind,
   type ManagedImageSource,
+  type WorkloadImageTarget,
 } from '@skyhook-io/k8s-ui'
 import type { ServicePortRenderProps } from '@skyhook-io/k8s-ui/components/resources/renderers/ServiceRenderer'
-import type { SelectedResource, ResourceRef, Relationships } from '../../types'
+import type { SelectedResource, ResourceRef, Relationships, ResourceWithRelationships } from '../../types'
 import {
   kindToPlural,
   pluralToKind,
@@ -48,6 +49,7 @@ import {
   useResumeCronJob,
   useRestartWorkload,
   fetchWorkloadImages,
+  fetchResourceWithRelationships,
   useSetWorkloadImages,
   useWorkloadRevisions,
   useRollbackWorkload,
@@ -281,6 +283,16 @@ interface WorkloadViewProps {
   pushTabHistory?: boolean
 }
 
+interface ImageTargetOwnershipContext {
+  root: {
+    resource: string
+    namespace: string
+    name: string
+  }
+  target: WorkloadImageTarget
+  response: ResourceWithRelationships<Record<string, unknown>>
+}
+
 function useActionsBarProps(
   kind: string,
   namespace: string,
@@ -480,6 +492,8 @@ export function WorkloadView({
   const [searchParams, setSearchParams] = useSearchParams()
   const apiKind = kindToPlural(kindProp)
   const queryClient = useQueryClient()
+  const [imageTargetOwnership, setImageTargetOwnership] =
+    useState<ImageTargetOwnershipContext | null>(null)
 
   // Tab state from URL query param — migrate legacy tab names
   const rawTab = searchParams.get('tab')
@@ -576,6 +590,16 @@ export function WorkloadView({
   )
   const certificateInfo = resourceResponse?.certificateInfo
   const hpaDiagnosis = resourceResponse?.hpaDiagnosis
+  const activeImageTargetOwnership = useMemo(
+    () =>
+      imageTargetOwnership &&
+      imageTargetOwnership.root.resource.toLowerCase() === apiKind.toLowerCase() &&
+      imageTargetOwnership.root.namespace === namespace &&
+      imageTargetOwnership.root.name === name
+        ? imageTargetOwnership
+        : null,
+    [apiKind, imageTargetOwnership, name, namespace],
+  )
   const relationshipGitopsOwner = useMemo(
     () => gitOpsOwnerFromRelationships(relationships),
     [relationships],
@@ -625,13 +649,27 @@ export function WorkloadView({
   const helmSourceResource = relationshipHelmOwner
     ? resource
     : inheritedGitOpsResponse.data?.resource
-  const shouldResolveArgoOwner = rawGitopsOwner?.tool === 'argocd' && !rawGitopsOwner.namespace
+  const targetRawGitopsOwner = useMemo(
+    () => gitOpsOwnerFromRelationships(activeImageTargetOwnership?.response.relationships),
+    [activeImageTargetOwnership?.response.relationships],
+  )
+  const targetHelmOwner = nativeHelmOwnerFromRelationships(
+    activeImageTargetOwnership?.response.relationships,
+    activeImageTargetOwnership?.target.namespace ?? namespace,
+  )
+  const shouldResolveArgoOwner =
+    (rawGitopsOwner?.tool === 'argocd' && !rawGitopsOwner.namespace) ||
+    (targetRawGitopsOwner?.tool === 'argocd' && !targetRawGitopsOwner.namespace)
   const { data: argoApplications } = useResources<any>('applications', undefined, 'argoproj.io', {
     enabled: shouldResolveArgoOwner,
   })
   const gitopsOwner = useMemo(
     () => resolveGitOpsOwner(rawGitopsOwner, argoApplications),
     [rawGitopsOwner, argoApplications],
+  )
+  const targetGitopsOwner = useMemo(
+    () => resolveGitOpsOwner(targetRawGitopsOwner, argoApplications),
+    [argoApplications, targetRawGitopsOwner],
   )
   const gitopsOwnerGroup = gitopsOwner ? gitOpsOwnerGroup(gitopsOwner) : ''
   const shouldFetchGitOpsOwner = Boolean(gitopsOwner?.namespace)
@@ -640,6 +678,17 @@ export function WorkloadView({
     gitopsOwner?.namespace ?? '',
     gitopsOwner?.name ?? '',
     gitopsOwnerGroup,
+  )
+  const targetGitopsOwnerGroup = targetGitopsOwner ? gitOpsOwnerGroup(targetGitopsOwner) : ''
+  const shouldFetchTargetGitOpsOwner = Boolean(
+    activeImageTargetOwnership && targetGitopsOwner?.namespace,
+  )
+  const targetGitopsOwnerQuery = useResource<Record<string, unknown>>(
+    shouldFetchTargetGitOpsOwner ? targetGitopsOwner!.kind : '',
+    targetGitopsOwner?.namespace ?? '',
+    targetGitopsOwner?.name ?? '',
+    targetGitopsOwnerGroup,
+    { enabled: shouldFetchTargetGitOpsOwner },
   )
   const gitOpsOwnerStatus = useMemo(
     () => deriveGitOpsOwnerStatus(gitopsOwner, gitopsOwnerQuery.data),
@@ -843,32 +892,96 @@ export function WorkloadView({
     },
     [navigateRouter, searchParams],
   )
+  const loadImagesWithTargetOwnership = useCallback(
+    async (params: { kind: string; namespace: string; name: string }) => {
+      setImageTargetOwnership(null)
+      const inventory = await baseActionsBarProps.onLoadImages!(params)
+      const targetDiffers =
+        inventory.target.resource.toLowerCase() !== params.kind.toLowerCase() ||
+        inventory.target.namespace !== params.namespace ||
+        inventory.target.name !== params.name
+      if (!targetDiffers) return inventory
+
+      const response = await queryClient.fetchQuery({
+        queryKey: [
+          'resource',
+          inventory.target.resource,
+          inventory.target.namespace,
+          inventory.target.name,
+          inventory.target.group,
+        ],
+        queryFn: () =>
+          fetchResourceWithRelationships<Record<string, unknown>>(
+            inventory.target.resource,
+            inventory.target.namespace,
+            inventory.target.name,
+            inventory.target.group,
+          ),
+        staleTime: 0,
+      })
+      setImageTargetOwnership({
+        root: {
+          resource: params.kind,
+          namespace: params.namespace,
+          name: params.name,
+        },
+        target: inventory.target,
+        response,
+      })
+      return inventory
+    },
+    [baseActionsBarProps.onLoadImages, queryClient, setImageTargetOwnership],
+  )
+  const imageGitopsOwner = activeImageTargetOwnership ? targetGitopsOwner : gitopsOwner
+  const imageHelmOwner = activeImageTargetOwnership ? targetHelmOwner : helmOwner
+  const imageGitopsOwnerData = activeImageTargetOwnership
+    ? targetGitopsOwnerQuery.data
+    : gitopsOwnerQuery.data
   const managedImageSources = useMemo<ManagedImageSource[]>(() => {
     const sources: ManagedImageSource[] = []
-    if (gitopsOwner) {
+    if (imageGitopsOwner) {
       sources.push({
         type: 'GitOps',
-        label: `${gitopsOwner.namespace}/${gitopsOwner.name}`,
-        onOpen: gitopsOwnerQuery.data ? () => handleOpenGitOpsResource(gitopsOwner) : undefined,
+        label: imageGitopsOwner.namespace
+          ? `${imageGitopsOwner.namespace}/${imageGitopsOwner.name}`
+          : imageGitopsOwner.name,
+        onOpen: imageGitopsOwnerData
+          ? () => handleOpenGitOpsResource(imageGitopsOwner)
+          : undefined,
       })
     }
-    if (helmOwner) {
+    if (imageHelmOwner) {
       sources.push({
         type: 'Helm',
-        label: `${helmOwner.namespace}/${helmOwner.name}`,
-        onOpen: () => handleOpenHelmRelease(helmOwner),
+        label: `${imageHelmOwner.namespace}/${imageHelmOwner.name}`,
+        onOpen: () => handleOpenHelmRelease(imageHelmOwner),
       })
     }
     return sources
-  }, [gitopsOwner, gitopsOwnerQuery.data, handleOpenGitOpsResource, handleOpenHelmRelease, helmOwner])
+  }, [
+    handleOpenGitOpsResource,
+    handleOpenHelmRelease,
+    imageGitopsOwner,
+    imageGitopsOwnerData,
+    imageHelmOwner,
+  ])
   const actionsBarProps = useMemo(
     () => ({
       ...baseActionsBarProps,
+      onLoadImages: baseActionsBarProps.onLoadImages
+        ? loadImagesWithTargetOwnership
+        : undefined,
       onCompareTo,
       onCompareAcrossClusters,
       managedImageSources,
     }),
-    [baseActionsBarProps, managedImageSources, onCompareTo, onCompareAcrossClusters],
+    [
+      baseActionsBarProps,
+      loadImagesWithTargetOwnership,
+      managedImageSources,
+      onCompareTo,
+      onCompareAcrossClusters,
+    ],
   )
   const handleOpenApplication = useCallback(
     (appKey: string) => {

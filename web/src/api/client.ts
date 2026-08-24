@@ -2196,6 +2196,22 @@ export function useArgoRevisionMetadata(
 
 // Generic resource fetching - returns resource with relationships
 // Uses '_' as placeholder for cluster-scoped resources (empty namespace)
+export function fetchResourceWithRelationships<T>(
+  kind: string,
+  namespace: string,
+  name: string,
+  group?: string,
+): Promise<ResourceWithRelationships<T>> {
+  const ns = namespace || "_";
+  const params = new URLSearchParams();
+  if (group) params.set("group", group);
+  const queryString = params.toString();
+
+  return fetchJSON(
+    `/resources/${kind}/${ns}/${name}${queryString ? `?${queryString}` : ""}`,
+  );
+}
+
 export function useResource<T>(
   kind: string,
   namespace: string,
@@ -2203,18 +2219,9 @@ export function useResource<T>(
   group?: string,
   options?: { enabled?: boolean; refetchInterval?: number | false },
 ) {
-  // For cluster-scoped resources, use '_' as namespace placeholder
-  const ns = namespace || "_";
-  const params = new URLSearchParams();
-  if (group) params.set("group", group);
-  const queryString = params.toString();
-
   const query = useQuery<ResourceWithRelationships<T>>({
     queryKey: ["resource", kind, namespace, name, group],
-    queryFn: () =>
-      fetchJSON(
-        `/resources/${kind}/${ns}/${name}${queryString ? `?${queryString}` : ""}`,
-      ),
+    queryFn: () => fetchResourceWithRelationships<T>(kind, namespace, name, group),
     enabled: (options?.enabled ?? true) && Boolean(kind && name), // namespace can be empty for cluster-scoped resources
     refetchInterval: options?.refetchInterval,
   });
@@ -2236,17 +2243,9 @@ export function useResourceWithRelationships<T>(
   name: string,
   group?: string,
 ) {
-  const ns = namespace || "_";
-  const params = new URLSearchParams();
-  if (group) params.set("group", group);
-  const queryString = params.toString();
-
   return useQuery<ResourceWithRelationships<T>>({
     queryKey: ["resource", kind, namespace, name, group],
-    queryFn: () =>
-      fetchJSON(
-        `/resources/${kind}/${ns}/${name}${queryString ? `?${queryString}` : ""}`,
-      ),
+    queryFn: () => fetchResourceWithRelationships<T>(kind, namespace, name, group),
     enabled: Boolean(kind && name),
   });
 }

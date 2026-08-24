@@ -1,12 +1,25 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, fetchWorkloadImages, setWorkloadImages } from './client'
+import { ApiError, fetchResourceWithRelationships, fetchWorkloadImages, setWorkloadImages } from './client'
 
 afterEach(() => {
   vi.unstubAllGlobals()
 })
 
 describe('workload image API', () => {
+  it('loads the exact referenced workload and API group for ownership checks', async () => {
+    const response = { resource: { kind: 'Deployment' }, relationships: { managedBy: [] } }
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      expect(input).toBe('/api/resources/deployments/prod/shared?group=apps')
+      return Promise.resolve(new Response(JSON.stringify(response), { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      fetchResourceWithRelationships('deployments', 'prod', 'shared', 'apps'),
+    ).resolves.toEqual(response)
+  })
+
   it('loads the authoritative image inventory', async () => {
     const inventory = {
       target: { group: 'apps', resource: 'deployments', kind: 'Deployment', namespace: 'prod', name: 'web' },

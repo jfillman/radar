@@ -89,15 +89,21 @@ export function canSubmitImageUpdates({
   managed,
   acknowledged,
   busy,
+  loadFailed = false,
 }: {
   updateCount: number
   hasEmptyImage: boolean
   managed: boolean
   acknowledged: boolean
   busy: boolean
+  loadFailed?: boolean
 }): boolean {
   return (
-    updateCount > 0 && !hasEmptyImage && (!managed || acknowledged) && !busy
+    updateCount > 0 &&
+    !hasEmptyImage &&
+    (!managed || acknowledged) &&
+    !busy &&
+    !loadFailed
   )
 }
 
@@ -225,6 +231,7 @@ export function SetImageDialog({
     managed: managedSources.length > 0,
     acknowledged,
     busy,
+    loadFailed: Boolean(loadError),
   })
 
   const handleSubmit = async () => {
@@ -325,6 +332,22 @@ export function SetImageDialog({
           </div>
         ) : inventory ? (
           <div className="space-y-4">
+            {loadError && (
+              <div className="rounded-md border border-theme-border bg-theme-base px-3 py-2 text-xs">
+                <p className="font-medium text-theme-text-primary">Refresh required</p>
+                <p className="mt-1 text-theme-text-secondary">
+                  Radar couldn’t verify the latest images and ownership. {loadError}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void loadInventory(true)}
+                  className="mt-2 inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium btn-brand-muted"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Retry refresh
+                </button>
+              </div>
+            )}
             {targetDiffers && (
               <div className="rounded-md border border-theme-border bg-theme-base px-3 py-2 text-xs text-theme-text-secondary">
                 This Rollout reads its Pod template from{' '}

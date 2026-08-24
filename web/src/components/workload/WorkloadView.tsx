@@ -291,6 +291,7 @@ interface ImageTargetOwnershipContext {
   }
   target: WorkloadImageTarget
   response: ResourceWithRelationships<Record<string, unknown>>
+  inheritedResponse?: ResourceWithRelationships<Record<string, unknown>>
 }
 
 function useActionsBarProps(
@@ -494,6 +495,7 @@ export function WorkloadView({
   const queryClient = useQueryClient()
   const [imageTargetOwnership, setImageTargetOwnership] =
     useState<ImageTargetOwnershipContext | null>(null)
+  const imageOwnershipRequestRef = useRef(0)
 
   // Tab state from URL query param — migrate legacy tab names
   const rawTab = searchParams.get('tab')
@@ -649,14 +651,27 @@ export function WorkloadView({
   const helmSourceResource = relationshipHelmOwner
     ? resource
     : inheritedGitOpsResponse.data?.resource
-  const targetRawGitopsOwner = useMemo(
+  const targetRelationshipGitopsOwner = useMemo(
     () => gitOpsOwnerFromRelationships(activeImageTargetOwnership?.response.relationships),
     [activeImageTargetOwnership?.response.relationships],
   )
-  const targetHelmOwner = nativeHelmOwnerFromRelationships(
+  const targetInheritedGitopsOwner = useMemo(
+    () =>
+      gitOpsOwnerFromRelationships(
+        activeImageTargetOwnership?.inheritedResponse?.relationships,
+      ),
+    [activeImageTargetOwnership?.inheritedResponse?.relationships],
+  )
+  const targetRawGitopsOwner = targetRelationshipGitopsOwner ?? targetInheritedGitopsOwner
+  const targetRelationshipHelmOwner = nativeHelmOwnerFromRelationships(
     activeImageTargetOwnership?.response.relationships,
     activeImageTargetOwnership?.target.namespace ?? namespace,
   )
+  const targetInheritedHelmOwner = nativeHelmOwnerFromRelationships(
+    activeImageTargetOwnership?.inheritedResponse?.relationships,
+    activeImageTargetOwnership?.target.namespace ?? namespace,
+  )
+  const targetHelmOwner = targetRelationshipHelmOwner ?? targetInheritedHelmOwner
   const shouldResolveArgoOwner =
     (rawGitopsOwner?.tool === 'argocd' && !rawGitopsOwner.namespace) ||
     (targetRawGitopsOwner?.tool === 'argocd' && !targetRawGitopsOwner.namespace)
@@ -894,40 +909,72 @@ export function WorkloadView({
   )
   const loadImagesWithTargetOwnership = useCallback(
     async (params: { kind: string; namespace: string; name: string }) => {
-      setImageTargetOwnership(null)
+      const request = ++imageOwnershipRequestRef.current
       const inventory = await baseActionsBarProps.onLoadImages!(params)
       const targetDiffers =
         inventory.target.resource.toLowerCase() !== params.kind.toLowerCase() ||
         inventory.target.namespace !== params.namespace ||
         inventory.target.name !== params.name
-      if (!targetDiffers) return inventory
+      if (!targetDiffers) {
+        if (request === imageOwnershipRequestRef.current) {
+          setImageTargetOwnership(null)
+        }
+        return inventory
+      }
 
-      const response = await queryClient.fetchQuery({
-        queryKey: [
-          'resource',
-          inventory.target.resource,
-          inventory.target.namespace,
-          inventory.target.name,
-          inventory.target.group,
-        ],
-        queryFn: () =>
-          fetchResourceWithRelationships<Record<string, unknown>>(
-            inventory.target.resource,
-            inventory.target.namespace,
-            inventory.target.name,
-            inventory.target.group,
-          ),
-        staleTime: 0,
-      })
-      setImageTargetOwnership({
-        root: {
-          resource: params.kind,
-          namespace: params.namespace,
-          name: params.name,
+      const fetchRelationships = (
+        resource: string,
+        targetNamespace: string,
+        targetName: string,
+        group?: string,
+      ) =>
+        queryClient.fetchQuery({
+          queryKey: ['resource', resource, targetNamespace, targetName, group],
+          queryFn: () =>
+            fetchResourceWithRelationships<Record<string, unknown>>(
+              resource,
+              targetNamespace,
+              targetName,
+              group,
+            ),
+          staleTime: 0,
+        })
+      const response = await fetchRelationships(
+        inventory.target.resource,
+        inventory.target.namespace,
+        inventory.target.name,
+        inventory.target.group,
+      )
+      const inheritedRef = findInheritedGitOpsLookupRef(
+        response.relationships,
+        gitOpsOwnerFromRelationships(response.relationships),
+        {
+          kind: inventory.target.kind,
+          namespace: inventory.target.namespace,
+          name: inventory.target.name,
+          group: inventory.target.group,
         },
-        target: inventory.target,
-        response,
-      })
+      )
+      const inheritedResponse = inheritedRef
+        ? await fetchRelationships(
+            kindToPlural(inheritedRef.kind),
+            inheritedRef.namespace,
+            inheritedRef.name,
+            inheritedRef.group,
+          )
+        : undefined
+      if (request === imageOwnershipRequestRef.current) {
+        setImageTargetOwnership({
+          root: {
+            resource: params.kind,
+            namespace: params.namespace,
+            name: params.name,
+          },
+          target: inventory.target,
+          response,
+          inheritedResponse,
+        })
+      }
       return inventory
     },
     [baseActionsBarProps.onLoadImages, queryClient, setImageTargetOwnership],
@@ -1286,7 +1333,7 @@ function resolveGitOpsOwner(
   return namespace ? { ...owner, namespace } : owner
 }
 
-function findInheritedGitOpsLookupRef(
+export function findInheritedGitOpsLookupRef(
   relationships: Relationships | undefined,
   directOwner: GitOpsOwnerRef | null,
   current: ResourceRef,

@@ -122,5 +122,6 @@ describe('canSubmitImageUpdates', () => {
   it('blocks empty images and concurrent submissions', () => {
     expect(canSubmitImageUpdates({ ...ready, hasEmptyImage: true })).toBe(false)
     expect(canSubmitImageUpdates({ ...ready, busy: true })).toBe(false)
+    expect(canSubmitImageUpdates({ ...ready, loadFailed: true })).toBe(false)
   })
 })

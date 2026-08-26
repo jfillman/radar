@@ -222,7 +222,21 @@ jobs:
 
           if git diff --staged --quiet; then
             echo "No changes to Helm chart"
-          else
-            git commit -m "Update radar chart to v$VERSION"
-            git push origin main
+            exit 0
           fi
+          git commit -m "Update radar chart to v$VERSION"
+
+          # Push with rebase-retry: radar-hub's chart sync writes to the same
+          # helm-charts main and can land between our clone and our push, making
+          # this a non-fast-forward reject. Mirrors the loop in radar-hub's
+          # publish-ghcr.yml. Until 2026-08 the hub job never got this far, so the
+          # collision could not happen; it can now.
+          for attempt in 1 2 3 4 5; do
+            if git push origin main; then
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt) — rebasing on origin/main"
+            git pull --rebase origin main
+          done
+          echo "::error::could not push chart update to helm-charts main after retries (persistent concurrent writes)."
+          exit 1

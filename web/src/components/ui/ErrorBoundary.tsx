@@ -36,7 +36,9 @@ export class ErrorBoundary extends Component<Props, State> {
     console.error('[ErrorBoundary]', error, info.componentStack)
   }
 
-  handleReset = () => this.setState({ hasError: false, error: null, resetKey: this.props.resetKey })
+  // resetKey is left alone: getDerivedStateFromProps has already reconciled it
+  // with the current props by the time any handler can run.
+  handleReset = () => this.setState({ hasError: false, error: null })
 
   render() {
     if (!this.state.hasError) return this.props.children

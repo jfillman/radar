@@ -818,6 +818,9 @@ func workloadSelectorGetError(err error) *workloadError {
 	if apierrors.IsNotFound(err) || errors.Is(err, k8score.ErrResourceNotFound) {
 		return &workloadError{http.StatusNotFound, err.Error()}
 	}
+	if errors.Is(err, k8s.ErrWorkloadSelectorUnavailable) || errors.Is(err, rollouts.ErrWorkloadRefUnsupported) {
+		return &workloadError{http.StatusBadRequest, err.Error()}
+	}
 	return &workloadError{http.StatusInternalServerError, err.Error()}
 }
 

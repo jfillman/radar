@@ -19,7 +19,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/helm"
@@ -854,10 +853,8 @@ func collectAppWorkloads(ctx context.Context, cache *k8s.ResourceCache, namespac
 	updatedRevisionTargets := applicationRevisionTargets(cache, namespaces, argoRollouts)
 	rolloutReferencedDeployments := map[string]bool{}
 	for _, rollout := range argoRollouts {
-		if refKind, _, _ := unstructured.NestedString(rollout.Object, "spec", "workloadRef", "kind"); refKind == "Deployment" {
-			if refName, _, _ := unstructured.NestedString(rollout.Object, "spec", "workloadRef", "name"); refName != "" {
-				rolloutReferencedDeployments[rollout.GetNamespace()+"/"+refName] = true
-			}
+		if target, err := rollouts.ResolveTemplateTarget(rollout); err == nil && target.GVR.Resource == "deployments" {
+			rolloutReferencedDeployments[rollout.GetNamespace()+"/"+target.Name] = true
 		}
 	}
 
@@ -1042,36 +1039,20 @@ func rolloutSpecifiesReplicas(rollout *unstructured.Unstructured) bool {
 }
 
 func rolloutApplicationFields(cache *k8s.ResourceCache, rollout *unstructured.Unstructured) (*metav1.LabelSelector, string, int) {
-	selector := labelSelectorFromUnstructured(rollout.Object, "spec", "selector")
+	selector, _ := k8s.ResolveRolloutSelector(cache, rollout)
 	image := primaryUnstructuredImage(rollout.Object, "spec", "template", "spec", "containers")
-	refKind, _, _ := unstructured.NestedString(rollout.Object, "spec", "workloadRef", "kind")
-	refName, _, _ := unstructured.NestedString(rollout.Object, "spec", "workloadRef", "name")
-	if refKind != "Deployment" || refName == "" || cache.Deployments() == nil {
+	target, err := rollouts.ResolveTemplateTarget(rollout)
+	if err != nil || target.GVR.Resource != "deployments" || cache.Deployments() == nil {
 		return selector, image, 0
 	}
-	deployment, err := cache.Deployments().Deployments(rollout.GetNamespace()).Get(refName)
+	deployment, err := cache.Deployments().Deployments(rollout.GetNamespace()).Get(target.Name)
 	if err != nil {
 		return selector, image, 0
-	}
-	if selector == nil {
-		selector = deployment.Spec.Selector
 	}
 	if image == "" {
 		image = primaryImage(deployment.Spec.Template.Spec.Containers)
 	}
 	return selector, image, appDesiredReplicas(deployment.Spec.Replicas)
-}
-
-func labelSelectorFromUnstructured(object map[string]any, fields ...string) *metav1.LabelSelector {
-	raw, found, err := unstructured.NestedMap(object, fields...)
-	if err != nil || !found {
-		return nil
-	}
-	var selector metav1.LabelSelector
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(raw, &selector); err != nil {
-		return nil
-	}
-	return &selector
 }
 
 func primaryUnstructuredImage(object map[string]any, fields ...string) string {

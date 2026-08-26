@@ -373,7 +373,7 @@ func TestSetWorkloadImagesKeepsAdmissionErrorAccurateAfterReorderRetry(t *testin
 func TestSetWorkloadImagesFollowsRolloutWorkloadRef(t *testing.T) {
 	rollout := imageWorkload("argoproj.io/v1alpha1", "Rollout", "prod", "web", nil, nil)
 	unstructured.RemoveNestedField(rollout.Object, "spec", "template")
-	_ = unstructured.SetNestedMap(rollout.Object, map[string]any{"kind": "Deployment", "name": "web-target"}, "spec", "workloadRef")
+	_ = unstructured.SetNestedMap(rollout.Object, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "name": "web-target"}, "spec", "workloadRef")
 	_ = unstructured.SetNestedMap(rollout.Object, map[string]any{"canary": map[string]any{}}, "spec", "strategy")
 	deployment := imageWorkload("apps/v1", "Deployment", "prod", "web-target",
 		[]any{imageContainer("app", "repo/app:v1")}, nil)
@@ -466,7 +466,7 @@ func TestGetWorkloadImagesRejectsTerminatingRootAndReferencedTarget(t *testing.T
 
 	rollout := imageWorkload("argoproj.io/v1alpha1", "Rollout", "prod", "rollout", nil, nil)
 	unstructured.RemoveNestedField(rollout.Object, "spec", "template")
-	_ = unstructured.SetNestedMap(rollout.Object, map[string]any{"kind": "Deployment", "name": "web"}, "spec", "workloadRef")
+	_ = unstructured.SetNestedMap(rollout.Object, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "name": "web"}, "spec", "workloadRef")
 	_, err = NewWorkloadManager(fakeImageClient(rollout, terminatingDeployment), nil).GetWorkloadImages(context.Background(), "rollouts", "prod", "rollout")
 	if !errors.Is(err, ErrImageWorkloadTerminating) {
 		t.Fatalf("terminating referenced target error = %v", err)
@@ -482,13 +482,13 @@ func TestWorkloadImageTargetForRollout(t *testing.T) {
 
 	ref := inline.DeepCopy()
 	unstructured.RemoveNestedField(ref.Object, "spec", "template")
-	_ = unstructured.SetNestedMap(ref.Object, map[string]any{"kind": "Deployment", "name": "web-target"}, "spec", "workloadRef")
+	_ = unstructured.SetNestedMap(ref.Object, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "name": "web-target"}, "spec", "workloadRef")
 	group, resource, needsGet, supported = WorkloadImageTargetForRollout(ref)
 	if group != "apps" || resource != "deployments" || !needsGet || !supported {
 		t.Errorf("workloadRef target = (%q, %q, %v, %v)", group, resource, needsGet, supported)
 	}
 
-	_ = unstructured.SetNestedMap(ref.Object, map[string]any{"kind": "StatefulSet", "name": "web-target"}, "spec", "workloadRef")
+	_ = unstructured.SetNestedMap(ref.Object, map[string]any{"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "web-target"}, "spec", "workloadRef")
 	_, _, _, supported = WorkloadImageTargetForRollout(ref)
 	if supported {
 		t.Error("unsupported workloadRef reported as supported")

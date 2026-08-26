@@ -8,6 +8,7 @@ import (
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/packages"
+	"github.com/skyhook-io/radar/pkg/rollouts"
 	"github.com/skyhook-io/radar/pkg/subject"
 	"github.com/skyhook-io/radar/pkg/topology"
 	appsv1 "k8s.io/api/apps/v1"
@@ -1243,12 +1244,12 @@ func TestRolloutApplicationFieldsUseReferencedDeployment(t *testing.T) {
 		"kind":       "Rollout",
 		"metadata":   map[string]any{"namespace": "prod", "name": "checkout"},
 		"spec": map[string]any{
-			"workloadRef": map[string]any{"kind": "Deployment", "name": "target"},
+			"workloadRef": map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "name": "target"},
 		},
 	}}
 
 	selector, image, desired := rolloutApplicationFields(k8s.GetResourceCache(), rollout)
-	if selector == nil || selector.MatchLabels["app"] != "checkout" || image != "repo/checkout:v2" || desired != 4 {
+	if selector == nil || selector.MatchLabels["app"] != "checkout" || len(selector.MatchExpressions) != 1 || selector.MatchExpressions[0].Key != rollouts.PodTemplateHashLabel || image != "repo/checkout:v2" || desired != 4 {
 		t.Fatalf("referenced fields = selector %#v, image %q, desired %d", selector, image, desired)
 	}
 }

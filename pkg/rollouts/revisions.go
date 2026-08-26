@@ -68,23 +68,15 @@ func ResolveTemplateTarget(ro *unstructured.Unstructured) (TemplateTarget, error
 		return target, nil
 	}
 	ref, supported := workloadRefTargets[refKind]
-	if !supported {
+	apiVersion, _, _ := unstructured.NestedString(ro.Object, "spec", "workloadRef", "apiVersion")
+	refGVK := schema.FromAPIVersionAndKind(apiVersion, refKind)
+	if !supported || refGVK.Group != ref.gvr.Group {
 		return TemplateTarget{}, fmt.Errorf("Rollout %s/%s references a %s: %w", ro.GetNamespace(), ro.GetName(), refKind, ErrWorkloadRefUnsupported)
 	}
 	target.GVR = ref.gvr
 	target.Name = refName
 	target.TemplatePath = ref.templatePath
 	return target, nil
-}
-
-// WorkloadRefResource returns the resource an undo will patch for a workloadRef
-// kind, so callers can authorize against the object actually being written.
-func WorkloadRefResource(kind string) (group, resource string, supported bool) {
-	target, ok := workloadRefTargets[kind]
-	if !ok {
-		return "", "", false
-	}
-	return target.gvr.Group, target.gvr.Resource, true
 }
 
 // ListRevisions returns the Rollout's revision history, newest first.

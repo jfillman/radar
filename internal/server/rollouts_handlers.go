@@ -81,10 +81,11 @@ func (s *Server) handleRolloutOperation(w http.ResponseWriter, r *http.Request) 
 
 // A workloadRef undo lands on the referenced workload, not the Rollout.
 func rollbackAuthTarget(ro *unstructured.Unstructured) (group, resource string, supported bool) {
-	if refKind, _, ok := rollouts.WorkloadRef(ro); ok {
-		return rollouts.WorkloadRefResource(refKind)
+	target, err := rollouts.ResolveTemplateTarget(ro)
+	if err != nil {
+		return "", "", false
 	}
-	return "argoproj.io", "rollouts", true
+	return target.GVR.Group, target.GVR.Resource, true
 }
 
 // handleRolloutCapabilities reports which actions the caller can perform.

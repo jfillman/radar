@@ -354,6 +354,9 @@ func workloadSelectorMCPError(ctx context.Context, err error, kind, namespace, n
 	if apierrors.IsNotFound(err) || errors.Is(err, k8score.ErrResourceNotFound) {
 		return notFoundError(ctx, err, kind, namespace, name)
 	}
+	if errors.Is(err, k8s.ErrWorkloadSelectorUnavailable) || errors.Is(err, rollouts.ErrWorkloadRefUnsupported) {
+		return fmt.Errorf("invalid %s %s/%s: %w", kind, namespace, name, err)
+	}
 	return fmt.Errorf("get %s %s/%s: %w", kind, namespace, name, err)
 }
 

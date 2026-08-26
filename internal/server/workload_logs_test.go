@@ -403,6 +403,9 @@ func TestWorkloadSelectorGetErrorPreservesKubernetesStatus(t *testing.T) {
 	if got := workloadSelectorGetError(fmt.Errorf("%w: list jobs", k8s.ErrWorkloadAccessDenied)); got.statusCode != 403 {
 		t.Fatalf("cache permission statusCode = %d, want 403", got.statusCode)
 	}
+	if got := workloadSelectorGetError(fmt.Errorf("rollout selector: %w", k8s.ErrWorkloadSelectorUnavailable)); got.statusCode != 400 {
+		t.Fatalf("invalid selector statusCode = %d, want 400", got.statusCode)
+	}
 }
 
 func TestShouldWaitForPodsInLogStream(t *testing.T) {

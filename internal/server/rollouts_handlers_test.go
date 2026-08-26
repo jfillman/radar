@@ -144,9 +144,13 @@ func TestRestartTerminatingRolloutReturns409(t *testing.T) {
 // write the referenced workload, and hides it from those who can.
 func TestRollbackAuthTargetFollowsTheObjectUndoPatches(t *testing.T) {
 	ref := func(kind string) *unstructured.Unstructured {
+		apiVersion := "apps/v1"
+		if kind == "PodTemplate" {
+			apiVersion = "v1"
+		}
 		return &unstructured.Unstructured{Object: map[string]any{
 			"spec": map[string]any{
-				"workloadRef": map[string]any{"kind": kind, "name": "target"},
+				"workloadRef": map[string]any{"apiVersion": apiVersion, "kind": kind, "name": "target"},
 			},
 		}}
 	}

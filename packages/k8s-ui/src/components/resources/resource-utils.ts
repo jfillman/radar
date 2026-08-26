@@ -3,7 +3,7 @@
 import { formatCPUString, formatMemoryString, formatBytes } from '../../utils/format'
 import { pluralize } from '../../utils/pluralize'
 import type { WorkloadPodInfo } from '../../types/core'
-import { getArgoRolloutStepNumber, getWorkloadRolloutActivity, isArgoRolloutResource, rolloutActivityBadge, type WorkloadRolloutActivity } from '../../utils/workload-rollout'
+import { getArgoRolloutStepNumber, getWorkloadRolloutActivity, isArgoRolloutResource, isRolloutActivityVisible, rolloutActivityBadge, type WorkloadRolloutActivity } from '../../utils/workload-rollout'
 
 // Import functions from sub-modules used internally by getCellFilterValue
 import { getCertificateStatus, getCertificateRequestStatus, getClusterIssuerStatus, getClusterIssuerType, getOrderState, getChallengeState, getChallengeType } from './resource-utils-certmanager'
@@ -2176,7 +2176,7 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
           status = getWorkloadStatus(resource, kindLower)
         } else {
           const display = getWorkloadDisplayStatus(resource, kindLower)
-          if (display.activity.phase !== 'idle') return display.status.text
+          if (isRolloutActivityVisible(display.activity)) return display.status.text
           status = display.status
         }
         return workloadStatusLabel(status)

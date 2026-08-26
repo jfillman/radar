@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getRolloutStep, getWorkloadDisplayStatus, getWorkloadStatus, workloadStatusLabel } from './resource-utils'
+import { getCellFilterValue, getRolloutStep, getWorkloadDisplayStatus, getWorkloadStatus, workloadStatusLabel } from './resource-utils'
 
 describe('getRolloutStep', () => {
   it('presents Argo currentStepIndex as a one-based step number', () => {
@@ -112,7 +112,7 @@ describe('getWorkloadStatus', () => {
   })
 
   it('shows health instead of a reached StatefulSet partition', () => {
-    expect(getWorkloadDisplayStatus({
+    const resource = {
       metadata: { generation: 2 },
       spec: { replicas: 5, updateStrategy: { rollingUpdate: { partition: 2 } } },
       status: {
@@ -121,6 +121,25 @@ describe('getWorkloadStatus', () => {
         readyReplicas: 4,
         availableReplicas: 4,
       },
-    }, 'statefulsets').status).toMatchObject({ text: '4/5', level: 'degraded' })
+    }
+
+    expect(getWorkloadDisplayStatus(resource, 'statefulsets').status).toMatchObject({ text: '4/5', level: 'degraded' })
+    expect(getCellFilterValue(resource, 'status', 'statefulsets')).toBe('Degraded')
+  })
+
+  it('uses serving health as the filter value for an inactive pause policy', () => {
+    const resource = {
+      metadata: { generation: 2 },
+      spec: { replicas: 3, paused: true },
+      status: {
+        observedGeneration: 2,
+        replicas: 3,
+        updatedReplicas: 3,
+        readyReplicas: 0,
+        availableReplicas: 0,
+      },
+    }
+
+    expect(getCellFilterValue(resource, 'status', 'deployments')).toBe('Unhealthy')
   })
 })

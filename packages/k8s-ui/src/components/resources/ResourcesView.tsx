@@ -144,6 +144,7 @@ import { pluralize } from '../../utils/pluralize'
 import { getPodGpuCount, getNodeGpuCount } from '../../utils/extended-resources'
 import { parseQuantityToNumber } from '../../utils/format'
 import { type CustomColumnDef, type CustomColumnSource, customColumnKey, readCustomColumnValue, sanitizeCustomColumnDefs } from '../../utils/custom-columns'
+import { isRolloutActivityVisible } from '../../utils/workload-rollout'
 import { FreshnessControl, type FreshnessConnection } from '../ui/FreshnessControl'
 import { Tooltip } from '../ui/Tooltip'
 import { AuditBadgeTooltip, type AuditBadgeMessage } from '../audit/AuditBadgeTooltip'
@@ -6778,7 +6779,7 @@ function WorkloadCell({ resource, column, kind }: { resource: any; kind: string;
   switch (column) {
     case 'status': {
       const { activity, status: statusBadge } = getWorkloadDisplayStatus(resource, kind)
-      const rolloutVisible = activity.active || activity.phase === 'stalled'
+      const rolloutVisible = isRolloutActivityVisible(activity)
       const label = rolloutVisible ? statusBadge.text : workloadStatusLabel(statusBadge)
       return <Tooltip content={rolloutVisible ? activity.detail || statusBadge.text : statusBadge.text}><span className={clsx('badge', statusBadge.color)}>{label}</span></Tooltip>
     }
@@ -6858,7 +6859,7 @@ function DaemonSetCell({ resource, column }: { resource: any; column: string }) 
   switch (column) {
     case 'status': {
       const { activity, status: statusBadge } = getWorkloadDisplayStatus(resource, 'daemonsets')
-      const rolloutVisible = activity.active || activity.phase === 'stalled'
+      const rolloutVisible = isRolloutActivityVisible(activity)
       const label = rolloutVisible ? statusBadge.text : workloadStatusLabel(statusBadge)
       return <Tooltip content={rolloutVisible ? activity.detail || statusBadge.text : statusBadge.text}><span className={clsx('badge', statusBadge.color)}>{label}</span></Tooltip>
     }

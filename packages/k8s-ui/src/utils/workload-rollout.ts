@@ -31,6 +31,10 @@ export function rolloutMayAdvanceAutomatically(activity: WorkloadRolloutActivity
     (activity.phase === 'waiting' && !activity.manual)
 }
 
+export function isRolloutActivityVisible(activity: WorkloadRolloutActivity): boolean {
+  return activity.active || activity.phase === 'stalled'
+}
+
 export function getWorkloadRolloutActivity(
   resource: any,
   kind?: string,

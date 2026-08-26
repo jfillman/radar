@@ -289,7 +289,11 @@ EOF
     --namespace "${RADAR_NS}" --create-namespace \
     --set image.repository=radar-cilium-demo --set image.tag=dev --set image.pullPolicy=Never \
     --wait --timeout 120s >/dev/null
-  ok "Radar running in-cluster"
+  # On a rerun the tag is unchanged, so helm alone leaves the old pod (and its
+  # old binary) running — restart to pick up the freshly loaded image.
+  kctl -n "${RADAR_NS}" rollout restart deploy/radar >/dev/null
+  kctl -n "${RADAR_NS}" rollout status deploy/radar --timeout=120s >/dev/null
+  ok "Radar running in-cluster (current build)"
 
   echo
   # `kubectl auth can-i` exits 1 when the answer is no, which under pipefail

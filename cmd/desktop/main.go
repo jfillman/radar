@@ -182,6 +182,7 @@ func main() {
 		KubecostURL:              fileCfg.KubecostURL,
 		KubecostAPIKey:           fileCfg.KubecostAPIKey,
 		KubecostClusterID:        fileCfg.KubecostClusterID,
+		KubecostClusterIDContext: fileCfg.KubecostClusterIDContext,
 		OpenCostFlagSet:          openCostCurrencyFlagSet,
 		PrometheusHeaders:        resolvedPrometheusHeaders,
 		PrometheusHeadersFromEnv: fileCfg.PrometheusHeadersFromEnv,

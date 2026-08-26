@@ -66,6 +66,7 @@ type AppConfig struct {
 	KubecostURL              string
 	KubecostAPIKey           string
 	KubecostClusterID        string
+	KubecostClusterIDContext string
 	PrometheusHeaders        map[string]string
 	PrometheusHeadersFromEnv map[string]string
 	BeylaJobSelector         string
@@ -251,10 +252,11 @@ func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) {
 		prometheuspkg.SetHeaders(cfg.PrometheusHeaders)
 	}
 	if err := internalopencost.ConfigureStartup(internalopencost.ManagerConfig{
-		Source:    internalopencost.Source(cfg.CostSource),
-		URL:       cfg.KubecostURL,
-		APIKey:    cfg.KubecostAPIKey,
-		ClusterID: cfg.KubecostClusterID,
+		Source:           internalopencost.Source(cfg.CostSource),
+		URL:              cfg.KubecostURL,
+		APIKey:           cfg.KubecostAPIKey,
+		ClusterID:        cfg.KubecostClusterID,
+		ClusterIDContext: cfg.KubecostClusterIDContext,
 	}); err != nil {
 		log.Printf("[opencost] Invalid cost source configuration: %v", err)
 	}
@@ -282,12 +284,14 @@ func CreateServer(cfg AppConfig) *server.Server {
 	kubecostURL := cfg.KubecostURL
 	kubecostAPIKey := cfg.KubecostAPIKey
 	kubecostClusterID := cfg.KubecostClusterID
+	kubecostClusterIDContext := cfg.KubecostClusterIDContext
 	if internalopencost.IsEnvManaged() {
 		costConfig := internalopencost.ConfigSnapshot()
 		costSource = string(costConfig.Source)
 		kubecostURL = costConfig.URL
 		kubecostAPIKey = costConfig.APIKey
 		kubecostClusterID = costConfig.ClusterID
+		kubecostClusterIDContext = costConfig.ClusterIDContext
 	}
 	effectiveCfg := &config.Config{
 		Kubeconfig:               cfg.Kubeconfig,
@@ -307,6 +311,7 @@ func CreateServer(cfg AppConfig) *server.Server {
 		KubecostURL:              kubecostURL,
 		KubecostAPIKey:           kubecostAPIKey,
 		KubecostClusterID:        kubecostClusterID,
+		KubecostClusterIDContext: kubecostClusterIDContext,
 		PrometheusHeaders:        cfg.PrometheusHeaders,
 		PrometheusHeadersFromEnv: cfg.PrometheusHeadersFromEnv,
 		DebugImage:               cfg.DebugImage,

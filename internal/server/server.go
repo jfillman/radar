@@ -5160,6 +5160,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		file.CostSource = string(effectiveCost.Source)
 		file.KubecostURL = effectiveCost.URL
 		file.KubecostClusterID = effectiveCost.ClusterID
+		file.KubecostAPIKeyContext = effectiveCost.APIKeyContext
 		file.KubecostClusterIDContext = effectiveCost.ClusterIDContext
 		kubecostAPIKeySet = effectiveCost.APIKey != ""
 		if kubecostEnvError != "" {
@@ -5211,6 +5212,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		effective.CostSource = string(effectiveCost.Source)
 		effective.KubecostURL = effectiveCost.URL
 		effective.KubecostClusterID = effectiveCost.ClusterID
+		effective.KubecostAPIKeyContext = effectiveCost.APIKeyContext
 		effective.KubecostClusterIDContext = effectiveCost.ClusterIDContext
 		effective.PrometheusHeaders = nil
 		effective.KubecostAPIKey = ""
@@ -5258,6 +5260,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			costSource               string
 			kubecostURL              string
 			kubecostAPIKey           string
+			kubecostAPIKeyContext    string
 			kubecostClusterID        string
 			kubecostClusterIDContext string
 		}{
@@ -5272,6 +5275,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			costSource:               c.CostSource,
 			kubecostURL:              c.KubecostURL,
 			kubecostAPIKey:           c.KubecostAPIKey,
+			kubecostAPIKeyContext:    c.KubecostAPIKeyContext,
 			kubecostClusterID:        c.KubecostClusterID,
 			kubecostClusterIDContext: c.KubecostClusterIDContext,
 		}
@@ -5287,6 +5291,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		c.CostSource = preserved.costSource
 		c.KubecostURL = preserved.kubecostURL
 		c.KubecostAPIKey = preserved.kubecostAPIKey
+		c.KubecostAPIKeyContext = preserved.kubecostAPIKeyContext
 		c.KubecostClusterID = preserved.kubecostClusterID
 		c.KubecostClusterIDContext = preserved.kubecostClusterIDContext
 	})

@@ -4595,7 +4595,7 @@ export interface RolloutCapabilities {
   skipStep: boolean;
   rollback: boolean;
   restart: boolean;
-  setImage: boolean;
+  setImage?: boolean;
   strategy: string;
   terminating: boolean;
 }

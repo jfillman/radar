@@ -9,6 +9,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/skyhook-io/radar/pkg/rollouts"
 )
 
 var ErrWorkloadAccessDenied = errors.New("workload access denied")
@@ -81,14 +83,45 @@ func GetWorkloadSelector(cache *ResourceCache, kind, namespace, name string) (*m
 			return nil, fmt.Errorf("rollout %s/%s: %w", namespace, name, err)
 		}
 		raw, found, err := unstructured.NestedMap(rollout.Object, "spec", "selector")
-		if err != nil || !found {
-			return nil, fmt.Errorf("rollout %s/%s has no selector", namespace, name)
-		}
-		var selector metav1.LabelSelector
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(raw, &selector); err != nil {
+		if err != nil {
 			return nil, fmt.Errorf("rollout %s/%s selector: %w", namespace, name, err)
 		}
-		return &selector, nil
+		if found {
+			var selector metav1.LabelSelector
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(raw, &selector); err != nil {
+				return nil, fmt.Errorf("rollout %s/%s selector: %w", namespace, name, err)
+			}
+			return &selector, nil
+		}
+
+		refKind, refName, ok := rollouts.WorkloadRef(rollout)
+		if !ok {
+			return nil, fmt.Errorf("rollout %s/%s has no selector", namespace, name)
+		}
+		switch refKind {
+		case "Deployment":
+			lister := cache.Deployments()
+			if lister == nil {
+				return nil, fmt.Errorf("%w: list deployments", ErrWorkloadAccessDenied)
+			}
+			deployment, err := lister.Deployments(namespace).Get(refName)
+			if err != nil {
+				return nil, fmt.Errorf("deployment %s/%s referenced by rollout %s: %w", namespace, refName, name, err)
+			}
+			return deployment.Spec.Selector, nil
+		case "ReplicaSet":
+			lister := cache.ReplicaSets()
+			if lister == nil {
+				return nil, fmt.Errorf("%w: list replicasets", ErrWorkloadAccessDenied)
+			}
+			replicaSet, err := lister.ReplicaSets(namespace).Get(refName)
+			if err != nil {
+				return nil, fmt.Errorf("replicaset %s/%s referenced by rollout %s: %w", namespace, refName, name, err)
+			}
+			return replicaSet.Spec.Selector, nil
+		default:
+			return nil, fmt.Errorf("rollout %s/%s has no selector and references %s %s", namespace, name, refKind, refName)
+		}
 
 	default:
 		return nil, fmt.Errorf("unsupported workload kind: %s", kind)

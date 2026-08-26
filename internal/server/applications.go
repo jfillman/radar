@@ -83,7 +83,7 @@ type workloadRef struct {
 }
 
 const (
-	applicationsCacheTTL      = 2 * time.Second
+	applicationsCacheTTL      = 10 * time.Second
 	applicationsGraphCacheTTL = 60 * time.Second
 )
 
@@ -864,9 +864,6 @@ func collectAppWorkloads(ctx context.Context, cache *k8s.ResourceCache, namespac
 	add := func(kind, ns, name string, lbls, anns map[string]string, image string, workloadHealth packages.Health, ready, desired int, selector *metav1.LabelSelector, rollout *health.WorkloadRolloutActivity, batch *appBatchSummary) {
 		pods := podsForSelector(podsByNS[ns], selector)
 		rollout = attributeApplicationRolloutFailure(rollout, pods, updatedRevisionTargets[kind+"/"+ns+"/"+name])
-		if rollout != nil && rollout.Phase == health.RolloutStalled {
-			workloadHealth = packages.HealthUnhealthy
-		}
 		restarts, reason := podsRestarts(pods)
 		meta := metav1.ObjectMeta{Namespace: ns, Name: name, Labels: lbls, Annotations: anns}
 		overlay := subject.ResolveOverlay(&meta, false)
@@ -976,7 +973,7 @@ func collectAppWorkloads(ctx context.Context, cache *k8s.ResourceCache, namespac
 		}
 		ready := int(activity.Available)
 		add("Rollout", rollout.GetNamespace(), rollout.GetName(), rollout.GetLabels(), rollout.GetAnnotations(),
-			image, rolloutApplicationHealth(activity, ready, desired), ready, desired, selector, visibleRolloutActivity(activity), nil)
+			image, applicationServingHealth(ready, desired), ready, desired, selector, visibleRolloutActivity(activity), nil)
 	}
 	if jobLister := cache.Jobs(); jobLister != nil {
 		forEachNamespace(func(ns string) {
@@ -1090,10 +1087,7 @@ func primaryUnstructuredImage(object map[string]any, fields ...string) string {
 	return image
 }
 
-func rolloutApplicationHealth(activity health.WorkloadRolloutActivity, ready, desired int) packages.Health {
-	if activity.Phase == health.RolloutStalled {
-		return packages.HealthUnhealthy
-	}
+func applicationServingHealth(ready, desired int) packages.Health {
 	if desired <= 0 {
 		return packages.HealthNeutral
 	}
@@ -1164,19 +1158,25 @@ func attributeApplicationRolloutFailure(activity *health.WorkloadRolloutActivity
 		return activity
 	}
 	now := time.Now()
+	var failed *corev1.Pod
 	for _, pod := range pods {
 		if pod.Labels[target.label] != target.value || health.Pod(pod, now).Level != health.LevelUnhealthy {
 			continue
 		}
-		copy := *activity
-		copy.Phase = health.RolloutStalled
-		copy.Active = false
-		copy.Manual = false
-		copy.Label = "New revision cannot start"
-		copy.Detail = fmt.Sprintf("%s · Pod %s", health.PodProblemReason(pod, now), pod.Name)
-		return &copy
+		if failed == nil || pod.Name < failed.Name {
+			failed = pod
+		}
 	}
-	return activity
+	if failed == nil {
+		return activity
+	}
+	copy := *activity
+	copy.Phase = health.RolloutStalled
+	copy.Active = false
+	copy.Manual = false
+	copy.Label = "New revision cannot start"
+	copy.Detail = fmt.Sprintf("%s · Pod %s", health.PodProblemReason(failed, now), failed.Name)
+	return &copy
 }
 
 func appDesiredReplicas(replicas *int32) int {

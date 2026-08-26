@@ -44,7 +44,7 @@ import {
 } from '../../utils/applications'
 import { ReadyBar } from './ReadyBar'
 import { ProvenanceBadge, ClassBadge, CategoryChip, VersionInfo, BatchSignalChip } from './AppChips'
-import { AppIdentityTooltip, EnvHint } from './AppTooltips'
+import { AppIdentityTooltip, EnvHint, RolloutSummaryTooltip } from './AppTooltips'
 
 function ApplicationRuntimeCell({ apps, workloadClass, ready, desired }: { apps: AppRow[]; workloadClass: AppWorkloadClass; ready: number; desired: number }) {
   if (workloadClass !== 'job') {
@@ -53,7 +53,7 @@ function ApplicationRuntimeCell({ apps, workloadClass, ready, desired }: { apps:
     return (
       <span className="inline-flex max-w-full items-center gap-3">
         <ReadyBar ready={ready} desired={desired} />
-        <Tooltip content={rollout.detail} delay={150}>
+        <Tooltip content={<RolloutSummaryTooltip summary={rollout} />} delay={150}>
           <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-theme-text-secondary">
             <StatusDot tone={mapHealthToTone(rollout.health)} />
             <span className="truncate">{rollout.label}</span>

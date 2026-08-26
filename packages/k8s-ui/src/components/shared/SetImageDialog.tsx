@@ -87,6 +87,7 @@ export function canSubmitImageUpdates({
   updateCount,
   hasEmptyImage,
   managed,
+  ownershipResolved,
   acknowledged,
   busy,
   loadFailed = false,
@@ -94,6 +95,7 @@ export function canSubmitImageUpdates({
   updateCount: number
   hasEmptyImage: boolean
   managed: boolean
+  ownershipResolved: boolean
   acknowledged: boolean
   busy: boolean
   loadFailed?: boolean
@@ -101,6 +103,7 @@ export function canSubmitImageUpdates({
   return (
     updateCount > 0 &&
     !hasEmptyImage &&
+    ownershipResolved &&
     (!managed || acknowledged) &&
     !busy &&
     !loadFailed
@@ -137,7 +140,7 @@ export function SetImageDialog({
   workloadLabel,
   workloadName,
   workloadResource,
-  managedSources = [],
+  managedSources,
   pending = false,
   onClose,
   onLoad,
@@ -225,10 +228,12 @@ export function SetImageDialog({
       (container) => !(drafts[containerKey(container)] ?? '').trim(),
     ) ?? false
   const busy = pending || submitting
+  const ownershipResolved = managedSources !== undefined
   const canSubmit = canSubmitImageUpdates({
     updateCount: updates.length,
     hasEmptyImage,
-    managed: managedSources.length > 0,
+    managed: (managedSources?.length ?? 0) > 0,
+    ownershipResolved,
     acknowledged,
     busy,
     loadFailed: Boolean(loadError),
@@ -348,6 +353,14 @@ export function SetImageDialog({
                 </button>
               </div>
             )}
+            {!ownershipResolved && (
+              <div className="rounded-md border border-theme-border bg-theme-base px-3 py-2 text-xs">
+                <p className="font-medium text-theme-text-primary">Management ownership unavailable</p>
+                <p className="mt-1 text-theme-text-secondary">
+                  The host must verify GitOps and Helm ownership before Radar can safely update a live image.
+                </p>
+              </div>
+            )}
             {targetDiffers && (
               <div className="rounded-md border border-theme-border bg-theme-base px-3 py-2 text-xs text-theme-text-secondary">
                 This Rollout reads its Pod template from{' '}
@@ -363,7 +376,7 @@ export function SetImageDialog({
               {describeImageUpdateBehavior(inventory.behavior)}
             </div>
 
-            {managedSources.length > 0 && (
+            {managedSources && managedSources.length > 0 && (
               <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-3">
                 <div className="flex items-start gap-2">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />

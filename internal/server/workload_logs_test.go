@@ -1,9 +1,9 @@
 package server
 
 import (
-	"context"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -78,14 +78,22 @@ func TestDaemonSetRevisionLookupUsesWorkloadSelector(t *testing.T) {
 		controllerRevisionsGVR: "ControllerRevisionList",
 	})
 	var selector string
+	listCalls := 0
 	dynamicClient.PrependReactor("list", "controllerrevisions", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		listCalls++
 		selector = action.(clienttesting.ListAction).GetListRestrictions().Labels.String()
 		return true, &unstructured.UnstructuredList{}, nil
 	})
 
-	workloadRevisionTargetFor(context.Background(), k8s.GetResourceCache(), dynamicClient, "daemonsets", "ops", "agent")
+	server := &Server{}
+	request := httptest.NewRequest("GET", "/api/workloads/daemonsets/ops/agent/pods", nil)
+	server.workloadRevisionTargetForRequest(request, k8s.GetResourceCache(), dynamicClient, "test-context", "daemonsets", "ops", "agent")
+	server.workloadRevisionTargetForRequest(request, k8s.GetResourceCache(), dynamicClient, "test-context", "daemonsets", "ops", "agent")
 	if selector != "app=agent" {
 		t.Fatalf("ControllerRevision selector = %q, want app=agent", selector)
+	}
+	if listCalls != 1 {
+		t.Fatalf("ControllerRevision list calls = %d, want 1 within memo TTL", listCalls)
 	}
 }
 

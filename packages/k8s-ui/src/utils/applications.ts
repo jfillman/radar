@@ -35,6 +35,7 @@ export interface AppRolloutSummary {
   count: number
   label: string
   detail: string
+  details: string[]
   health: AppHealth
 }
 
@@ -68,12 +69,14 @@ export function rolloutSummaryForApps(apps: AppRow[]): AppRolloutSummary | null 
       ? stalled === entries.length
         ? `${stalled} stalled`
         : `${stalled} stalled · ${entries.length - stalled} waiting`
-      : `${entries.length} workload changes`
-  const detail = entries.map(({ app, workload, rollout }) => {
+      : `${entries.length} updating`
+  const details = entries.map(({ app, workload, rollout }) => {
     const prefix = apps.length > 1 ? `${app.name} / ` : ''
     return `${prefix}${workload.name}: ${rollout.label}${rollout.detail ? ` — ${rollout.detail}` : ''}`
-  }).join('\n')
-  return { count: entries.length, label, detail, health }
+  })
+  const visibleDetails = details.slice(0, 8)
+  const detail = `${visibleDetails.join(' · ')}${details.length > visibleDetails.length ? ` · +${details.length - visibleDetails.length} more` : ''}`
+  return { count: entries.length, label, detail, details, health }
 }
 
 export interface AppBatchSummary {

@@ -69,10 +69,9 @@ import {
   getIngressHosts,
   getServiceExternalIP,
   getWorkloadDisplayStatus,
-  getWorkloadStatus,
 } from '../resources/resource-utils'
 import { ServicePortCards, type ServicePortRenderProps } from '../resources/renderers/ServiceRenderer'
-import { getWorkloadRolloutActivity, rolloutActivityBadge, rolloutMayAdvanceAutomatically, type WorkloadRolloutActivity } from '../../utils/workload-rollout'
+import { rolloutMayAdvanceAutomatically, type WorkloadRolloutActivity } from '../../utils/workload-rollout'
 import { WorkloadRolloutNotice } from './WorkloadRolloutNotice'
 
 export type WorkloadTabType = 'overview' | 'topology' | 'timeline' | 'logs' | 'metrics' | 'reachability' | 'cost' | 'yaml'
@@ -2110,12 +2109,10 @@ function WorkloadStatusStrip({
 }
 
 function getReplicatedWorkloadState(resource: any, apiKind: string, workloadPods?: WorkloadPodInfo[]): ReplicatedWorkloadState {
-  const rollout = getWorkloadRolloutActivity(resource, apiKind, workloadPods)
+  const { activity: rollout, status } = getWorkloadDisplayStatus(resource, apiKind, workloadPods)
   if (rollout.phase !== 'idle' || rollout.label !== 'Stable') {
-    const badge = rolloutActivityBadge(rollout)
-    return stateSummary(rollout.label, rollout.detail || '', badge.color, badge.level, rollout)
+    return stateSummary(rollout.label, rollout.detail || '', status.color, status.level, rollout)
   }
-  const status = getWorkloadStatus(resource, apiKind.toLowerCase())
   const label = status.level === 'healthy'
     ? 'Healthy'
     : status.level === 'degraded'

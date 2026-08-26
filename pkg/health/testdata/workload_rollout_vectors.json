@@ -37,6 +37,31 @@
       }
     },
     {
+      "name": "deployment new generation supersedes stale failure",
+      "kind": "Deployment",
+      "phase": "applying",
+      "active": true,
+      "manual": false,
+      "label": "Applying change",
+      "detail": "Waiting for the Deployment controller to observe generation",
+      "desired": 3,
+      "updated": 1,
+      "ready": 3,
+      "available": 3,
+      "object": {
+        "metadata": { "generation": 5 },
+        "spec": { "replicas": 3 },
+        "status": {
+          "observedGeneration": 4,
+          "replicas": 3,
+          "updatedReplicas": 1,
+          "readyReplicas": 3,
+          "availableReplicas": 3,
+          "conditions": [{ "type": "Progressing", "status": "False", "reason": "ProgressDeadlineExceeded", "message": "previous revision timed out" }]
+        }
+      }
+    },
+    {
       "name": "deployment surge remains visibly progressing",
       "kind": "Deployment",
       "phase": "progressing",
@@ -52,6 +77,24 @@
         "metadata": { "generation": 4 },
         "spec": { "replicas": 3 },
         "status": { "observedGeneration": 4, "replicas": 4, "updatedReplicas": 2, "readyReplicas": 4, "availableReplicas": 4 }
+      }
+    },
+    {
+      "name": "deployment pure scale up is scaling",
+      "kind": "Deployment",
+      "phase": "progressing",
+      "active": true,
+      "manual": false,
+      "label": "Scaling",
+      "detail": "3/5 updated · 3 available",
+      "desired": 5,
+      "updated": 3,
+      "ready": 3,
+      "available": 3,
+      "object": {
+        "metadata": { "generation": 5 },
+        "spec": { "replicas": 5 },
+        "status": { "observedGeneration": 5, "replicas": 3, "updatedReplicas": 3, "readyReplicas": 3, "availableReplicas": 3 }
       }
     },
     {
@@ -113,6 +156,24 @@
         "metadata": { "generation": 5 },
         "spec": { "replicas": 5, "updateStrategy": { "type": "RollingUpdate", "rollingUpdate": { "partition": 2 } } },
         "status": { "observedGeneration": 5, "replicas": 5, "updatedReplicas": 3, "readyReplicas": 5, "currentRevision": "old", "updateRevision": "new" }
+      }
+    },
+    {
+      "name": "statefulset partition at rest is stable",
+      "kind": "StatefulSet",
+      "phase": "idle",
+      "active": false,
+      "manual": false,
+      "label": "Stable",
+      "detail": "5/5 ready",
+      "desired": 5,
+      "updated": 5,
+      "ready": 5,
+      "available": 5,
+      "object": {
+        "metadata": { "generation": 5 },
+        "spec": { "replicas": 5, "updateStrategy": { "type": "RollingUpdate", "rollingUpdate": { "partition": 2 } } },
+        "status": { "observedGeneration": 5, "replicas": 5, "updatedReplicas": 5, "readyReplicas": 5, "currentRevision": "same", "updateRevision": "same" }
       }
     },
     {
@@ -294,7 +355,7 @@
       "object": {
         "metadata": { "generation": 5 },
         "spec": { "replicas": 5, "updateStrategy": { "type": "RollingUpdate", "rollingUpdate": { "partition": 2 } } },
-        "status": { "observedGeneration": 5, "updatedReplicas": 3, "readyReplicas": 4 }
+        "status": { "observedGeneration": 5, "updatedReplicas": 3, "readyReplicas": 4, "currentRevision": "old", "updateRevision": "new" }
       }
     },
     {
@@ -429,6 +490,33 @@
         "metadata": { "generation": 5 },
         "spec": { "replicas": 2, "strategy": { "canary": {} } },
         "status": { "observedGeneration": "4", "phase": "Healthy", "updatedReplicas": 2, "readyReplicas": 2, "availableReplicas": 2 }
+      }
+    },
+    {
+      "name": "argo new generation supersedes stale failure",
+      "kind": "Rollout",
+      "phase": "applying",
+      "active": true,
+      "manual": false,
+      "label": "Applying change",
+      "detail": "Waiting for the Rollout controller to observe generation",
+      "desired": 2,
+      "updated": 1,
+      "ready": 2,
+      "available": 2,
+      "object": {
+        "apiVersion": "argoproj.io/v1alpha1",
+        "kind": "Rollout",
+        "metadata": { "generation": 6 },
+        "spec": { "replicas": 2, "strategy": { "canary": {} } },
+        "status": {
+          "observedGeneration": "5",
+          "phase": "Degraded",
+          "updatedReplicas": 1,
+          "readyReplicas": 2,
+          "availableReplicas": 2,
+          "conditions": [{ "type": "Progressing", "status": "False", "reason": "ProgressDeadlineExceeded" }]
+        }
       }
     },
     {

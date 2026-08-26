@@ -28,6 +28,7 @@ import { displayKindName } from '../ui/drawer-components'
 import { getDefaultContainerName } from '../resources/resource-utils'
 import { SetImageDialog, type ManagedImageSource } from './SetImageDialog'
 import type { WorkloadImageInventory, WorkloadImageUpdate } from '../../types/core'
+import { isArgoRolloutResource } from '../../utils/workload-rollout'
 
 // ============================================================================
 // ACTIONS BAR - Interactive buttons that change based on resource kind
@@ -164,6 +165,8 @@ export function ResourceActionsBar({
   onDrainNode, isDrainingNode,
 }: ResourceActionsBarProps) {
   const kind = resource.kind.toLowerCase()
+  const supportsWorkloadActions = ['deployments', 'statefulsets', 'daemonsets'].includes(kind) ||
+    (kind === 'rollouts' && isArgoRolloutResource(data))
   const canOpenWorkloadLogs = Boolean(
     canViewLogs &&
     !hideLogs &&
@@ -366,12 +369,12 @@ export function ResourceActionsBar({
       )}
 
       {/* Workload actions - restart, rollback, and logs */}
-      {['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(kind) && (
+      {supportsWorkloadActions && (
         <>
           {onLoadImages && onSetImages && !data?.metadata?.deletionTimestamp && (
             <button
               onClick={() => setShowSetImage(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand rounded-lg"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
             >
               <Box className="w-3.5 h-3.5" />
               Update image

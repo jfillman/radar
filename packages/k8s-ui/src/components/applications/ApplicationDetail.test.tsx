@@ -97,7 +97,7 @@ describe("ApplicationDetail shell", () => {
     const html = renderDetail({ app: rolling })
 
     expect(html).toContain('Rolling out')
-    expect(html).toContain('1 pending · 4/4 ready')
+    expect(html).toContain('1 workload affected · 4/4 ready')
     expect(html).toContain('2/3 updated · 3 available')
   })
 

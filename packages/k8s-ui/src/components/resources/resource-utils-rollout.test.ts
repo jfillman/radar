@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getRolloutStep, getWorkloadDisplayStatus, getWorkloadStatus } from './resource-utils'
+import { getRolloutStep, getWorkloadDisplayStatus, getWorkloadStatus, workloadStatusLabel } from './resource-utils'
 
 describe('getRolloutStep', () => {
   it('presents Argo currentStepIndex as a one-based step number', () => {
@@ -79,6 +79,36 @@ describe('getWorkloadStatus', () => {
         availableReplicas: 0,
       },
     }, 'deployments').status).toMatchObject({ text: 'Rollout paused', level: 'unhealthy' })
+  })
+
+  it('preserves unhealthy serving capacity while an Argo Rollout progresses', () => {
+    const display = getWorkloadDisplayStatus({
+      apiVersion: 'argoproj.io/v1alpha1',
+      metadata: { generation: 2 },
+      spec: { replicas: 3 },
+      status: {
+        observedGeneration: '2',
+        phase: 'Progressing',
+        updatedReplicas: 1,
+        readyReplicas: 0,
+        availableReplicas: 0,
+      },
+    }, 'rollouts')
+
+    expect(display.status).toMatchObject({ text: 'Rolling out', level: 'degraded' })
+  })
+
+  it('does not fabricate Argo rollout state for a colliding CRD', () => {
+    const display = getWorkloadDisplayStatus({
+      apiVersion: 'rollouts.kruise.io/v1alpha1',
+      kind: 'Rollout',
+      metadata: { generation: 1 },
+      spec: { replicas: 3 },
+      status: { readyReplicas: 3, availableReplicas: 3, updatedReplicas: 3 },
+    }, 'rollouts')
+
+    expect(display.status).toMatchObject({ text: 'Unknown', level: 'unknown' })
+    expect(workloadStatusLabel(display.status)).toBe('Unknown')
   })
 
   it('shows health instead of a reached StatefulSet partition', () => {

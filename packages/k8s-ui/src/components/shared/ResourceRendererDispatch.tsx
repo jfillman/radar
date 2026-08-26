@@ -1,5 +1,6 @@
 import { clsx } from 'clsx'
 import { SEVERITY_BADGE } from '../../utils/badge-colors'
+import { isArgoRolloutResource } from '../../utils/workload-rollout'
 import {
   getPodStatus,
   getWorkloadDisplayStatus,
@@ -650,7 +651,7 @@ export function ResourceRendererDispatch({
     kind === 'clusters' || kind === 'backups' || kind === 'scheduledbackups' || kind === 'poolers'
     || kind === 'objectstores' || kind === 'databases' || kind === 'publications'
     || kind === 'subscriptions' || kind === 'imagecatalogs' || kind === 'clusterimagecatalogs'
-    || kind === 'policies'
+    || kind === 'policies' || kind === 'rollouts'
   const isCNPGApiVersion = isApiGroup(data?.apiVersion, CNPG_GROUP)
   const groupGatedMatched =
     (kind === 'clusters' && (isCNPGApiVersion || isApiGroup(data?.apiVersion, 'cluster.x-k8s.io')))
@@ -662,6 +663,7 @@ export function ResourceRendererDispatch({
     || (kind === 'subscriptions'
       && (isCNPGApiVersion || isApiGroup(data?.apiVersion, 'messaging.knative.dev')))
     || (kind === 'policies' && isApiGroup(data?.apiVersion, 'kyverno.io'))
+    || (kind === 'rollouts' && isArgoRolloutResource(data))
   const groupGatedFallthrough = isGroupGatedKind && !groupGatedMatched
 
   const calicoApiVersionMatched = isCalicoApiVersion(data?.apiVersion)
@@ -746,7 +748,7 @@ export function ResourceRendererDispatch({
         {(kind === 'hpas' || kind === 'horizontalpodautoscalers') && <HPAComp data={data} onNavigate={onNavigate} hpaDiagnosis={hpaDiagnosis} />}
         {kind === 'nodes' && <NodeComp data={data} relationships={relationships} />}
         {kind === 'persistentvolumeclaims' && <PVCComp data={data} onNavigate={onNavigate} />}
-        {kind === 'rollouts' && <RolloutComp data={data} onNavigate={onNavigate} />}
+        {kind === 'rollouts' && isArgoRolloutResource(data) && <RolloutComp data={data} onNavigate={onNavigate} />}
         {kind === 'analysisruns' && <AnalysisRunRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'certificates' && !data?.apiVersion?.includes('networking.internal.knative.dev') && <CertificateRenderer data={data} />}
         {kind === 'workflows' && <WorkflowRenderer data={data} onNavigate={onNavigate} />}

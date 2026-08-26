@@ -56,11 +56,11 @@ func deploymentRollout(d *appsv1.Deployment) WorkloadRolloutActivity {
 	available := d.Status.AvailableReplicas
 	base := activityCounts(desired, updated, ready, available)
 
-	if conditionFailed(d.Status.Conditions, "Progressing", "ProgressDeadlineExceeded") {
-		return base.with(RolloutStalled, false, "Rollout stalled", conditionMessage(d.Status.Conditions, "Progressing", "Progress deadline exceeded"))
-	}
 	if d.Status.ObservedGeneration < d.Generation {
 		return base.with(RolloutApplying, true, "Applying change", "Waiting for the Deployment controller to observe generation")
+	}
+	if conditionFailed(d.Status.Conditions, "Progressing", "ProgressDeadlineExceeded") {
+		return base.with(RolloutStalled, false, "Rollout stalled", conditionMessage(d.Status.Conditions, "Progressing", "Progress deadline exceeded"))
 	}
 	old := d.Status.Replicas - updated
 	if old < 0 {
@@ -92,6 +92,9 @@ func deploymentRollout(d *appsv1.Deployment) WorkloadRolloutActivity {
 	if updated == 0 {
 		return base.with(RolloutWaiting, true, "Waiting for new revision", replicaDetail(updated, desired, available))
 	}
+	if old == 0 && updated == d.Status.Replicas {
+		return base.with(RolloutProgressing, true, "Scaling", replicaDetail(updated, desired, available))
+	}
 	return base.with(RolloutProgressing, true, "Rolling out", replicaDetail(updated, desired, available))
 }
 
@@ -122,7 +125,7 @@ func statefulSetRollout(s *appsv1.StatefulSet) WorkloadRolloutActivity {
 		target = 0
 	}
 	if updated >= target {
-		if partition > 0 {
+		if partition > 0 && s.Status.CurrentRevision != "" && s.Status.UpdateRevision != "" && s.Status.CurrentRevision != s.Status.UpdateRevision {
 			return base.with(RolloutPartitionReached, false, "Partition reached", fmt.Sprintf("%d/%d Pods intentionally retained", partition, desired))
 		}
 		return base.with(RolloutIdle, false, "Stable", fmt.Sprintf("%d/%d ready", ready, desired))
@@ -176,6 +179,12 @@ func argoRollout(r *unstructured.Unstructured) WorkloadRolloutActivity {
 	phase, _, _ := unstructured.NestedString(r.Object, "status", "phase")
 	message, _, _ := unstructured.NestedString(r.Object, "status", "message")
 	aborted, _, _ := unstructured.NestedBool(r.Object, "status", "abort")
+	if observed, found, _ := unstructured.NestedString(r.Object, "status", "observedGeneration"); found {
+		generation, err := strconv.ParseInt(observed, 10, 64)
+		if err == nil && generation > 0 && generation < r.GetGeneration() {
+			return base.with(RolloutApplying, true, "Applying change", "Waiting for the Rollout controller to observe generation")
+		}
+	}
 	if failedMessage, failed := argoFailureMessage(r); failed {
 		if failedMessage == "" {
 			failedMessage = message
@@ -191,13 +200,6 @@ func argoRollout(r *unstructured.Unstructured) WorkloadRolloutActivity {
 		}
 		return base.with(RolloutStalled, false, "Rollout stalled", message)
 	}
-	if observed, found, _ := unstructured.NestedString(r.Object, "status", "observedGeneration"); found {
-		generation, err := strconv.ParseInt(observed, 10, 64)
-		if err == nil && generation > 0 && generation < r.GetGeneration() {
-			return base.with(RolloutApplying, true, "Applying change", "Waiting for the Rollout controller to observe generation")
-		}
-	}
-
 	switch strings.ToLower(phase) {
 	case "degraded", "error", "failed", "aborted":
 		if message == "" {

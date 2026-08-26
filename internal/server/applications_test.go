@@ -1176,6 +1176,13 @@ func TestAttributeApplicationRolloutFailure(t *testing.T) {
 		t.Fatalf("stalled rollout attribution = %#v", got)
 	}
 
+	firstByName := failed.DeepCopy()
+	firstByName.Name = "api-a"
+	got = attributeApplicationRolloutFailure(activity, []*corev1.Pod{failed, firstByName}, target)
+	if !strings.Contains(got.Detail, "Pod api-a") {
+		t.Fatalf("multiple failed pods were not attributed deterministically: %#v", got)
+	}
+
 	oldTarget := workloadRevisionTarget{label: appsv1.DefaultDeploymentUniqueLabelKey, value: "other"}
 	if got := attributeApplicationRolloutFailure(activity, []*corev1.Pod{failed}, oldTarget); got != activity {
 		t.Fatalf("old-revision failure changed rollout: %#v", got)
@@ -1209,15 +1216,12 @@ func TestVisibleRolloutActivityOnlyIncludesPendingOrStalledWork(t *testing.T) {
 	}
 }
 
-func TestRolloutApplicationHealthPreservesServingHealth(t *testing.T) {
-	if got := rolloutApplicationHealth(health.WorkloadRolloutActivity{Phase: health.RolloutApplying}, 3, 3); got != packages.HealthHealthy {
+func TestApplicationServingHealthIgnoresRolloutActivity(t *testing.T) {
+	if got := applicationServingHealth(3, 3); got != packages.HealthHealthy {
 		t.Fatalf("fully ready applying health = %q, want healthy", got)
 	}
-	if got := rolloutApplicationHealth(health.WorkloadRolloutActivity{Phase: health.RolloutApplying}, 0, 3); got != packages.HealthUnhealthy {
+	if got := applicationServingHealth(0, 3); got != packages.HealthUnhealthy {
 		t.Fatalf("zero ready applying health = %q, want unhealthy", got)
-	}
-	if got := rolloutApplicationHealth(health.WorkloadRolloutActivity{Phase: health.RolloutStalled}, 3, 3); got != packages.HealthUnhealthy {
-		t.Fatalf("stalled health = %q, want unhealthy", got)
 	}
 }
 

@@ -207,6 +207,32 @@ describe('getResourceStatus — workload rollout activity', () => {
     expect(getResourceStatus('deployments', scaled)).toMatchObject({ text: 'Scaled to 0', level: 'neutral' })
     expect(getCellFilterValue(scaled, 'status', 'deployments')).toBe('Scaled to 0')
   })
+
+  it('treats a foreign Rollout CRD as unknown', () => {
+    const rollout = {
+      apiVersion: 'rollouts.kruise.io/v1alpha1',
+      kind: 'Rollout',
+      metadata: { name: 'foreign' },
+      spec: { replicas: 3 },
+      status: { readyReplicas: 3, availableReplicas: 3, updatedReplicas: 3 },
+    }
+    expect(getResourceStatus('rollouts', rollout)).toMatchObject({ text: 'Unknown', level: 'unknown' })
+  })
+})
+
+describe('Rollout kind collision', () => {
+  it('routes foreign Rollouts to the generic renderer', () => {
+    const html = renderKind('rollouts', {
+      apiVersion: 'rollouts.kruise.io/v1alpha1',
+      kind: 'Rollout',
+      metadata: { name: 'foreign', namespace: 'default' },
+      spec: { collisionProbe: COLLISION_PROBE },
+      status: {},
+    }, 'default')
+
+    expect(html).toContain(COLLISION_PROBE)
+    expect(html).not.toContain('Rollout Strategy')
+  })
 })
 
 describe('getResourceStatus — colliding plurals', () => {

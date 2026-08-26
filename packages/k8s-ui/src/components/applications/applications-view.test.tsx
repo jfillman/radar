@@ -192,6 +192,19 @@ describe('rolloutSummaryForApps', () => {
 
     expect(summary).toBeNull()
   })
+
+  it('caps grouped rollout details while preserving the full structured list', () => {
+    const summary = rolloutSummaryForApps([app({
+      workloads: Array.from({ length: 10 }, (_, index) => wl({
+        name: `worker-${index}`,
+        rollout: { phase: 'progressing', active: true, manual: false, label: 'Rolling out', desired: 1, updated: 0, ready: 1, available: 1 },
+      })),
+    })])
+
+    expect(summary).toMatchObject({ label: '10 updating', count: 10 })
+    expect(summary?.details).toHaveLength(10)
+    expect(summary?.detail).toContain('+2 more')
+  })
 })
 
 describe('searchTextForEntry (single)', () => {

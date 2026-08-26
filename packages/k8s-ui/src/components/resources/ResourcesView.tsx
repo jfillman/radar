@@ -41,6 +41,7 @@ import {
   getPodRestarts,
   getPodProblems,
   getWorkloadDisplayStatus,
+  workloadStatusLabel,
   getWorkloadProblems,
   workloadMatchesProblemCategory,
   getContainerSquareStates,
@@ -6777,7 +6778,9 @@ function WorkloadCell({ resource, column, kind }: { resource: any; kind: string;
   switch (column) {
     case 'status': {
       const { activity, status: statusBadge } = getWorkloadDisplayStatus(resource, kind)
-      return <Tooltip content={activity.phase === 'idle' ? statusBadge.text : activity.detail || statusBadge.text}><span className={clsx('badge', statusBadge.color)}>{statusBadge.text}</span></Tooltip>
+      const rolloutVisible = activity.active || activity.phase === 'stalled'
+      const label = rolloutVisible ? statusBadge.text : workloadStatusLabel(statusBadge)
+      return <Tooltip content={rolloutVisible ? activity.detail || statusBadge.text : statusBadge.text}><span className={clsx('badge', statusBadge.color)}>{label}</span></Tooltip>
     }
     case 'ready': {
       const desired = spec.replicas ?? 1
@@ -6855,7 +6858,9 @@ function DaemonSetCell({ resource, column }: { resource: any; column: string }) 
   switch (column) {
     case 'status': {
       const { activity, status: statusBadge } = getWorkloadDisplayStatus(resource, 'daemonsets')
-      return <Tooltip content={activity.phase === 'idle' ? statusBadge.text : activity.detail || statusBadge.text}><span className={clsx('badge', statusBadge.color)}>{statusBadge.text}</span></Tooltip>
+      const rolloutVisible = activity.active || activity.phase === 'stalled'
+      const label = rolloutVisible ? statusBadge.text : workloadStatusLabel(statusBadge)
+      return <Tooltip content={rolloutVisible ? activity.detail || statusBadge.text : statusBadge.text}><span className={clsx('badge', statusBadge.color)}>{label}</span></Tooltip>
     }
     case 'desired':
       return <span className="text-sm text-theme-text-secondary">{status.desiredNumberScheduled || 0}</span>

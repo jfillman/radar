@@ -137,6 +137,9 @@ type Server struct {
 
 	capacityIssueMemo *capacityIssueMemo
 
+	workloadRevisionMu    sync.Mutex
+	workloadRevisionCache map[string]workloadRevisionTargetCacheEntry
+
 	yamlSchemaMu          sync.Mutex
 	yamlSchemaCache       map[string][]byte
 	yamlSchemaPathCache   map[string]yamlSchemaPathCacheEntry

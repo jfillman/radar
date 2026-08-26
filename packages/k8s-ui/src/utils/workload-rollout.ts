@@ -21,6 +21,10 @@ export interface WorkloadRolloutActivity {
   available: number
 }
 
+export function isArgoRolloutResource(resource: any): boolean {
+  return String(resource?.apiVersion || '').startsWith('argoproj.io/')
+}
+
 export function rolloutMayAdvanceAutomatically(activity: WorkloadRolloutActivity): boolean {
   return activity.phase === 'applying' ||
     activity.phase === 'progressing' ||
@@ -33,7 +37,7 @@ export function getWorkloadRolloutActivity(
   workloadPods?: WorkloadPodInfo[],
 ): WorkloadRolloutActivity {
   const normalized = (kind || resource?.kind || '').toLowerCase().replace(/s$/, '')
-  if (normalized === 'rollout' && !String(resource?.apiVersion || '').startsWith('argoproj.io/')) {
+  if (normalized === 'rollout' && !isArgoRolloutResource(resource)) {
     return activity('idle', false, false, 'Stable', '', 0, 0, 0, 0)
   }
   let result: WorkloadRolloutActivity
@@ -66,11 +70,11 @@ function deploymentActivity(resource: any): WorkloadRolloutActivity {
   const base = activity('idle', false, false, 'Stable', '', desired, updated, ready, available)
   const progress = (status.conditions || []).find((condition: any) => condition.type === 'Progressing')
 
-  if (progress?.status === 'False' || progress?.reason === 'ProgressDeadlineExceeded') {
-    return merge(base, 'stalled', false, 'Rollout stalled', progress.message || 'Progress deadline exceeded')
-  }
   if ((status.observedGeneration ?? 0) < (resource?.metadata?.generation ?? 0)) {
     return merge(base, 'applying', true, 'Applying change', 'Waiting for the Deployment controller to observe generation')
+  }
+  if (progress?.status === 'False' || progress?.reason === 'ProgressDeadlineExceeded') {
+    return merge(base, 'stalled', false, 'Rollout stalled', progress.message || 'Progress deadline exceeded')
   }
   const old = Math.max(0, (status.replicas ?? 0) - updated)
   const pending = updated < desired || old > 0
@@ -87,8 +91,9 @@ function deploymentActivity(resource: any): WorkloadRolloutActivity {
       ? merge(base, 'waiting', true, 'Waiting for new revision', replicaDetail(updated, desired, available))
       : merge(base, 'progressing', true, 'Replacing replicas', replicaDetail(updated, desired, available))
   }
-  return updated === 0
-    ? merge(base, 'waiting', true, 'Waiting for new revision', replicaDetail(updated, desired, available))
+  if (updated === 0) return merge(base, 'waiting', true, 'Waiting for new revision', replicaDetail(updated, desired, available))
+  return old === 0 && updated === (status.replicas ?? 0)
+    ? merge(base, 'progressing', true, 'Scaling', replicaDetail(updated, desired, available))
     : merge(base, 'progressing', true, 'Rolling out', replicaDetail(updated, desired, available))
 }
 
@@ -112,7 +117,8 @@ function statefulSetActivity(resource: any): WorkloadRolloutActivity {
   const partition = spec.updateStrategy?.rollingUpdate?.partition ?? 0
   const target = Math.max(0, desired - partition)
   if (updated >= target) {
-    return partition > 0
+    const pendingRevision = Boolean(status.currentRevision && status.updateRevision && status.currentRevision !== status.updateRevision)
+    return partition > 0 && pendingRevision
       ? merge(base, 'partition-reached', false, 'Partition reached', `${partition}/${desired} Pods intentionally retained`)
       : merge(base, 'idle', false, 'Stable', `${ready}/${desired} ready`)
   }
@@ -155,18 +161,18 @@ function argoRolloutActivity(resource: any): WorkloadRolloutActivity {
   const available = status.availableReplicas ?? 0
   const base = activity('idle', false, false, 'Stable', '', desired, updated, ready, available)
   const detail = argoDetail(resource, updated, desired, available)
+  const observedGeneration = typeof status.observedGeneration === 'string' && /^\d+$/.test(status.observedGeneration)
+    ? Number.parseInt(status.observedGeneration, 10)
+    : 0
+  if (observedGeneration > 0 && observedGeneration < (resource?.metadata?.generation ?? 0)) {
+    return merge(base, 'applying', true, 'Applying change', 'Waiting for the Rollout controller to observe generation')
+  }
   const failedCondition = (status.conditions || []).find((condition: any) =>
     (condition.type === 'InvalidSpec' && condition.status === 'True') ||
     (condition.type === 'Progressing' && (condition.status === 'False' || condition.reason === 'ProgressDeadlineExceeded')),
   )
   if (failedCondition || status.abort) {
     return merge(base, 'stalled', false, 'Rollout stalled', failedCondition?.message || failedCondition?.reason || status.message || (status.abort ? 'The Rollout was aborted' : '') || 'The Rollout controller reported a failed revision')
-  }
-  const observedGeneration = typeof status.observedGeneration === 'string' && /^\d+$/.test(status.observedGeneration)
-    ? Number.parseInt(status.observedGeneration, 10)
-    : 0
-  if (observedGeneration > 0 && observedGeneration < (resource?.metadata?.generation ?? 0)) {
-    return merge(base, 'applying', true, 'Applying change', 'Waiting for the Rollout controller to observe generation')
   }
   switch (String(status.phase || '').toLowerCase()) {
     case 'degraded':
@@ -194,7 +200,9 @@ function withUpdatedRevisionFailure(
   pods?: WorkloadPodInfo[],
 ): WorkloadRolloutActivity {
   if ((!rollout.active && rollout.phase !== 'stalled') || rollout.phase === 'applying' || !pods) return rollout
-  const failed = pods.find((pod) => pod.updatedRevision === true && pod.healthLevel === 'unhealthy')
+  const failed = pods
+    .filter((pod) => pod.updatedRevision === true && pod.healthLevel === 'unhealthy')
+    .sort((a, b) => a.name.localeCompare(b.name))[0]
   if (!failed) return rollout
   const reason = failed.reason || failed.lastTerminationReason || failed.phase || 'Pod failed'
   return merge(rollout, 'stalled', false, 'New revision cannot start', `${reason} · Pod ${failed.name}`)

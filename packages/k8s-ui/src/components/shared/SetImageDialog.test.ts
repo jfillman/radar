@@ -108,6 +108,7 @@ describe('canSubmitImageUpdates', () => {
     updateCount: 1,
     hasEmptyImage: false,
     managed: false,
+    ownershipResolved: true,
     acknowledged: false,
     busy: false,
   }
@@ -123,5 +124,6 @@ describe('canSubmitImageUpdates', () => {
     expect(canSubmitImageUpdates({ ...ready, hasEmptyImage: true })).toBe(false)
     expect(canSubmitImageUpdates({ ...ready, busy: true })).toBe(false)
     expect(canSubmitImageUpdates({ ...ready, loadFailed: true })).toBe(false)
+    expect(canSubmitImageUpdates({ ...ready, ownershipResolved: false })).toBe(false)
   })
 })

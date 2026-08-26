@@ -3,7 +3,7 @@
 import { formatCPUString, formatMemoryString, formatBytes } from '../../utils/format'
 import { pluralize } from '../../utils/pluralize'
 import type { WorkloadPodInfo } from '../../types/core'
-import { getArgoRolloutStepNumber, getWorkloadRolloutActivity, rolloutActivityBadge, type WorkloadRolloutActivity } from '../../utils/workload-rollout'
+import { getArgoRolloutStepNumber, getWorkloadRolloutActivity, isArgoRolloutResource, rolloutActivityBadge, type WorkloadRolloutActivity } from '../../utils/workload-rollout'
 
 // Import functions from sub-modules used internally by getCellFilterValue
 import { getCertificateStatus, getCertificateRequestStatus, getClusterIssuerStatus, getClusterIssuerType, getOrderState, getChallengeState, getChallengeType } from './resource-utils-certmanager'
@@ -845,18 +845,31 @@ export function getWorkloadDisplayStatus(
 ): { activity: WorkloadRolloutActivity; status: StatusBadge } {
   const normalizedKind = kind.toLowerCase().replace(/s$/, '')
   const activity = getWorkloadRolloutActivity(resource, normalizedKind, workloadPods)
+  if (normalizedKind === 'rollout' && !isArgoRolloutResource(resource)) {
+    return { activity, status: getRolloutStatus(resource) }
+  }
   const healthStatus = getWorkloadStatus(resource, `${normalizedKind}s`)
-  if ((!activity.active && activity.phase !== 'stalled') && normalizedKind !== 'rollout') {
+  if (!activity.active && activity.phase !== 'stalled') {
     return { activity, status: healthStatus }
   }
   const status: StatusBadge = rolloutActivityBadge(activity)
-  if (normalizedKind !== 'rollout') {
-    if (workloadStatusLevelRank[healthStatus.level] > workloadStatusLevelRank[status.level]) {
-      status.level = healthStatus.level
-      status.color = healthStatus.color
-    }
+  if (workloadStatusLevelRank[healthStatus.level] > workloadStatusLevelRank[status.level]) {
+    status.level = healthStatus.level
+    status.color = healthStatus.color
   }
   return { activity, status }
+}
+
+export function workloadStatusLabel(status: StatusBadge): string {
+  if (status.text === 'Scaled to 0') return status.text
+  return {
+    healthy: 'Healthy',
+    degraded: 'Degraded',
+    alert: 'Alert',
+    unhealthy: 'Unhealthy',
+    neutral: 'Neutral',
+    unknown: 'Unknown',
+  }[status.level]
 }
 
 const workloadStatusLevelRank: Record<HealthLevel, number> = {
@@ -1510,6 +1523,9 @@ export function getPVCAccessModes(pvc: any): string {
 // ============================================================================
 
 export function getRolloutStatus(rollout: any): StatusBadge {
+  if (!isArgoRolloutResource(rollout)) {
+    return { text: 'Unknown', color: healthColors.unknown, level: 'unknown' }
+  }
   return rolloutActivityBadge(getWorkloadRolloutActivity(rollout, 'rollout'))
 }
 
@@ -2163,15 +2179,7 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
           if (display.activity.phase !== 'idle') return display.status.text
           status = display.status
         }
-        if (status.text === 'Scaled to 0') return status.text
-        return {
-          healthy: 'Healthy',
-          degraded: 'Degraded',
-          alert: 'Alert',
-          unhealthy: 'Unhealthy',
-          neutral: 'Neutral',
-          unknown: 'Unknown',
-        }[status.level]
+        return workloadStatusLabel(status)
       }
       if (kindLower === 'nodes') return getNodeStatus(resource).text
       if (kindLower === 'jobs') return getJobStatus(resource).text

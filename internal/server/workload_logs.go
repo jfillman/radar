@@ -145,7 +145,8 @@ func (s *Server) handleWorkloadPods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := workloadRevisionTargetFor(r.Context(), k8s.GetResourceCache(), s.getDynamicClientForRequest(r), kind, namespace, name)
+	dynamicClient, contextName := s.getDynamicClientSnapshotForRequest(r)
+	target := s.workloadRevisionTargetForRequest(r, k8s.GetResourceCache(), dynamicClient, contextName, kind, namespace, name)
 	s.writeJSON(w, map[string]any{
 		"pods": buildPodInfosForRevision(pods, target),
 	})
@@ -706,6 +707,47 @@ type workloadRevisionTarget struct {
 	value string
 }
 
+const workloadRevisionTargetTTL = 5 * time.Second
+
+type workloadRevisionTargetCacheEntry struct {
+	target    workloadRevisionTarget
+	expiresAt time.Time
+}
+
+func (s *Server) workloadRevisionTargetForRequest(r *http.Request, cache *k8s.ResourceCache, dynamicClient dynamic.Interface, contextName, kind, namespace, name string) workloadRevisionTarget {
+	if (kind != "daemonset" && kind != "daemonsets") || cache == nil || cache.DaemonSets() == nil {
+		return workloadRevisionTargetFor(r.Context(), cache, dynamicClient, kind, namespace, name)
+	}
+	workload, err := cache.DaemonSets().DaemonSets(namespace).Get(name)
+	if err != nil {
+		return workloadRevisionTarget{}
+	}
+	key := contextName + "\x00" + requestCachePrincipal(r) + "\x00" + string(workload.UID) + "\x00" + strconv.FormatInt(workload.Generation, 10)
+	now := time.Now()
+	s.workloadRevisionMu.Lock()
+	entry, ok := s.workloadRevisionCache[key]
+	s.workloadRevisionMu.Unlock()
+	if ok && now.Before(entry.expiresAt) {
+		return entry.target
+	}
+
+	target := daemonSetRevisionTarget(r.Context(), dynamicClient, workload)
+	s.workloadRevisionMu.Lock()
+	if s.workloadRevisionCache == nil {
+		s.workloadRevisionCache = make(map[string]workloadRevisionTargetCacheEntry)
+	}
+	for existingKey, existing := range s.workloadRevisionCache {
+		if !now.Before(existing.expiresAt) {
+			delete(s.workloadRevisionCache, existingKey)
+		}
+	}
+	if len(s.workloadRevisionCache) < 256 {
+		s.workloadRevisionCache[key] = workloadRevisionTargetCacheEntry{target: target, expiresAt: now.Add(workloadRevisionTargetTTL)}
+	}
+	s.workloadRevisionMu.Unlock()
+	return target
+}
+
 func workloadRevisionTargetFor(ctx context.Context, cache *k8s.ResourceCache, dynamicClient dynamic.Interface, kind, namespace, name string) workloadRevisionTarget {
 	if cache == nil {
 		return workloadRevisionTarget{}
@@ -735,23 +777,7 @@ func workloadRevisionTargetFor(ctx context.Context, cache *k8s.ResourceCache, dy
 	case "daemonset", "daemonsets":
 		if cache.DaemonSets() != nil {
 			if workload, err := cache.DaemonSets().DaemonSets(namespace).Get(name); err == nil {
-				if dynamicClient == nil {
-					return workloadRevisionTarget{}
-				}
-				selector, err := metav1.LabelSelectorAsSelector(workload.Spec.Selector)
-				if err != nil {
-					return workloadRevisionTarget{}
-				}
-				controllerRevisions, err := dynamicClient.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "controllerrevisions"}).Namespace(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
-				if err != nil {
-					log.Printf("[workload-pods] DaemonSet revision attribution unavailable for %s/%s: %v", namespace, name, err)
-					return workloadRevisionTarget{}
-				}
-				for _, revision := range k8score.BuildControllerRevisions(controllerRevisions.Items, string(workload.UID)) {
-					if revision.IsCurrent && revision.PodHash != "" {
-						return workloadRevisionTarget{label: appsv1.ControllerRevisionHashLabelKey, value: revision.PodHash}
-					}
-				}
+				return daemonSetRevisionTarget(ctx, dynamicClient, workload)
 			}
 		}
 	case "rollout", "rollouts":
@@ -759,6 +785,27 @@ func workloadRevisionTargetFor(ctx context.Context, cache *k8s.ResourceCache, dy
 			if hash, found, _ := unstructured.NestedString(workload.Object, "status", "currentPodHash"); found {
 				return workloadRevisionTarget{label: rollouts.PodTemplateHashLabel, value: hash}
 			}
+		}
+	}
+	return workloadRevisionTarget{}
+}
+
+func daemonSetRevisionTarget(ctx context.Context, dynamicClient dynamic.Interface, workload *appsv1.DaemonSet) workloadRevisionTarget {
+	if dynamicClient == nil {
+		return workloadRevisionTarget{}
+	}
+	selector, err := metav1.LabelSelectorAsSelector(workload.Spec.Selector)
+	if err != nil {
+		return workloadRevisionTarget{}
+	}
+	controllerRevisions, err := dynamicClient.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "controllerrevisions"}).Namespace(workload.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
+	if err != nil {
+		log.Printf("[workload-pods] DaemonSet revision attribution unavailable for %s/%s: %v", workload.Namespace, workload.Name, err)
+		return workloadRevisionTarget{}
+	}
+	for _, revision := range k8score.BuildControllerRevisions(controllerRevisions.Items, string(workload.UID)) {
+		if revision.IsCurrent && revision.PodHash != "" {
+			return workloadRevisionTarget{label: appsv1.ControllerRevisionHashLabelKey, value: revision.PodHash}
 		}
 	}
 	return workloadRevisionTarget{}

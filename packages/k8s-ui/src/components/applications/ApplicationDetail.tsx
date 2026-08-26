@@ -82,7 +82,7 @@ import {
 } from "../../utils/applications";
 import { PaneLoader } from "../ui/PaneLoader";
 import { midTruncate } from "../../utils/format";
-import { VersionTooltip, AppIdentityTooltip } from "./AppTooltips";
+import { VersionTooltip, AppIdentityTooltip, RolloutSummaryTooltip } from "./AppTooltips";
 import {
   ProvenanceBadge,
   ClassBadge,
@@ -712,7 +712,7 @@ export function ApplicationDetail({
         ) : null}
         {workloadClass !== "job" && rolloutSummary ? (
           <ContextFact label="Runtime">
-            <Tooltip content={rolloutSummary.detail} delay={150}>
+            <Tooltip content={<RolloutSummaryTooltip summary={rolloutSummary} />} delay={150}>
               <span className="inline-flex items-center gap-1.5">
                 <StatusDot tone={mapHealthToTone(rolloutSummary.health)} />
                 {rolloutSummary.label}
@@ -1140,7 +1140,7 @@ function ApplicationOverview({
                 pureBatch
                   ? batchStats.activeDetail
                   : rolloutSummary
-                    ? `${rolloutSummary.count} pending · ${ready}/${desired} ready`
+                    ? `${rolloutSummary.count} workload${rolloutSummary.count === 1 ? "" : "s"} affected · ${ready}/${desired} ready`
                   : desired > 0
                     ? `${ready}/${desired} ready`
                     : "No desired replicas"

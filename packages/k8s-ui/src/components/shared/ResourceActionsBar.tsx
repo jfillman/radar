@@ -247,7 +247,7 @@ export function ResourceActionsBar({
   }
 
   return (
-    <div className="flex items-center gap-2 px-4 py-2 flex-wrap">
+    <div className="flex items-center gap-1.5 px-4 py-2 flex-wrap">
       {/* Kind-specific actions (left) */}
       {kind === 'pods' && (
         <>
@@ -374,10 +374,10 @@ export function ResourceActionsBar({
           {onLoadImages && onSetImages && !data?.metadata?.deletionTimestamp && (
             <button
               onClick={() => setShowSetImage(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
+              className="flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
             >
               <Box className="w-3.5 h-3.5" />
-              Update image
+              Set image
             </button>
           )}
           {onRestart && (
@@ -388,10 +388,10 @@ export function ResourceActionsBar({
                 name: resource.name,
               })}
               disabled={isRestarting}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
+              className="flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isRestarting ? 'animate-spin' : ''}`} />
-              {isRestarting ? 'Restarting...' : 'Restart'}
+              Restart
             </button>
           )}
           {isRollbackKind && onRollback && (
@@ -400,7 +400,7 @@ export function ResourceActionsBar({
                 onClick={() => setShowRevisions(true)}
                 disabled={!hasMultipleRevisions}
                 className={clsx(
-                  "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors",
+                  "flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded-lg transition-colors",
                   hasMultipleRevisions
                     ? "text-white bg-amber-600 hover:bg-amber-700"
                     : "text-theme-text-disabled bg-theme-elevated"
@@ -501,7 +501,7 @@ export function ResourceActionsBar({
             workloadKind: kind,
             workloadName: resource.name,
           })}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
+          className="flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
         >
           <FileText className="w-3.5 h-3.5" />
           Logs
@@ -548,7 +548,7 @@ export function ResourceActionsBar({
           <button
             onClick={onToggleYaml}
             className={clsx(
-              'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
+              'flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded-lg transition-colors',
               showYaml
                 ? 'btn-brand'
                 : 'text-theme-text-secondary hover:text-theme-text-primary border border-theme-border-light hover:bg-theme-elevated'

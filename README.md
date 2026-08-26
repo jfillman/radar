@@ -396,15 +396,17 @@ See [docs/capacity.md](docs/capacity.md) for the full reference.
 
 ### Cost Insights
 
-Track Kubernetes spending with OpenCost integration. Radar reads the configured currency from a
-running OpenCost or Kubecost workload when available and otherwise uses USD. Override the label in
-Settings → Cost, config, CLI, or Helm. Radar does not convert values between currencies.
+Track Kubernetes spending from OpenCost-compatible Prometheus metrics or a Kubecost 3 Aggregator.
+Auto mode keeps working Prometheus cost metrics, then discovers a local Kubecost Aggregator; a
+federated agent-only cluster can use its central Aggregator URL in Settings, config, or Helm. Radar
+reads the configured currency from a running OpenCost or Kubecost workload when available and
+otherwise uses USD. It labels values but does not convert them.
 
 - Cluster hourly and projected monthly cost, top namespaces by spend
-- Cost trend charts with 6h/24h/7d range selector
+- Cost trend charts with 6h/24h/7d range selector when Prometheus history is available
 - Namespace and workload-level cost breakdowns with efficiency scoring
 - Node costs with instance type and region pricing
-- Appears automatically when OpenCost metrics are detected in Prometheus
+- Appears automatically when compatible Prometheus metrics or Kubecost current allocation data is detected
 
 ### Cluster Audit
 
@@ -522,7 +524,7 @@ Upgrade impact also gets list-only access to CSIStorageCapacities, FlowSchemas, 
 | **Dynamic Resource Allocation** | ResourceClaim, ResourceClaimTemplate, DeviceClass, ResourceSlice (resource.k8s.io, K8s 1.32+) |
 | **NVIDIA GPU Operator** | ClusterPolicy, NVIDIADriver |
 | **Calico** | NetworkPolicy, GlobalNetworkPolicy, StagedNetworkPolicy, StagedGlobalNetworkPolicy, StagedKubernetesNetworkPolicy, IPPool, HostEndpoint, Tier |
-| **Cost (OpenCost)** | Namespace/workload/node cost breakdown via Prometheus (no CRDs) |
+| **Cost (OpenCost / Kubecost)** | Namespace/workload/node cost via compatible Prometheus metrics or the Kubecost 3 Aggregator (no CRDs) |
 | **CRDs** | Any Custom Resource Definition in your cluster (auto-discovered) |
 
 ---

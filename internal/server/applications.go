@@ -1160,7 +1160,7 @@ func applicationRevisionTargets(cache *k8s.ResourceCache, namespaces []string, a
 }
 
 func attributeApplicationRolloutFailure(activity *health.WorkloadRolloutActivity, pods []*corev1.Pod, target workloadRevisionTarget) *health.WorkloadRolloutActivity {
-	if activity == nil || !activity.Active || activity.Phase == health.RolloutApplying || target.label == "" || target.value == "" {
+	if activity == nil || (!activity.Active && activity.Phase != health.RolloutStalled) || activity.Phase == health.RolloutApplying || target.label == "" || target.value == "" {
 		return activity
 	}
 	now := time.Now()

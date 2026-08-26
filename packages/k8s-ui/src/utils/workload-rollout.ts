@@ -184,7 +184,7 @@ function withUpdatedRevisionFailure(
   rollout: WorkloadRolloutActivity,
   pods?: WorkloadPodInfo[],
 ): WorkloadRolloutActivity {
-  if (!rollout.active || rollout.phase === 'applying' || !pods) return rollout
+  if ((!rollout.active && rollout.phase !== 'stalled') || rollout.phase === 'applying' || !pods) return rollout
   const failed = pods.find((pod) => pod.updatedRevision === true && pod.healthLevel === 'unhealthy')
   if (!failed) return rollout
   const reason = failed.reason || failed.lastTerminationReason || failed.phase || 'Pod failed'

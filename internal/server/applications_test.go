@@ -1164,6 +1164,15 @@ func TestAttributeApplicationRolloutFailure(t *testing.T) {
 		t.Fatalf("attributed rollout = %#v", got)
 	}
 
+	controllerStalled := *activity
+	controllerStalled.Phase = health.RolloutStalled
+	controllerStalled.Active = false
+	controllerStalled.Label = "Rollout stalled"
+	got = attributeApplicationRolloutFailure(&controllerStalled, []*corev1.Pod{failed}, target)
+	if got.Label != "New revision cannot start" || !strings.Contains(got.Detail, "ImagePullBackOff · Pod api-new") {
+		t.Fatalf("stalled rollout attribution = %#v", got)
+	}
+
 	oldTarget := workloadRevisionTarget{label: appsv1.DefaultDeploymentUniqueLabelKey, value: "other"}
 	if got := attributeApplicationRolloutFailure(activity, []*corev1.Pod{failed}, oldTarget); got != activity {
 		t.Fatalf("old-revision failure changed rollout: %#v", got)

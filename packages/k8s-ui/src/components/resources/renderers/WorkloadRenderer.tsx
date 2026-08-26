@@ -189,7 +189,7 @@ export function WorkloadRenderer({ kind, data, onNavigate, onViewPods, onScale, 
 
   return (
     <>
-      {!hasProblems && <WorkloadRolloutNotice activity={displayedActivity} className="mb-4" />}
+      {(!hasProblems || displayedActivity.phase === 'stalled') && <WorkloadRolloutNotice activity={displayedActivity} className="mb-4" />}
 
       {/* Problems alert - shown at top when there are real issues */}
       {hasProblems && (

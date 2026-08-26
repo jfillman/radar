@@ -33,7 +33,15 @@ describe('WorkloadRenderer', () => {
         data={{
           ...deployment,
           metadata: { ...deployment.metadata, generation: 2 },
-          status: { observedGeneration: 2, replicas: 4, readyReplicas: 3, availableReplicas: 3, updatedReplicas: 1 },
+          status: {
+            observedGeneration: 2,
+            replicas: 4,
+            readyReplicas: 2,
+            availableReplicas: 2,
+            unavailableReplicas: 1,
+            updatedReplicas: 1,
+            conditions: [{ type: 'Progressing', status: 'False', message: 'Progress deadline exceeded' }],
+          },
         }}
         workloadPods={[{
           name: 'api-new-revision',
@@ -48,6 +56,8 @@ describe('WorkloadRenderer', () => {
 
     expect(html).toContain('New revision cannot start')
     expect(html).toContain('ImagePullBackOff · Pod api-new-revision')
+    expect(html).toContain('Issues Detected')
+    expect(html).toContain('Progressing: Progress deadline exceeded')
     expect(html).not.toContain('Rolling out')
   })
 

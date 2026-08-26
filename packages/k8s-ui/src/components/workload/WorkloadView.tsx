@@ -702,9 +702,7 @@ export function WorkloadView({
   const rolloutActivity = resource && isRolloutStatusKind(apiKind)
     ? getWorkloadRolloutActivity(resource, apiKind, workloadPods)
     : null
-  const status = rolloutActivity
-    ? rolloutActivityBadge(rolloutActivity)
-    : getResourceStatus(apiKind, resource)
+  const status = getWorkloadHeaderStatus(apiKind, resource, rolloutActivity)
   const rolloutMayAutoAdvance = rolloutActivity ? rolloutMayAdvanceAutomatically(rolloutActivity) : false
   useEffect(() => {
     if (!recentImageSave) return
@@ -1221,6 +1219,16 @@ export function WorkloadView({
     </DetailShell>
     </OperationalIssuesShownContext.Provider>
   )
+}
+
+export function getWorkloadHeaderStatus(
+  apiKind: string,
+  resource: any,
+  rolloutActivity: WorkloadRolloutActivity | null,
+) {
+  return rolloutActivity && rolloutActivity.phase !== 'idle'
+    ? rolloutActivityBadge(rolloutActivity)
+    : getResourceStatus(apiKind, resource)
 }
 
 // ============================================================================

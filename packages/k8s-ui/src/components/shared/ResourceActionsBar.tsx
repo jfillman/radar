@@ -381,18 +381,24 @@ export function ResourceActionsBar({
             </button>
           )}
           {onRestart && (
-            <button
-              onClick={() => onRestart({
-                kind: resource.kind,
-                namespace: resource.namespace,
-                name: resource.name,
-              })}
-              disabled={isRestarting}
-              className="flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isRestarting ? 'animate-spin' : ''}`} />
-              Restart
-            </button>
+            <>
+              <button
+                onClick={() => onRestart({
+                  kind: resource.kind,
+                  namespace: resource.namespace,
+                  name: resource.name,
+                })}
+                disabled={isRestarting}
+                aria-busy={isRestarting}
+                className="flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium btn-brand-muted rounded-lg"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRestarting ? 'animate-spin' : ''}`} />
+                Restart
+              </button>
+              <span className="sr-only" aria-live="polite">
+                {isRestarting ? 'Restarting workload' : ''}
+              </span>
+            </>
           )}
           {isRollbackKind && onRollback && (
             <Tooltip content={hasMultipleRevisions ? 'View revision history and rollback' : 'Only one revision exists'} delay={150}>

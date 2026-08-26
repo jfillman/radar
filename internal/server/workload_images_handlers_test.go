@@ -73,6 +73,11 @@ func TestGetWorkloadImagesHandler(t *testing.T) {
 }
 
 func TestSetWorkloadImagesHandler(t *testing.T) {
+	clearApplicationsCache()
+	t.Cleanup(clearApplicationsCache)
+	applicationsCacheMu.Lock()
+	applicationsCache["test"] = applicationsCacheEntry{}
+	applicationsCacheMu.Unlock()
 	deployment := serverImageDeployment("repo/app:v1")
 	updated := serverImageDeployment("repo/app:v2")
 	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), deployment)
@@ -97,6 +102,11 @@ func TestSetWorkloadImagesHandler(t *testing.T) {
 	}
 	if result.Containers[0].Image != "repo/app:v2" {
 		t.Errorf("result = %+v", result.Containers)
+	}
+	applicationsCacheMu.Lock()
+	defer applicationsCacheMu.Unlock()
+	if len(applicationsCache) != 0 {
+		t.Errorf("applications cache was not cleared after image update")
 	}
 }
 

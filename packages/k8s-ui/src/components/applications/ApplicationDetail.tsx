@@ -68,6 +68,7 @@ import {
   batchActivityForApp,
   batchRuntimeForApp,
   rolloutSummaryForApps,
+  rolloutDisplayHealth,
   applicationDisplayHealth,
   sourceReportedHealth,
   sourceSyncHealth,
@@ -81,7 +82,6 @@ import {
 } from "../../utils/applications";
 import { PaneLoader } from "../ui/PaneLoader";
 import { midTruncate } from "../../utils/format";
-import { rolloutActivityLevel } from "../../utils/workload-rollout";
 import { VersionTooltip, AppIdentityTooltip } from "./AppTooltips";
 import {
   ProvenanceBadge,
@@ -2043,8 +2043,11 @@ function workloadRuntimeStatus(workload: AppWorkload): {
   label: string;
   health: AppHealth;
 } {
-  if (workload.rollout && workload.rollout.phase !== 'idle') {
-    return { label: workload.rollout.label, health: rolloutActivityLevel(workload.rollout) }
+  if (workload.rollout && (workload.rollout.active || workload.rollout.phase === 'stalled')) {
+    return {
+      label: workload.rollout.label,
+      health: rolloutDisplayHealth(workload.rollout, workload.health),
+    }
   }
   const batch = workload.batch;
   if (!batch) {
@@ -2062,7 +2065,7 @@ function workloadRuntimeStatus(workload: AppWorkload): {
 }
 
 function workloadRuntimeDetail(workload: AppWorkload): string {
-  if (workload.rollout && workload.rollout.phase !== 'idle') return workload.rollout.detail || `${workload.ready}/${workload.desired} ready`
+  if (workload.rollout && (workload.rollout.active || workload.rollout.phase === 'stalled')) return workload.rollout.detail || `${workload.ready}/${workload.desired} ready`
   const batch = workload.batch;
   if (!batch) return `${workload.ready}/${workload.desired} ready`;
   if ((batch.activeRuns ?? 0) > 0)

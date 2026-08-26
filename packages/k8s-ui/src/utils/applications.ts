@@ -38,9 +38,17 @@ export interface AppRolloutSummary {
   health: AppHealth
 }
 
+export function rolloutDisplayHealth(activity: WorkloadRolloutActivity, workloadHealth: string): AppHealth {
+  const rolloutHealth: AppHealth = rolloutActivityLevel(activity)
+  const servingHealth = healthOf(workloadHealth)
+  return servingHealth === 'healthy' || servingHealth === 'neutral'
+    ? rolloutHealth
+    : worstHealth([rolloutHealth, servingHealth])
+}
+
 export function rolloutSummaryForApps(apps: AppRow[]): AppRolloutSummary | null {
   const entries = apps.flatMap((app) => app.workloads
-    .filter((workload) => workload.rollout && workload.rollout.phase !== 'idle' && workload.rollout.phase !== 'partition-reached')
+    .filter((workload) => workload.rollout && (workload.rollout.active || workload.rollout.phase === 'stalled'))
     .map((workload) => ({ app, workload, rollout: workload.rollout! })))
   if (entries.length === 0) return null
   const rank = (phase: WorkloadRolloutActivity['phase']) => {
@@ -49,7 +57,10 @@ export function rolloutSummaryForApps(apps: AppRow[]): AppRolloutSummary | null 
     return 1
   }
   const worst = entries.reduce((current, entry) => rank(entry.rollout.phase) > rank(current.rollout.phase) ? entry : current)
-  const health: AppHealth = rolloutActivityLevel(worst.rollout)
+  const health = entries.reduce<AppHealth>(
+    (current, entry) => worstHealth([current, rolloutDisplayHealth(entry.rollout, entry.workload.health)]),
+    'neutral',
+  )
   const stalled = entries.filter((entry) => entry.rollout.phase === 'stalled').length
   const label = entries.length === 1
     ? worst.rollout.label

@@ -141,6 +141,17 @@ describe('rolloutSummaryForApps', () => {
     expect(summary?.detail).toContain('2/3 updated')
   })
 
+  it('keeps rollout copy while preserving a worse workload health tone', () => {
+    const summary = rolloutSummaryForApps([app({
+      workloads: [wl({
+        health: 'unhealthy',
+        rollout: { phase: 'progressing', active: true, manual: false, label: 'Rolling out', desired: 3, updated: 1, ready: 0, available: 0 },
+      })],
+    })])
+
+    expect(summary).toMatchObject({ label: 'Rolling out', health: 'unhealthy' })
+  })
+
   it('escalates a stalled revision without changing stable app health data', () => {
     const summary = rolloutSummaryForApps([app({
       workloads: [wl({
@@ -169,6 +180,17 @@ describe('rolloutSummaryForApps', () => {
     })])
 
     expect(summary?.label).toBe('2 stalled')
+  })
+
+  it('does not promote inactive rollout policies to app-level activity', () => {
+    const summary = rolloutSummaryForApps([app({
+      workloads: [
+        wl({ rollout: { phase: 'paused', active: false, manual: false, label: 'Rollout paused', desired: 1, updated: 1, ready: 0, available: 0 } }),
+        wl({ rollout: { phase: 'partition-reached', active: false, manual: false, label: 'Partition reached', desired: 3, updated: 2, ready: 2, available: 2 } }),
+      ],
+    })])
+
+    expect(summary).toBeNull()
   })
 })
 

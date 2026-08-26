@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/packages"
 	"github.com/skyhook-io/radar/pkg/subject"
@@ -13,6 +14,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // rawInput builds a workload with no label overlay and its own structural root
@@ -1182,5 +1185,86 @@ func TestAttributeApplicationRolloutFailure(t *testing.T) {
 	applying.Phase = health.RolloutApplying
 	if got := attributeApplicationRolloutFailure(&applying, []*corev1.Pod{failed}, target); got != &applying {
 		t.Fatalf("pre-observation failure was attributed: %#v", got)
+	}
+}
+
+func TestVisibleRolloutActivityOnlyIncludesPendingOrStalledWork(t *testing.T) {
+	tests := []struct {
+		name     string
+		activity health.WorkloadRolloutActivity
+		visible  bool
+	}{
+		{name: "idle", activity: health.WorkloadRolloutActivity{Phase: health.RolloutIdle}},
+		{name: "inactive pause", activity: health.WorkloadRolloutActivity{Phase: health.RolloutPaused}},
+		{name: "partition reached", activity: health.WorkloadRolloutActivity{Phase: health.RolloutPartitionReached}},
+		{name: "pending pause", activity: health.WorkloadRolloutActivity{Phase: health.RolloutPaused, Active: true}, visible: true},
+		{name: "stalled", activity: health.WorkloadRolloutActivity{Phase: health.RolloutStalled}, visible: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := visibleRolloutActivity(tt.activity); (got != nil) != tt.visible {
+				t.Fatalf("visibleRolloutActivity() = %#v, visible = %t", got, tt.visible)
+			}
+		})
+	}
+}
+
+func TestRolloutApplicationHealthPreservesServingHealth(t *testing.T) {
+	if got := rolloutApplicationHealth(health.WorkloadRolloutActivity{Phase: health.RolloutApplying}, 3, 3); got != packages.HealthHealthy {
+		t.Fatalf("fully ready applying health = %q, want healthy", got)
+	}
+	if got := rolloutApplicationHealth(health.WorkloadRolloutActivity{Phase: health.RolloutApplying}, 0, 3); got != packages.HealthUnhealthy {
+		t.Fatalf("zero ready applying health = %q, want unhealthy", got)
+	}
+	if got := rolloutApplicationHealth(health.WorkloadRolloutActivity{Phase: health.RolloutStalled}, 3, 3); got != packages.HealthUnhealthy {
+		t.Fatalf("stalled health = %q, want unhealthy", got)
+	}
+}
+
+func TestRolloutApplicationFieldsUseReferencedDeployment(t *testing.T) {
+	replicas := int32(4)
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "target"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "checkout"}},
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "app", Image: "repo/checkout:v2"}},
+			}},
+		},
+	}
+	useTestResourceCache(t, fake.NewSimpleClientset(deployment))
+	rollout := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1",
+		"kind":       "Rollout",
+		"metadata":   map[string]any{"namespace": "prod", "name": "checkout"},
+		"spec": map[string]any{
+			"workloadRef": map[string]any{"kind": "Deployment", "name": "target"},
+		},
+	}}
+
+	selector, image, desired := rolloutApplicationFields(k8s.GetResourceCache(), rollout)
+	if selector == nil || selector.MatchLabels["app"] != "checkout" || image != "repo/checkout:v2" || desired != 4 {
+		t.Fatalf("referenced fields = selector %#v, image %q, desired %d", selector, image, desired)
+	}
+}
+
+func TestApplicationRevisionTargetsUseCurrentDeploymentReplicaSet(t *testing.T) {
+	uid := types.UID("deployment-uid")
+	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "checkout", UID: uid}}
+	replicaSet := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Namespace:   "prod",
+		Name:        "checkout-new",
+		Labels:      map[string]string{appsv1.DefaultDeploymentUniqueLabelKey: "new"},
+		Annotations: map[string]string{"deployment.kubernetes.io/revision": "2"},
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: "apps/v1", Kind: "Deployment", Name: "checkout", UID: uid,
+		}},
+	}}
+	useTestResourceCache(t, fake.NewSimpleClientset(deployment, replicaSet))
+
+	target := applicationRevisionTargets(k8s.GetResourceCache(), []string{"prod"}, nil)["Deployment/prod/checkout"]
+	if target.label != appsv1.DefaultDeploymentUniqueLabelKey || target.value != "new" {
+		t.Fatalf("revision target = %#v", target)
 	}
 }

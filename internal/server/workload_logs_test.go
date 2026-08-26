@@ -1,18 +1,25 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/k8score"
@@ -53,6 +60,32 @@ func TestBuildPodInfosForRevisionAttributesOnlyKnownIdentities(t *testing.T) {
 	}
 	if infos[2].UpdatedRevision != nil {
 		t.Fatalf("unknown revision was guessed: %#v", infos[2])
+	}
+}
+
+func TestDaemonSetRevisionLookupUsesWorkloadSelector(t *testing.T) {
+	uid := types.UID("daemonset-uid")
+	daemonSet := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ops", Name: "agent", UID: uid},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "agent"}},
+		},
+	}
+	useTestResourceCache(t, fake.NewSimpleClientset(daemonSet))
+
+	controllerRevisionsGVR := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "controllerrevisions"}
+	dynamicClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		controllerRevisionsGVR: "ControllerRevisionList",
+	})
+	var selector string
+	dynamicClient.PrependReactor("list", "controllerrevisions", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		selector = action.(clienttesting.ListAction).GetListRestrictions().Labels.String()
+		return true, &unstructured.UnstructuredList{}, nil
+	})
+
+	workloadRevisionTargetFor(context.Background(), k8s.GetResourceCache(), dynamicClient, "daemonsets", "ops", "agent")
+	if selector != "app=agent" {
+		t.Fatalf("ControllerRevision selector = %q, want app=agent", selector)
 	}
 }
 

@@ -498,7 +498,7 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
   rollouts: [
     { key: 'name', label: 'Name' },
     { key: 'namespace', label: 'Namespace', width: 'w-48' },
-    { key: 'status', label: 'Phase', width: 'w-28' },
+    { key: 'status', label: 'Status', width: 'w-32' },
     { key: 'ready', label: 'Ready', width: 'w-24', tooltip: 'Available / Desired replicas' },
     { key: 'strategy', label: 'Strategy', width: 'w-24' },
     { key: 'step', label: 'Step', width: 'w-20', hideOnMobile: true, tooltip: 'Current canary step / Total steps' },
@@ -6002,6 +6002,9 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
     case 'persistentvolumeclaims':
       return <PVCCell resource={resource} column={column} />
     case 'rollouts':
+      if (!resource.apiVersion?.startsWith('argoproj.io/')) {
+        return <GenericCell resource={resource} column={column} />
+      }
       return <RolloutCell resource={resource} column={column} />
     case 'analysisruns':
       return <AnalysisRunCell resource={resource} column={column} />

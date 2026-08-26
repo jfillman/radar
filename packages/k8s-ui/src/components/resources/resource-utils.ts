@@ -824,13 +824,13 @@ export function getWorkloadStatus(resource: any, kind: string): StatusBadge {
     return { text: `${ready}/${desired}`, color: healthColors.neutral, level: 'neutral' }
   }
 
-  // Check if updating
-  if (updated < desired && updated > 0) {
-    return { text: `Updating ${updated}/${desired}`, color: healthColors.degraded, level: 'degraded' }
-  }
-
   if (ready >= desired && available >= desired) {
     return { text: `${Math.min(ready, desired)}/${desired}`, color: healthColors.healthy, level: 'healthy' }
+  }
+  const partition = kind === 'statefulsets' ? (spec.updateStrategy?.rollingUpdate?.partition ?? 0) : 0
+  const updateTarget = Math.max(0, desired - partition)
+  if (updated < updateTarget && updated > 0) {
+    return { text: `Updating ${updated}/${updateTarget}`, color: healthColors.degraded, level: 'degraded' }
   }
   if (ready > 0) {
     return { text: `${ready}/${desired}`, color: healthColors.degraded, level: 'degraded' }
@@ -845,10 +845,27 @@ export function getWorkloadDisplayStatus(
 ): { activity: WorkloadRolloutActivity; status: StatusBadge } {
   const normalizedKind = kind.toLowerCase().replace(/s$/, '')
   const activity = getWorkloadRolloutActivity(resource, normalizedKind, workloadPods)
-  const status = activity.phase === 'idle' && normalizedKind !== 'rollout'
-    ? getWorkloadStatus(resource, `${normalizedKind}s`)
-    : rolloutActivityBadge(activity)
+  const healthStatus = getWorkloadStatus(resource, `${normalizedKind}s`)
+  if ((!activity.active && activity.phase !== 'stalled') && normalizedKind !== 'rollout') {
+    return { activity, status: healthStatus }
+  }
+  const status: StatusBadge = rolloutActivityBadge(activity)
+  if (normalizedKind !== 'rollout') {
+    if (workloadStatusLevelRank[healthStatus.level] > workloadStatusLevelRank[status.level]) {
+      status.level = healthStatus.level
+      status.color = healthStatus.color
+    }
+  }
   return { activity, status }
+}
+
+const workloadStatusLevelRank: Record<HealthLevel, number> = {
+  neutral: 0,
+  healthy: 0,
+  unknown: 2,
+  degraded: 3,
+  alert: 4,
+  unhealthy: 5,
 }
 
 /** Detect problems for Deployments, StatefulSets, DaemonSets. Parallel to getPodProblems. */

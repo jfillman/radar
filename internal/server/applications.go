@@ -1033,7 +1033,7 @@ func collectAppWorkloads(ctx context.Context, cache *k8s.ResourceCache, namespac
 type addAppWorkloadFunc func(kind, ns, name string, lbls, anns map[string]string, image string, workloadHealth packages.Health, ready, desired int, selector *metav1.LabelSelector, rollout *health.WorkloadRolloutActivity, batch *appBatchSummary)
 
 func visibleRolloutActivity(activity health.WorkloadRolloutActivity) *health.WorkloadRolloutActivity {
-	if activity.Phase == health.RolloutIdle {
+	if !activity.Active && activity.Phase != health.RolloutStalled {
 		return nil
 	}
 	return &activity

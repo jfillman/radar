@@ -63,6 +63,7 @@ func (s *Server) handleSetWorkloadImages(w http.ResponseWriter, r *http.Request)
 		s.writeWorkloadImageError(w, err, "update", kind, namespace, name)
 		return
 	}
+	clearApplicationsCache()
 	s.writeJSON(w, result)
 }
 

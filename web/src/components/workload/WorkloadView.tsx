@@ -323,7 +323,7 @@ function useActionsBarProps(
   const resumeCronJobMutation = useResumeCronJob()
 
   const isRolloutShape = isRolloutKind(kind)
-  const isRollout = isRolloutShape && (group === undefined || group === 'argoproj.io')
+  const isRollout = isRolloutShape && group === 'argoproj.io'
   const isRollbackKind = ['deployments', 'statefulsets', 'daemonsets'].includes(kind.toLowerCase()) || isRollout
   const { data: rolloutCapabilities, isPending: rolloutCapabilitiesPending } = useRolloutCapabilities(namespace, name, isRollout)
   // Restart and Rollback are the generic workload buttons, so a Rollout has to
@@ -332,7 +332,7 @@ function useActionsBarProps(
   const rolloutAllows = (verb: 'restart' | 'rollback') =>
     !isRollout || !rolloutCapabilities || rolloutCapabilities[verb]
   const canSetImages = isRolloutShape
-    ? group === 'argoproj.io' && !rolloutCapabilitiesPending && rolloutCapabilities?.setImage === true
+    ? isRollout && !rolloutCapabilitiesPending && rolloutCapabilities?.setImage === true
     : !workloadWritesPending && canPatchWorkloadKind({ name: kind, group }, workloadWrites)
   const loadImages = useCallback(
     (params: { kind: string; namespace: string; name: string }) =>

@@ -1029,6 +1029,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
     const kind = kindToPlural(event.kind)
     const structural = event.operation === 'add' || event.operation === 'delete'
+    const applicationWorkload = ['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(kind)
 
     const fast = fastInvalidationRef.current
     fast.changedKinds.add(kind)
@@ -1042,7 +1043,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     }
 
     const slow = slowInvalidationRef.current
-    if (!structural) slow.updatedKinds.add(kind)
+    if (!structural || applicationWorkload) slow.updatedKinds.add(kind)
 
     // FAST tier — membership-sensitive + cheap, bounded 3s latency.
     if (fast.timer === null) {
@@ -1050,12 +1051,6 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         const f = fastInvalidationRef.current
         for (const k of f.changedKinds) {
           queryClient.invalidateQueries({ queryKey: ['resource', k] }) // open detail drawer stays live
-          if (['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(k)) {
-            queryClient.invalidateQueries({ queryKey: ['resources', k] })
-          }
-        }
-        if ([...f.changedKinds].some((k) => ['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(k))) {
-          queryClient.invalidateQueries({ queryKey: ['applications'] })
         }
         for (const k of f.structuralKinds) {
           queryClient.invalidateQueries({ queryKey: ['resources', k] }) // list membership changed
@@ -1083,13 +1078,16 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
       }, 3000)
     }
 
-    // SLOW tier — throttle the expensive queries for status-only churn. Only
-    // updates schedule it; structural changes are fully handled by the fast tier.
-    if (!structural && slow.timer === null) {
+    // SLOW tier — throttle expensive status churn. Workload membership changes
+    // also pass through here so the Applications refetch lands after its cache TTL.
+    if ((!structural || applicationWorkload) && slow.timer === null) {
       slow.timer = window.setTimeout(() => {
         const s = slowInvalidationRef.current
         for (const k of s.updatedKinds) {
           queryClient.invalidateQueries({ queryKey: ['resources', k] })
+        }
+        if ([...s.updatedKinds].some((k) => ['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(k))) {
+          queryClient.invalidateQueries({ queryKey: ['applications'] })
         }
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }) // health reflects status updates
         slowInvalidationRef.current = { updatedKinds: new Set(), timer: null }

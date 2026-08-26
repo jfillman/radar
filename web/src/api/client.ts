@@ -4392,6 +4392,7 @@ export function useSetWorkloadImages() {
       if (result.target.resource !== variables.kind) {
         queryClient.invalidateQueries({ queryKey: ["resources", result.target.resource] });
       }
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
       queryClient.invalidateQueries({
         queryKey: [
           "workload-revisions",

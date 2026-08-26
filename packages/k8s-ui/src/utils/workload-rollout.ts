@@ -33,6 +33,9 @@ export function getWorkloadRolloutActivity(
   workloadPods?: WorkloadPodInfo[],
 ): WorkloadRolloutActivity {
   const normalized = (kind || resource?.kind || '').toLowerCase().replace(/s$/, '')
+  if (normalized === 'rollout' && !String(resource?.apiVersion || '').startsWith('argoproj.io/')) {
+    return activity('idle', false, false, 'Stable', '', 0, 0, 0, 0)
+  }
   let result: WorkloadRolloutActivity
   switch (normalized) {
     case 'deployment':
@@ -157,7 +160,13 @@ function argoRolloutActivity(resource: any): WorkloadRolloutActivity {
     (condition.type === 'Progressing' && (condition.status === 'False' || condition.reason === 'ProgressDeadlineExceeded')),
   )
   if (failedCondition || status.abort) {
-    return merge(base, 'stalled', false, 'Rollout stalled', failedCondition?.message || status.message || (status.abort ? 'The Rollout was aborted' : failedCondition?.reason) || 'The Rollout controller reported a failed revision')
+    return merge(base, 'stalled', false, 'Rollout stalled', failedCondition?.message || failedCondition?.reason || status.message || (status.abort ? 'The Rollout was aborted' : '') || 'The Rollout controller reported a failed revision')
+  }
+  const observedGeneration = typeof status.observedGeneration === 'string' && /^\d+$/.test(status.observedGeneration)
+    ? Number.parseInt(status.observedGeneration, 10)
+    : 0
+  if (observedGeneration > 0 && observedGeneration < (resource?.metadata?.generation ?? 0)) {
+    return merge(base, 'applying', true, 'Applying change', 'Waiting for the Rollout controller to observe generation')
   }
   switch (String(status.phase || '').toLowerCase()) {
     case 'degraded':

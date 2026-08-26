@@ -738,7 +738,11 @@ func workloadRevisionTargetFor(ctx context.Context, cache *k8s.ResourceCache, dy
 				if dynamicClient == nil {
 					return workloadRevisionTarget{}
 				}
-				controllerRevisions, err := dynamicClient.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "controllerrevisions"}).Namespace(namespace).List(ctx, metav1.ListOptions{LabelSelector: appsv1.ControllerRevisionHashLabelKey})
+				selector, err := metav1.LabelSelectorAsSelector(workload.Spec.Selector)
+				if err != nil {
+					return workloadRevisionTarget{}
+				}
+				controllerRevisions, err := dynamicClient.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "controllerrevisions"}).Namespace(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
 				if err != nil {
 					log.Printf("[workload-pods] DaemonSet revision attribution unavailable for %s/%s: %v", namespace, name, err)
 					return workloadRevisionTarget{}

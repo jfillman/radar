@@ -52,4 +52,45 @@ describe('getWorkloadStatus', () => {
       },
     }, 'deployments').status).toMatchObject({ text: 'Rolling out', level: 'neutral' })
   })
+
+  it('shows health instead of an inactive pause policy', () => {
+    expect(getWorkloadDisplayStatus({
+      metadata: { generation: 2 },
+      spec: { replicas: 3, paused: true },
+      status: {
+        observedGeneration: 2,
+        replicas: 3,
+        updatedReplicas: 3,
+        readyReplicas: 0,
+        availableReplicas: 0,
+      },
+    }, 'deployments').status).toMatchObject({ text: '0/3', level: 'unhealthy' })
+  })
+
+  it('keeps active rollout copy while preserving a worse health tone', () => {
+    expect(getWorkloadDisplayStatus({
+      metadata: { generation: 2 },
+      spec: { replicas: 3, paused: true },
+      status: {
+        observedGeneration: 2,
+        replicas: 3,
+        updatedReplicas: 0,
+        readyReplicas: 0,
+        availableReplicas: 0,
+      },
+    }, 'deployments').status).toMatchObject({ text: 'Rollout paused', level: 'unhealthy' })
+  })
+
+  it('shows health instead of a reached StatefulSet partition', () => {
+    expect(getWorkloadDisplayStatus({
+      metadata: { generation: 2 },
+      spec: { replicas: 5, updateStrategy: { rollingUpdate: { partition: 2 } } },
+      status: {
+        observedGeneration: 2,
+        updatedReplicas: 3,
+        readyReplicas: 4,
+        availableReplicas: 4,
+      },
+    }, 'statefulsets').status).toMatchObject({ text: '4/5', level: 'degraded' })
+  })
 })

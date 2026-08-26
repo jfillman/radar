@@ -2,6 +2,7 @@ package health
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -190,6 +191,12 @@ func argoRollout(r *unstructured.Unstructured) WorkloadRolloutActivity {
 		}
 		return base.with(RolloutStalled, false, "Rollout stalled", message)
 	}
+	if observed, found, _ := unstructured.NestedString(r.Object, "status", "observedGeneration"); found {
+		generation, err := strconv.ParseInt(observed, 10, 64)
+		if err == nil && generation > 0 && generation < r.GetGeneration() {
+			return base.with(RolloutApplying, true, "Applying change", "Waiting for the Rollout controller to observe generation")
+		}
+	}
 
 	switch strings.ToLower(phase) {
 	case "degraded", "error", "failed", "aborted":
@@ -238,12 +245,13 @@ func argoFailureMessage(r *unstructured.Unstructured) (string, bool) {
 }
 
 func argoStepDetail(r *unstructured.Unstructured, updated, desired, available int32) string {
-	if step, found, _ := unstructured.NestedInt64(r.Object, "status", "currentStepIndex"); found {
+	steps, stepsFound, _ := unstructured.NestedSlice(r.Object, "spec", "strategy", "canary", "steps")
+	if step, found, _ := unstructured.NestedInt64(r.Object, "status", "currentStepIndex"); found && stepsFound && len(steps) > 0 {
 		displayStep := step + 1
 		if displayStep < 1 {
 			displayStep = 1
 		}
-		if steps, stepsFound, _ := unstructured.NestedSlice(r.Object, "spec", "strategy", "canary", "steps"); stepsFound && len(steps) > 0 && displayStep > int64(len(steps)) {
+		if displayStep > int64(len(steps)) {
 			displayStep = int64(len(steps))
 		}
 		return fmt.Sprintf("Step %d · %d/%d updated · %d available", displayStep, updated, desired, available)

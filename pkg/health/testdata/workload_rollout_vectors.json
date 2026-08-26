@@ -410,6 +410,90 @@
         "spec": { "replicas": 2, "strategy": { "canary": {} } },
         "status": { "phase": "Progressing", "conditions": [{ "type": "Progressing", "status": "False" }] }
       }
+    },
+    {
+      "name": "argo controller has not observed image change",
+      "kind": "Rollout",
+      "phase": "applying",
+      "active": true,
+      "manual": false,
+      "label": "Applying change",
+      "detail": "Waiting for the Rollout controller to observe generation",
+      "desired": 2,
+      "updated": 2,
+      "ready": 2,
+      "available": 2,
+      "object": {
+        "apiVersion": "argoproj.io/v1alpha1",
+        "kind": "Rollout",
+        "metadata": { "generation": 5 },
+        "spec": { "replicas": 2, "strategy": { "canary": {} } },
+        "status": { "observedGeneration": "4", "phase": "Healthy", "updatedReplicas": 2, "readyReplicas": 2, "availableReplicas": 2 }
+      }
+    },
+    {
+      "name": "argo step index without declared steps is omitted",
+      "kind": "Rollout",
+      "phase": "progressing",
+      "active": true,
+      "manual": false,
+      "label": "Rolling out",
+      "detail": "1/2 updated · 2 available",
+      "desired": 2,
+      "updated": 1,
+      "ready": 2,
+      "available": 2,
+      "object": {
+        "apiVersion": "argoproj.io/v1alpha1",
+        "kind": "Rollout",
+        "spec": { "replicas": 2, "strategy": { "canary": {} } },
+        "status": { "phase": "Progressing", "currentStepIndex": 3, "updatedReplicas": 1, "readyReplicas": 2, "availableReplicas": 2 }
+      }
+    },
+    {
+      "name": "argo failed condition reason precedes status message",
+      "kind": "Rollout",
+      "phase": "stalled",
+      "active": false,
+      "manual": false,
+      "label": "Rollout stalled",
+      "detail": "ProgressDeadlineExceeded",
+      "desired": 2,
+      "updated": 1,
+      "ready": 1,
+      "available": 1,
+      "object": {
+        "apiVersion": "argoproj.io/v1alpha1",
+        "kind": "Rollout",
+        "spec": { "replicas": 2, "strategy": { "canary": {} } },
+        "status": {
+          "phase": "Progressing",
+          "message": "less specific status message",
+          "updatedReplicas": 1,
+          "readyReplicas": 1,
+          "availableReplicas": 1,
+          "conditions": [{ "type": "Progressing", "status": "False", "reason": "ProgressDeadlineExceeded" }]
+        }
+      }
+    },
+    {
+      "name": "non argo rollout kind collision is ignored",
+      "kind": "Rollout",
+      "phase": "idle",
+      "active": false,
+      "manual": false,
+      "label": "Stable",
+      "detail": "",
+      "desired": 0,
+      "updated": 0,
+      "ready": 0,
+      "available": 0,
+      "object": {
+        "apiVersion": "rollouts.kruise.io/v1beta1",
+        "kind": "Rollout",
+        "spec": { "replicas": 2 },
+        "status": { "phase": "Progressing", "updatedReplicas": 1, "readyReplicas": 1, "availableReplicas": 1 }
+      }
     }
   ]
 }

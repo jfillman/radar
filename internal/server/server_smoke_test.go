@@ -45,6 +45,20 @@ var (
 // replace the resource cache restore it from here.
 var testFakeClient *fake.Clientset
 
+func useTestResourceCache(t *testing.T, client *fake.Clientset) {
+	t.Helper()
+	t.Cleanup(func() {
+		k8s.ResetResourceCache()
+		if err := k8s.InitTestResourceCache(testFakeClient); err != nil {
+			t.Fatalf("restore package fixture cache: %v", err)
+		}
+	})
+	k8s.ResetResourceCache()
+	if err := k8s.InitTestResourceCache(client); err != nil {
+		t.Fatalf("initialize test resource cache: %v", err)
+	}
+}
+
 func TestMain(m *testing.M) {
 	// The Cloud-funnel rollout gate mints an install ID in ~/.radar on first
 	// use; redirect HOME so no test run touches the developer's real settings.

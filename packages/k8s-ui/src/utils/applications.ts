@@ -1,5 +1,5 @@
 import type { ResourceRef } from '../types/core'
-import type { WorkloadRolloutActivity } from './workload-rollout'
+import { rolloutActivityLevel, type WorkloadRolloutActivity } from './workload-rollout'
 
 // Shared model for the Applications surface — host-agnostic. The OSS single-
 // cluster view and (eventually) the Cloud fleet view both build on these types
@@ -49,11 +49,7 @@ export function rolloutSummaryForApps(apps: AppRow[]): AppRolloutSummary | null 
     return 1
   }
   const worst = entries.reduce((current, entry) => rank(entry.rollout.phase) > rank(current.rollout.phase) ? entry : current)
-  const health: AppHealth = worst.rollout.phase === 'stalled'
-    ? 'unhealthy'
-    : worst.rollout.phase === 'paused' || worst.rollout.manual
-      ? 'degraded'
-      : 'neutral'
+  const health: AppHealth = rolloutActivityLevel(worst.rollout)
   const stalled = entries.filter((entry) => entry.rollout.phase === 'stalled').length
   const label = entries.length === 1
     ? worst.rollout.label

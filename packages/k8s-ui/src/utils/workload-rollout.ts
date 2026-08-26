@@ -242,24 +242,24 @@ function mergeManual(
   return { ...base, phase, active, manual: true, label, detail }
 }
 
-export function rolloutActivityBadge(activity: WorkloadRolloutActivity): { text: string; color: string; level: 'healthy' | 'neutral' | 'degraded' | 'unhealthy' } {
+export function rolloutActivityLevel(activity: WorkloadRolloutActivity): 'healthy' | 'neutral' | 'degraded' | 'unhealthy' {
   switch (activity.phase) {
     case 'stalled':
-      return { text: activity.label, color: 'status-unhealthy', level: 'unhealthy' }
+      return 'unhealthy'
     case 'paused':
-      return { text: activity.label, color: 'status-degraded', level: 'degraded' }
+      return 'degraded'
     case 'waiting':
-      return activity.manual
-        ? { text: activity.label, color: 'status-degraded', level: 'degraded' }
-        : { text: activity.label, color: 'status-neutral', level: 'neutral' }
+      return activity.manual ? 'degraded' : 'neutral'
     case 'applying':
     case 'progressing':
-      return { text: activity.label, color: 'status-neutral', level: 'neutral' }
     case 'partition-reached':
-      return { text: activity.label, color: 'status-neutral', level: 'neutral' }
+      return 'neutral'
     default:
-      return activity.label === 'Stable'
-        ? { text: activity.label, color: 'status-healthy', level: 'healthy' }
-        : { text: activity.label, color: 'status-neutral', level: 'neutral' }
+      return activity.label === 'Stable' ? 'healthy' : 'neutral'
   }
+}
+
+export function rolloutActivityBadge(activity: WorkloadRolloutActivity): { text: string; color: string; level: 'healthy' | 'neutral' | 'degraded' | 'unhealthy' } {
+  const level = rolloutActivityLevel(activity)
+  return { text: activity.label, color: `status-${level}`, level }
 }

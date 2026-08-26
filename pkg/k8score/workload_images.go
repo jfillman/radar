@@ -23,8 +23,8 @@ var (
 )
 
 const (
-	ContainerTypeRegular = "container"
-	ContainerTypeInit    = "initContainer"
+	containerTypeRegular = "container"
+	containerTypeInit    = "initContainer"
 )
 
 type WorkloadContainerImage struct {
@@ -214,8 +214,8 @@ func inventoryContainerImages(obj *unstructured.Unstructured, templatePath []str
 		typeName string
 		field    string
 	}{
-		{typeName: ContainerTypeRegular, field: "containers"},
-		{typeName: ContainerTypeInit, field: "initContainers"},
+		{typeName: containerTypeRegular, field: "containers"},
+		{typeName: containerTypeInit, field: "initContainers"},
 	} {
 		path := append(append([]string{}, templatePath...), "spec", set.field)
 		containers, found, err := unstructured.NestedSlice(obj.Object, path...)
@@ -223,7 +223,7 @@ func inventoryContainerImages(obj *unstructured.Unstructured, templatePath []str
 			return nil, fmt.Errorf("%w: %s is malformed", ErrInvalidImageUpdate, strings.Join(path, "."))
 		}
 		if !found {
-			if set.typeName == ContainerTypeRegular {
+			if set.typeName == containerTypeRegular {
 				return nil, fmt.Errorf("%w: workload has no containers", ErrInvalidImageUpdate)
 			}
 			continue
@@ -253,7 +253,7 @@ func validateImageUpdates(updates []WorkloadImageUpdate) error {
 	}
 	seen := make(map[string]struct{}, len(updates))
 	for _, update := range updates {
-		if update.Type != ContainerTypeRegular && update.Type != ContainerTypeInit {
+		if update.Type != containerTypeRegular && update.Type != containerTypeInit {
 			return fmt.Errorf("%w: unknown container type %q", ErrInvalidImageUpdate, update.Type)
 		}
 		if update.Name == "" || update.PreviousImage == "" || update.Image == "" {
@@ -276,7 +276,7 @@ func buildImagePatch(obj *unstructured.Unstructured, resource schema.GroupResour
 	locations := make([]imageLocation, 0, len(updates))
 	for _, update := range updates {
 		field := "containers"
-		if update.Type == ContainerTypeInit {
+		if update.Type == containerTypeInit {
 			field = "initContainers"
 		}
 		path := append(append([]string{}, templatePath...), "spec", field)

@@ -30,7 +30,6 @@ import {
   Scale,
 } from 'lucide-react'
 import { clsx } from 'clsx'
-import { getWorkloadRolloutActivity, rolloutActivityBadge } from '../../utils/workload-rollout'
 import { ResourceBar } from '../ui/ResourceBar'
 import type { SelectedResource, APIResource } from '../../types'
 import { isForbiddenError } from '../../types/fetch-error'
@@ -41,7 +40,7 @@ import {
   getPodStatus,
   getPodRestarts,
   getPodProblems,
-  getWorkloadStatus,
+  getWorkloadDisplayStatus,
   getWorkloadProblems,
   workloadMatchesProblemCategory,
   getContainerSquareStates,
@@ -6774,8 +6773,7 @@ function WorkloadCell({ resource, column, kind }: { resource: any; kind: string;
 
   switch (column) {
     case 'status': {
-      const activity = getWorkloadRolloutActivity(resource, kind)
-      const statusBadge = activity.phase === 'idle' ? getWorkloadStatus(resource, kind) : rolloutActivityBadge(activity)
+      const { activity, status: statusBadge } = getWorkloadDisplayStatus(resource, kind)
       return <Tooltip content={activity.phase === 'idle' ? statusBadge.text : activity.detail || statusBadge.text}><span className={clsx('badge', statusBadge.color)}>{statusBadge.text}</span></Tooltip>
     }
     case 'ready': {
@@ -6853,8 +6851,7 @@ function DaemonSetCell({ resource, column }: { resource: any; column: string }) 
 
   switch (column) {
     case 'status': {
-      const activity = getWorkloadRolloutActivity(resource, 'daemonsets')
-      const statusBadge = activity.phase === 'idle' ? getWorkloadStatus(resource, 'daemonsets') : rolloutActivityBadge(activity)
+      const { activity, status: statusBadge } = getWorkloadDisplayStatus(resource, 'daemonsets')
       return <Tooltip content={activity.phase === 'idle' ? statusBadge.text : activity.detail || statusBadge.text}><span className={clsx('badge', statusBadge.color)}>{statusBadge.text}</span></Tooltip>
     }
     case 'desired':

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getRolloutStep, getWorkloadStatus } from './resource-utils'
+import { getRolloutStep, getWorkloadDisplayStatus, getWorkloadStatus } from './resource-utils'
 
 describe('getRolloutStep', () => {
   it('presents Argo currentStepIndex as a one-based step number', () => {
@@ -23,5 +23,33 @@ describe('getWorkloadStatus', () => {
       spec: { replicas: 1 },
       status: { readyReplicas: 2, availableReplicas: 1, updatedReplicas: 1 },
     }, 'deployments')).toMatchObject({ text: '1/1', level: 'healthy' })
+  })
+
+  it('shows health instead of Stable for an idle under-replicated workload', () => {
+    expect(getWorkloadDisplayStatus({
+      metadata: { generation: 2 },
+      spec: { replicas: 3 },
+      status: {
+        observedGeneration: 2,
+        replicas: 2,
+        updatedReplicas: 3,
+        readyReplicas: 2,
+        availableReplicas: 2,
+      },
+    }, 'deployments').status).toMatchObject({ text: '2/3', level: 'degraded' })
+  })
+
+  it('shows rollout activity while a revision is progressing', () => {
+    expect(getWorkloadDisplayStatus({
+      metadata: { generation: 2 },
+      spec: { replicas: 3 },
+      status: {
+        observedGeneration: 2,
+        replicas: 4,
+        updatedReplicas: 2,
+        readyReplicas: 3,
+        availableReplicas: 3,
+      },
+    }, 'deployments').status).toMatchObject({ text: 'Rolling out', level: 'neutral' })
   })
 })

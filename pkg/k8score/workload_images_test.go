@@ -60,10 +60,10 @@ func TestGetWorkloadImagesInventoriesRegularAndInitContainers(t *testing.T) {
 	if len(inventory.Containers) != 3 {
 		t.Fatalf("containers = %v, want 3 entries", inventory.Containers)
 	}
-	if inventory.Containers[0] != (WorkloadContainerImage{Type: ContainerTypeRegular, Name: "app", Image: "repo/app:v1"}) {
+	if inventory.Containers[0] != (WorkloadContainerImage{Type: containerTypeRegular, Name: "app", Image: "repo/app:v1"}) {
 		t.Errorf("first container = %+v", inventory.Containers[0])
 	}
-	if inventory.Containers[2].Type != ContainerTypeInit || inventory.Containers[2].Name != "migrate" {
+	if inventory.Containers[2].Type != containerTypeInit || inventory.Containers[2].Name != "migrate" {
 		t.Errorf("init container = %+v", inventory.Containers[2])
 	}
 	if inventory.Target.Group != "apps" || inventory.Target.Resource != "deployments" || inventory.Target.Name != "web" {
@@ -96,8 +96,8 @@ func TestSetWorkloadImagesBuildsOneAtomicNarrowPatch(t *testing.T) {
 	})
 
 	result, err := NewWorkloadManager(client, nil).SetWorkloadImages(context.Background(), "Deployment", "prod", "web", []WorkloadImageUpdate{
-		{Type: ContainerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2"},
-		{Type: ContainerTypeInit, Name: "migrate", PreviousImage: "repo/migrate:v1", Image: "repo/migrate:v2"},
+		{Type: containerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2"},
+		{Type: containerTypeInit, Name: "migrate", PreviousImage: "repo/migrate:v1", Image: "repo/migrate:v2"},
 	})
 	if err != nil {
 		t.Fatalf("SetWorkloadImages: %v", err)
@@ -147,7 +147,7 @@ func TestSetWorkloadImagesRejectsStalePreviousImageBeforePatching(t *testing.T) 
 	client := fakeImageClient(deployment)
 
 	_, err := NewWorkloadManager(client, nil).SetWorkloadImages(context.Background(), "deployments", "prod", "web", []WorkloadImageUpdate{{
-		Type: ContainerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v3",
+		Type: containerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v3",
 	}})
 	if !apierrors.IsConflict(err) {
 		t.Fatalf("error = %v, want Conflict", err)
@@ -194,7 +194,7 @@ func TestSetWorkloadImagesRetriesWhenContainerOrderChanges(t *testing.T) {
 	})
 
 	result, err := NewWorkloadManager(client, nil).SetWorkloadImages(context.Background(), "deployments", "prod", "web", []WorkloadImageUpdate{{
-		Type: ContainerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2",
+		Type: containerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2",
 	}})
 	if err != nil {
 		t.Fatalf("SetWorkloadImages: %v", err)
@@ -228,7 +228,7 @@ func TestSetWorkloadImagesReturnsConflictWhenImageChangesDuringPatch(t *testing.
 	})
 
 	_, err := NewWorkloadManager(client, nil).SetWorkloadImages(context.Background(), "deployments", "prod", "web", []WorkloadImageUpdate{{
-		Type: ContainerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v3",
+		Type: containerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v3",
 	}})
 	if !apierrors.IsConflict(err) {
 		t.Fatalf("error = %v, want Conflict", err)
@@ -289,7 +289,7 @@ func TestSetWorkloadImagesDetectsTerminationAfterRejectedPatch(t *testing.T) {
 			})
 
 			_, err := NewWorkloadManager(client, nil).SetWorkloadImages(context.Background(), "deployments", "prod", "web", []WorkloadImageUpdate{{
-				Type: ContainerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2",
+				Type: containerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2",
 			}})
 			if !errors.Is(err, ErrImageWorkloadTerminating) {
 				t.Fatalf("error = %v, want ErrImageWorkloadTerminating", err)
@@ -313,7 +313,7 @@ func TestSetWorkloadImagesPreservesUnrelatedInvalidErrors(t *testing.T) {
 	})
 
 	_, err := NewWorkloadManager(client, nil).SetWorkloadImages(context.Background(), "deployments", "prod", "web", []WorkloadImageUpdate{{
-		Type: ContainerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2",
+		Type: containerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2",
 	}})
 	if !apierrors.IsInvalid(err) {
 		t.Fatalf("error = %v, want original Invalid", err)
@@ -357,7 +357,7 @@ func TestSetWorkloadImagesKeepsAdmissionErrorAccurateAfterReorderRetry(t *testin
 	})
 
 	_, err := NewWorkloadManager(client, nil).SetWorkloadImages(context.Background(), "deployments", "prod", "web", []WorkloadImageUpdate{{
-		Type: ContainerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2",
+		Type: containerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2",
 	}})
 	if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "admission rejected the image") {
 		t.Fatalf("error = %v, want admission Invalid", err)
@@ -385,7 +385,7 @@ func TestSetWorkloadImagesFollowsRolloutWorkloadRef(t *testing.T) {
 	})
 
 	result, err := NewWorkloadManager(client, nil).SetWorkloadImages(context.Background(), "rollouts", "prod", "web", []WorkloadImageUpdate{{
-		Type: ContainerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2",
+		Type: containerTypeRegular, Name: "app", PreviousImage: "repo/app:v1", Image: "repo/app:v2",
 	}})
 	if err != nil {
 		t.Fatalf("SetWorkloadImages: %v", err)
@@ -502,16 +502,16 @@ func TestValidateImageUpdates(t *testing.T) {
 	}{
 		{"empty", nil},
 		{"unknown type", []WorkloadImageUpdate{{Type: "ephemeralContainer", Name: "debug", PreviousImage: "a", Image: "b"}}},
-		{"missing image", []WorkloadImageUpdate{{Type: ContainerTypeRegular, Name: "app", PreviousImage: "a"}}},
-		{"unchanged", []WorkloadImageUpdate{{Type: ContainerTypeRegular, Name: "app", PreviousImage: "a", Image: "a"}}},
+		{"missing image", []WorkloadImageUpdate{{Type: containerTypeRegular, Name: "app", PreviousImage: "a"}}},
+		{"unchanged", []WorkloadImageUpdate{{Type: containerTypeRegular, Name: "app", PreviousImage: "a", Image: "a"}}},
 		{"duplicate", []WorkloadImageUpdate{
-			{Type: ContainerTypeRegular, Name: "app", PreviousImage: "a", Image: "b"},
-			{Type: ContainerTypeRegular, Name: "app", PreviousImage: "a", Image: "c"},
+			{Type: containerTypeRegular, Name: "app", PreviousImage: "a", Image: "b"},
+			{Type: containerTypeRegular, Name: "app", PreviousImage: "a", Image: "c"},
 		}},
 		{"too many", func() []WorkloadImageUpdate {
 			updates := make([]WorkloadImageUpdate, 65)
 			for i := range updates {
-				updates[i] = WorkloadImageUpdate{Type: ContainerTypeRegular, Name: fmt.Sprintf("app-%d", i), PreviousImage: "a", Image: "b"}
+				updates[i] = WorkloadImageUpdate{Type: containerTypeRegular, Name: fmt.Sprintf("app-%d", i), PreviousImage: "a", Image: "b"}
 			}
 			return updates
 		}()},

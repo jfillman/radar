@@ -16,7 +16,7 @@ import {
   rbacResourceBadgeClass,
   rbacApiGroupBadgeClass,
 } from '../../../utils/rbac-badges'
-import { getWorkloadRolloutActivity, rolloutMayAdvanceAutomatically } from '../../../utils/workload-rollout'
+import { getWorkloadRolloutActivity } from '../../../utils/workload-rollout'
 import { useProgressiveRefresh } from '../../../hooks/useProgressiveRefresh'
 import { WorkloadRolloutNotice } from '../../workload/WorkloadRolloutNotice'
 
@@ -161,9 +161,7 @@ export function WorkloadRenderer({ kind, data, onNavigate, onViewPods, onScale, 
     ? { ...rolloutActivity, phase: 'applying' as const, active: true, label: 'Scaling workload', detail: `Waiting for the controller to apply ${scaledTo} replicas` }
     : rolloutActivity
 
-  // Request data refresh while scaling is in progress
-  const isScaling = scaledTo !== null || rolloutMayAdvanceAutomatically(rolloutActivity)
-  useProgressiveRefresh(isScaling, onRequestRefresh)
+  useProgressiveRefresh(scaledTo !== null, onRequestRefresh)
 
   useEffect(() => {
     if (isScaleBlocked) {

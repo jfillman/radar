@@ -81,6 +81,7 @@ import {
 } from "../../utils/applications";
 import { PaneLoader } from "../ui/PaneLoader";
 import { midTruncate } from "../../utils/format";
+import { rolloutActivityLevel } from "../../utils/workload-rollout";
 import { VersionTooltip, AppIdentityTooltip } from "./AppTooltips";
 import {
   ProvenanceBadge,
@@ -2043,12 +2044,7 @@ function workloadRuntimeStatus(workload: AppWorkload): {
   health: AppHealth;
 } {
   if (workload.rollout && workload.rollout.phase !== 'idle') {
-    const health: AppHealth = workload.rollout.phase === 'stalled'
-      ? 'unhealthy'
-      : workload.rollout.phase === 'paused' || workload.rollout.manual
-        ? 'degraded'
-        : 'neutral'
-    return { label: workload.rollout.label, health }
+    return { label: workload.rollout.label, health: rolloutActivityLevel(workload.rollout) }
   }
   const batch = workload.batch;
   if (!batch) {

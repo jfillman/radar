@@ -68,6 +68,7 @@ import {
   getIngressAddress,
   getIngressHosts,
   getServiceExternalIP,
+  getWorkloadDisplayStatus,
   getWorkloadStatus,
 } from '../resources/resource-utils'
 import { ServicePortCards, type ServicePortRenderProps } from '../resources/renderers/ServiceRenderer'
@@ -699,10 +700,11 @@ export function WorkloadView({
     },
   ], [active, expanded, onBack, onClose, switchView]))
 
-  const rolloutActivity = resource && isRolloutStatusKind(apiKind)
-    ? getWorkloadRolloutActivity(resource, apiKind, workloadPods)
+  const rolloutDisplay = resource && isRolloutStatusKind(apiKind)
+    ? getWorkloadDisplayStatus(resource, apiKind, workloadPods)
     : null
-  const status = getWorkloadHeaderStatus(apiKind, resource, rolloutActivity)
+  const rolloutActivity = rolloutDisplay?.activity ?? null
+  const status = rolloutDisplay?.status ?? getResourceStatus(apiKind, resource)
   const rolloutMayAutoAdvance = rolloutActivity ? rolloutMayAdvanceAutomatically(rolloutActivity) : false
   useEffect(() => {
     if (!recentImageSave) return
@@ -1219,16 +1221,6 @@ export function WorkloadView({
     </DetailShell>
     </OperationalIssuesShownContext.Provider>
   )
-}
-
-export function getWorkloadHeaderStatus(
-  apiKind: string,
-  resource: any,
-  rolloutActivity: WorkloadRolloutActivity | null,
-) {
-  return rolloutActivity && rolloutActivity.phase !== 'idle'
-    ? rolloutActivityBadge(rolloutActivity)
-    : getResourceStatus(apiKind, resource)
 }
 
 // ============================================================================

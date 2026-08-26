@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react'
 
+const FAST_REFRESH_INTERVAL = 2000
+const SLOW_REFRESH_INTERVAL = 15000
+const FAST_REFRESH_DURATION = 120000
+
 export function useProgressiveRefresh(
   enabled: boolean,
   refresh?: () => void | Promise<unknown>,
-  fastInterval = 2000,
-  slowInterval = 15000,
-  fastFor = 120000,
 ) {
   const refreshRef = useRef(refresh)
   refreshRef.current = refresh
@@ -17,7 +18,7 @@ export function useProgressiveRefresh(
     let cancelled = false
     let timeout: number | undefined
     const schedule = () => {
-      const delay = Date.now() - startedAt < fastFor ? fastInterval : slowInterval
+      const delay = Date.now() - startedAt < FAST_REFRESH_DURATION ? FAST_REFRESH_INTERVAL : SLOW_REFRESH_INTERVAL
       timeout = window.setTimeout(() => {
         void Promise.resolve()
           .then(() => refreshRef.current?.())
@@ -32,5 +33,5 @@ export function useProgressiveRefresh(
       cancelled = true
       if (timeout !== undefined) window.clearTimeout(timeout)
     }
-  }, [enabled, fastFor, fastInterval, hasRefresh, slowInterval])
+  }, [enabled, hasRefresh])
 }

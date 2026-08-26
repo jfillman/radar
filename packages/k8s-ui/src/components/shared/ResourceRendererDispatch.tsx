@@ -1,8 +1,8 @@
 import { clsx } from 'clsx'
 import { SEVERITY_BADGE } from '../../utils/badge-colors'
-import { getWorkloadRolloutActivity, rolloutActivityBadge } from '../../utils/workload-rollout'
 import {
   getPodStatus,
+  getWorkloadDisplayStatus,
   getWorkloadStatus,
   getJobStatus,
   getCronJobStatus,
@@ -994,8 +994,7 @@ export function getResourceStatus(kind: string, data: any): { text: string; colo
 
   if (k === 'pods') return getPodStatus(data)
   if (['deployments', 'statefulsets', 'daemonsets'].includes(k)) {
-    const activity = getWorkloadRolloutActivity(data, k)
-    return activity.phase === 'idle' ? getWorkloadStatus(data, k) : rolloutActivityBadge(activity)
+    return getWorkloadDisplayStatus(data, k).status
   }
   if (k === 'replicasets') return getWorkloadStatus(data, k)
   if (k === 'services') {

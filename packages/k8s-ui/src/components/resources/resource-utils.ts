@@ -2,7 +2,8 @@
 
 import { formatCPUString, formatMemoryString, formatBytes } from '../../utils/format'
 import { pluralize } from '../../utils/pluralize'
-import { getArgoRolloutStepNumber, getWorkloadRolloutActivity, rolloutActivityBadge } from '../../utils/workload-rollout'
+import type { WorkloadPodInfo } from '../../types/core'
+import { getArgoRolloutStepNumber, getWorkloadRolloutActivity, rolloutActivityBadge, type WorkloadRolloutActivity } from '../../utils/workload-rollout'
 
 // Import functions from sub-modules used internally by getCellFilterValue
 import { getCertificateStatus, getCertificateRequestStatus, getClusterIssuerStatus, getClusterIssuerType, getOrderState, getChallengeState, getChallengeType } from './resource-utils-certmanager'
@@ -835,6 +836,19 @@ export function getWorkloadStatus(resource: any, kind: string): StatusBadge {
     return { text: `${ready}/${desired}`, color: healthColors.degraded, level: 'degraded' }
   }
   return { text: `${ready}/${desired}`, color: healthColors.unhealthy, level: 'unhealthy' }
+}
+
+export function getWorkloadDisplayStatus(
+  resource: any,
+  kind: string,
+  workloadPods?: WorkloadPodInfo[],
+): { activity: WorkloadRolloutActivity; status: StatusBadge } {
+  const normalizedKind = kind.toLowerCase().replace(/s$/, '')
+  const activity = getWorkloadRolloutActivity(resource, normalizedKind, workloadPods)
+  const status = activity.phase === 'idle' && normalizedKind !== 'rollout'
+    ? getWorkloadStatus(resource, `${normalizedKind}s`)
+    : rolloutActivityBadge(activity)
+  return { activity, status }
 }
 
 /** Detect problems for Deployments, StatefulSets, DaemonSets. Parallel to getPodProblems. */
@@ -2124,11 +2138,14 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
     case 'status':
       if (kindLower === 'pods') return getPodStatus(resource).text
       if (['deployments', 'statefulsets', 'daemonsets', 'replicasets'].includes(kindLower)) {
-        if (kindLower !== 'replicasets') {
-          const activity = getWorkloadRolloutActivity(resource, kindLower)
-          if (activity.phase !== 'idle') return activity.label
+        let status: StatusBadge
+        if (kindLower === 'replicasets') {
+          status = getWorkloadStatus(resource, kindLower)
+        } else {
+          const display = getWorkloadDisplayStatus(resource, kindLower)
+          if (display.activity.phase !== 'idle') return display.status.text
+          status = display.status
         }
-        const status = getWorkloadStatus(resource, kindLower)
         if (status.text === 'Scaled to 0') return status.text
         return {
           healthy: 'Healthy',

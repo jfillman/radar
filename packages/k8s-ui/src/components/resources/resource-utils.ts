@@ -3,7 +3,7 @@
 import { formatCPUString, formatMemoryString, formatBytes } from '../../utils/format'
 import { pluralize } from '../../utils/pluralize'
 import type { WorkloadPodInfo } from '../../types/core'
-import { getArgoRolloutStepNumber, getWorkloadRolloutActivity, isArgoRolloutResource, isRolloutActivityVisible, rolloutActivityBadge, type WorkloadRolloutActivity } from '../../utils/workload-rollout'
+import { getArgoRolloutStepNumber, getObservedGeneration, getWorkloadRolloutActivity, isArgoRolloutResource, isRolloutActivityVisible, rolloutActivityBadge, type WorkloadRolloutActivity } from '../../utils/workload-rollout'
 
 // Import functions from sub-modules used internally by getCellFilterValue
 import { getCertificateStatus, getCertificateRequestStatus, getClusterIssuerStatus, getClusterIssuerType, getOrderState, getChallengeState, getChallengeType } from './resource-utils-certmanager'
@@ -764,8 +764,8 @@ export function getContainerSquareStates(pod: any): ContainerSquareState[] {
  */
 function isConverging(resource: any): boolean {
   const generation = resource?.metadata?.generation
-  const observed = resource?.status?.observedGeneration
-  return typeof generation === 'number' && typeof observed === 'number' && observed > 0 && observed < generation
+  const observed = getObservedGeneration(resource)
+  return typeof generation === 'number' && observed > 0 && observed < generation
 }
 
 /** Whether the pod was created by a batch Job. The owner's API group is checked
@@ -849,7 +849,7 @@ export function getWorkloadDisplayStatus(
     return { activity, status: getRolloutStatus(resource) }
   }
   const healthStatus = getWorkloadStatus(resource, `${normalizedKind}s`)
-  if (!activity.active && activity.phase !== 'stalled') {
+  if (!isRolloutActivityVisible(activity)) {
     return { activity, status: healthStatus }
   }
   const status: StatusBadge = rolloutActivityBadge(activity)
@@ -2170,7 +2170,7 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
       return resource.spec?.type || resource.type || ''
     case 'status':
       if (kindLower === 'pods') return getPodStatus(resource).text
-      if (['deployments', 'statefulsets', 'daemonsets', 'replicasets'].includes(kindLower)) {
+      if (['deployments', 'statefulsets', 'daemonsets', 'replicasets', 'rollouts'].includes(kindLower)) {
         let status: StatusBadge
         if (kindLower === 'replicasets') {
           status = getWorkloadStatus(resource, kindLower)
@@ -2189,7 +2189,6 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
       if (kindLower === 'clusterissuers' || kindLower === 'issuers') return getClusterIssuerStatus(resource).text
       if (kindLower === 'persistentvolumeclaims') return getPVCStatus(resource).text
       if (kindLower === 'persistentvolumes') return getPVStatus(resource).text
-      if (kindLower === 'rollouts') return getRolloutStatus(resource).text
       if (kindLower === 'analysisruns') return getAnalysisRunStatus(resource).text
       if (kindLower === 'workflows') return getWorkflowStatus(resource).text
       if (kindLower === 'cronworkflows') return getCronWorkflowStatus(resource).text

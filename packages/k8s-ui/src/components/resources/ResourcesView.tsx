@@ -81,7 +81,6 @@ import {
   getPVCStatus,
   getPVCCapacity,
   getPVCAccessModes,
-  getRolloutStatus,
   getAnalysisRunStatus,
   summarizeAnalysisMetrics,
   getRolloutStrategy,
@@ -6772,17 +6771,20 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
   }
 }
 
+function WorkloadStatusCell({ resource, kind }: { resource: any; kind: string }) {
+  const { activity, status } = getWorkloadDisplayStatus(resource, kind)
+  const rolloutVisible = isRolloutActivityVisible(activity)
+  const label = rolloutVisible ? status.text : workloadStatusLabel(status)
+  return <Tooltip content={rolloutVisible ? activity.detail || status.text : status.text}><span className={clsx('badge', status.color)}>{label}</span></Tooltip>
+}
+
 function WorkloadCell({ resource, column, kind }: { resource: any; kind: string; column: string }) {
   const status = resource.status || {}
   const spec = resource.spec || {}
 
   switch (column) {
-    case 'status': {
-      const { activity, status: statusBadge } = getWorkloadDisplayStatus(resource, kind)
-      const rolloutVisible = isRolloutActivityVisible(activity)
-      const label = rolloutVisible ? statusBadge.text : workloadStatusLabel(statusBadge)
-      return <Tooltip content={rolloutVisible ? activity.detail || statusBadge.text : statusBadge.text}><span className={clsx('badge', statusBadge.color)}>{label}</span></Tooltip>
-    }
+    case 'status':
+      return <WorkloadStatusCell resource={resource} kind={kind} />
     case 'ready': {
       const desired = spec.replicas ?? 1
       const ready = status.readyReplicas || 0
@@ -6857,12 +6859,8 @@ function DaemonSetCell({ resource, column }: { resource: any; column: string }) 
   const status = resource.status || {}
 
   switch (column) {
-    case 'status': {
-      const { activity, status: statusBadge } = getWorkloadDisplayStatus(resource, 'daemonsets')
-      const rolloutVisible = isRolloutActivityVisible(activity)
-      const label = rolloutVisible ? statusBadge.text : workloadStatusLabel(statusBadge)
-      return <Tooltip content={rolloutVisible ? activity.detail || statusBadge.text : statusBadge.text}><span className={clsx('badge', statusBadge.color)}>{label}</span></Tooltip>
-    }
+    case 'status':
+      return <WorkloadStatusCell resource={resource} kind="daemonsets" />
     case 'desired':
       return <span className="text-sm text-theme-text-secondary">{status.desiredNumberScheduled || 0}</span>
     case 'ready': {
@@ -7592,14 +7590,8 @@ function PVCCell({ resource, column }: { resource: any; column: string }) {
 
 function RolloutCell({ resource, column }: { resource: any; column: string }) {
   switch (column) {
-    case 'status': {
-      const status = getRolloutStatus(resource)
-      return (
-        <span className={clsx('badge', status.color)}>
-          {status.text}
-        </span>
-      )
-    }
+    case 'status':
+      return <WorkloadStatusCell resource={resource} kind="rollouts" />
     case 'ready': {
       const ready = getRolloutReady(resource)
       const parts = ready.split('/')

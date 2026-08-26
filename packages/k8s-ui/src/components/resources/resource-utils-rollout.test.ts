@@ -82,7 +82,7 @@ describe('getWorkloadStatus', () => {
   })
 
   it('preserves unhealthy serving capacity while an Argo Rollout progresses', () => {
-    const display = getWorkloadDisplayStatus({
+    const resource = {
       apiVersion: 'argoproj.io/v1alpha1',
       metadata: { generation: 2 },
       spec: { replicas: 3 },
@@ -93,9 +93,47 @@ describe('getWorkloadStatus', () => {
         readyReplicas: 0,
         availableReplicas: 0,
       },
-    }, 'rollouts')
+    }
+    const display = getWorkloadDisplayStatus(resource, 'rollouts')
 
     expect(display.status).toMatchObject({ text: 'Rolling out', level: 'degraded' })
+    expect(getCellFilterValue(resource, 'status', 'rollouts')).toBe('Rolling out')
+  })
+
+  it('keeps Argo generation lag informational when observedGeneration is a string', () => {
+    const resource = {
+      apiVersion: 'argoproj.io/v1alpha1',
+      metadata: { generation: 3 },
+      spec: { replicas: 3 },
+      status: {
+        observedGeneration: '2',
+        phase: 'Healthy',
+        updatedReplicas: 0,
+        readyReplicas: 0,
+        availableReplicas: 0,
+      },
+    }
+
+    expect(getWorkloadDisplayStatus(resource, 'rollouts').status).toMatchObject({ text: 'Applying change', level: 'neutral' })
+    expect(getCellFilterValue(resource, 'status', 'rollouts')).toBe('Applying change')
+  })
+
+  it('uses semantic health for an idle Argo Rollout', () => {
+    const resource = {
+      apiVersion: 'argoproj.io/v1alpha1',
+      metadata: { generation: 2 },
+      spec: { replicas: 3 },
+      status: {
+        observedGeneration: '2',
+        phase: 'Healthy',
+        updatedReplicas: 3,
+        readyReplicas: 3,
+        availableReplicas: 3,
+      },
+    }
+
+    expect(getWorkloadDisplayStatus(resource, 'rollouts').status).toMatchObject({ text: '3/3', level: 'healthy' })
+    expect(getCellFilterValue(resource, 'status', 'rollouts')).toBe('Healthy')
   })
 
   it('does not fabricate Argo rollout state for a colliding CRD', () => {

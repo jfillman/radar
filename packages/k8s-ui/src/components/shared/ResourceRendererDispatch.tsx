@@ -11,7 +11,6 @@ import {
   getServiceStatus,
   getNodeStatus,
   getPVCStatus,
-  getRolloutStatus,
   getAnalysisRunStatus,
   getWorkflowStatus,
   getCronWorkflowStatus,
@@ -995,7 +994,7 @@ export function getResourceStatus(kind: string, data: any): { text: string; colo
   const k = kind.toLowerCase()
 
   if (k === 'pods') return getPodStatus(data)
-  if (['deployments', 'statefulsets', 'daemonsets'].includes(k)) {
+  if (['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(k)) {
     return getWorkloadDisplayStatus(data, k).status
   }
   if (k === 'replicasets') return getWorkloadStatus(data, k)
@@ -1021,7 +1020,6 @@ export function getResourceStatus(kind: string, data: any): { text: string; colo
   if (k === 'hpas' || k === 'horizontalpodautoscalers') return getHPAStatus(data)
   if (k === 'nodes') return getNodeStatus(data)
   if (k === 'persistentvolumeclaims') return getPVCStatus(data)
-  if (k === 'rollouts') return getRolloutStatus(data)
   if (k === 'analysisruns') return getAnalysisRunStatus(data)
   if (k === 'workflows') return getWorkflowStatus(data)
   if (k === 'cronworkflows') return getCronWorkflowStatus(data)

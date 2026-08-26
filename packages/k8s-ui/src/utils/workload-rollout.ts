@@ -35,6 +35,14 @@ export function isRolloutActivityVisible(activity: WorkloadRolloutActivity): boo
   return activity.active || activity.phase === 'stalled'
 }
 
+export function getObservedGeneration(resource: any): number {
+  const observed = resource?.status?.observedGeneration
+  if (typeof observed === 'number' && Number.isFinite(observed)) return observed
+  return typeof observed === 'string' && /^\d+$/.test(observed)
+    ? Number.parseInt(observed, 10)
+    : 0
+}
+
 export function getWorkloadRolloutActivity(
   resource: any,
   kind?: string,
@@ -165,9 +173,7 @@ function argoRolloutActivity(resource: any): WorkloadRolloutActivity {
   const available = status.availableReplicas ?? 0
   const base = activity('idle', false, false, 'Stable', '', desired, updated, ready, available)
   const detail = argoDetail(resource, updated, desired, available)
-  const observedGeneration = typeof status.observedGeneration === 'string' && /^\d+$/.test(status.observedGeneration)
-    ? Number.parseInt(status.observedGeneration, 10)
-    : 0
+  const observedGeneration = getObservedGeneration(resource)
   if (observedGeneration > 0 && observedGeneration < (resource?.metadata?.generation ?? 0)) {
     return merge(base, 'applying', true, 'Applying change', 'Waiting for the Rollout controller to observe generation')
   }

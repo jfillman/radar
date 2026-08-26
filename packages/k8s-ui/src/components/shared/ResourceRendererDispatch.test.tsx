@@ -218,6 +218,23 @@ describe('getResourceStatus — workload rollout activity', () => {
     }
     expect(getResourceStatus('rollouts', rollout)).toMatchObject({ text: 'Unknown', level: 'unknown' })
   })
+
+  it('uses merged rollout and serving health for Argo Rollouts', () => {
+    const rollout = {
+      apiVersion: 'argoproj.io/v1alpha1',
+      metadata: { generation: 2 },
+      spec: { replicas: 3 },
+      status: {
+        observedGeneration: '2',
+        phase: 'Progressing',
+        updatedReplicas: 1,
+        readyReplicas: 0,
+        availableReplicas: 0,
+      },
+    }
+
+    expect(getResourceStatus('rollouts', rollout)).toMatchObject({ text: 'Rolling out', level: 'degraded' })
+  })
 })
 
 describe('Rollout kind collision', () => {

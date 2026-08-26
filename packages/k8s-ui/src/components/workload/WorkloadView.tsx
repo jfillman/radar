@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback, type ComponentType, type ReactNode } from 'react'
 import { flushSync } from 'react-dom'
 import { useRefreshAnimation } from '../../hooks/useRefreshAnimation'
+import { useProgressiveRefresh } from '../../hooks/useProgressiveRefresh'
 import { startViewTransitionSafe } from '../../utils/view-transition'
 import { FetchResult } from '../ui/FetchResult'
 import { PaneLoader } from '../ui/PaneLoader'
@@ -67,8 +68,11 @@ import {
   getIngressAddress,
   getIngressHosts,
   getServiceExternalIP,
+  getWorkloadStatus,
 } from '../resources/resource-utils'
 import { ServicePortCards, type ServicePortRenderProps } from '../resources/renderers/ServiceRenderer'
+import { getWorkloadRolloutActivity, rolloutActivityBadge, rolloutMayAdvanceAutomatically, type WorkloadRolloutActivity } from '../../utils/workload-rollout'
+import { WorkloadRolloutNotice } from './WorkloadRolloutNotice'
 
 export type WorkloadTabType = 'overview' | 'topology' | 'timeline' | 'logs' | 'metrics' | 'reachability' | 'cost' | 'yaml'
 type TabType = WorkloadTabType
@@ -465,6 +469,23 @@ export function WorkloadView({
   const [initialContainer, setInitialContainer] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
   const [saveSuccess, setSaveSuccess] = useState(false)
+  const [recentImageSave, setRecentImageSave] = useState(false)
+  const sawImageRollout = useRef(false)
+
+  const effectiveActionsBarProps = useMemo(() => {
+    const onSetImages = actionsBarProps?.onSetImages as ((params: unknown) => Promise<unknown>) | undefined
+    if (!onSetImages) return actionsBarProps
+    return {
+      ...actionsBarProps,
+      onSetImages: async (params: unknown) => {
+        const result = await onSetImages(params)
+        sawImageRollout.current = false
+        setRecentImageSave(true)
+        refetchProp?.()
+        return result
+      },
+    }
+  }, [actionsBarProps, refetchProp])
 
   // Refresh animation
   const [refetch, isRefreshAnimating, refreshPhase] = useRefreshAnimation(refetchProp ?? (() => {}))
@@ -678,7 +699,25 @@ export function WorkloadView({
     },
   ], [active, expanded, onBack, onClose, switchView]))
 
-  const status = getResourceStatus(apiKind, resource)
+  const rolloutActivity = resource && isRolloutStatusKind(apiKind)
+    ? getWorkloadRolloutActivity(resource, apiKind, workloadPods)
+    : null
+  const status = rolloutActivity
+    ? rolloutActivityBadge(rolloutActivity)
+    : getResourceStatus(apiKind, resource)
+  const rolloutMayAutoAdvance = rolloutActivity ? rolloutMayAdvanceAutomatically(rolloutActivity) : false
+  useEffect(() => {
+    if (!recentImageSave) return
+    if (rolloutActivity?.phase !== 'idle') sawImageRollout.current = true
+    if (sawImageRollout.current && rolloutActivity?.phase === 'idle') {
+      setRecentImageSave(false)
+      sawImageRollout.current = false
+      return
+    }
+    const timeout = window.setTimeout(() => setRecentImageSave(false), 15000)
+    return () => window.clearTimeout(timeout)
+  }, [recentImageSave, rolloutActivity?.phase])
+  useProgressiveRefresh(rolloutMayAutoAdvance || recentImageSave, refetchProp)
   const showOwnershipHeading = kind === 'Pod' && Boolean(ownershipContext)
   const headerImage = metadata.find(m => m.label === 'Image')?.value
 
@@ -831,7 +870,7 @@ export function WorkloadView({
           </div>
 
           {/* Actions bar */}
-          <ResourceActionsBar resource={selectedResource} data={resource} onClose={onClose} showYaml={showYaml} onToggleYaml={() => switchView(!showYaml)} {...actionsBarProps} />
+          <ResourceActionsBar resource={selectedResource} data={resource} onClose={onClose} showYaml={showYaml} onToggleYaml={() => switchView(!showYaml)} {...effectiveActionsBarProps} />
         </div>
 
         {/* Success animation overlay */}
@@ -875,6 +914,7 @@ export function WorkloadView({
                 certificateInfo={certificateInfo}
                 hpaDiagnosis={hpaDiagnosis}
                 scalerDiagnostics={scalerDiagnostics}
+                workloadPods={workloadPods}
                 onCopy={copyToClipboard}
                 copied={copied}
                 onNavigate={onNavigateToResource ? (ref) => onNavigateToResource(refToSelectedResource(ref)) : undefined}
@@ -1010,10 +1050,17 @@ export function WorkloadView({
       activeTab={effectiveTab}
       onTabChange={handleSetTab}
       scopeControls={scopeControls}
-      tabStripEnd={<ResourceActionsBar resource={selectedResource} data={resource} hideLogs {...actionsBarProps} />}
+      tabStripEnd={<ResourceActionsBar resource={selectedResource} data={resource} hideLogs {...effectiveActionsBarProps} />}
       overlay={saveSuccess ? <SaveSuccessAnimation /> : null}
       compactHeader={compactHeader}
     >
+      <div className="flex h-full min-h-0 flex-col">
+        {effectiveTab !== 'overview' && rolloutActivity && (rolloutActivity.phase !== 'idle' || recentImageSave) && (
+          <div className="shrink-0 px-4 pt-4">
+            <WorkloadRolloutNotice activity={rolloutActivity} recentImageSave={recentImageSave} />
+          </div>
+        )}
+        <div className="min-h-0 flex-1">
         {effectiveTab === 'overview' && expandedOverview ? (
           <div className="h-full min-h-0">
             {hasOperationalIssues && renderOverviewLead && (
@@ -1059,6 +1106,7 @@ export function WorkloadView({
               introContent={overviewIntro}
               leadContent={hasOperationalIssues && renderOverviewLead ? renderOverviewLead({ kind, namespace, name }) : undefined}
               onEvaluateCapacity={onEvaluateCapacity}
+              recentImageSave={recentImageSave}
             />
         )}
         {effectiveTab === 'topology' && (
@@ -1168,6 +1216,8 @@ export function WorkloadView({
             </div>
           </div>
         )}
+        </div>
+      </div>
     </DetailShell>
     </OperationalIssuesShownContext.Provider>
   )
@@ -1533,6 +1583,7 @@ function InfoTab({
   introContent,
   leadContent,
   onEvaluateCapacity,
+  recentImageSave,
 }: {
   resource: any
   selectedResource: SelectedResource
@@ -1568,6 +1619,7 @@ function InfoTab({
   extraContent?: ReactNode
   introContent?: ReactNode
   leadContent?: ReactNode
+  recentImageSave?: boolean
 }) {
   if (!resource) {
     return <FetchResult loading={isLoading} error={error} className="h-full" />
@@ -1655,6 +1707,7 @@ function InfoTab({
       introContent={introContent}
       leadContent={leadContent}
       onEvaluateCapacity={onEvaluateCapacity}
+      recentImageSave={recentImageSave}
     />
   )
 }
@@ -1673,10 +1726,15 @@ const LOGS_TAB_WITHOUT_PODS_KINDS = new Set([
   'scaledjobs',
 ])
 const RUNTIME_WORKLOAD_OVERVIEW_KINDS = new Set(['deployments', 'statefulsets', 'daemonsets', 'jobs', 'cronjobs'])
+const ROLLOUT_STATUS_KINDS = new Set(['deployments', 'statefulsets', 'daemonsets', 'rollouts'])
 type RuntimeOverviewShape = 'replicated' | 'job' | 'cronjob'
 
 function isRuntimeWorkloadOverviewKind(kind: string) {
   return RUNTIME_WORKLOAD_OVERVIEW_KINDS.has(kindToPlural(kind).toLowerCase())
+}
+
+function isRolloutStatusKind(kind: string) {
+  return ROLLOUT_STATUS_KINDS.has(kindToPlural(kind).toLowerCase())
 }
 
 function runtimeOverviewShape(kind: string): RuntimeOverviewShape {
@@ -1711,6 +1769,7 @@ function WorkloadOverviewTab({
   introContent,
   leadContent,
   onEvaluateCapacity,
+  recentImageSave,
 }: {
   resource: any
   selectedResource: SelectedResource
@@ -1736,6 +1795,7 @@ function WorkloadOverviewTab({
   extraContent?: ReactNode
   introContent?: ReactNode
   leadContent?: ReactNode
+  recentImageSave?: boolean
 }) {
   const apiKind = kindToPlural(selectedResource.kind)
   const resourceKind = resource?.kind || displayKindName(apiKind, resource?.kind)
@@ -1758,7 +1818,7 @@ function WorkloadOverviewTab({
         : 'Related resources'
 
   if (overviewShape === 'replicated') {
-    const state = getReplicatedWorkloadState(resource, apiKind)
+    const state = getReplicatedWorkloadState(resource, apiKind, workloadPods)
     const serviceAccountName = getPodTemplateSpec(resource, apiKind)?.serviceAccountName || 'default'
     return (
       <div className="h-full overflow-auto bg-theme-base">
@@ -1771,6 +1831,7 @@ function WorkloadOverviewTab({
             readiness={readiness}
             podSummary={podSummary}
             servingSummary={showServingPath ? buildServingStripSummary(servingRelationshipGroups, servingResources) : undefined}
+            recentImageSave={recentImageSave}
           />
 
           {onEvaluateCapacity && (
@@ -1989,9 +2050,10 @@ interface ReplicatedWorkloadState {
   label: string
   detail: string
   badgeClass: string
-  level: 'healthy' | 'neutral' | 'degraded' | 'unhealthy' | 'unknown'
+  level: 'healthy' | 'neutral' | 'degraded' | 'alert' | 'unhealthy' | 'unknown'
   healthy: boolean
   needsAttention: boolean
+  rollout: WorkloadRolloutActivity
 }
 
 function WorkloadStatusStrip({
@@ -1999,14 +2061,21 @@ function WorkloadStatusStrip({
   readiness,
   podSummary,
   servingSummary,
+  recentImageSave,
 }: {
   state: ReplicatedWorkloadState
   readiness: ReadinessSummary
   podSummary: ReturnType<typeof getPodSummary>
   servingSummary?: string
+  recentImageSave?: boolean
 }) {
   const servingMode = Boolean(servingSummary)
-  const stateDetail = servingMode && state.healthy ? 'runtime health' : state.detail
+  const baseStateDetail = servingMode && state.healthy ? 'runtime health' : state.detail
+  const stateDetail = recentImageSave
+    ? state.rollout.phase === 'idle'
+      ? 'Image saved · waiting for controller status'
+      : `Image saved · ${baseStateDetail}`
+    : baseStateDetail
   const podItem = servingMode && typeof podSummary.total === 'number'
     ? {
         label: 'Pods',
@@ -2040,50 +2109,21 @@ function WorkloadStatusStrip({
   )
 }
 
-function getReplicatedWorkloadState(resource: any, apiKind: string): ReplicatedWorkloadState {
-  const status = resource?.status || {}
-  const spec = resource?.spec || {}
-  const metadata = resource?.metadata || {}
-  const k = apiKind.toLowerCase()
-  const generation = metadata.generation
-  const observedGeneration = status.observedGeneration
-  const controllerBehind =
-    typeof generation === 'number' &&
-    typeof observedGeneration === 'number' &&
-    observedGeneration < generation
-
-  if (k === 'daemonsets') {
-    const desired = status.desiredNumberScheduled ?? 0
-    const ready = status.numberReady ?? 0
-    const updated = status.updatedNumberScheduled ?? 0
-    const unavailable = status.numberUnavailable ?? Math.max(0, desired - ready)
-    if (desired === 0) return stateSummary('No targets', 'selector matches no nodes', 'status-neutral', 'neutral')
-    if (controllerBehind) return stateSummary('Applying', 'controller has not observed latest spec', 'status-neutral', 'neutral')
-    if (updated < desired) return stateSummary('Rolling out', `${updated}/${desired} updated`, 'status-neutral', 'neutral')
-    if (ready === desired && unavailable === 0) return stateSummary('Healthy', `${ready}/${desired} ready`, 'status-healthy', 'healthy')
-    if (ready > 0) return stateSummary('Degraded', `${ready}/${desired} ready`, 'status-degraded', 'degraded')
-    return stateSummary('Unhealthy', 'no scheduled pods are ready', 'status-unhealthy', 'unhealthy')
+function getReplicatedWorkloadState(resource: any, apiKind: string, workloadPods?: WorkloadPodInfo[]): ReplicatedWorkloadState {
+  const rollout = getWorkloadRolloutActivity(resource, apiKind, workloadPods)
+  if (rollout.phase !== 'idle' || rollout.label !== 'Stable') {
+    const badge = rolloutActivityBadge(rollout)
+    return stateSummary(rollout.label, rollout.detail || '', badge.color, badge.level, rollout)
   }
-
-  const desired = spec.replicas ?? status.replicas ?? 0
-  const ready = status.readyReplicas ?? 0
-  const updated = status.updatedReplicas ?? 0
-  const available = status.availableReplicas ?? ready
-  const unavailable = status.unavailableReplicas ?? Math.max(0, desired - available)
-  if (desired === 0) return stateSummary('Scaled to zero', 'no replicas requested', 'status-neutral', 'neutral')
-  if (k === 'deployments' && spec.paused) return stateSummary('Paused', `${ready}/${desired} ready`, 'status-neutral', 'neutral')
-  const progressCondition = Array.isArray(status.conditions)
-    ? status.conditions.find((condition: any) => condition.type === 'Progressing')
-    : undefined
-  if (progressCondition?.status === 'False' || progressCondition?.reason === 'ProgressDeadlineExceeded') {
-    return stateSummary('Stalled', progressCondition.message || `${ready}/${desired} ready`, 'status-unhealthy', 'unhealthy')
-  }
-  if (controllerBehind) return stateSummary('Applying', 'controller has not observed latest spec', 'status-neutral', 'neutral')
-  const statefulSetRolling = k === 'statefulsets' && status.updateRevision && status.currentRevision && status.updateRevision !== status.currentRevision
-  if (updated < desired || statefulSetRolling) return stateSummary('Rolling out', `${updated}/${desired} updated`, 'status-neutral', 'neutral')
-  if (ready === desired && available === desired && unavailable === 0) return stateSummary('Healthy', `${ready}/${desired} ready`, 'status-healthy', 'healthy')
-  if (ready > 0) return stateSummary('Degraded', `${ready}/${desired} ready`, 'status-degraded', 'degraded')
-  return stateSummary('Unhealthy', 'no replicas are ready', 'status-unhealthy', 'unhealthy')
+  const status = getWorkloadStatus(resource, apiKind.toLowerCase())
+  const label = status.level === 'healthy'
+    ? 'Healthy'
+    : status.level === 'degraded'
+      ? 'Degraded'
+      : status.level === 'unhealthy'
+        ? 'Unhealthy'
+        : 'Stable'
+  return stateSummary(label, rollout.detail || status.text, status.color, status.level, rollout)
 }
 
 function stateSummary(
@@ -2091,6 +2131,7 @@ function stateSummary(
   detail: string,
   badgeClass: string,
   level: ReplicatedWorkloadState['level'],
+  rollout: WorkloadRolloutActivity,
 ): ReplicatedWorkloadState {
   return {
     label,
@@ -2098,7 +2139,8 @@ function stateSummary(
     badgeClass,
     level,
     healthy: level === 'healthy',
-    needsAttention: level === 'degraded' || level === 'unhealthy',
+    needsAttention: level === 'degraded' || level === 'alert' || level === 'unhealthy',
+    rollout,
   }
 }
 
@@ -2247,16 +2289,16 @@ function getReadinessSummary(resource: any, apiKind: string): ReadinessSummary {
     const available = status.numberAvailable ?? ready
     const unavailable = status.numberUnavailable ?? Math.max(0, desired - available)
     const noTargets = desired === 0
-    const healthy = !noTargets && ready === desired && unavailable === 0
+    const healthy = !noTargets && ready >= desired && unavailable === 0
     return {
-      readyLabel: `${ready}/${desired}`,
+      readyLabel: `${Math.min(ready, desired)}/${desired}`,
       detail: `${updated}/${desired} up-to-date`,
       healthLabel: noTargets ? 'No targets' : healthy ? 'Healthy' : 'Degraded',
       healthBadge: noTargets ? 'bg-theme-elevated text-theme-text-secondary' : healthy ? 'status-healthy' : 'status-degraded',
       hasIssue: !healthy && !noTargets,
       stats: [
         { label: 'Desired', value: desired },
-        { label: 'Ready', value: ready, tone: ready === desired ? 'good' : 'warn' },
+        { label: 'Ready', value: Math.min(ready, desired), tone: ready >= desired ? 'good' : 'warn' },
         { label: 'Available', value: available },
         { label: 'Unavailable', value: unavailable, tone: unavailable > 0 ? 'warn' : 'default' },
       ],
@@ -2307,16 +2349,17 @@ function getReadinessSummary(resource: any, apiKind: string): ReadinessSummary {
     }
   }
 
-  const desired = spec.replicas ?? status.replicas ?? 0
+  const desired = spec.replicas ?? 1
   const current = status.replicas ?? desired
   const ready = status.readyReplicas ?? 0
+  const targetReady = Math.min(ready, desired)
   const updated = status.updatedReplicas ?? 0
   const available = status.availableReplicas ?? ready
   const unavailable = status.unavailableReplicas ?? Math.max(0, desired - available)
   const scaledToZero = desired === 0
-  const healthy = !scaledToZero && ready === desired && unavailable === 0
+  const healthy = !scaledToZero && ready >= desired && unavailable === 0
   return {
-    readyLabel: `${ready}/${desired}`,
+    readyLabel: `${targetReady}/${desired}`,
     detail: `${updated}/${desired} updated · ${available} available`,
     healthLabel: scaledToZero ? 'Scaled to zero' : healthy ? 'Healthy' : 'Degraded',
     healthBadge: scaledToZero ? 'bg-theme-elevated text-theme-text-secondary' : healthy ? 'status-healthy' : 'status-degraded',
@@ -2324,7 +2367,7 @@ function getReadinessSummary(resource: any, apiKind: string): ReadinessSummary {
     stats: [
       { label: 'Desired', value: desired },
       { label: 'Current', value: current },
-      { label: 'Ready', value: ready, tone: ready === desired ? 'good' : 'warn' },
+      { label: 'Ready', value: targetReady, tone: ready >= desired ? 'good' : 'warn' },
       { label: 'Updated', value: updated },
       { label: 'Available', value: available },
       { label: 'Unavailable', value: unavailable, tone: unavailable > 0 ? 'warn' : 'default' },
@@ -2594,7 +2637,9 @@ function RuntimeCard({
   onSwitchToLogs?: () => void
 }) {
   const progress = rolloutProgress(resource, apiKind, state)
-  const headline = rolloutHeadline(resource, apiKind, readiness, scaling)
+  const headline = state.rollout.phase !== 'idle'
+    ? `${state.label}${state.detail ? ` · ${state.detail}` : ''}`
+    : rolloutHeadline(resource, apiKind, readiness, scaling)
   const facts = rolloutFacts(resource, apiKind, scaling, Boolean(progress))
   const scalerRefs = relationships?.scalers ?? []
   const navigateRef = onNavigate ? (ref: ResourceRef) => onNavigate(refToSelectedResource(ref)) : undefined
@@ -3325,7 +3370,7 @@ function RolloutProgressBar({ progress, state }: { progress: RolloutProgressSumm
 
 function rolloutProgressFillClass(level: ReplicatedWorkloadState['level']): string {
   if (level === 'unhealthy') return 'bg-red-500'
-  if (level === 'degraded') return 'bg-amber-500'
+  if (level === 'degraded' || level === 'alert') return 'bg-amber-500'
   return 'bg-accent'
 }
 
@@ -3347,7 +3392,7 @@ function RolloutFactChip({ label, value, tone = 'default' }: { label: string; va
 
 function rolloutStateDotClass(level: ReplicatedWorkloadState['level']): string {
   if (level === 'unhealthy') return 'bg-red-500'
-  if (level === 'degraded') return 'bg-amber-500'
+  if (level === 'degraded' || level === 'alert') return 'bg-amber-500'
   if (level === 'neutral') return 'bg-skyhook-500'
   if (level === 'unknown') return 'bg-theme-text-tertiary'
   return 'bg-emerald-500'
@@ -3387,7 +3432,7 @@ function rolloutFacts(
     return facts
   }
 
-  const desired = spec.replicas ?? status.replicas ?? 0
+  const desired = spec.replicas ?? 1
   const current = status.replicas ?? desired
   const updated = status.updatedReplicas ?? 0
   const unavailable = status.unavailableReplicas ?? Math.max(0, desired - (status.availableReplicas ?? status.readyReplicas ?? 0))
@@ -3421,13 +3466,14 @@ function rolloutProgress(resource: any, apiKind: string, state: ReplicatedWorklo
   const spec = resource?.spec || {}
   const status = resource?.status || {}
   const k = apiKind.toLowerCase()
+  if (state.rollout.phase === 'idle' || state.rollout.phase === 'partition-reached' || state.rollout.phase === 'applying') return null
 
   if (k === 'daemonsets') {
     const desired = status.desiredNumberScheduled ?? 0
     const updated = status.updatedNumberScheduled ?? 0
     const ready = status.numberReady ?? 0
     const unavailable = status.numberUnavailable ?? Math.max(0, desired - ready)
-    if (!shouldShowRolloutProgress(desired, updated, ready, unavailable, state)) return null
+    if (!shouldShowRolloutProgress(desired, state)) return null
     return {
       updated,
       desired,
@@ -3438,31 +3484,30 @@ function rolloutProgress(resource: any, apiKind: string, state: ReplicatedWorklo
     }
   }
 
-  const desired = spec.replicas ?? status.replicas ?? 0
+  const configuredDesired = spec.replicas ?? 1
+  const desired = k === 'statefulsets'
+    ? Math.max(0, configuredDesired - (spec.updateStrategy?.rollingUpdate?.partition ?? 0))
+    : configuredDesired
   const updated = status.updatedReplicas ?? 0
   const ready = status.readyReplicas ?? 0
-  const unavailable = status.unavailableReplicas ?? Math.max(0, desired - (status.availableReplicas ?? ready))
-  if (!shouldShowRolloutProgress(desired, updated, ready, unavailable, state)) return null
+  const unavailable = status.unavailableReplicas ?? Math.max(0, configuredDesired - (status.availableReplicas ?? ready))
+  if (!shouldShowRolloutProgress(desired, state)) return null
   return {
     updated,
     desired,
     ready,
     unavailable,
     updatedLabel: `${updated}/${desired} updated`,
-    readyLabel: `${ready}/${desired} ready`,
+    readyLabel: `${Math.min(ready, configuredDesired)}/${configuredDesired} ready`,
   }
 }
 
 function shouldShowRolloutProgress(
   desired: number,
-  updated: number,
-  ready: number,
-  unavailable: number,
   state: ReplicatedWorkloadState,
 ): boolean {
   if (desired <= 0) return false
-  if (updated < desired || ready < desired || unavailable > 0) return true
-  return state.label === 'Rolling out' || state.label === 'Applying' || state.label === 'Stalled'
+  return state.rollout.active || state.rollout.phase === 'stalled'
 }
 
 function rolloutHeadline(resource: any, apiKind: string, readiness: ReadinessSummary, scaling: ScalingSummary): string {

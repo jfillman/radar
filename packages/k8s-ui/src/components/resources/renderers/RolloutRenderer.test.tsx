@@ -138,6 +138,14 @@ describe('rolloutActions state gating', () => {
   })
 })
 
+describe('RolloutRenderer step display', () => {
+  it('does not render beyond the final declared canary step', () => {
+    const html = renderToString(<RolloutRenderer data={canaryRollout({ phase: 'Healthy', currentStepIndex: 4 }, 4)} />)
+    expect(html).toContain('4/4')
+    expect(html).not.toContain('5/4')
+  })
+})
+
 describe('rolloutProblems', () => {
   it('reports an aborted rollout once, not once per matching branch', () => {
     const problems = rolloutProblems(

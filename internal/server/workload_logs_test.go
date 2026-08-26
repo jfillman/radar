@@ -37,6 +37,25 @@ func TestSortRunsPrefersActiveThenNewest(t *testing.T) {
 	}
 }
 
+func TestBuildPodInfosForRevisionAttributesOnlyKnownIdentities(t *testing.T) {
+	pods := []*corev1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "new", Labels: map[string]string{"pod-template-hash": "rev-2"}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "old", Labels: map[string]string{"pod-template-hash": "rev-1"}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "unknown"}},
+	}
+
+	infos := buildPodInfosForRevision(pods, workloadRevisionTarget{label: "pod-template-hash", value: "rev-2"})
+	if infos[0].UpdatedRevision == nil || !*infos[0].UpdatedRevision {
+		t.Fatalf("new revision attribution = %#v", infos[0])
+	}
+	if infos[1].UpdatedRevision == nil || *infos[1].UpdatedRevision {
+		t.Fatalf("old revision attribution = %#v", infos[1])
+	}
+	if infos[2].UpdatedRevision != nil {
+		t.Fatalf("unknown revision was guessed: %#v", infos[2])
+	}
+}
+
 func TestSortRunsUsesNewestRunTimestamp(t *testing.T) {
 	runs := []WorkloadRun{
 		{Name: "started-newer", Phase: "Succeeded", StartedAt: "2026-01-03T00:00:00Z"},

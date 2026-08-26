@@ -3613,6 +3613,7 @@ export function useUpdateResource() {
         queryKey: ["resources", variables.kind],
       });
       queryClient.invalidateQueries({ queryKey: ["topology"] });
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
     },
   });
 }

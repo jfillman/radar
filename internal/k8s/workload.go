@@ -7,6 +7,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 var ErrWorkloadAccessDenied = errors.New("workload access denied")
@@ -72,6 +74,21 @@ func GetWorkloadSelector(cache *ResourceCache, kind, namespace, name string) (*m
 		return &metav1.LabelSelector{
 			MatchLabels: map[string]string{"workflows.argoproj.io/workflow": name},
 		}, nil
+
+	case "rollout", "rollouts":
+		rollout, err := cache.GetDynamicWithGroup(context.Background(), "Rollout", namespace, name, "argoproj.io")
+		if err != nil {
+			return nil, fmt.Errorf("rollout %s/%s: %w", namespace, name, err)
+		}
+		raw, found, err := unstructured.NestedMap(rollout.Object, "spec", "selector")
+		if err != nil || !found {
+			return nil, fmt.Errorf("rollout %s/%s has no selector", namespace, name)
+		}
+		var selector metav1.LabelSelector
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(raw, &selector); err != nil {
+			return nil, fmt.Errorf("rollout %s/%s selector: %w", namespace, name, err)
+		}
+		return &selector, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported workload kind: %s", kind)

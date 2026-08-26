@@ -1050,6 +1050,12 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         const f = fastInvalidationRef.current
         for (const k of f.changedKinds) {
           queryClient.invalidateQueries({ queryKey: ['resource', k] }) // open detail drawer stays live
+          if (['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(k)) {
+            queryClient.invalidateQueries({ queryKey: ['resources', k] })
+          }
+        }
+        if ([...f.changedKinds].some((k) => ['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(k))) {
+          queryClient.invalidateQueries({ queryKey: ['applications'] })
         }
         for (const k of f.structuralKinds) {
           queryClient.invalidateQueries({ queryKey: ['resources', k] }) // list membership changed

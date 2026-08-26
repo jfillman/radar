@@ -9,6 +9,64 @@ const deployment = {
 }
 
 describe('WorkloadRenderer', () => {
+  it('shows a calm rollout notice even when every desired replica remains ready', () => {
+    const html = renderToString(
+      <WorkloadRenderer
+        kind="deployments"
+        data={{
+          ...deployment,
+          metadata: { ...deployment.metadata, generation: 2 },
+          status: { observedGeneration: 2, replicas: 4, readyReplicas: 4, availableReplicas: 4, updatedReplicas: 2 },
+        }}
+      />,
+    )
+
+    expect(html).toContain('Rolling out')
+    expect(html).toContain('2/3 updated · 4 available')
+    expect(html).not.toContain('Issues Detected')
+  })
+
+  it('uses new-revision Pod failure evidence in the rollout notice', () => {
+    const html = renderToString(
+      <WorkloadRenderer
+        kind="deployments"
+        data={{
+          ...deployment,
+          metadata: { ...deployment.metadata, generation: 2 },
+          status: { observedGeneration: 2, replicas: 4, readyReplicas: 3, availableReplicas: 3, updatedReplicas: 1 },
+        }}
+        workloadPods={[{
+          name: 'api-new-revision',
+          containers: ['api'],
+          ready: false,
+          healthLevel: 'unhealthy',
+          reason: 'ImagePullBackOff',
+          updatedRevision: true,
+        }]}
+      />,
+    )
+
+    expect(html).toContain('New revision cannot start')
+    expect(html).toContain('ImagePullBackOff · Pod api-new-revision')
+    expect(html).not.toContain('Rolling out')
+  })
+
+  it('explains that OnDelete needs a manual Pod restart', () => {
+    const html = renderToString(
+      <WorkloadRenderer
+        kind="statefulsets"
+        data={{
+          metadata: { name: 'db', namespace: 'prod', generation: 3 },
+          spec: { replicas: 3, updateStrategy: { type: 'OnDelete' } },
+          status: { observedGeneration: 3, replicas: 3, readyReplicas: 3, updatedReplicas: 0 },
+        }}
+      />,
+    )
+
+    expect(html).toContain('Waiting for Pod restart')
+    expect(html).toContain('OnDelete strategy · 0/3 updated')
+  })
+
   it('enables manual scaling when no replica controller targets the workload', () => {
     const html = renderToString(
       <WorkloadRenderer kind="deployments" data={deployment} onScale={async () => {}} />,

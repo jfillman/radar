@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
 import { ResourceRendererDispatch, getResourceStatus, type RendererOverrides } from './ResourceRendererDispatch'
+import { getCellFilterValue } from '../resources/resource-utils'
 import type { ResourceRef } from '../../types'
 
 function renderWithScalers(scalers: ResourceRef[]): string {
@@ -178,6 +179,35 @@ function renderCollidingKind(kind: string, apiVersion: string): string {
     />,
   )
 }
+
+describe('getResourceStatus — workload rollout activity', () => {
+  const steadyDegraded = {
+    metadata: { generation: 4 },
+    spec: { replicas: 3 },
+    status: { observedGeneration: 4, replicas: 3, updatedReplicas: 3, readyReplicas: 2, availableReplicas: 2 },
+  }
+
+  it('keeps steady-state availability as health instead of rollout activity', () => {
+    expect(getResourceStatus('deployments', steadyDegraded)).toMatchObject({ text: '2/3', level: 'degraded' })
+    expect(getCellFilterValue(steadyDegraded, 'status', 'deployments')).toBe('Degraded')
+  })
+
+  it('uses the rollout label consistently while a revision is moving', () => {
+    const rolling = {
+      metadata: { generation: 4 },
+      spec: { replicas: 3 },
+      status: { observedGeneration: 4, replicas: 4, updatedReplicas: 2, readyReplicas: 3, availableReplicas: 3 },
+    }
+    expect(getResourceStatus('deployments', rolling)?.text).toBe('Rolling out')
+    expect(getCellFilterValue(rolling, 'status', 'deployments')).toBe('Rolling out')
+  })
+
+  it('keeps scaled-to-zero workloads neutral', () => {
+    const scaled = { metadata: { generation: 2 }, spec: { replicas: 0 }, status: { observedGeneration: 2 } }
+    expect(getResourceStatus('deployments', scaled)).toMatchObject({ text: 'Scaled to 0', level: 'neutral' })
+    expect(getCellFilterValue(scaled, 'status', 'deployments')).toBe('Scaled to 0')
+  })
+})
 
 describe('getResourceStatus — colliding plurals', () => {
   it('fabricates no PostgreSQL status for a third-party clusters CRD', () => {

@@ -67,6 +67,7 @@ import {
   batchSignalForApp,
   batchActivityForApp,
   batchRuntimeForApp,
+  rolloutSummaryForApps,
   applicationDisplayHealth,
   sourceReportedHealth,
   sourceSyncHealth,
@@ -359,6 +360,10 @@ export function ApplicationDetail({
   );
   const workloadClass = workloadClassOf(app.workload_class);
   const batchRuntime = batchRuntimeForApp(app);
+  const rolloutSummary = useMemo(
+    () => rolloutSummaryForApps([{ ...app, workloads }]),
+    [app, workloads],
+  );
   const overall = applicationDisplayHealth(app);
   const verdictTone = HEALTH_META[overall].pill;
   const verdictLabel =
@@ -702,8 +707,16 @@ export function ApplicationDetail({
         {workloadClass === "job" ? (
           <ContextFact label="Runtime">{batchRuntime.label}</ContextFact>
         ) : desired > 0 ? (
-          <ContextFact label="Ready">
-            <ReadyBar ready={ready} desired={desired} width="w-16" />
+          <ContextFact label="Ready"><ReadyBar ready={ready} desired={desired} width="w-16" /></ContextFact>
+        ) : null}
+        {workloadClass !== "job" && rolloutSummary ? (
+          <ContextFact label="Runtime">
+            <Tooltip content={rolloutSummary.detail} delay={150}>
+              <span className="inline-flex items-center gap-1.5">
+                <StatusDot tone={mapHealthToTone(rolloutSummary.health)} />
+                {rolloutSummary.label}
+              </span>
+            </Tooltip>
           </ContextFact>
         ) : null}
         {(app.appVersion || versions.length > 0) && (
@@ -1074,6 +1087,10 @@ function ApplicationOverview({
     app.runtimeHealth ??
       worstHealth(workloads.map((workload) => workload.health)),
   );
+  const rolloutSummary = useMemo(
+    () => rolloutSummaryForApps([{ ...app, workloads }]),
+    [app, workloads],
+  );
   const hasDeliveryStatus = Boolean(
     app.sourceStatus?.sync || app.sourceStatus?.health,
   );
@@ -1116,11 +1133,13 @@ function ApplicationOverview({
               value={
                 pureBatch
                   ? batchRuntimeForApp(app).label
-                  : HEALTH_META[runtimeHealth].label
+                  : rolloutSummary?.label || HEALTH_META[runtimeHealth].label
               }
               detail={
                 pureBatch
                   ? batchStats.activeDetail
+                  : rolloutSummary
+                    ? `${rolloutSummary.count} pending · ${ready}/${desired} ready`
                   : desired > 0
                     ? `${ready}/${desired} ready`
                     : "No desired replicas"
@@ -2023,6 +2042,14 @@ function workloadRuntimeStatus(workload: AppWorkload): {
   label: string;
   health: AppHealth;
 } {
+  if (workload.rollout && workload.rollout.phase !== 'idle') {
+    const health: AppHealth = workload.rollout.phase === 'stalled'
+      ? 'unhealthy'
+      : workload.rollout.phase === 'paused' || workload.rollout.manual
+        ? 'degraded'
+        : 'neutral'
+    return { label: workload.rollout.label, health }
+  }
   const batch = workload.batch;
   if (!batch) {
     const health = healthOf(workload.health);
@@ -2039,6 +2066,7 @@ function workloadRuntimeStatus(workload: AppWorkload): {
 }
 
 function workloadRuntimeDetail(workload: AppWorkload): string {
+  if (workload.rollout && workload.rollout.phase !== 'idle') return workload.rollout.detail || `${workload.ready}/${workload.desired} ready`
   const batch = workload.batch;
   if (!batch) return `${workload.ready}/${workload.desired} ready`;
   if ((batch.activeRuns ?? 0) > 0)

@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest'
+import { renderToStaticMarkup } from 'react-dom/server'
 import {
   buildSingleAppEntry,
   searchTextForEntry,
   foldAppGroups,
   type AppRow,
   type SingleAppEntry,
+  rolloutSummaryForApps,
 } from '../../utils/applications'
+import { ReadyBar } from './ReadyBar'
 
 // Parity tests for the pure core the shared ApplicationsView is built on:
 // buildSingleAppEntry (the extracted former buildEntry), the search-text helper,
@@ -113,6 +116,59 @@ describe('buildSingleAppEntry', () => {
     }))
 
     expect(e.health).toBe('degraded')
+  })
+})
+
+describe('ReadyBar', () => {
+  it('caps target readiness during a surge', () => {
+    const html = renderToStaticMarkup(<ReadyBar ready={2} desired={1} />)
+    expect(html).toContain('1/1')
+    expect(html).not.toContain('2/1')
+  })
+})
+
+describe('rolloutSummaryForApps', () => {
+  it('surfaces a healthy surge rollout as activity rather than degradation', () => {
+    const summary = rolloutSummaryForApps([app({
+      workloads: [wl({
+        ready: 3,
+        desired: 3,
+        rollout: { phase: 'progressing', active: true, manual: false, label: 'Rolling out', detail: '2/3 updated · 3 available', desired: 3, updated: 2, ready: 3, available: 3 },
+      })],
+    })])
+
+    expect(summary).toMatchObject({ label: 'Rolling out', health: 'neutral', count: 1 })
+    expect(summary?.detail).toContain('2/3 updated')
+  })
+
+  it('escalates a stalled revision without changing stable app health data', () => {
+    const summary = rolloutSummaryForApps([app({
+      workloads: [wl({
+        rollout: { phase: 'stalled', active: false, manual: false, label: 'New revision cannot start', detail: 'ImagePullBackOff', desired: 1, updated: 0, ready: 1, available: 1 },
+      })],
+    })])
+
+    expect(summary).toMatchObject({ label: 'New revision cannot start', health: 'unhealthy' })
+  })
+
+  it('names stalled work before the other pending changes in a grouped app', () => {
+    const summary = rolloutSummaryForApps([app({
+      workloads: [
+        wl({ name: 'broken', rollout: { phase: 'stalled', active: false, manual: false, label: 'Rollout stalled', desired: 1, updated: 0, ready: 1, available: 1 } }),
+        wl({ name: 'manual', rollout: { phase: 'paused', active: true, manual: false, label: 'Rollout paused', desired: 1, updated: 0, ready: 1, available: 1 } }),
+      ],
+    })])
+
+    expect(summary).toMatchObject({ label: '1 stalled · 1 waiting', health: 'unhealthy', count: 2 })
+  })
+
+  it('does not report zero waiting workloads when every change is stalled', () => {
+    const stalled = { phase: 'stalled' as const, active: false, manual: false, label: 'Rollout stalled', desired: 1, updated: 0, ready: 1, available: 1 }
+    const summary = rolloutSummaryForApps([app({
+      workloads: [wl({ name: 'one', rollout: stalled }), wl({ name: 'two', rollout: stalled })],
+    })])
+
+    expect(summary?.label).toBe('2 stalled')
   })
 })
 

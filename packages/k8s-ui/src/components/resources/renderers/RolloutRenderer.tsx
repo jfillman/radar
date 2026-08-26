@@ -4,7 +4,7 @@ import { clsx } from 'clsx'
 import { AlertBanner, Section, PropertyList, Property, ConditionsSection, PodTemplateSection, type ConditionTone } from '../../ui/drawer-components'
 import { Tooltip } from '../../ui/Tooltip'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
-import { formatAge } from '../resource-utils'
+import { formatAge, getRolloutStep } from '../resource-utils'
 import { BADGE_INACTIVE } from '../../../utils/badge-colors'
 
 export type RolloutAction = 'abort' | 'retry' | 'promote' | 'promote-full' | 'skip-step'
@@ -413,7 +413,7 @@ export function RolloutRenderer({ data, onNavigate, capabilities, onAction, pend
             <>
               <Property label="Strategy" value="Canary" />
               {steps.length > 0 && currentStepIndex !== undefined && (
-                <Property label="Current Step" value={`${currentStepIndex}/${steps.length}`} />
+                <Property label="Current Step" value={getRolloutStep(data)} />
               )}
               {status.canary?.weights?.canary?.weight !== undefined && (
                 <Property label="Canary Weight" value={`${status.canary.weights.canary.weight}%`} />

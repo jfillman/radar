@@ -5,9 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/packages"
 	"github.com/skyhook-io/radar/pkg/subject"
 	"github.com/skyhook-io/radar/pkg/topology"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -1140,5 +1142,36 @@ func TestWorkloadClass_MixedComposition(t *testing.T) {
 		if r := rowByName(rows, "shop"); r == nil || r.WorkloadClass != c.want {
 			t.Errorf("%s: WorkloadClass = %v, want %s", c.name, r, c.want)
 		}
+	}
+}
+
+func TestAttributeApplicationRolloutFailure(t *testing.T) {
+	activity := &health.WorkloadRolloutActivity{
+		Phase: health.RolloutProgressing, Active: true, Label: "Rolling out",
+	}
+	failed := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "api-new", Labels: map[string]string{appsv1.DefaultDeploymentUniqueLabelKey: "new"}},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: "api", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff"}},
+			}},
+		},
+	}
+	target := workloadRevisionTarget{label: appsv1.DefaultDeploymentUniqueLabelKey, value: "new"}
+	got := attributeApplicationRolloutFailure(activity, []*corev1.Pod{failed}, target)
+	if got.Phase != health.RolloutStalled || got.Active || got.Label != "New revision cannot start" || !strings.Contains(got.Detail, "ImagePullBackOff · Pod api-new") {
+		t.Fatalf("attributed rollout = %#v", got)
+	}
+
+	oldTarget := workloadRevisionTarget{label: appsv1.DefaultDeploymentUniqueLabelKey, value: "other"}
+	if got := attributeApplicationRolloutFailure(activity, []*corev1.Pod{failed}, oldTarget); got != activity {
+		t.Fatalf("old-revision failure changed rollout: %#v", got)
+	}
+
+	applying := *activity
+	applying.Phase = health.RolloutApplying
+	if got := attributeApplicationRolloutFailure(&applying, []*corev1.Pod{failed}, target); got != &applying {
+		t.Fatalf("pre-observation failure was attributed: %#v", got)
 	}
 }

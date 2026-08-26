@@ -1,5 +1,6 @@
 import { clsx } from 'clsx'
 import { SEVERITY_BADGE } from '../../utils/badge-colors'
+import { getWorkloadRolloutActivity, rolloutActivityBadge } from '../../utils/workload-rollout'
 import {
   getPodStatus,
   getWorkloadStatus,
@@ -272,7 +273,7 @@ import {
   isComposite,
   isClaim,
 } from '../resources/resource-utils-crossplane'
-import type { SelectedResource, Relationships, ResourceRef, SecretCertificateInfo, ResolvedEnvFrom, TimelineEvent, HPADiagnosis } from '../../types'
+import type { SelectedResource, Relationships, ResourceRef, SecretCertificateInfo, ResolvedEnvFrom, TimelineEvent, HPADiagnosis, WorkloadPodInfo } from '../../types'
 import type { CopyHandler } from '../ui/drawer-components'
 import { AlertBanner } from '../ui/drawer-components'
 import { replicaScalers } from '../../utils/replica-scalers'
@@ -310,6 +311,7 @@ export interface RendererOverrides {
     relationships?: Relationships
     scaleBlockedBy?: ResourceRef[]
     scalerDiagnostics?: ScalerDiagnosis[]
+    workloadPods?: WorkloadPodInfo[]
   }>
   // Optional override for Crossplane Composite / Claim — host wraps the
   // package renderer to fan out per-composed-ref status fetches via React Query.
@@ -500,6 +502,7 @@ interface ResourceRendererDispatchProps {
   certificateInfo?: SecretCertificateInfo
   hpaDiagnosis?: HPADiagnosis
   scalerDiagnostics?: ScalerDiagnosis[]
+  workloadPods?: WorkloadPodInfo[]
   onCopy: (text: string, key: string) => void
   copied: string | null
   onNavigate?: (ref: ResourceRef) => void
@@ -545,6 +548,7 @@ export function ResourceRendererDispatch({
   certificateInfo,
   hpaDiagnosis,
   scalerDiagnostics,
+  workloadPods,
   onCopy,
   copied,
   onNavigate,
@@ -727,6 +731,7 @@ export function ResourceRendererDispatch({
             relationships={relationships}
             scaleBlockedBy={scaleBlockedBy}
             scalerDiagnostics={scalerDiagnostics}
+            workloadPods={workloadPods}
           />
         )}
         {kind === 'replicasets' && <ReplicaSetRenderer data={data} />}
@@ -988,7 +993,11 @@ export function getResourceStatus(kind: string, data: any): { text: string; colo
   const k = kind.toLowerCase()
 
   if (k === 'pods') return getPodStatus(data)
-  if (['deployments', 'statefulsets', 'replicasets', 'daemonsets'].includes(k)) return getWorkloadStatus(data, k)
+  if (['deployments', 'statefulsets', 'daemonsets'].includes(k)) {
+    const activity = getWorkloadRolloutActivity(data, k)
+    return activity.phase === 'idle' ? getWorkloadStatus(data, k) : rolloutActivityBadge(activity)
+  }
+  if (k === 'replicasets') return getWorkloadStatus(data, k)
   if (k === 'services') {
     if (data.apiVersion?.includes('serving.knative.dev')) {
       const status = getKnativeConditionStatus(data)

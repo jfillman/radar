@@ -1,4 +1,5 @@
 import type { ResourceRef } from '../types/core'
+import type { WorkloadRolloutActivity } from './workload-rollout'
 
 // Shared model for the Applications surface — host-agnostic. The OSS single-
 // cluster view and (eventually) the Cloud fleet view both build on these types
@@ -26,7 +27,46 @@ export interface AppWorkload {
   desired: number;
   restarts: number;
   reason?: string;
+  rollout?: WorkloadRolloutActivity;
   batch?: AppBatchSummary;
+}
+
+export interface AppRolloutSummary {
+  count: number
+  label: string
+  detail: string
+  health: AppHealth
+}
+
+export function rolloutSummaryForApps(apps: AppRow[]): AppRolloutSummary | null {
+  const entries = apps.flatMap((app) => app.workloads
+    .filter((workload) => workload.rollout && workload.rollout.phase !== 'idle' && workload.rollout.phase !== 'partition-reached')
+    .map((workload) => ({ app, workload, rollout: workload.rollout! })))
+  if (entries.length === 0) return null
+  const rank = (phase: WorkloadRolloutActivity['phase']) => {
+    if (phase === 'stalled') return 3
+    if (phase === 'paused') return 2
+    return 1
+  }
+  const worst = entries.reduce((current, entry) => rank(entry.rollout.phase) > rank(current.rollout.phase) ? entry : current)
+  const health: AppHealth = worst.rollout.phase === 'stalled'
+    ? 'unhealthy'
+    : worst.rollout.phase === 'paused' || worst.rollout.manual
+      ? 'degraded'
+      : 'neutral'
+  const stalled = entries.filter((entry) => entry.rollout.phase === 'stalled').length
+  const label = entries.length === 1
+    ? worst.rollout.label
+    : stalled > 0
+      ? stalled === entries.length
+        ? `${stalled} stalled`
+        : `${stalled} stalled · ${entries.length - stalled} waiting`
+      : `${entries.length} workload changes`
+  const detail = entries.map(({ app, workload, rollout }) => {
+    const prefix = apps.length > 1 ? `${app.name} / ` : ''
+    return `${prefix}${workload.name}: ${rollout.label}${rollout.detail ? ` — ${rollout.detail}` : ''}`
+  }).join('\n')
+  return { count: entries.length, label, detail, health }
 }
 
 export interface AppBatchSummary {

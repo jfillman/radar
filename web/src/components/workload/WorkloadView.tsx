@@ -576,6 +576,9 @@ export function WorkloadView({
       queryClient.refetchQueries({
         queryKey: ['workload-runs', apiKind, namespace, name],
       }),
+      queryClient.refetchQueries({
+        queryKey: ['workload-pods', apiKind, namespace, name],
+      }),
     ])
   }, [apiKind, name, namespace, queryClient, refetchResource])
   const podWorkloadOwner = useMemo(
@@ -1061,7 +1064,7 @@ export function WorkloadView({
     [],
   )
 
-  const supportsWorkloadPods = ['deployments', 'statefulsets', 'daemonsets'].includes(apiKind)
+  const supportsWorkloadPods = ['deployments', 'statefulsets', 'daemonsets', 'rollouts'].includes(apiKind)
   const workloadPodsQuery = useWorkloadPods(supportsWorkloadPods ? apiKind : '', namespace, name)
   const workloadAwaitsCapacity =
     karpenter?.state === 'available' &&

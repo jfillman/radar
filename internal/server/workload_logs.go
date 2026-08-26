@@ -15,17 +15,21 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/rollouts"
 )
 
 // WorkloadPodContainerInfo contains compact per-container runtime status for the UI.
@@ -53,6 +57,8 @@ type WorkloadPodInfo struct {
 	StepID                string                     `json:"stepID,omitempty"`
 	StepName              string                     `json:"stepName,omitempty"`
 	StepPhase             string                     `json:"stepPhase,omitempty"`
+	RevisionIdentity      string                     `json:"revisionIdentity,omitempty"`
+	UpdatedRevision       *bool                      `json:"updatedRevision,omitempty"`
 }
 
 // workloadLogEntry is an internal structure for log lines from pods
@@ -118,6 +124,8 @@ var validWorkloadKinds = map[string]bool{
 	"jobs":         true,
 	"workflow":     true,
 	"workflows":    true,
+	"rollout":      true,
+	"rollouts":     true,
 }
 
 // handleWorkloadPods returns the list of pods for a workload
@@ -137,8 +145,9 @@ func (s *Server) handleWorkloadPods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	target := workloadRevisionTargetFor(r.Context(), k8s.GetResourceCache(), s.getDynamicClientForRequest(r), kind, namespace, name)
 	s.writeJSON(w, map[string]any{
-		"pods": buildPodInfos(pods),
+		"pods": buildPodInfosForRevision(pods, target),
 	})
 }
 
@@ -576,10 +585,22 @@ func isPodReady(pod *corev1.Pod) bool {
 
 // buildPodInfos converts pods to WorkloadPodInfo slice
 func buildPodInfos(pods []*corev1.Pod) []WorkloadPodInfo {
+	return buildPodInfosForRevision(pods, workloadRevisionTarget{})
+}
+
+func buildPodInfosForRevision(pods []*corev1.Pod, target workloadRevisionTarget) []WorkloadPodInfo {
 	infos := make([]WorkloadPodInfo, 0, len(pods))
 	now := time.Now()
 	for _, pod := range pods {
-		infos = append(infos, buildPodInfo(pod, now))
+		info := buildPodInfo(pod, now)
+		if target.label != "" && target.value != "" {
+			if identity := pod.Labels[target.label]; identity != "" {
+				updated := identity == target.value
+				info.RevisionIdentity = identity
+				info.UpdatedRevision = &updated
+			}
+		}
+		infos = append(infos, info)
 	}
 	return infos
 }
@@ -664,7 +685,7 @@ func (e *workloadError) Error() string { return e.message }
 // getWorkloadPods validates the kind, retrieves cache, and returns pods for a workload
 func (s *Server) getWorkloadPods(kind, namespace, name string) ([]*corev1.Pod, *workloadError) {
 	if !validWorkloadKinds[kind] {
-		return nil, &workloadError{http.StatusBadRequest, "only deployments, statefulsets, daemonsets, jobs, and workflows are supported"}
+		return nil, &workloadError{http.StatusBadRequest, "only deployments, statefulsets, daemonsets, rollouts, jobs, and workflows are supported"}
 	}
 
 	cache := k8s.GetResourceCache()
@@ -678,6 +699,65 @@ func (s *Server) getWorkloadPods(kind, namespace, name string) ([]*corev1.Pod, *
 	}
 
 	return cache.GetPodsForWorkload(namespace, selector), nil
+}
+
+type workloadRevisionTarget struct {
+	label string
+	value string
+}
+
+func workloadRevisionTargetFor(ctx context.Context, cache *k8s.ResourceCache, dynamicClient dynamic.Interface, kind, namespace, name string) workloadRevisionTarget {
+	if cache == nil {
+		return workloadRevisionTarget{}
+	}
+	switch kind {
+	case "deployment", "deployments":
+		if cache.Deployments() == nil || cache.ReplicaSets() == nil {
+			return workloadRevisionTarget{}
+		}
+		deployment, err := cache.Deployments().Deployments(namespace).Get(name)
+		if err != nil {
+			return workloadRevisionTarget{}
+		}
+		replicaSets, err := cache.ReplicaSets().ReplicaSets(namespace).List(labels.Everything())
+		if err != nil {
+			return workloadRevisionTarget{}
+		}
+		if hash := k8score.CurrentDeploymentRevisionPodHashes(replicaSets)[deployment.UID]; hash != "" {
+			return workloadRevisionTarget{label: appsv1.DefaultDeploymentUniqueLabelKey, value: hash}
+		}
+	case "statefulset", "statefulsets":
+		if cache.StatefulSets() != nil {
+			if workload, err := cache.StatefulSets().StatefulSets(namespace).Get(name); err == nil {
+				return workloadRevisionTarget{label: appsv1.ControllerRevisionHashLabelKey, value: workload.Status.UpdateRevision}
+			}
+		}
+	case "daemonset", "daemonsets":
+		if cache.DaemonSets() != nil {
+			if workload, err := cache.DaemonSets().DaemonSets(namespace).Get(name); err == nil {
+				if dynamicClient == nil {
+					return workloadRevisionTarget{}
+				}
+				controllerRevisions, err := dynamicClient.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "controllerrevisions"}).Namespace(namespace).List(ctx, metav1.ListOptions{LabelSelector: appsv1.ControllerRevisionHashLabelKey})
+				if err != nil {
+					log.Printf("[workload-pods] DaemonSet revision attribution unavailable for %s/%s: %v", namespace, name, err)
+					return workloadRevisionTarget{}
+				}
+				for _, revision := range k8score.BuildControllerRevisions(controllerRevisions.Items, string(workload.UID)) {
+					if revision.IsCurrent && revision.PodHash != "" {
+						return workloadRevisionTarget{label: appsv1.ControllerRevisionHashLabelKey, value: revision.PodHash}
+					}
+				}
+			}
+		}
+	case "rollout", "rollouts":
+		if workload, err := cache.GetDynamicWithGroup(context.Background(), "Rollout", namespace, name, "argoproj.io"); err == nil {
+			if hash, found, _ := unstructured.NestedString(workload.Object, "status", "currentPodHash"); found {
+				return workloadRevisionTarget{label: rollouts.PodTemplateHashLabel, value: hash}
+			}
+		}
+	}
+	return workloadRevisionTarget{}
 }
 
 func workloadSelectorGetError(err error) *workloadError {

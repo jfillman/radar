@@ -1480,6 +1480,8 @@ export interface WorkloadPodInfo {
   stepID?: string
   stepName?: string
   stepPhase?: string
+  revisionIdentity?: string
+  updatedRevision?: boolean
 }
 
 // SSE event types for workload log streaming

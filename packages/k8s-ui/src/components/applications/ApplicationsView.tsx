@@ -39,6 +39,7 @@ import {
   foldAppGroups,
   batchSignalForApp,
   batchRuntimeForApp,
+  rolloutSummaryForApps,
   type FoldedRow,
 } from '../../utils/applications'
 import { ReadyBar } from './ReadyBar'
@@ -46,7 +47,21 @@ import { ProvenanceBadge, ClassBadge, CategoryChip, VersionInfo, BatchSignalChip
 import { AppIdentityTooltip, EnvHint } from './AppTooltips'
 
 function ApplicationRuntimeCell({ apps, workloadClass, ready, desired }: { apps: AppRow[]; workloadClass: AppWorkloadClass; ready: number; desired: number }) {
-  if (workloadClass !== 'job') return <ReadyBar ready={ready} desired={desired} />
+  if (workloadClass !== 'job') {
+    const rollout = rolloutSummaryForApps(apps)
+    if (!rollout) return <ReadyBar ready={ready} desired={desired} />
+    return (
+      <span className="inline-flex max-w-full items-center gap-3">
+        <ReadyBar ready={ready} desired={desired} />
+        <Tooltip content={rollout.detail} delay={150}>
+          <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-theme-text-secondary">
+            <StatusDot tone={mapHealthToTone(rollout.health)} />
+            <span className="truncate">{rollout.label}</span>
+          </span>
+        </Tooltip>
+      </span>
+    )
+  }
   const runtimes = apps.map(batchRuntimeForApp)
   const worst = runtimes.reduce((current, runtime) => (HEALTH_RANK[runtime.health] ?? 0) > (HEALTH_RANK[current.health] ?? 0) ? runtime : current, runtimes[0])
   if (!worst) return <span className="text-xs text-theme-text-tertiary">Idle</span>
@@ -60,7 +75,7 @@ function ApplicationRuntimeCell({ apps, workloadClass, ready, desired }: { apps:
 }
 
 function applicationRuntimeLabel(apps: AppRow[], workloadClass: AppWorkloadClass, health: AppHealth): string {
-  if (workloadClass !== 'job') return HEALTH_META[health].label
+  if (workloadClass !== 'job') return rolloutSummaryForApps(apps)?.detail || HEALTH_META[health].label
   const labels = Array.from(new Set(apps.map((app) => batchRuntimeForApp(app).label)))
   return labels.length === 1 ? labels[0] : 'Multiple batch states'
 }

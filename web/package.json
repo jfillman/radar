@@ -26,7 +26,7 @@
     "tsc:ts6": "tsc --noEmit",
     "test": "vitest run src",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
-    "lint": "eslint src && node scripts/check-no-native-title.mjs"
+    "lint": "eslint src && node scripts/check-no-native-title.mjs && node scripts/check-error-boundary-reset.mjs"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.2.8",

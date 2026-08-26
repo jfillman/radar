@@ -161,6 +161,7 @@ export interface CloudConnectCapability {
 export interface FeatureCapabilities {
   yamlReview?: boolean
   yamlSchemas?: boolean
+  workloadImages?: boolean
 }
 
 // DeploymentMode is the closed set of topologies Radar can run in.

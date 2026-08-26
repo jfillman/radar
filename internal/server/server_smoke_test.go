@@ -1905,8 +1905,8 @@ func TestSmokeCapabilitiesShape(t *testing.T) {
 		}
 	}
 
-	if !body.Features["yamlReview"] || !body.Features["yamlSchemas"] {
-		t.Fatalf("capabilities.features = %v, want YAML review and schemas enabled", body.Features)
+	if !body.Features["yamlReview"] || !body.Features["yamlSchemas"] || !body.Features["workloadImages"] {
+		t.Fatalf("capabilities.features = %v, want YAML review, schemas, and workload images enabled", body.Features)
 	}
 }
 

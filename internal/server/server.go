@@ -1239,8 +1239,9 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	caps.Deployment = k8s.DeploymentInfo{Mode: deploymentMode()}
 	caps.CloudConnect = s.cloudConnectCapability()
 	caps.Features = k8s.FeatureCapabilities{
-		YAMLReview:  true,
-		YAMLSchemas: true,
+		YAMLReview:     true,
+		YAMLSchemas:    true,
+		WorkloadImages: true,
 	}
 	caps.AuthEnabled = s.authConfig.Enabled()
 	if user := auth.UserFromContext(r.Context()); user != nil {

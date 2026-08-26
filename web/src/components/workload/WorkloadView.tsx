@@ -23,7 +23,7 @@ import {
   getGitOpsResourceStatus,
   isDiagnoseKind,
   isRolloutKind,
-  canPatchWorkloadKind,
+  canSetWorkloadImages,
   type ManagedImageSource,
   type WorkloadImageTarget,
 } from '@skyhook-io/k8s-ui'
@@ -302,6 +302,7 @@ function useActionsBarProps(
   cascadeEnabled: boolean,
 ) {
   const { showCopied } = useToast()
+  const { features } = useCapabilitiesContext()
   const openTerminal = useOpenTerminal()
   const openLogs = useOpenLogs()
   const openWorkloadLogs = useOpenWorkloadLogs()
@@ -331,9 +332,10 @@ function useActionsBarProps(
   // answers — withholding while it loads would flicker the shared buttons.
   const rolloutAllows = (verb: 'restart' | 'rollback') =>
     !isRollout || !rolloutCapabilities || rolloutCapabilities[verb]
+  const imageUpdatesSupported = features?.workloadImages === true
   const canSetImages = isRolloutShape
-    ? isRollout && !rolloutCapabilitiesPending && rolloutCapabilities?.setImage === true
-    : !workloadWritesPending && canPatchWorkloadKind({ name: kind, group }, workloadWrites)
+    ? imageUpdatesSupported && isRollout && !rolloutCapabilitiesPending && rolloutCapabilities?.setImage === true
+    : !workloadWritesPending && canSetWorkloadImages({ name: kind, group }, workloadWrites, imageUpdatesSupported)
   const loadImages = useCallback(
     (params: { kind: string; namespace: string; name: string }) =>
       queryClient.fetchQuery({

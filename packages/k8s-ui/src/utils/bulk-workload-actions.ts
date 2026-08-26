@@ -30,6 +30,14 @@ export function canPatchWorkloadKind(
   }
 }
 
+export function canSetWorkloadImages(
+  kind: BulkWorkloadKindInfo | null | undefined,
+  writes: WorkloadWritePermissions | undefined,
+  supported: boolean,
+): boolean {
+  return supported && canPatchWorkloadKind(kind, writes)
+}
+
 export function canBulkScaleKind(
   kind: BulkWorkloadKindInfo | null | undefined,
   writes: WorkloadWritePermissions | undefined,

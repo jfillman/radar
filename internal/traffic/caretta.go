@@ -395,14 +395,16 @@ func (c *CarettaSource) discoverPrometheus(ctx context.Context) string {
 		return ""
 	}
 
-	var noData []string
+	var noData, unreachable []string
 	for _, info := range candidates {
 		wrongData := false
 
 		if c.inCluster {
 			// In-cluster: the Service address resolves and answers in single-digit
 			// ms. Probe it directly — a managed forward isn't expected here (no
-			// pods/portforward RBAC), so a cluster-address probe is the only path.
+			// pods/portforward RBAC), so a cluster-address probe is the only path,
+			// and one that can't be reached is a real diagnosis (not the local
+			// "Connect() will port-forward" case), so record it.
 			switch c.acceptBackendLocked(ctx, info, info.clusterAddr+info.basePath) {
 			case backendAccepted:
 				log.Printf("[caretta] Found metrics service at %s (basePath=%q)", info.clusterAddr, info.basePath)
@@ -410,6 +412,8 @@ func (c *CarettaSource) discoverPrometheus(ctx context.Context) string {
 				return info.clusterAddr
 			case backendNoCarettaData:
 				wrongData = true
+			case backendUnreachable:
+				unreachable = append(unreachable, fmt.Sprintf("%s/%s", info.namespace, info.name))
 			}
 		} else {
 			// Local: a cluster address can't resolve from here, so only an already
@@ -436,11 +440,16 @@ func (c *CarettaSource) discoverPrometheus(ctx context.Context) string {
 		}
 	}
 
-	// Nothing bound. Either the candidates aren't reachable in-cluster (the local
-	// case — Connect() port-forwards to them) or none of them holds Caretta data.
-	// Only the latter is a diagnosis; unreachable here is the normal local case.
-	log.Printf("[caretta] No Caretta-backed metrics service reachable in-cluster. Call Connect() for port-forward.")
-	c.backendWarning = noBackendWarning(noData, nil)
+	// Nothing bound. In-cluster, a candidate that couldn't be reached is a real
+	// diagnosis, so name it. Local, a cluster address unreachable here is the
+	// normal case — Connect() port-forwards to the candidates — so nothing is
+	// recorded as unreachable and the warning falls back to the generic message.
+	if c.inCluster {
+		log.Printf("[caretta] No Caretta-backed metrics service reachable in-cluster.")
+	} else {
+		log.Printf("[caretta] No Caretta-backed metrics service reachable locally. Call Connect() for port-forward.")
+	}
+	c.backendWarning = noBackendWarning(noData, unreachable)
 	return ""
 }
 

@@ -125,7 +125,7 @@ Use `/visual-test` command for the full workflow (cluster check, Playwright MCP,
 
 ### Demo clusters (scripted test fixtures)
 
-Nine scripted `kind` clusters under `scripts/*-demo.sh` reproduce the states each integration needs — states that are hard or impossible to conjure by hand (frozen controllers holding all phases at once, configurations that fail in ways that look like success, connection lanes toggled on demand).
+Ten scripted `kind` clusters under `scripts/*-demo.sh` reproduce the states each integration needs — states that are hard or impossible to conjure by hand (frozen controllers holding all phases at once, configurations that fail in ways that look like success, connection lanes toggled on demand).
 
 **Before using one, read its `scripts/<name>-demo/README.md` — this is not optional.** Each README is the only complete account of what the scenarios cover, which modes are NOT interchangeable, and why the cluster is shaped the way it is; the shape encodes hard-won constraints that look like bugs if you don't know them. Don't improvise against the fixtures or "fix" what looks broken before reading it.
 
@@ -139,6 +139,7 @@ After `make <name>-demo`, run `kubectl config use-context kind-radar-<name>-demo
 | CloudNativePG | `make cnpg-demo` | CNPG renderers/badges. `-live` for real failovers; fixtures have strict ordering constraints |
 | Beyla | `make beyla-demo` | `internal/traffic/beyla.go` — which labels exist depends on Beyla config, not code. Modes `attrs` / `no-network` |
 | Cilium | `make cilium-demo` | `internal/traffic/hubble.go` — every Hubble connection lane. Modes `tls` / `netpol` / `install-radar` |
+| Kubecost | `make kubecost-demo` | Kubecost 3 current costs — real allocation/assets, local port-forward and in-cluster Service DNS. Modes `query` / `install-radar` / `radar-smoke` |
 | Calico | `make calico-demo` | Calico surfaces — both API groups, staged policies, tiers |
 | Crossplane | `make crossplane-demo` | Crossplane renderers and spec-shape dispatch |
 | Rollouts | `make rollouts-demo` | Argo Rollouts progression. `-roll` advances a rollout |

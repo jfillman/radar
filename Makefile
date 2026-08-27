@@ -1,6 +1,7 @@
 .PHONY: build install clean dev frontend backend test test-e2e test-chart lint help restart restart-fe kill watch-backend watch-frontend loadtest
 .PHONY: calico-demo calico-demo-down calico-demo-status
 .PHONY: cilium-demo cilium-demo-down cilium-demo-status
+.PHONY: kubecost-demo kubecost-demo-down kubecost-demo-status
 .PHONY: release release-binaries-dry docker docker-test docker-multiarch docker-push
 .PHONY: desktop desktop-binary desktop-dev desktop-package-darwin desktop-package-windows desktop-package-linux
 
@@ -302,6 +303,19 @@ cilium-demo-down:
 cilium-demo-status:
 	./scripts/cilium-demo.sh status
 
+# Kubecost 3 on kind with ephemeral storage, deterministic prices, accelerated
+# FinOps Agent exports, and Deployment/StatefulSet/DaemonSet fixtures. Exercises
+# the real allocation/asset API plus Radar's local port-forward and in-cluster
+# Service-DNS lanes. See scripts/kubecost-demo/README.md.
+kubecost-demo:
+	./scripts/kubecost-demo.sh up
+
+kubecost-demo-down:
+	./scripts/kubecost-demo.sh down
+
+kubecost-demo-status:
+	./scripts/kubecost-demo.sh status
+
 # Bootstrap a kind cluster running real Calico with its aggregated API server,
 # plus the policy shapes the Calico surfaces render (both API groups serving the
 # same objects, all three staged kinds including a staged deletion, a non-default
@@ -442,6 +456,7 @@ help:
 	@echo "  make velero-demo-live - Velero with real object storage; states produced by the controller"
 	@echo "  make beyla-demo       - Grafana Beyla eBPF traffic fixtures"
 	@echo "  make cilium-demo      - Cilium + Hubble Relay, all Radar connection lanes"
+	@echo "  make kubecost-demo    - Kubecost 3 current-cost API and Radar connection lanes"
 	@echo "  make calico-demo      - Real Calico, both API groups, staged policies"
 	@echo ""
 	@echo "Desktop:"

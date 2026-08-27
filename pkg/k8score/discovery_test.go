@@ -183,10 +183,9 @@ func TestSupportsWatchGVRCoreResourceUsesExactEmptyGroup(t *testing.T) {
 // collision: the plural "localqueues" exists as a real CRD in kueue.x-k8s.io
 // (supports list/watch) and as kueue's aggregated visibility APIService in
 // visibility.kueue.x-k8s.io (no list/watch). Both are CRD-typed and live in
-// different groups, so the older precedence rules never fired and the bare-kind
-// pick was strict first-writer-wins — nondeterministic in production because
-// cross-group discovery order is unstable. GetGVR must resolve to the
-// list/watch-capable CRD regardless of insertion order.
+// different groups, so the bare-kind pick is decided by the list/watch verbs:
+// GetGVR must resolve to the list/watch-capable CRD regardless of insertion
+// order, since cross-group discovery order is unstable in production.
 func TestGetGVRBareKindPrefersListWatchAcrossGroups(t *testing.T) {
 	visibility := APIResource{
 		Group:      "visibility.kueue.x-k8s.io",

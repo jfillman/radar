@@ -271,9 +271,11 @@ func (d *ResourceDiscovery) indexResourceLocked(resource APIResource) {
 	//      lacks those verbs (e.g. a real CRD over an aggregated APIService),
 	//   4. a deterministic sorted-group tie-break so the winner does not depend
 	//      on discovery order when two groups are otherwise indistinguishable.
-	// Rules 3-4 fix bare-kind collisions across groups (e.g. localqueues in
-	// kueue.x-k8s.io vs visibility.kueue.x-k8s.io), which the older rules left
-	// as nondeterministic first-writer-wins.
+	// Rules 3-4 resolve bare-kind collisions across groups deterministically: for
+	// localqueues in kueue.x-k8s.io vs visibility.kueue.x-k8s.io, the list/watch-
+	// capable real CRD wins over the aggregated APIService that lacks those verbs,
+	// and when candidates are otherwise indistinguishable the lowest group name
+	// wins so the result does not depend on discovery order.
 	kindKey := strings.ToLower(resource.Kind)
 	if existing, ok := d.resourceMap[kindKey]; !ok || preferResource(resource, existing) {
 		d.resourceMap[kindKey] = resource
@@ -398,8 +400,11 @@ func (d *ResourceDiscovery) GetAPIResources() ([]APIResource, error) {
 }
 
 // GetGVR returns the GroupVersionResource for a given kind or plural name.
-// WARNING: If multiple CRDs share the same Kind across different API groups,
-// this returns whichever was discovered first. Use GetGVRWithGroup to disambiguate.
+// NOTE: When multiple resources share the same Kind across different API groups,
+// this resolves the collision deterministically: a list/watch-capable resource
+// wins over one lacking those verbs, then the lowest group name breaks ties, so
+// the result does not depend on discovery order. Still use GetGVRWithGroup when a
+// caller needs a specific API group.
 func (d *ResourceDiscovery) GetGVR(kindOrName string) (schema.GroupVersionResource, bool) {
 	if d == nil {
 		return schema.GroupVersionResource{}, false

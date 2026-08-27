@@ -856,6 +856,7 @@ export function getWorkloadDisplayStatus(
   if (workloadStatusLevelRank[healthStatus.level] > workloadStatusLevelRank[status.level]) {
     status.level = healthStatus.level
     status.color = healthStatus.color
+    status.text = `${workloadStatusLabel(healthStatus)} · ${status.text}`
   }
   return { activity, status }
 }
@@ -1524,7 +1525,7 @@ export function getPVCAccessModes(pvc: any): string {
 
 export function getRolloutStatus(rollout: any): StatusBadge {
   if (!isArgoRolloutResource(rollout)) {
-    return { text: 'Unknown', color: healthColors.unknown, level: 'unknown' }
+    return { text: rollout.status?.phase || 'Unknown', color: healthColors.unknown, level: 'unknown' }
   }
   return rolloutActivityBadge(getWorkloadRolloutActivity(rollout, 'rollout'))
 }

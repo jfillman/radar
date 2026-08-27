@@ -233,7 +233,7 @@ describe('getResourceStatus — workload rollout activity', () => {
       },
     }
 
-    expect(getResourceStatus('rollouts', rollout)).toMatchObject({ text: 'Rolling out', level: 'degraded' })
+    expect(getResourceStatus('rollouts', rollout)).toMatchObject({ text: 'Degraded · Rolling out', level: 'degraded' })
   })
 })
 

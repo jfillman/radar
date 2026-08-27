@@ -850,7 +850,8 @@ func collectAppWorkloads(ctx context.Context, cache *k8s.ResourceCache, namespac
 	scaledJobBatches := scaledJobBatchSummaries(cache, namespaces)
 	cronWorkflowBatches := cronWorkflowBatchSummaries(ctx, cache, namespaces)
 	argoRollouts := listDynamicByNamespacesGroup(ctx, cache, namespaces, "Rollout", "argoproj.io")
-	updatedRevisionTargets := applicationRevisionTargets(cache, namespaces, argoRollouts)
+	var updatedRevisionTargets map[string]workloadRevisionTarget
+	var updatedRevisionTargetsOnce sync.Once
 	rolloutReferencedDeployments := map[string]bool{}
 	for _, rollout := range argoRollouts {
 		if target, err := rollouts.ResolveTemplateTarget(rollout); err == nil && target.GVR.Resource == "deployments" {
@@ -860,7 +861,12 @@ func collectAppWorkloads(ctx context.Context, cache *k8s.ResourceCache, namespac
 
 	add := func(kind, ns, name string, lbls, anns map[string]string, image string, workloadHealth packages.Health, ready, desired int, selector *metav1.LabelSelector, rollout *health.WorkloadRolloutActivity, batch *appBatchSummary) {
 		pods := podsForSelector(podsByNS[ns], selector)
-		rollout = attributeApplicationRolloutFailure(rollout, pods, updatedRevisionTargets[kind+"/"+ns+"/"+name])
+		if rollout != nil && (rollout.Active || rollout.Phase == health.RolloutStalled) && rollout.Phase != health.RolloutApplying {
+			updatedRevisionTargetsOnce.Do(func() {
+				updatedRevisionTargets = applicationRevisionTargets(ctx, cache, namespaces, argoRollouts)
+			})
+			rollout = attributeApplicationRolloutFailure(rollout, pods, updatedRevisionTargets[kind+"/"+ns+"/"+name])
+		}
 		restarts, reason := podsRestarts(pods)
 		meta := metav1.ObjectMeta{Namespace: ns, Name: name, Labels: lbls, Annotations: anns}
 		overlay := subject.ResolveOverlay(&meta, false)
@@ -1081,7 +1087,7 @@ func applicationServingHealth(ready, desired int) packages.Health {
 	return packages.HealthUnhealthy
 }
 
-func applicationRevisionTargets(cache *k8s.ResourceCache, namespaces []string, argoRollouts []*unstructured.Unstructured) map[string]workloadRevisionTarget {
+func applicationRevisionTargets(ctx context.Context, cache *k8s.ResourceCache, namespaces []string, argoRollouts []*unstructured.Unstructured) map[string]workloadRevisionTarget {
 	targets := map[string]workloadRevisionTarget{}
 	if cache.ReplicaSets() != nil {
 		var allReplicaSets []*appsv1.ReplicaSet
@@ -1104,6 +1110,9 @@ func applicationRevisionTargets(cache *k8s.ResourceCache, namespaces []string, a
 					deployments, _ = cache.Deployments().Deployments(namespace).List(labels.Everything())
 				}
 				for _, deployment := range deployments {
+					if deployment.Status.UpdatedReplicas == 0 {
+						continue
+					}
 					if hash := currentHashes[deployment.UID]; hash != "" {
 						targets["Deployment/"+deployment.Namespace+"/"+deployment.Name] = workloadRevisionTarget{label: appsv1.DefaultDeploymentUniqueLabelKey, value: hash}
 					}
@@ -1122,6 +1131,27 @@ func applicationRevisionTargets(cache *k8s.ResourceCache, namespaces []string, a
 			for _, statefulSet := range statefulSets {
 				if statefulSet.Status.UpdateRevision != "" {
 					targets["StatefulSet/"+statefulSet.Namespace+"/"+statefulSet.Name] = workloadRevisionTarget{label: appsv1.ControllerRevisionHashLabelKey, value: statefulSet.Status.UpdateRevision}
+				}
+			}
+		})
+	}
+	if cache.DaemonSets() != nil {
+		controllerRevisions := listDynamicByNamespacesGroup(ctx, cache, namespaces, "ControllerRevision", "apps")
+		controllerRevisionItems := make([]unstructured.Unstructured, 0, len(controllerRevisions))
+		for _, revision := range controllerRevisions {
+			controllerRevisionItems = append(controllerRevisionItems, *revision)
+		}
+		currentHashes := k8score.CurrentControllerRevisionPodHashes(controllerRevisionItems)
+		forEachWorkloadNamespace(namespaces, func(namespace string) {
+			var daemonSets []*appsv1.DaemonSet
+			if namespace == "" {
+				daemonSets, _ = cache.DaemonSets().List(labels.Everything())
+			} else {
+				daemonSets, _ = cache.DaemonSets().DaemonSets(namespace).List(labels.Everything())
+			}
+			for _, daemonSet := range daemonSets {
+				if hash := currentHashes[daemonSet.UID]; hash != "" {
+					targets["DaemonSet/"+daemonSet.Namespace+"/"+daemonSet.Name] = workloadRevisionTarget{label: appsv1.ControllerRevisionHashLabelKey, value: hash}
 				}
 			}
 		})

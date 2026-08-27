@@ -57,12 +57,12 @@ interface WorkloadRendererProps {
 }
 
 // Extract real problems from workload status (excludes normal rollout progress)
-function getWorkloadProblems(status: any, spec: any, kind: string, rolloutActive: boolean): string[] {
+function getWorkloadProblems(status: any, spec: any, kind: string, rolloutExplainsShortfall: boolean): string[] {
   const problems: string[] = []
   const isDaemonSet = kind === 'daemonsets'
 
   // Check replica/pod counts — only flag as problem if NOT actively progressing
-  if (!rolloutActive) {
+  if (!rolloutExplainsShortfall) {
     if (isDaemonSet) {
       const ready = status.numberReady || 0
       const desired = status.desiredNumberScheduled || 0
@@ -92,7 +92,7 @@ function getWorkloadProblems(status: any, spec: any, kind: string, rolloutActive
     }
     // Show condition failures, but skip Available=False during active rollout (that's expected)
     if (cond.status === 'False' && cond.message) {
-      if (rolloutActive && cond.type === 'Available') continue
+      if (rolloutExplainsShortfall && cond.type === 'Available') continue
       problems.push(`${cond.type}: ${cond.message}`)
     }
   }
@@ -155,7 +155,8 @@ export function WorkloadRenderer({ kind, data, onNavigate, onViewPods, onScale, 
   // (richer, with cause/action), so the workload-status problems would duplicate.
   const operationalIssuesShown = useOperationalIssuesShown()
   const rolloutActivity = getWorkloadRolloutActivity(data, kind, workloadPods)
-  const problems = operationalIssuesShown ? [] : getWorkloadProblems(status, spec, kind, rolloutActivity.active)
+  const rolloutExplainsShortfall = rolloutActivity.phase === 'applying' || rolloutActivity.phase === 'progressing'
+  const problems = operationalIssuesShown ? [] : getWorkloadProblems(status, spec, kind, rolloutExplainsShortfall)
   const hasProblems = problems.length > 0
   const displayedActivity = scaledTo !== null && rolloutActivity.phase === 'idle'
     ? { ...rolloutActivity, phase: 'applying' as const, active: true, label: 'Scaling workload', detail: `Waiting for the controller to apply ${scaledTo} replicas` }

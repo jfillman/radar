@@ -6775,7 +6775,8 @@ function WorkloadStatusCell({ resource, kind }: { resource: any; kind: string })
   const { activity, status } = getWorkloadDisplayStatus(resource, kind)
   const rolloutVisible = isRolloutActivityVisible(activity)
   const label = rolloutVisible ? status.text : workloadStatusLabel(status)
-  return <Tooltip content={rolloutVisible ? activity.detail || status.text : status.text}><span className={clsx('badge', status.color)}>{label}</span></Tooltip>
+  const detail = rolloutVisible && activity.detail ? `${activity.detail} · ${status.text}` : status.text
+  return <Tooltip content={detail}><span className={clsx('badge', status.color)}>{label}</span></Tooltip>
 }
 
 function WorkloadCell({ resource, column, kind }: { resource: any; kind: string; column: string }) {

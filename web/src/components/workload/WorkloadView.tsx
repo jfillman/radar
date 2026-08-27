@@ -989,7 +989,10 @@ export function WorkloadView({
   const imageGitopsOwnerData = activeImageTargetOwnership
     ? targetGitopsOwnerQuery.data
     : gitopsOwnerQuery.data
-  const managedImageSources = useMemo<ManagedImageSource[]>(() => {
+  const managedImageSources = useMemo<ManagedImageSource[] | undefined>(() => {
+    if (!activeImageTargetOwnership && inheritedGitOpsLookupRef && (inheritedGitOpsResponse.isPending || inheritedGitOpsResponse.isError)) {
+      return undefined
+    }
     const sources: ManagedImageSource[] = []
     if (imageGitopsOwner) {
       sources.push({
@@ -1013,9 +1016,13 @@ export function WorkloadView({
   }, [
     handleOpenGitOpsResource,
     handleOpenHelmRelease,
+    activeImageTargetOwnership,
     imageGitopsOwner,
     imageGitopsOwnerData,
     imageHelmOwner,
+    inheritedGitOpsLookupRef,
+    inheritedGitOpsResponse.isError,
+    inheritedGitOpsResponse.isPending,
   ])
   const actionsBarProps = useMemo(
     () => ({

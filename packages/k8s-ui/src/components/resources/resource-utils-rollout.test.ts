@@ -78,7 +78,7 @@ describe('getWorkloadStatus', () => {
         readyReplicas: 0,
         availableReplicas: 0,
       },
-    }, 'deployments').status).toMatchObject({ text: 'Rollout paused', level: 'unhealthy' })
+    }, 'deployments').status).toMatchObject({ text: 'Unhealthy · Rollout paused', level: 'unhealthy' })
   })
 
   it('preserves unhealthy serving capacity while an Argo Rollout progresses', () => {
@@ -96,8 +96,8 @@ describe('getWorkloadStatus', () => {
     }
     const display = getWorkloadDisplayStatus(resource, 'rollouts')
 
-    expect(display.status).toMatchObject({ text: 'Rolling out', level: 'degraded' })
-    expect(getCellFilterValue(resource, 'status', 'rollouts')).toBe('Rolling out')
+    expect(display.status).toMatchObject({ text: 'Degraded · Rolling out', level: 'degraded' })
+    expect(getCellFilterValue(resource, 'status', 'rollouts')).toBe('Degraded · Rolling out')
   })
 
   it('keeps Argo generation lag informational when observedGeneration is a string', () => {
@@ -142,10 +142,10 @@ describe('getWorkloadStatus', () => {
       kind: 'Rollout',
       metadata: { generation: 1 },
       spec: { replicas: 3 },
-      status: { readyReplicas: 3, availableReplicas: 3, updatedReplicas: 3 },
+      status: { phase: 'Progressing', readyReplicas: 3, availableReplicas: 3, updatedReplicas: 3 },
     }, 'rollouts')
 
-    expect(display.status).toMatchObject({ text: 'Unknown', level: 'unknown' })
+    expect(display.status).toMatchObject({ text: 'Progressing', level: 'unknown' })
     expect(workloadStatusLabel(display.status)).toBe('Unknown')
   })
 

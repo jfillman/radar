@@ -81,3 +81,24 @@ func TestCurrentDeploymentRevisionPodHashes(t *testing.T) {
 		t.Fatalf("current Deployment pod hash = %q, want new", got[types.UID("api")])
 	}
 }
+
+func TestCurrentControllerRevisionPodHashes(t *testing.T) {
+	revisions := []unstructured.Unstructured{
+		{Object: map[string]any{
+			"metadata": map[string]any{"labels": map[string]any{appsv1.ControllerRevisionHashLabelKey: "old"}},
+			"revision": int64(1),
+		}},
+		{Object: map[string]any{
+			"metadata": map[string]any{"labels": map[string]any{appsv1.ControllerRevisionHashLabelKey: "new"}},
+			"revision": int64(2),
+		}},
+	}
+	for i := range revisions {
+		revisions[i].SetOwnerReferences([]metav1.OwnerReference{{Kind: "DaemonSet", UID: types.UID("agent")}})
+	}
+
+	got := CurrentControllerRevisionPodHashes(revisions)
+	if got[types.UID("agent")] != "new" {
+		t.Fatalf("current ControllerRevision pod hash = %q, want new", got[types.UID("agent")])
+	}
+}

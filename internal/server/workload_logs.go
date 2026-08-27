@@ -761,6 +761,9 @@ func workloadRevisionTargetFor(ctx context.Context, cache *k8s.ResourceCache, dy
 		if err != nil {
 			return workloadRevisionTarget{}
 		}
+		if deployment.Status.UpdatedReplicas == 0 {
+			return workloadRevisionTarget{}
+		}
 		replicaSets, err := cache.ReplicaSets().ReplicaSets(namespace).List(labels.Everything())
 		if err != nil {
 			return workloadRevisionTarget{}
@@ -781,7 +784,7 @@ func workloadRevisionTargetFor(ctx context.Context, cache *k8s.ResourceCache, dy
 			}
 		}
 	case "rollout", "rollouts":
-		if workload, err := cache.GetDynamicWithGroup(context.Background(), "Rollout", namespace, name, "argoproj.io"); err == nil {
+		if workload, err := cache.GetDynamicWithGroup(ctx, "Rollout", namespace, name, "argoproj.io"); err == nil {
 			if hash, found, _ := unstructured.NestedString(workload.Object, "status", "currentPodHash"); found {
 				return workloadRevisionTarget{label: rollouts.PodTemplateHashLabel, value: hash}
 			}
@@ -803,10 +806,8 @@ func daemonSetRevisionTarget(ctx context.Context, dynamicClient dynamic.Interfac
 		log.Printf("[workload-pods] DaemonSet revision attribution unavailable for %s/%s: %v", workload.Namespace, workload.Name, err)
 		return workloadRevisionTarget{}
 	}
-	for _, revision := range k8score.BuildControllerRevisions(controllerRevisions.Items, string(workload.UID)) {
-		if revision.IsCurrent && revision.PodHash != "" {
-			return workloadRevisionTarget{label: appsv1.ControllerRevisionHashLabelKey, value: revision.PodHash}
-		}
+	if hash := k8score.CurrentControllerRevisionPodHashes(controllerRevisions.Items)[workload.UID]; hash != "" {
+		return workloadRevisionTarget{label: appsv1.ControllerRevisionHashLabelKey, value: hash}
 	}
 	return workloadRevisionTarget{}
 }

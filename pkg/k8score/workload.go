@@ -1009,6 +1009,37 @@ func CurrentDeploymentRevisionPodHashes(replicaSets []*appsv1.ReplicaSet) map[ty
 	return hashes
 }
 
+func CurrentControllerRevisionPodHashes(revisions []unstructured.Unstructured) map[types.UID]string {
+	type revisionHash struct {
+		revision int64
+		hash     string
+	}
+	current := make(map[types.UID]revisionHash)
+	for i := range revisions {
+		revision := &revisions[i]
+		number, found, _ := unstructured.NestedInt64(revision.Object, "revision")
+		if !found {
+			continue
+		}
+		for _, owner := range revision.GetOwnerReferences() {
+			if (owner.Kind != "StatefulSet" && owner.Kind != "DaemonSet") || owner.UID == "" {
+				continue
+			}
+			if existing, ok := current[owner.UID]; !ok || number > existing.revision {
+				current[owner.UID] = revisionHash{revision: number, hash: revision.GetLabels()[appsv1.ControllerRevisionHashLabelKey]}
+			}
+			break
+		}
+	}
+	hashes := make(map[types.UID]string, len(current))
+	for uid, revision := range current {
+		if revision.hash != "" {
+			hashes[uid] = revision.hash
+		}
+	}
+	return hashes
+}
+
 func (m *WorkloadManager) listControllerRevisions(ctx context.Context, namespace, name, workloadUID string) ([]WorkloadRevision, error) {
 	crGVR, ok := m.discovery.GetGVR("controllerrevisions")
 	if !ok {

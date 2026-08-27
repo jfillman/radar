@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -1256,7 +1257,10 @@ func TestRolloutApplicationFieldsUseReferencedDeployment(t *testing.T) {
 
 func TestApplicationRevisionTargetsUseCurrentDeploymentReplicaSet(t *testing.T) {
 	uid := types.UID("deployment-uid")
-	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "checkout", UID: uid}}
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "checkout", UID: uid},
+		Status:     appsv1.DeploymentStatus{UpdatedReplicas: 1},
+	}
 	replicaSet := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
 		Namespace:   "prod",
 		Name:        "checkout-new",
@@ -1268,8 +1272,26 @@ func TestApplicationRevisionTargetsUseCurrentDeploymentReplicaSet(t *testing.T) 
 	}}
 	useTestResourceCache(t, fake.NewSimpleClientset(deployment, replicaSet))
 
-	target := applicationRevisionTargets(k8s.GetResourceCache(), []string{"prod"}, nil)["Deployment/prod/checkout"]
+	target := applicationRevisionTargets(context.Background(), k8s.GetResourceCache(), []string{"prod"}, nil)["Deployment/prod/checkout"]
 	if target.label != appsv1.DefaultDeploymentUniqueLabelKey || target.value != "new" {
 		t.Fatalf("revision target = %#v", target)
+	}
+}
+
+func TestApplicationRevisionTargetsSkipDeploymentBeforeNewReplicaSetExists(t *testing.T) {
+	uid := types.UID("deployment-uid")
+	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "checkout", UID: uid}}
+	replicaSet := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Namespace:   "prod",
+		Labels:      map[string]string{appsv1.DefaultDeploymentUniqueLabelKey: "old"},
+		Annotations: map[string]string{"deployment.kubernetes.io/revision": "1"},
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: "apps/v1", Kind: "Deployment", Name: "checkout", UID: uid,
+		}},
+	}}
+	useTestResourceCache(t, fake.NewSimpleClientset(deployment, replicaSet))
+
+	if target := applicationRevisionTargets(context.Background(), k8s.GetResourceCache(), []string{"prod"}, nil)["Deployment/prod/checkout"]; target.label != "" {
+		t.Fatalf("revision target = %#v, want none before an updated replica exists", target)
 	}
 }

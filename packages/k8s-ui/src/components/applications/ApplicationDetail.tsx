@@ -1134,7 +1134,11 @@ function ApplicationOverview({
               value={
                 pureBatch
                   ? batchRuntimeForApp(app).label
-                  : rolloutSummary?.label || HEALTH_META[runtimeHealth].label
+                  : rolloutSummary
+                    ? runtimeHealth === 'healthy' || runtimeHealth === 'neutral'
+                      ? rolloutSummary.label
+                      : `${HEALTH_META[runtimeHealth].label} · ${rolloutSummary.label}`
+                    : HEALTH_META[runtimeHealth].label
               }
               detail={
                 pureBatch

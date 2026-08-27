@@ -77,6 +77,21 @@ describe('WorkloadRenderer', () => {
     expect(html).toContain('OnDelete strategy · 0/3 updated')
   })
 
+  it('keeps outage problems visible when an OnDelete workload has no update pending', () => {
+    const html = renderToString(
+      <WorkloadRenderer
+        kind="statefulsets"
+        data={{
+          metadata: { name: 'db', namespace: 'prod', generation: 3 },
+          spec: { replicas: 3, updateStrategy: { type: 'OnDelete' } },
+          status: { observedGeneration: 3, replicas: 3, readyReplicas: 0, updatedReplicas: 3 },
+        }}
+      />,
+    )
+
+    expect(html).toContain('3 of 3 replicas are not ready')
+  })
+
   it('enables manual scaling when no replica controller targets the workload', () => {
     const html = renderToString(
       <WorkloadRenderer kind="deployments" data={deployment} onScale={async () => {}} />,

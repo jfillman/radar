@@ -11,13 +11,13 @@ interface Props {
    * via `key`, which would also discard the children's state on every change
    * while nothing is wrong.
    */
-  resetKey?: unknown
+  resetKey: string | number
 }
 
 interface State {
   hasError: boolean
   error: Error | null
-  resetKey: unknown
+  resetKey: string | number
 }
 
 export class ErrorBoundary extends Component<Props, State> {
@@ -36,8 +36,6 @@ export class ErrorBoundary extends Component<Props, State> {
     console.error('[ErrorBoundary]', error, info.componentStack)
   }
 
-  // resetKey is left alone: getDerivedStateFromProps has already reconciled it
-  // with the current props by the time any handler can run.
   handleReset = () => this.setState({ hasError: false, error: null })
 
   render() {

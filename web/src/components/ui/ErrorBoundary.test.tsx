@@ -2,19 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import { ErrorBoundary } from './ErrorBoundary'
 
-// The reset contract, exercised through the static lifecycle hooks so it runs
-// without a DOM. What this pins down is that navigating clears a caught error:
-// React re-renders the same boundary instance rather than remounting it, so a
-// boundary that only latched would keep the fallback on screen forever.
-const derive = (resetKey: unknown, state: { hasError: boolean; error: Error | null; resetKey: unknown }) =>
-  (ErrorBoundary as unknown as {
-    getDerivedStateFromProps: (
-      p: { children: null; resetKey: unknown },
-      s: typeof state,
-    ) => typeof state | null
-  }).getDerivedStateFromProps({ children: null, resetKey }, state)
-
-const caught = (resetKey: unknown) => ({
+// Navigating re-renders this boundary rather than remounting it, so a boundary
+// that only latched would keep the fallback on screen for the rest of the
+// session. These drive the lifecycle hooks directly - a caught error needs a
+// real render loop, which the SSR-string tests used elsewhere here cannot give.
+const caught = (resetKey: string) => ({
   hasError: true,
   error: new Error("Cannot read properties of undefined (reading 'nodeCount')"),
   resetKey,
@@ -22,20 +14,36 @@ const caught = (resetKey: unknown) => ({
 
 describe('ErrorBoundary reset', () => {
   it('clears a caught error when resetKey changes', () => {
-    const next = derive('/topology', caught('/'))
-    expect(next).toEqual({ hasError: false, error: null, resetKey: '/topology' })
+    expect(ErrorBoundary.getDerivedStateFromProps({ children: null, resetKey: '/topology' }, caught('/'))).toEqual({
+      hasError: false,
+      error: null,
+      resetKey: '/topology',
+    })
   })
 
   it('clears it when only a later path segment changes', () => {
-    // mainView is just the first segment, so /resources/pods and
-    // /resources/services are the same view. Keying on the view alone would
-    // leave a crash under /resources trapping the user as they switch kinds.
-    const next = derive('/resources/services', caught('/resources/pods'))
+    // The view is just the first path segment, so /resources/pods and
+    // /resources/services are the same view. Resetting per view would leave a
+    // crash under /resources trapping the user as they switch kinds.
+    const next = ErrorBoundary.getDerivedStateFromProps(
+      { children: null, resetKey: '/resources/services' },
+      caught('/resources/pods'),
+    )
+    expect(next?.hasError).toBe(false)
+  })
+
+  it('clears it when only the query changes', () => {
+    // Selection rides in the query, so a path-only key would strand a crash on
+    // the view that produced it.
+    const next = ErrorBoundary.getDerivedStateFromProps(
+      { children: null, resetKey: '/resources/pods?resource=kube-system/coredns' },
+      caught('/resources/pods'),
+    )
     expect(next?.hasError).toBe(false)
   })
 
   it('holds the error while resetKey is unchanged', () => {
-    expect(derive('/', caught('/'))).toBeNull()
+    expect(ErrorBoundary.getDerivedStateFromProps({ children: null, resetKey: '/' }, caught('/'))).toBeNull()
   })
 
   it('records the error', () => {

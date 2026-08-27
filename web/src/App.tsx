@@ -2031,13 +2031,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           retained background list out of the focus order + a11y tree (the visual
           cover already blocks pointer events). */}
       {contentReady && <div className="flex-1 flex overflow-hidden" inert={expandedView}>
-        {/* resetKey is load-bearing: navigating re-renders this same boundary
-            instance rather than remounting it, so without it a view that throws
-            keeps the fallback on screen and no amount of navigating escapes it.
-            Keyed on the full path, not mainView, because mainView is only the
-            first path segment - a crash under /resources would otherwise still
-            trap the user while they switch kinds. */}
-        <ErrorBoundary resetKey={location.pathname}>
+        {/* Search included, not just the path: selection inside a view rides in
+            the query (?resource=, ?release=), so a path-only key would still
+            strand a crash on the view that produced it. */}
+        <ErrorBoundary resetKey={location.pathname + location.search}>
         {/* Home dashboard */}
         {mainView === 'home' && (
           <HomeView

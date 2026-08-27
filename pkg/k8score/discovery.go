@@ -264,23 +264,73 @@ func (d *ResourceDiscovery) indexResourceLocked(resource APIResource) {
 		Resource: resource.Name,
 	}
 
-	// Store in map by lowercase kind for lookup. Prefer non-CRD over CRD,
-	// then stable versions within the same group.
+	// Store in map by lowercase kind for lookup. Precedence, in order:
+	//   1. non-CRD over CRD,
+	//   2. within the same group + CRD-ness, a more stable version,
+	//   3. among same CRD-ness, a list/watch-capable resource over one that
+	//      lacks those verbs (e.g. a real CRD over an aggregated APIService),
+	//   4. a deterministic sorted-group tie-break so the winner does not depend
+	//      on discovery order when two groups are otherwise indistinguishable.
+	// Rules 3-4 fix bare-kind collisions across groups (e.g. localqueues in
+	// kueue.x-k8s.io vs visibility.kueue.x-k8s.io), which the older rules left
+	// as nondeterministic first-writer-wins.
 	kindKey := strings.ToLower(resource.Kind)
-	if existing, ok := d.resourceMap[kindKey]; !ok ||
-		(!resource.IsCRD && existing.IsCRD) ||
-		(resource.IsCRD == existing.IsCRD && existing.Group == resource.Group && IsMoreStableVersion(resource.Version, existing.Version)) {
+	if existing, ok := d.resourceMap[kindKey]; !ok || preferResource(resource, existing) {
 		d.resourceMap[kindKey] = resource
 		d.gvrMap[kindKey] = gvr
 	}
 
 	nameKey := strings.ToLower(resource.Name)
-	if existing, ok := d.resourceMap[nameKey]; !ok ||
-		(!resource.IsCRD && existing.IsCRD) ||
-		(resource.IsCRD == existing.IsCRD && existing.Group == resource.Group && IsMoreStableVersion(resource.Version, existing.Version)) {
+	if existing, ok := d.resourceMap[nameKey]; !ok || preferResource(resource, existing) {
 		d.resourceMap[nameKey] = resource
 		d.gvrMap[nameKey] = gvr
 	}
+}
+
+// preferResource reports whether resource should replace existing as the
+// bare-kind/name winner in the lookup maps. It encodes the precedence documented
+// in indexResourceLocked.
+func preferResource(resource, existing APIResource) bool {
+	// Non-CRD over CRD.
+	if !resource.IsCRD && existing.IsCRD {
+		return true
+	}
+	if resource.IsCRD != existing.IsCRD {
+		return false
+	}
+
+	// Same CRD-ness beyond this point.
+	// More stable version within the same group.
+	if existing.Group == resource.Group {
+		return IsMoreStableVersion(resource.Version, existing.Version)
+	}
+
+	// Different groups: prefer a list/watch-capable resource so a browsable
+	// resource wins over a list/watch-less aggregated API.
+	resourceLW := hasListWatch(resource.Verbs)
+	existingLW := hasListWatch(existing.Verbs)
+	if resourceLW != existingLW {
+		return resourceLW
+	}
+
+	// Otherwise break the tie deterministically by sorted group name so the
+	// result is stable regardless of discovery order.
+	return resource.Group < existing.Group
+}
+
+// hasListWatch reports whether verbs include both list and watch.
+func hasListWatch(verbs []string) bool {
+	hasList := false
+	hasWatch := false
+	for _, verb := range verbs {
+		if verb == "list" {
+			hasList = true
+		}
+		if verb == "watch" {
+			hasWatch = true
+		}
+	}
+	return hasList && hasWatch
 }
 
 // Stats returns lightweight stats without triggering a refresh.
@@ -458,17 +508,7 @@ func (d *ResourceDiscovery) SupportsWatch(kindOrName string) bool {
 	if !ok {
 		return false
 	}
-	hasList := false
-	hasWatch := false
-	for _, verb := range res.Verbs {
-		if verb == "list" {
-			hasList = true
-		}
-		if verb == "watch" {
-			hasWatch = true
-		}
-	}
-	return hasList && hasWatch
+	return hasListWatch(res.Verbs)
 }
 
 // SupportsWatchGVR checks if a GVR supports list and watch verbs.
@@ -484,17 +524,7 @@ func (d *ResourceDiscovery) SupportsWatchGVR(gvr schema.GroupVersionResource) bo
 		if res.Group != gvr.Group || res.Version != gvr.Version || res.Name != gvr.Resource {
 			continue
 		}
-		hasList := false
-		hasWatch := false
-		for _, verb := range res.Verbs {
-			if verb == "list" {
-				hasList = true
-			}
-			if verb == "watch" {
-				hasWatch = true
-			}
-		}
-		return hasList && hasWatch
+		return hasListWatch(res.Verbs)
 	}
 	return false
 }

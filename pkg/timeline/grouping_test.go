@@ -8,7 +8,8 @@ import (
 // TestGroupByApp_ClusterScopedMergesWithApp verifies that a cluster-scoped
 // resource (Namespace == "") carrying an app label is merged into the existing
 // namespaced group for that same app, instead of landing in its own isolated
-// group. Regression test for #1501.
+// group. Cluster-scoped resources with an app label merge into the matching
+// namespaced app group.
 func TestGroupByApp_ClusterScopedMergesWithApp(t *testing.T) {
 	events := []TimelineEvent{
 		{ID: "1", Kind: "Deployment", Namespace: "myns", Name: "my-app",

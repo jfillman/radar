@@ -79,6 +79,20 @@ func (s *Server) handleRolloutOperation(w http.ResponseWriter, r *http.Request) 
 	s.writeJSON(w, result)
 }
 
+// canReadWorkloadRefSource reports whether the caller may read the object a workloadRef
+// Rollout keeps its pod template on. Rollouts that carry their own template need nothing.
+func (s *Server) canReadWorkloadRefSource(r *http.Request, ro *unstructured.Unstructured, namespace string) bool {
+	if _, _, ok := rollouts.WorkloadRef(ro); !ok {
+		return true
+	}
+	target, err := rollouts.ResolveTemplateTarget(ro)
+	if err != nil {
+		// Nothing readable to gate on; promote-full fails on its own terms instead.
+		return true
+	}
+	return s.canRead(r, target.GVR.Group, target.GVR.Resource, namespace, "get")
+}
+
 // A workloadRef undo lands on the referenced workload, not the Rollout.
 func rollbackAuthTarget(ro *unstructured.Unstructured) (group, resource string, supported bool) {
 	target, err := rollouts.ResolveTemplateTarget(ro)
@@ -128,6 +142,11 @@ func (s *Server) handleRolloutCapabilities(w http.ResponseWriter, r *http.Reques
 	mainVerb := canPatch && !terminating
 	stepVerb := statusVerb && strategy == rollouts.StrategyCanary
 
+	// Promoting a workloadRef Rollout reads the referenced workload to tell whether the
+	// controller has caught up, so offering the action without that read hands the user
+	// a button that fails.
+	promoteFullVerb := statusVerb && s.canReadWorkloadRefSource(r, ro, namespace)
+
 	rbGroup, rbResource, rbSupported := rollbackAuthTarget(ro)
 	rollbackVerb := rbSupported && !terminating &&
 		s.canRead(r, rbGroup, rbResource, namespace, "patch")
@@ -140,7 +159,7 @@ func (s *Server) handleRolloutCapabilities(w http.ResponseWriter, r *http.Reques
 		Abort:       statusVerb,
 		Retry:       statusVerb,
 		Promote:     statusVerb,
-		PromoteFull: statusVerb,
+		PromoteFull: promoteFullVerb,
 		SkipStep:    stepVerb,
 		Rollback:    rollbackVerb,
 		Restart:     mainVerb,
@@ -150,8 +169,15 @@ func (s *Server) handleRolloutCapabilities(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// errCodeControllerNotCaughtUp lets a caller act on WHY a promotion was refused. The
+// status alone cannot: 503 is also what a lost cluster connection answers, and a caller
+// that reads only the code would tell the operator to retry something that will not
+// recover on its own.
+const errCodeControllerNotCaughtUp = "controller_not_caught_up"
+
 func (s *Server) writeRolloutError(w http.ResponseWriter, err error, action, namespace, name string) {
 	var status int
+	var code string
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		status = http.StatusGatewayTimeout
@@ -165,9 +191,18 @@ func (s *Server) writeRolloutError(w http.ResponseWriter, err error, action, nam
 		status = http.StatusConflict
 	case errors.Is(err, rollouts.ErrNoSteps), errors.Is(err, rollouts.ErrWorkloadRefUnsupported):
 		status = http.StatusBadRequest
+	// The controller is a dependency that is lagging or down — the request was fine, so
+	// the caller should retry rather than treat this as a bug in radar.
+	case errors.Is(err, rollouts.ErrControllerNotCaughtUp):
+		status = http.StatusServiceUnavailable
+		code = errCodeControllerNotCaughtUp
 	default:
 		status = http.StatusInternalServerError
 	}
 	log.Printf("[rollouts] %q %s/%s -> %d: %v", action, sanitizeForLog(namespace), sanitizeForLog(name), status, err)
+	if code != "" {
+		s.writeErrorCode(w, status, code, err.Error())
+		return
+	}
 	s.writeError(w, status, err.Error())
 }

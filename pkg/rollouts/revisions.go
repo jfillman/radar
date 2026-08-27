@@ -208,7 +208,7 @@ func Undo(ctx context.Context, client dynamic.Interface, namespace, name string,
 	}
 
 	return OperationResult{
-		Message:   fmt.Sprintf("Rollout %s/%s rolled back to revision %d", namespace, name, targetRevision),
+		Message:   fmt.Sprintf("Rollout %s/%s: rollback to revision %d initiated — the controller starts the new rollout", namespace, name, targetRevision),
 		Operation: "undo",
 		Namespace: namespace,
 		Name:      name,

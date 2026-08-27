@@ -22,6 +22,7 @@ import { classifyDiffLine } from './UnifiedDiff'
 import { Tooltip } from '../ui/Tooltip'
 import { ForceDeleteConfirmDialog, type CascadeDependent } from '../ui/ForceDeleteConfirmDialog'
 import { ConfirmDialog } from '../ui/ConfirmDialog'
+import { AlertBanner } from '../ui/drawer-components'
 import { DialogPortal } from '../ui/DialogPortal'
 import type { SelectedResource, WorkloadRevision } from '../../types'
 import { displayKindName } from '../ui/drawer-components'
@@ -956,17 +957,55 @@ export function revisionRoleBadges(rev: WorkloadRevision, isRollout: boolean): R
   return badges
 }
 
-// Awaits promote-full so the dialog cannot close on a half-landed rollback. A
-// failure is reported by the mutation's error toast, so it must not block the close.
+// Awaits promote-full so the dialog cannot close on a half-landed rollback, and reports
+// whether it landed: the rollback has already succeeded by this point, so a failure here
+// leaves the Rollout replaying its canary steps and the operator has to be told which
+// half of the pair still needs them.
+export interface PromoteFailure {
+  message: string
+  // Only a lagging controller clears on its own. The status cannot say that — a lost
+  // cluster connection also answers 503 — so this reads the error code the server sends.
+  controllerLagging: boolean
+}
+
+// What the operator is told when the rollback landed and the promotion did not. Kept
+// apart from the markup so the wording and the retry decision can be tested.
+export function promoteFailureGuidance(failure: PromoteFailure): {
+  body: string
+  canRetry: boolean
+} {
+  const shared =
+    'The rollback is live and is re-running the canary steps you asked to skip. ' +
+    'If any of them is a manual pause it will stop there until someone promotes it.'
+  if (failure.controllerLagging) {
+    return {
+      body: `${shared} The Argo Rollouts controller had not caught up yet, which usually clears within a few seconds.`,
+      canRetry: true,
+    }
+  }
+  return {
+    body: `${shared} Promote full is also available from the rollout page once this is resolved.`,
+    canRetry: false,
+  }
+}
+
 export async function completePromoteAfterRollback(
   promote: () => void | Promise<unknown>,
   setPending: (pending: boolean) => void,
-): Promise<void> {
+): Promise<{ promoted: boolean; error?: PromoteFailure }> {
   setPending(true)
   try {
     await promote()
-  } catch {
-    // already surfaced to the user
+    return { promoted: true }
+  } catch (err) {
+    const code = (err as { data?: { error_code?: string } })?.data?.error_code
+    return {
+      promoted: false,
+      error: {
+        message: err instanceof Error ? err.message : String(err),
+        controllerLagging: code === 'controller_not_caught_up',
+      },
+    }
   } finally {
     setPending(false)
   }
@@ -989,6 +1028,8 @@ export function RevisionHistoryDialog({ kind, namespace, name, open, onClose, re
   const [diffRevision, setDiffRevision] = useState<number | null>(null)
   const [promoteAfterRollback, setPromoteAfterRollback] = useState(false)
   const [promotingFull, setPromotingFull] = useState(false)
+  const [promoteError, setPromoteError] = useState<PromoteFailure | null>(null)
+  const retryButtonRef = useRef<HTMLButtonElement>(null)
 
   const handleClose = () => { setDiffRevision(null); onClose() }
 
@@ -999,20 +1040,34 @@ export function RevisionHistoryDialog({ kind, namespace, name, open, onClose, re
   const isRollout = isRolloutKind(kind)
   const canPromoteAfterRollback = offersPromoteAfterRollback(kind, Boolean(onRolloutPromoteFull))
 
+  // The Confirm button unmounts when the panel appears, so focus would land on <body>
+  // and a keyboard user would have to tab the whole dialog to reach the retry.
+  useEffect(() => {
+    if (promoteError) retryButtonRef.current?.focus()
+  }, [promoteError])
+
   const currentRevision = revisions?.find(r => r.isCurrent)
   const selectedRevision = revisions?.find(r => r.number === diffRevision)
   const hasDiffData = currentRevision?.template && selectedRevision?.template
 
   function handleRollback(revision: number) {
+    setPromoteError(null)
     onRollback?.(
       { kind, namespace, name, revision },
       {
         onSuccess: async () => {
           if (canPromoteAfterRollback && promoteAfterRollback && onRolloutPromoteFull) {
-            await completePromoteAfterRollback(
+            const outcome = await completePromoteAfterRollback(
               () => onRolloutPromoteFull({ namespace, name }),
               setPromotingFull,
             )
+            if (!outcome.promoted) {
+              // Closing here would leave the operator with a green "rollback initiated"
+              // toast and a canary still running every step they asked to skip.
+              setPromoteError(outcome.error ?? { message: 'The promotion did not go through.', controllerLagging: false })
+              setConfirmRevision(null)
+              return
+            }
           }
           setConfirmRevision(null)
           setDiffRevision(null)
@@ -1020,6 +1075,21 @@ export function RevisionHistoryDialog({ kind, namespace, name, open, onClose, re
         },
       }
     )
+  }
+
+  async function retryPromoteFull() {
+    if (!onRolloutPromoteFull) return
+    const outcome = await completePromoteAfterRollback(
+      () => onRolloutPromoteFull({ namespace, name }),
+      setPromotingFull,
+    )
+    if (outcome.promoted) {
+      setPromoteError(null)
+      setDiffRevision(null)
+      onClose()
+      return
+    }
+    setPromoteError(outcome.error ?? { message: 'The promotion did not go through.', controllerLagging: false })
   }
 
   function formatTimeAgo(dateStr: string): string {
@@ -1161,7 +1231,11 @@ export function RevisionHistoryDialog({ kind, namespace, name, open, onClose, re
                               disabled={busy}
                               className="px-2 py-0.5 text-xs font-medium text-white bg-amber-600 hover:bg-amber-700 rounded transition-colors disabled:opacity-50"
                             >
-                              {promotingFull ? 'Promoting...' : isRollingBack ? 'Rolling back...' : 'Confirm'}
+                              {promotingFull
+                                ? 'Waiting for the controller…'
+                                : isRollingBack
+                                  ? 'Rolling back...'
+                                  : 'Confirm'}
                             </button>
                             <button
                               onClick={() => setConfirmRevision(null)}
@@ -1197,6 +1271,34 @@ export function RevisionHistoryDialog({ kind, namespace, name, open, onClose, re
           />
         )}
       </div>
+
+      {promoteError && (
+        <div className="mx-4 shrink-0" role="alert">
+          <AlertBanner
+            variant="warning"
+            title="Rolled back, but not promoted"
+            message={
+              <>
+                {promoteFailureGuidance(promoteError).body}
+                <span className="block mt-1 text-theme-text-tertiary break-words">
+                  {promoteError.message}
+                </span>
+              </>
+            }
+          >
+            {promoteFailureGuidance(promoteError).canRetry && (
+              <button
+                ref={retryButtonRef}
+                onClick={retryPromoteFull}
+                disabled={busy}
+                className="mt-2 px-2 py-0.5 text-xs font-medium text-white bg-amber-600 hover:bg-amber-700 rounded transition-colors disabled:opacity-50"
+              >
+                {promotingFull ? 'Waiting for the controller…' : 'Promote fully'}
+              </button>
+            )}
+          </AlertBanner>
+        </div>
+      )}
 
       <div className="flex items-center justify-between gap-4 p-4 border-t border-theme-border shrink-0">
         {canPromoteAfterRollback ? (

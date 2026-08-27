@@ -318,7 +318,9 @@ function useActionsBarProps(
   const restartWorkloadMutation = useRestartWorkload()
   const setWorkloadImagesMutation = useSetWorkloadImages()
   const rollbackMutation = useRollbackWorkload()
-  const rolloutActionMutation = useRolloutAction()
+  // Only the revision dialog drives this one, and it explains a failed promote in place
+  // with the retry — the generic action toast would be a second, vaguer voice.
+  const rolloutDialogPromote = useRolloutAction({ reportErrors: false })
   const triggerCronJobMutation = useTriggerCronJob()
   const suspendCronJobMutation = useSuspendCronJob()
   const resumeCronJobMutation = useResumeCronJob()
@@ -436,7 +438,7 @@ function useActionsBarProps(
     // mutateAsync, not mutate: the revision dialog awaits this before closing.
     onRolloutPromoteFull: rolloutCapabilities?.promoteFull
       ? (params: { namespace: string; name: string }) =>
-          rolloutActionMutation.mutateAsync({ action: 'promote-full', ...params })
+          rolloutDialogPromote.mutateAsync({ action: 'promote-full', ...params })
       : undefined,
     onTriggerCronJob: (params: Parameters<typeof triggerCronJobMutation.mutate>[0]) =>
       triggerCronJobMutation.mutate(params),

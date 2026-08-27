@@ -4613,33 +4613,35 @@ export function useRolloutCapabilities(
   });
 }
 
+// Fallbacks only. The server reports what it actually did — including when it found
+// nothing to do — so its message is preferred over anything asserted here.
 const ROLLOUT_ACTION_MESSAGES: Record<
   RolloutAction,
   { errorMessage: string; successMessage: string }
 > = {
   abort: {
     errorMessage: "Failed to abort rollout",
-    successMessage: "Rollout aborted — traffic reverted to the stable version",
+    successMessage: "Abort sent",
   },
   retry: {
     errorMessage: "Failed to retry rollout",
-    successMessage: "Rollout retried",
+    successMessage: "Retry sent",
   },
   promote: {
     errorMessage: "Failed to promote rollout",
-    successMessage: "Rollout promoted",
+    successMessage: "Promote sent",
   },
   "promote-full": {
     errorMessage: "Failed to promote rollout",
-    successMessage: "Rollout promoted to full — remaining steps skipped",
+    successMessage: "Promote full sent",
   },
   "skip-step": {
     errorMessage: "Failed to skip step",
-    successMessage: "Skipped to the next step",
+    successMessage: "Skip step sent",
   },
 };
 
-export function useRolloutAction() {
+export function useRolloutAction(options?: { reportErrors?: boolean }) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({
@@ -4659,14 +4661,26 @@ export function useRolloutAction() {
         const error = await response
           .json()
           .catch(() => ({ error: "Unknown error" }));
-        throw new Error(error.error || `HTTP ${response.status}`);
+        // The code, not the status, says whether retrying can help: a lost cluster
+        // connection answers 503 on this route too.
+        throw new ApiError(
+          error.error || `HTTP ${response.status}`,
+          response.status,
+          error,
+        );
       }
       return response.json();
     },
-    // meta is static, so per-action success wording goes through onSuccess.
-    meta: { errorMessage: "Rollout action failed" },
-    onSuccess: (_, variables) => {
-      showApiSuccess(ROLLOUT_ACTION_MESSAGES[variables.action].successMessage);
+    // meta is static, so per-action success wording goes through onSuccess. Callers that
+    // render the failure themselves opt out, so the toast handler stays silent.
+    meta:
+      options?.reportErrors === false
+        ? undefined
+        : { errorMessage: "Rollout action failed" },
+    onSuccess: (data, variables) => {
+      showApiSuccess(
+        data?.message || ROLLOUT_ACTION_MESSAGES[variables.action].successMessage,
+      );
       queryClient.invalidateQueries({ queryKey: ["resources", "rollouts"] });
       queryClient.invalidateQueries({
         queryKey: ["resource", "rollouts", variables.namespace, variables.name],

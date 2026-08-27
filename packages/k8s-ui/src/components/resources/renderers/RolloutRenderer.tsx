@@ -46,6 +46,22 @@ interface RolloutRendererProps {
   pendingAction?: RolloutAction | null
 }
 
+// Has the controller reconciled the template as it stands? A rollback changes the
+// template before the controller writes status, and until it catches up a Healthy phase
+// still describes the previous revision.
+//
+// A workloadRef Rollout keeps its template on another object, and a rollback patches
+// THAT object — this payload carries neither its generation nor a way to reach it, so
+// the honest answer is "unknown", not "yes".
+function controllerCaughtUp(data: any): boolean {
+  if (data?.spec?.workloadRef) return false
+  const observed = data?.status?.observedGeneration
+  if (observed === undefined || observed === null) return true
+  const seen = Number(observed)
+  if (!Number.isFinite(seen)) return true
+  return seen >= Number(data?.metadata?.generation ?? 0)
+}
+
 // A denied capability omits the verb entirely; `blocked` covers wrong-state only.
 export function rolloutActions(data: any, capabilities?: RolloutCapabilities): RolloutActionSpec[] {
   if (!capabilities) return []
@@ -55,6 +71,9 @@ export function rolloutActions(data: any, capabilities?: RolloutCapabilities): R
   const steps = data?.spec?.strategy?.canary?.steps || []
   const isAborted = status.abort === true
   const isSettled = phase === 'Healthy' && !isAborted
+  // Promote full is the one verb needed DURING the window where status is stale, so it
+  // only claims "nothing to promote" when the controller is known to have caught up.
+  const isFullyPromoted = isSettled && controllerCaughtUp(data)
   const stepsRemaining = steps.length > 0 && (status.currentStepIndex ?? 0) < steps.length
   // Mid-analysis a canary is Progressing with nothing paused, and promote advances
   // the step rather than clearing a pause — so gating on Paused alone hides it.
@@ -87,7 +106,7 @@ export function rolloutActions(data: any, capabilities?: RolloutCapabilities): R
       pendingLabel: 'Promoting…',
       icon: FastForward,
       hint: 'Skip every remaining step, pause, and analysis — emergency hotfix path',
-      blocked: isSettled ? 'Nothing left to promote' : isAborted ? 'Retry the rollout first' : undefined,
+      blocked: isFullyPromoted ? 'Nothing left to promote' : isAborted ? 'Retry the rollout first' : undefined,
       confirm: {
         title: 'Promote fully?',
         message:

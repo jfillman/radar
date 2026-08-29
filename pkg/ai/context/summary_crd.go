@@ -500,7 +500,10 @@ func gatewayPolicyStatus(obj *unstructured.Unstructured) (string, bool) {
 	}
 
 	failed, degraded, accepted := 0, 0, 0
-	problem := ""
+	// Tracked apart, not in one slot: a warning on the first ancestor and a
+	// failure on the second would otherwise report the warning's text with the
+	// failure's count, reading as though the warning was the failure.
+	failure, warning := "", ""
 
 	for _, a := range ancestors {
 		aMap, ok := a.(map[string]any)
@@ -522,11 +525,11 @@ func gatewayPolicyStatus(obj *unstructured.Unstructured) (string, bool) {
 			switch {
 			case (condType == "Accepted" || condType == "Programmed") && condStatus == "False":
 				if broke == "" {
-					broke = policyProblem(cond, condType)
+					broke = policyProblem(cond, condType, false)
 				}
 			case (condType == "Degraded" || condType == "Warning") && condStatus == "True":
 				if warned == "" {
-					warned = policyProblem(cond, condType)
+					warned = policyProblem(cond, condType, true)
 				}
 			case condType == "Accepted" && condStatus == "True":
 				hasAccepted = true
@@ -536,13 +539,13 @@ func gatewayPolicyStatus(obj *unstructured.Unstructured) (string, bool) {
 		switch {
 		case broke != "":
 			failed++
-			if problem == "" {
-				problem = broke
+			if failure == "" {
+				failure = broke
 			}
 		case warned != "":
 			degraded++
-			if problem == "" {
-				problem = warned
+			if warning == "" {
+				warning = warned
 			}
 		case hasAccepted:
 			accepted++
@@ -559,9 +562,9 @@ func gatewayPolicyStatus(obj *unstructured.Unstructured) (string, bool) {
 
 	switch {
 	case failed > 0:
-		return problem + scope(failed), true
+		return failure + scope(failed), true
 	case degraded > 0:
-		return problem + scope(degraded), true
+		return warning + scope(degraded), true
 	case accepted == total:
 		return "Accepted", true
 	default:
@@ -571,14 +574,21 @@ func gatewayPolicyStatus(obj *unstructured.Unstructured) (string, bool) {
 
 // policyProblem prefers the controller's reason, which names the actual
 // failure (ResourceNotFound, Conflicted, NotAllowed) where the type does not.
-func policyProblem(cond map[string]any, condType string) string {
+//
+// The fallback follows the condition's polarity: Accepted=False reads as
+// NotAccepted, but Warning=True means there *is* a warning and the same
+// construction would render NotWarning, inverting it.
+func policyProblem(cond map[string]any, condType string, trueMeansTrouble bool) string {
 	if reason, _ := cond["reason"].(string); reason != "" {
 		return reason
 	}
-	if condType != "" {
-		return "Not" + condType
+	if condType == "" {
+		return "Failed"
 	}
-	return "Failed"
+	if trueMeansTrouble {
+		return condType
+	}
+	return "Not" + condType
 }
 
 // extractReadyCondition extracts the most informative condition from status.conditions.

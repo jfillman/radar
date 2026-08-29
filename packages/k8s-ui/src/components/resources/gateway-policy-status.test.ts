@@ -38,6 +38,13 @@ describe('Gateway API PolicyStatus', () => {
     expect(getGatewayPolicyStatus(p)).toMatchObject({ text: 'ShadowedRules', tone: 'degraded' })
   })
 
+  // Accepted=False reads as "Not Accepted"; Warning=True means there IS a
+  // warning, so the same construction would invert it.
+  it('names a reason-less warning after the condition, not its negation', () => {
+    const p = policy(anc(cond('Accepted', 'True'), cond('Warning', 'True')))
+    expect(getGatewayPolicyStatus(p)).toMatchObject({ text: 'Warning', tone: 'degraded' })
+  })
+
   it('carries the controller message as the tooltip reason', () => {
     const p = policy(anc(cond('Accepted', 'False', 'Invalid', 'spec.targetRef.kind is not supported')))
     expect(getGatewayPolicyStatus(p)?.reason).toBe('spec.targetRef.kind is not supported')
@@ -71,6 +78,24 @@ describe('aggregating across ancestors', () => {
   it('treats Unknown as undecided rather than as failure', () => {
     const p = policy(anc(cond('Accepted', 'Unknown', 'Pending')))
     expect(getGatewayPolicyStatus(p)).toMatchObject({ tone: 'degraded' })
+  })
+
+  // One slot for both kinds of problem showed the warning's reason next to the
+  // failure's count and tone — the operator reads the warning as the failure.
+  it('reports the failure, not an earlier warning, when both are present', () => {
+    const p = policy(
+      anc(cond('Accepted', 'True'), cond('Warning', 'True', 'ShadowedRules')),
+      anc(cond('Accepted', 'False', 'NotAllowed')),
+    )
+    expect(getGatewayPolicyStatus(p)).toMatchObject({ text: 'NotAllowed (1/2)', tone: 'unhealthy' })
+  })
+
+  it('still reports the warning when nothing failed', () => {
+    const p = policy(
+      anc(cond('Accepted', 'True'), cond('Warning', 'True', 'ShadowedRules')),
+      anc(cond('Accepted', 'True')),
+    )
+    expect(getGatewayPolicyStatus(p)).toMatchObject({ text: 'ShadowedRules (1/2)', tone: 'degraded' })
   })
 
   it('is healthy only when every ancestor accepted', () => {

@@ -248,6 +248,19 @@ func TestGatewayPolicyStatus(t *testing.T) {
 		{"an ancestor with no verdict is not accepted", policy(anc(cond("Accepted", "True", "")), anc()), "Pending (1/2)", true},
 		{"unknown is undecided, not failed", policy(anc(cond("Accepted", "Unknown", "Pending"))), "Pending", true},
 		{"healthy only when every ancestor accepted", policy(anc(cond("Accepted", "True", "")), anc(cond("Accepted", "True", ""))), "Accepted", true},
+		// One slot for both kinds of problem reported the warning's reason with
+		// the failure's count, reading as though the warning was the failure.
+		{"failure wins over an earlier warning", policy(
+			anc(cond("Accepted", "True", ""), cond("Warning", "True", "ShadowedRules")),
+			anc(cond("Accepted", "False", "NotAllowed")),
+		), "NotAllowed (1/2)", true},
+		{"warning still reported when nothing failed", policy(
+			anc(cond("Accepted", "True", ""), cond("Warning", "True", "ShadowedRules")),
+			anc(cond("Accepted", "True", "")),
+		), "ShadowedRules (1/2)", true},
+		// Accepted=False reads as NotAccepted; Warning=True means there IS a
+		// warning, so the same construction would invert it.
+		{"reason-less warning keeps its own name", policy(anc(cond("Accepted", "True", ""), cond("Warning", "True", ""))), "Warning", true},
 		{"attaches to nothing", policy(), "NoAncestors", true},
 		{"not a policy", &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"conditions": []any{}}}}, "", false},
 	}

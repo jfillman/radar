@@ -29,11 +29,20 @@ function conditionsOf(ancestor: any): any[] {
   return Array.isArray(ancestor?.conditions) ? ancestor.conditions : []
 }
 
-function problemText(cond: any): string {
+/**
+ * The controller's reason where it gave one — it names the actual failure
+ * (ResourceNotFound, Conflicted, NotAllowed) where the type does not.
+ *
+ * The fallback has to follow the condition's polarity. `Accepted=False` reads
+ * as "Not Accepted", but `Warning=True` means there *is* a warning, so the same
+ * construction would render "Not Warning" and inverts the meaning.
+ */
+function problemText(cond: any, trueMeansTrouble = false): string {
   const reason = typeof cond?.reason === 'string' ? cond.reason.trim() : ''
   if (reason) return reason
   const type = typeof cond?.type === 'string' ? cond.type.trim() : ''
-  return type ? `Not ${type}` : 'Failed'
+  if (!type) return 'Failed'
+  return trueMeansTrouble ? type : `Not ${type}`
 }
 
 /** True when the object carries a Gateway API PolicyStatus. */
@@ -60,7 +69,12 @@ export function getGatewayPolicyStatus(resource: any): GenericStatus | null {
   let failed = 0
   let degraded = 0
   let accepted = 0
-  let problem: { text: string; reason?: string } | null = null
+  // Tracked apart, not in one slot: a warning on the first ancestor and a
+  // failure on the second would otherwise show the warning's text alongside
+  // the failure's count and tone, reading as though the warning was the
+  // failure.
+  let failure: { text: string; reason?: string } | null = null
+  let warning: { text: string; reason?: string } | null = null
 
   for (const ancestor of ancestors) {
     const conditions = conditionsOf(ancestor)
@@ -70,14 +84,14 @@ export function getGatewayPolicyStatus(resource: any): GenericStatus | null {
     )
     if (broken) {
       failed++
-      problem ??= { text: problemText(broken), reason: broken?.message }
+      failure ??= { text: problemText(broken), reason: broken?.message }
       continue
     }
 
     const warned = conditions.find((c: any) => NEGATIVE_CONDITIONS.has(c?.type) && c?.status === 'True')
     if (warned) {
       degraded++
-      problem ??= { text: problemText(warned), reason: warned?.message }
+      warning ??= { text: problemText(warned, true), reason: warned?.message }
       continue
     }
 
@@ -87,11 +101,11 @@ export function getGatewayPolicyStatus(resource: any): GenericStatus | null {
   const total = ancestors.length
   const scope = (n: number) => (total > 1 ? ` (${n}/${total})` : '')
 
-  if (failed > 0 && problem) {
-    return { text: `${problem.text}${scope(failed)}`, tone: 'unhealthy', reason: problem.reason }
+  if (failed > 0 && failure) {
+    return { text: `${failure.text}${scope(failed)}`, tone: 'unhealthy', reason: failure.reason }
   }
-  if (degraded > 0 && problem) {
-    return { text: `${problem.text}${scope(degraded)}`, tone: 'degraded', reason: problem.reason }
+  if (degraded > 0 && warning) {
+    return { text: `${warning.text}${scope(degraded)}`, tone: 'degraded', reason: warning.reason }
   }
   if (accepted === total) return { text: 'Accepted', tone: 'healthy' }
 

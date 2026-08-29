@@ -31,7 +31,7 @@ import { ClusterHealthCard } from './ClusterHealthCard'
 import { AlertTriangle, CheckCircle, Loader2, Shield } from 'lucide-react'
 import { clsx } from 'clsx'
 import { isMinorOrMajorUpdate } from '../../utils/version'
-import { RadarUpdateNotice } from './RadarUpdateNotice'
+import { RadarVersionLine } from './RadarVersionLine'
 
 interface HomeViewProps {
   namespaces: string[]
@@ -70,10 +70,10 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
   const { data: capabilities } = useCapabilities()
   const deploymentMode = capabilities ? (capabilities.deployment?.mode ?? 'local') : undefined
   const { data: versionInfo } = useVersionCheck(deploymentMode)
-  const showUpdateNotice = deploymentMode === 'in-cluster'
+  const showHomeUpgrade = deploymentMode === 'in-cluster'
     && !!versionInfo?.updateAvailable
     && isMinorOrMajorUpdate(versionInfo.currentVersion, versionInfo.latestVersion)
-  const { data: installationManager, isLoading: installationManagerLoading } = useCloudConnectSelf(showUpdateNotice, 15 * 60 * 1000)
+  const { data: installationManager, isLoading: installationManagerLoading } = useCloudConnectSelf(showHomeUpgrade, 15 * 60 * 1000)
 
   // SSE is cluster-wide on small/medium clusters; the picker only narrows the
   // dashboard summary, so re-apply the filter here or the legend disagrees.
@@ -135,17 +135,17 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
             <span>{fallbackClusterLoadState.message}</span>
           </div>
         )}
-        {showUpdateNotice && versionInfo && (
-          <RadarUpdateNotice
-            version={versionInfo}
-            manager={installationManager}
-            managerLoading={installationManagerLoading}
-            onNavigateToHelmRelease={onNavigateToHelmRelease}
-            onNavigateToGitOps={onNavigateToManagerPath}
-          />
-        )}
         {/* Row 1: Cluster Health Card (combined health + resource counts) */}
         <ClusterHealthCard
+          radarVersion={deploymentMode === 'in-cluster' && versionInfo ? (
+            <RadarVersionLine
+              version={versionInfo}
+              manager={installationManager}
+              managerLoading={installationManagerLoading}
+              onNavigateToHelmRelease={onNavigateToHelmRelease}
+              onNavigateToGitOps={onNavigateToManagerPath}
+            />
+          ) : undefined}
           freshness={
             <FreshnessControl
               mode="auto"

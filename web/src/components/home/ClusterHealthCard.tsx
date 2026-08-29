@@ -41,6 +41,7 @@ interface ClusterHealthCardProps {
   // Freshness/refresh control for the dashboard poll — rendered under the
   // cluster metadata so the overview carries a freshness signal without a band.
   freshness?: ReactNode
+  radarVersion?: ReactNode
 }
 
 function getMetricsInstallHint(platform: string): string {
@@ -137,6 +138,7 @@ export function ClusterHealthCard({
   onWarningEventsClick,
   onIssuesClick,
   freshness,
+  radarVersion,
 }: ClusterHealthCardProps) {
   void _topCRDs // Reserved for future CRD display
 
@@ -261,6 +263,7 @@ export function ClusterHealthCard({
                   onNavigate={onNavigateToUpgradeImpact}
                 />
               )}
+              {radarVersion}
               <span><span className="font-mono">{counts.namespaces}</span> namespaces</span>
               {/* Show raw kubeconfig context as muted metadata only when
                   it differs from the headline AND we're in local mode

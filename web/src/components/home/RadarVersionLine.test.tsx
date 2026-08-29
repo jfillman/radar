@@ -1,7 +1,7 @@
 import { renderToString } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { VersionInfo } from '../../api/client'
-import { RadarUpdateNotice } from './RadarUpdateNotice'
+import { RadarVersionLine } from './RadarVersionLine'
 
 const version: VersionInfo = {
   currentVersion: '1.2.3',
@@ -11,44 +11,67 @@ const version: VersionInfo = {
   releaseUrl: 'https://github.com/skyhook-io/radar/releases/tag/v1.3.0',
 }
 
-describe('RadarUpdateNotice', () => {
+describe('RadarVersionLine', () => {
+  it('shows the running version without an upgrade affordance when up to date', () => {
+    const html = renderToString(
+      <RadarVersionLine version={{ ...version, latestVersion: '1.2.3', updateAvailable: false }} />,
+    )
+    expect(html).toContain('Radar')
+    expect(html).toContain('v1.2.3')
+    expect(html).not.toContain('available')
+  })
+
+  it('keeps patch upgrades in Settings', () => {
+    const html = renderToString(
+      <RadarVersionLine version={{ ...version, latestVersion: '1.2.4' }} />,
+    )
+    expect(html).toContain('v1.2.3')
+    expect(html).not.toContain('v1.2.4')
+    expect(html).not.toContain('available')
+  })
+
   it('does not claim manager discovery has failed while it is loading', () => {
-    const html = renderToString(<RadarUpdateNotice version={version} managerLoading />)
+    const html = renderToString(<RadarVersionLine version={version} managerLoading />)
+    expect(html).toContain('v1.3.0')
+    expect(html).toContain('available')
+    expect(html).toContain('lucide-circle-arrow-up')
     expect(html).toContain('Checking how this installation is managed')
     expect(html).not.toContain('could not be confirmed')
   })
 
   it('deep-links exact Helm ownership when the host supports it', () => {
     const html = renderToString(
-      <RadarUpdateNotice
+      <RadarVersionLine
         version={version}
         manager={{ ownership: 'helm', namespace: 'radar-system', release: 'radar' }}
         onNavigateToHelmRelease={() => {}}
       />,
     )
     expect(html).toContain('Managed by Helm release radar-system/radar')
-    expect(html).toContain('Open Helm release')
+    expect(html).toContain('Open the release to upgrade')
   })
 
   it('only deep-links verified GitOps ownership', () => {
     const controllerRef = { group: 'kustomize.toolkit.fluxcd.io', kind: 'Kustomization', namespace: 'flux-system', name: 'radar' }
     const verified = renderToString(
-      <RadarUpdateNotice
+      <RadarVersionLine
         version={version}
         manager={{ ownership: 'gitops', controller: 'Flux', controllerRef, controllerVerified: true }}
         onNavigateToGitOps={() => {}}
       />,
     )
-    expect(verified).toMatch(/Open.*Kustomization/)
+    expect(verified).toContain('Managed by Kustomization flux-system/radar')
+    expect(verified).toContain('Open it to upgrade through GitOps')
 
     const suspected = renderToString(
-      <RadarUpdateNotice
+      <RadarVersionLine
         version={version}
         manager={{ ownership: 'gitops', controller: 'Flux', controllerRef }}
         onNavigateToGitOps={() => {}}
       />,
     )
     expect(suspected).toContain('appears to be managed by Flux')
-    expect(suspected).not.toContain('Open Kustomization')
+    expect(suspected).toContain('Open the release notes')
+    expect(suspected).not.toContain('Managed by Kustomization')
   })
 })

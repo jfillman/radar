@@ -18,6 +18,7 @@ import { getBackupStatus as _getBackupStatus, getRestoreStatus as _getRestoreSta
 import { getExternalSecretStatus as _getExternalSecretStatus, getClusterExternalSecretStatus as _getClusterExternalSecretStatus, getSecretStoreStatus as _getSecretStoreStatus, getClusterSecretStoreStatus as _getClusterSecretStoreStatus, getSecretStoreProviderType as _getSecretStoreProviderType } from './resource-utils-eso'
 import { getHPATableState, hpaStatusFromState } from './resource-utils-hpa'
 import { getCNPGClusterStatus as _getCNPGClusterStatus, getCNPGBackupStatus as _getCNPGBackupStatus, getCNPGScheduledBackupStatus as _getCNPGScheduledBackupStatus, getCNPGPoolerStatus as _getCNPGPoolerStatus, isApiGroup as _isApiGroup, CNPG_GROUP as _CNPG_GROUP } from './resource-utils-cnpg'
+import { getGenericResourceStatus } from './generic-status'
 import { getCalicoIPPoolAllowedUses, getCalicoIPPoolBlockSize, getCalicoIPPoolEncapsulation, getCalicoPolicyNamespaceSelector, getCalicoPolicyServiceAccountSelector, getCalicoPolicyTypes, isCalicoApiVersion, isCalicoPolicyResource } from './resource-utils-calico'
 
 // ============================================================================
@@ -2216,7 +2217,16 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
       if (kindLower === 'nvidiaclusterpolicies') return _getNvidiaClusterPolicyStatus(resource).text
       if (kindLower === 'nvidiadrivers') return _getNvidiaDriverStatus(resource).text
       if (kindLower === 'resourceclaims') return _getResourceClaimStatus(resource).text
-      if (kindLower === 'backups') return _getBackupStatus(resource).text
+      // Positively gated, matching the cell dispatch: `backups` is reached here
+      // only when the group is unknown to normalizeKindToPlural, and a third
+      // vendor's Backup renders through the generic path — so the sort key has
+      // to come from there too, or the column sorts on a Velero-derived string
+      // the row never displayed.
+      if (kindLower === 'backups') {
+        if (_isApiGroup(resource.apiVersion, _CNPG_GROUP)) return _getCNPGBackupStatus(resource).text
+        if (_isApiGroup(resource.apiVersion, 'velero.io')) return _getBackupStatus(resource).text
+        return getGenericResourceStatus(resource)?.text ?? ''
+      }
       // Velero's Restore/Schedule keys are group-qualified (see
       // GROUP_QUALIFIED_COLUMN_KEYS) because those plurals are shared with
       // rancher/backup-restore-operator and others. The unqualified plural
@@ -2224,8 +2234,17 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
       // reader below rather than being filtered as though it were Velero.
       if (kindLower === 'velerorestores') return _getRestoreStatus(resource).text
       if (kindLower === 'veleroschedules') return _getScheduleStatus(resource).text
-      if (kindLower === 'backupstoragelocations') return _getBSLStatus(resource).text
-      if (kindLower === 'backuprepositories') return _getBackupRepositoryStatus(resource).text
+      // Same positive gate as `backups` above, for the same reason: the cell
+      // dispatch sends a non-Velero resource to GenericCell, so the sort and
+      // filter keys have to come from there too.
+      if (kindLower === 'backupstoragelocations') {
+        if (_isApiGroup(resource.apiVersion, 'velero.io')) return _getBSLStatus(resource).text
+        return getGenericResourceStatus(resource)?.text ?? ''
+      }
+      if (kindLower === 'backuprepositories') {
+        if (_isApiGroup(resource.apiVersion, 'velero.io')) return _getBackupRepositoryStatus(resource).text
+        return getGenericResourceStatus(resource)?.text ?? ''
+      }
       if (kindLower === 'externalsecrets') return _getExternalSecretStatus(resource).text
       if (kindLower === 'clusterexternalsecrets') return _getClusterExternalSecretStatus(resource).text
       if (kindLower === 'secretstores') return _getSecretStoreStatus(resource).text
@@ -2242,15 +2261,9 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
       if (kindLower === 'cnpgbackups') return _getCNPGBackupStatus(resource).text
       if (kindLower === 'scheduledbackups' && _isApiGroup(resource.apiVersion, _CNPG_GROUP)) return _getCNPGScheduledBackupStatus(resource).text
       if (kindLower === 'poolers' && _isApiGroup(resource.apiVersion, _CNPG_GROUP)) return _getCNPGPoolerStatus(resource).text
-      // Generic CRDs: try status.phase, then Ready condition
-      if (resource.status?.phase) return resource.status.phase
-      {
-        const conditions = resource.status?.conditions || []
-        const ready = conditions.find((c: any) => c.type === 'Ready')
-        if (ready?.status === 'True') return 'Ready'
-        if (ready?.status === 'False') return 'Not Ready'
-      }
-      return ''
+      // Generic CRDs. Must read the same text the cell renders or the dropdown
+      // offers strings that appear on no row — hence the shared derivation.
+      return getGenericResourceStatus(resource)?.text ?? ''
     case 'state':
       if (kindLower === 'orders') return getOrderState(resource).text
       if (kindLower === 'challenges') return getChallengeState(resource).text

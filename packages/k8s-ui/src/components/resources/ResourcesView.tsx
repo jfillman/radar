@@ -137,7 +137,13 @@ import {
   parseColumnFilterExcludes,
   podMatchesProblemCategory,
   SEVERITY_DOT_COLOR,
+  healthColors,
 } from './resource-utils'
+import { getGenericResourceStatus } from './generic-status'
+import {
+  type PrinterColumnDef, type PrinterTable, PRINTER_COLUMN_PREFIX, formatPrinterCell, printerCellSortValue,
+  printerCellTone, printerColumnKey, printerColumnWidth, printerTableKey, printerTableMatchesKind, readPrinterCell,
+} from './printer-columns'
 import { SEVERITY_BADGE, EVENT_TYPE_COLORS } from '../../utils/badge-colors'
 import { pluralize } from '../../utils/pluralize'
 import { getPodGpuCount, getNodeGpuCount } from '../../utils/extended-resources'
@@ -2245,9 +2251,128 @@ function getColumnsForKind(kind: string, group?: string): Column[] {
   return DEFAULT_COLUMNS
 }
 
+/**
+ * Whether Radar hand-curates this kind's columns. The single definition of
+ * "curated": the printer-column XOR, the storage-key qualifier, and the host's
+ * decision whether to request table mode at all must all agree, or the server
+ * does work the client throws away — or worse, they disagree about which set a
+ * kind is on.
+ */
+export function hasCuratedColumns(kind: string, group?: string): boolean {
+  return getColumnsForKind(kind, group) !== DEFAULT_COLUMNS
+}
+
 // Get the default visible columns for a kind
 function getDefaultVisibleColumns(columns: Column[]): Set<string> {
   return new Set(columns.filter(c => c.defaultVisible !== false).map(c => c.key))
+}
+
+// Materializes one vendor-declared printer column into a self-contained
+// ExtraColumn, so it rides the same render/sort/filter rails as a user's custom
+// column. Values were evaluated server-side and arrive keyed by uid.
+function buildPrinterColumn(def: PrinterColumnDef, index: number, table: PrinterTable): ExtraColumn {
+  const read = (resource: any) => readPrinterCell(table, resource?.metadata?.uid, index)
+  return {
+    key: printerColumnKey(def),
+    label: def.name,
+    width: printerColumnWidth(def),
+    // Columns in kubectl's `-o wide` tier are declared but not shown by
+    // default; the column picker still offers them.
+    defaultVisible: (def.priority ?? 0) === 0,
+    tooltip: def.description || undefined,
+    render: (resource: any) => {
+      const value = read(resource)
+      // `date` cells arrive already humanized ("5m") — the API server's table
+      // converter does that, so re-formatting here would parse "5m" as a date.
+      const text = formatPrinterCell(value)
+      if (!text) return <span className="text-sm text-theme-text-tertiary">-</span>
+      // A column the vendor named Ready/Healthy/Established carries the only
+      // scannable signal these kinds have — they have no curated Status column.
+      // Rendering it as grey text would leave a screen of uniform "True".
+      const tone = printerCellTone(def, value)
+      if (tone) {
+        return (
+          // The value, not the column's description — the header tooltip
+          // carries that. A cell tooltip exists to reveal a truncated value.
+          <Tooltip content={text}>
+            <span className={clsx('badge', healthColors[tone])}>{text}</span>
+          </Tooltip>
+        )
+      }
+      return (
+        <Tooltip content={text}>
+          <span className="text-sm text-theme-text-secondary truncate block">{text}</span>
+        </Tooltip>
+      )
+    },
+    getSortValue: (resource: any) => printerCellSortValue(read(resource), def),
+    getFilterValue: (resource: any) => formatPrinterCell(read(resource)),
+  }
+}
+
+// Printer columns fill in only where Radar has no curated set for the kind —
+// the two are exclusive, never merged. A curated set is hand-tuned and often
+// encodes why a vendor-obvious field is the wrong one to show, so it wins.
+function buildPrinterColumns(
+  kind: string,
+  group: string | undefined,
+  table: PrinterTable | null | undefined,
+): ExtraColumn[] {
+  if (!table?.columns?.length) return []
+  if (!printerTableMatchesKind(table, kind, group)) return []
+  if (hasCuratedColumns(kind, group)) return []
+  return table.columns.map((def, i) => buildPrinterColumn(def, i, table))
+}
+
+// The kind's effective column set. Printer columns replace the generic
+// Name/Namespace/Status/Age set rather than joining it: the vendor's columns
+// are the answer to the same question the generic Status column was guessing
+// at, and showing both would ask the reader which one to believe. Name,
+// Namespace and Age stay because Radar renders those itself (the server drops
+// the CRD's own duplicates of them before sending).
+function columnsForKindWithPrinter(
+  kind: string,
+  group: string | undefined,
+  printerColumns: ExtraColumn[],
+): Column[] {
+  const curated = getColumnsForKind(kind, group)
+  if (!printerColumns.length || hasCuratedColumns(kind, group)) return curated
+  return [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-48' },
+    ...printerColumns,
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ]
+}
+
+/**
+ * The visible-column set for a kind the user has saved settings for.
+ *
+ * Saved choices win, with two seeded exceptions for columns the blob predates —
+ * a user cannot have decided to hide something they were never shown:
+ *   - host extras, which are injected by the embedding app;
+ *   - printer columns, but only when the blob names none at all. Once it names
+ *     one, the user has seen the set and an absent key is a deliberate hide.
+ */
+export function mergeSavedVisibleColumns(
+  savedVisible: string[],
+  extraKeys: string[],
+  printerColumns: ExtraColumn[],
+): Set<string> {
+  const merged = new Set(savedVisible)
+  for (const k of extraKeys) merged.add(k)
+  if (!savedVisible.some(k => k.startsWith(PRINTER_COLUMN_PREFIX))) {
+    for (const c of printerColumns) {
+      if (c.defaultVisible !== false) merged.add(c.key)
+    }
+  }
+  return merged
+}
+
+/** Storage/reset identity for a selection. Two CRDs can share a plural across
+ * API groups, and their columns are unrelated. */
+export function selectedKindIdentityOf(kind: { name: string; group?: string }): string {
+  return `${kind.name} ${kind.group ?? ''}`
 }
 
 // Host-injected leading columns minus any whose key collides with a built-in.
@@ -2276,6 +2401,22 @@ function filterHostExtras(
 // localStorage helpers for column settings
 const COLUMN_SETTINGS_PREFIX = 'radar-columns-'
 
+// Storage identity for a kind's column settings. normalizeKindToPlural falls
+// through to the bare plural for anything outside the curated collision
+// catalog, so two uncurated CRDs sharing a plural in different API groups —
+// Crossplane ships two `Usage` kinds — would share one blob and leak column
+// visibility, widths and custom columns between them. Harmless while both got
+// identical generic columns; not harmless once each has its own printer
+// columns. Only the fallthrough kinds are qualified, so curated and core kinds
+// keep the key their saved preferences are already under.
+export function columnSettingsKey(kind: string, group?: string): string {
+  const normalized = normalizeKindToPlural(kind, group)
+  if (group && !hasCuratedColumns(kind, group)) {
+    return `${normalized}.${group}`
+  }
+  return normalized
+}
+
 interface ColumnSettings {
   visible: string[]
   widths: Record<string, number>
@@ -2284,7 +2425,7 @@ interface ColumnSettings {
 
 function loadColumnSettings(kind: string, group?: string): ColumnSettings | null {
   try {
-    const key = COLUMN_SETTINGS_PREFIX + normalizeKindToPlural(kind, group)
+    const key = COLUMN_SETTINGS_PREFIX + columnSettingsKey(kind, group)
     const raw = localStorage.getItem(key)
     if (raw) return JSON.parse(raw)
   } catch { /* ignore */ }
@@ -2293,14 +2434,14 @@ function loadColumnSettings(kind: string, group?: string): ColumnSettings | null
 
 function saveColumnSettings(kind: string, group: string | undefined, settings: ColumnSettings) {
   try {
-    const key = COLUMN_SETTINGS_PREFIX + normalizeKindToPlural(kind, group)
+    const key = COLUMN_SETTINGS_PREFIX + columnSettingsKey(kind, group)
     localStorage.setItem(key, JSON.stringify(settings))
   } catch { /* ignore */ }
 }
 
 function clearColumnSettings(kind: string, group?: string) {
   try {
-    const key = COLUMN_SETTINGS_PREFIX + normalizeKindToPlural(kind, group)
+    const key = COLUMN_SETTINGS_PREFIX + columnSettingsKey(kind, group)
     localStorage.removeItem(key)
   } catch { /* ignore */ }
 }
@@ -2408,6 +2549,11 @@ interface ResourcesViewProps {
    *  doesn't need to extend KNOWN_COLUMNS or per-kind cell renderers.
    *  When undefined, behavior is byte-identical to single-cluster mode. */
   extraLeadingColumns?: ExtraColumn[]
+  /** Vendor-declared columns from the kind's CRD (additionalPrinterColumns),
+   *  evaluated server-side. Used ONLY for kinds Radar has no curated column
+   *  set for — the two are exclusive. Hosts that don't fetch them get the
+   *  generic columns and nothing changes. */
+  printerTable?: PrinterTable | null
   /** Escape hatch for full-page-nav row selection: receive the FULL
    *  resource object on row click / Enter / `d` / search-Enter, instead
    *  of the stripped {kind, namespace, name, group} shape onResourceClick
@@ -2637,6 +2783,7 @@ export function ResourcesView({
   onCreateResource,
   defaultKind = DEFAULT_KIND_INFO,
   extraLeadingColumns,
+  printerTable,
   onRowSelect,
   rowHrefFor,
   onCompareSubmit,
@@ -2834,22 +2981,32 @@ export function ResourcesView({
   // collision: a colliding extra is filtered out (with a dev-mode warn)
   // so we don't render two columns sharing one key — that would yield
   // duplicate React keys and corrupt visibleColumns / columnWidths state.
+  const builtPrinterColumns = useMemo(
+    () => buildPrinterColumns(selectedKind.name, selectedKind.group, printerTable),
+    [selectedKind.name, selectedKind.group, printerTable],
+  )
+  const printerColumnsKey = useMemo(
+    () => printerTableKey(builtPrinterColumns.length ? printerTable : null),
+    [printerTable, builtPrinterColumns],
+  )
+
   const allColumns = useMemo(() => {
-    const kindColumns = getColumnsForKind(selectedKind.name, selectedKind.group)
+    const kindColumns = columnsForKindWithPrinter(selectedKind.name, selectedKind.group, builtPrinterColumns)
     if (!extraLeadingColumns?.length && !builtCustomColumns.length) return kindColumns
     const builtinKeys = new Set(kindColumns.map(c => c.key))
     const filteredExtras = filterHostExtras(extraLeadingColumns, builtinKeys, selectedKind.name)
     return [...filteredExtras, ...kindColumns, ...builtCustomColumns]
-  }, [selectedKind.name, selectedKind.group, extraLeadingColumns, builtCustomColumns])
+  }, [selectedKind.name, selectedKind.group, extraLeadingColumns, builtCustomColumns, builtPrinterColumns])
 
   // Map of extra column keys for fast O(1) lookup on each render path
   // (cell render, sort, column-filter unique-values).
   const extraColumnsByKey = useMemo(() => {
     const m = new Map<string, ExtraColumn>()
     extraLeadingColumns?.forEach(c => m.set(c.key, c))
+    builtPrinterColumns.forEach(c => m.set(c.key, c))
     builtCustomColumns.forEach(c => m.set(c.key, c))
     return m
-  }, [extraLeadingColumns, builtCustomColumns])
+  }, [extraLeadingColumns, builtCustomColumns, builtPrinterColumns])
 
   // Guards the save effect from persisting on the initial load of each kind
   // (set false by the load effect, flipped true on its first skipped save).
@@ -2879,7 +3036,7 @@ export function ResourcesView({
     // (non-array, blank path, bad source) must not crash the later .map or add dead columns.
     const savedCustom = sanitizeCustomColumnDefs(saved?.custom)
     setCustomColumns(savedCustom)
-    const kindColumns = getColumnsForKind(selectedKind.name, selectedKind.group)
+    const kindColumns = columnsForKindWithPrinter(selectedKind.name, selectedKind.group, builtPrinterColumns)
     const builtinKeys = new Set(kindColumns.map(c => c.key))
     const extras = filterHostExtras(extraLeadingColumns, builtinKeys, selectedKind.name)
     const effective = [...extras, ...kindColumns, ...savedCustom.map(buildCustomColumn)]
@@ -2906,16 +3063,18 @@ export function ResourcesView({
         setVisibleColumns(getDefaultVisibleColumns(effective))
         setColumnWidths({})
       } else {
-        const merged = new Set(saved.visible)
-        for (const k of extraKeys) merged.add(k)
-        setVisibleColumns(merged)
+        setVisibleColumns(mergeSavedVisibleColumns(saved.visible, extraKeys, builtPrinterColumns))
         setColumnWidths(saved.widths || {})
       }
     } else {
       setVisibleColumns(getDefaultVisibleColumns(effective))
       setColumnWidths({})
     }
-  }, [selectedKind.name, selectedKind.group, extraLeadingColumns])
+    // printerColumnsKey, not builtPrinterColumns: the built array is a new
+    // identity on every refetch, and re-running this effect would reset the
+    // user's in-session column choices each time the list polls. The key only
+    // changes when the kind changes or an operator upgrade changes the CRD.
+  }, [selectedKind.name, selectedKind.group, extraLeadingColumns, printerColumnsKey])
 
   // Save column settings when they change (skip the initial load of each kind)
   useEffect(() => {
@@ -3969,12 +4128,17 @@ export function ResourcesView({
 
   // Reset sort and filters when kind changes (but not when syncing from URL navigation)
   // Track previous kind to skip on mount (where the effect fires but kind hasn't actually changed)
-  const prevKindRef = useRef(selectedKind.name)
+  // Keyed on group as well as plural: two CRDs can share a plural across API
+  // groups, and their printer columns are unrelated. Resetting on the plural
+  // alone would carry a `printer:*` sort or filter onto a table with no such
+  // column, where every row fails the filter and the list looks empty.
+  const selectedKindIdentity = selectedKindIdentityOf(selectedKind)
+  const prevKindRef = useRef(selectedKindIdentity)
   useEffect(() => {
-    if (prevKindRef.current === selectedKind.name) {
+    if (prevKindRef.current === selectedKindIdentity) {
       return
     }
-    prevKindRef.current = selectedKind.name
+    prevKindRef.current = selectedKindIdentity
     setSortColumn(null)
     setSortDirection(null)
     setOpenColumnFilter(null)
@@ -3983,7 +4147,7 @@ export function ResourcesView({
       setColumnFilterExcludes({})
     }
     setProblemFilters([])
-  }, [selectedKind.name])
+  }, [selectedKindIdentity])
 
   // Toggle sort for a column
   const handleSort = useCallback((column: string) => {
@@ -4017,7 +4181,17 @@ export function ResourcesView({
       case 'age':
         return meta.creationTimestamp ? new Date(meta.creationTimestamp).getTime() : 0
       case 'status':
-        return status.phase || ''
+        // Uncurated kinds sort on the text their badge shows: they have no
+        // phase to sort on when the status came from a condition or a replica
+        // count, so phase ordered them all as equal.
+        //
+        // Curated kinds sort on phase. Their cell already shows something
+        // richer, but routing the sort through the per-kind readers would
+        // reorder the most-used lists — Pods, Deployments, Nodes — and cost a
+        // status derivation per comparison.
+        return hasCuratedColumns(selectedKind.name, selectedKind.group)
+          ? (status.phase || '')
+          : (getGenericResourceStatus(resource)?.text ?? '')
       case 'containers':
         // Pod containers column — sort by readiness ratio
         if (status.containerStatuses) {
@@ -4096,7 +4270,7 @@ export function ResourcesView({
       default:
         return ''
     }
-  }, [metricsLookup])
+  }, [metricsLookup, selectedKind.name, selectedKind.group])
 
   // Helper to check if a pod matches problem filters
   const podMatchesProblemFilter = useCallback((pod: any, filters: string[]): boolean => {
@@ -6436,53 +6610,13 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
 function GenericCell({ resource, column }: { resource: any; column: string }) {
   switch (column) {
     case 'status': {
-      // Try to extract status from common patterns
-      const status = resource.status
-      if (!status) return <span className="text-sm text-theme-text-tertiary">-</span>
-
-      // Check for phase (common in many CRDs)
-      if (status.phase) {
-        const phase = status.phase as string
-        const isHealthy = ['Running', 'Active', 'Succeeded', 'Ready', 'Healthy', 'Available'].includes(phase)
-        const isWarning = ['Pending', 'Progressing', 'Unknown'].includes(phase)
-        return (
-          <span className={clsx(
-            'badge',
-            isHealthy ? 'status-healthy' :
-            isWarning ? 'status-degraded' :
-            'status-unhealthy'
-          )}>
-            {phase}
-          </span>
-        )
-      }
-
-      // Check for conditions (common pattern)
-      if (status.conditions && Array.isArray(status.conditions)) {
-        const readyCondition = status.conditions.find((c: any) => c.type === 'Ready' || c.type === 'Available')
-        if (readyCondition) {
-          const isReady = readyCondition.status === 'True'
-          return (
-            <span className={clsx(
-              'badge',
-              isReady ? 'status-healthy' : 'status-degraded'
-            )}>
-              {isReady ? 'Ready' : 'Not Ready'}
-            </span>
-          )
-        }
-      }
-
-      // Check for state field
-      if (status.state) {
-        return (
-          <span className="text-sm text-theme-text-secondary truncate">
-            {String(status.state)}
-          </span>
-        )
-      }
-
-      return <span className="text-sm text-theme-text-tertiary">-</span>
+      const derived = getGenericResourceStatus(resource)
+      if (!derived) return <span className="text-sm text-theme-text-tertiary">-</span>
+      return (
+        <Tooltip content={derived.reason ?? derived.text}>
+          <span className={clsx('badge', healthColors[derived.tone])}>{derived.text}</span>
+        </Tooltip>
+      )
     }
     default:
       return <span className="text-sm text-theme-text-tertiary">-</span>

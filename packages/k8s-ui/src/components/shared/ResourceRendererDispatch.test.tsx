@@ -655,12 +655,25 @@ describe('shared plurals — the status path collides too', () => {
   // The renderer and the status badge are two separate switches over the same
   // plural, and fixing one leaves the other reading a foreign CRD's conditions
   // as if they were Knative's.
+  // Phase-only on purpose. Knative reports a bare "Unknown" for a resource with
+  // no conditions, while the generic path reports the phase — so this fixture
+  // tells the two apart. A Ready=False condition would not: both paths surface
+  // the same text for it, and pinning which of phase/conditions wins is a
+  // separate concern that generic-status.test.ts owns.
   it('does not give a foreign subscriptions CRD a Knative status', () => {
     const s = getResourceStatus('subscriptions', {
       apiVersion: 'operators.coreos.com/v1alpha1',
-      status: { conditions: [{ type: 'Ready', status: 'False' }], phase: 'AtLatestKnown' },
+      status: { phase: 'AtLatestKnown' },
     })
     expect(s?.text).toBe('AtLatestKnown')
+  })
+
+  it('still routes a Knative subscription to the Knative status', () => {
+    const s = getResourceStatus('subscriptions', {
+      apiVersion: 'messaging.knative.dev/v1',
+      status: { phase: 'AtLatestKnown' },
+    })
+    expect(s?.text).toBe('Unknown')
   })
 
   it('still gives Knative its own status', () => {

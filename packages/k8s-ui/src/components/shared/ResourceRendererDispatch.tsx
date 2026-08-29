@@ -1,6 +1,7 @@
 import { clsx } from 'clsx'
-import { SEVERITY_BADGE } from '../../utils/badge-colors'
+import { SEVERITY_BADGE, HEALTH_BADGE_COLORS } from '../../utils/badge-colors'
 import { isArgoRolloutResource } from '../../utils/workload-rollout'
+import { getGenericResourceStatus } from '../resources/generic-status'
 import {
   getPodStatus,
   getWorkloadDisplayStatus,
@@ -1201,36 +1202,8 @@ export function getResourceStatus(kind: string, data: any): { text: string; colo
     return { text: status.text, color: status.color }
   }
 
-  // Generic status extraction
-  const status = data.status
-  if (status) {
-    if (status.phase) {
-      const phase = String(status.phase)
-      const healthyPhases = ['Running', 'Active', 'Succeeded', 'Ready', 'Healthy', 'Available', 'Bound']
-      const warningPhases = ['Pending', 'Progressing', 'Unknown', 'Terminating']
-      const isHealthy = healthyPhases.includes(phase)
-      const isWarning = warningPhases.includes(phase)
-      return {
-        text: phase,
-        color: isHealthy ? SEVERITY_BADGE.success :
-               isWarning ? SEVERITY_BADGE.warning :
-               SEVERITY_BADGE.error
-      }
-    }
-
-    if (status.conditions && Array.isArray(status.conditions)) {
-      const readyCondition = status.conditions.find((c: any) =>
-        c.type === 'Ready' || c.type === 'Available' || c.type === 'Progressing'
-      )
-      if (readyCondition) {
-        const isReady = readyCondition.status === 'True'
-        return {
-          text: isReady ? 'Ready' : 'Not Ready',
-          color: isReady ? SEVERITY_BADGE.success : SEVERITY_BADGE.warning
-        }
-      }
-    }
-  }
+  const derived = getGenericResourceStatus(data)
+  if (derived) return { text: derived.text, color: HEALTH_BADGE_COLORS[derived.tone] }
 
   return null
 }

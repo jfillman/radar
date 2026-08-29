@@ -1963,6 +1963,13 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// table=1 switches to the printer-column envelope. See resourceTableResponse
+	// for why that envelope is written even when there are no columns to report.
+	tableMode, err := parseTableMode(r.URL.Query().Get("table"))
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// parseNamespacesForUser primes the per-user perm cache (triggers
 	// DiscoverNamespaces if needed). canRead below relies on it.
@@ -1973,7 +1980,11 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	// returns the explicit status.
 	finalNamespaces, _, _, ok := s.preflightResourceList(r, kind, group, namespaces)
 	if !ok {
-		s.writeJSON(w, []any{})
+		// Denied, not empty. writeResourceList resolves columns for an empty
+		// list, and that lookup runs as Radar's own identity — so routing a
+		// denial through it would answer a caller who cannot list the kind with
+		// its column metadata. Emit the envelope without a table.
+		s.writeEmptyResourceTable(w, tableMode, kind, group)
 		return
 	}
 	namespaces = finalNamespaces
@@ -2072,7 +2083,7 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 		if includeSummary {
 			result = applySummaryStrip(result)
 		}
-		s.writeJSON(w, result)
+		s.writeResourceList(w, r, cache, tableMode, kind, group, result)
 		return
 	}
 
@@ -2377,7 +2388,7 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 		result = summarizeTypedList(kind, result)
 		result = applySummaryStrip(result)
 	}
-	s.writeJSON(w, result)
+	s.writeResourceList(w, r, cache, tableMode, kind, group, result)
 }
 
 // normalizeKind converts K8s kind names to lowercase for case-insensitive matching
@@ -4589,13 +4600,20 @@ func (s *Server) handleCAPIClusterConnect(w http.ResponseWriter, r *http.Request
 
 // Helper methods
 
+// normalizeNilSlice turns a nil slice into an empty one. Nil slices serialize
+// as "null", which breaks callers that expect an array. Shared with the
+// printer-column envelope, where the slice is nested a level down and so never
+// reaches writeJSON's own top-level check.
+func normalizeNilSlice(data any) any {
+	if data == nil || (reflect.TypeOf(data) != nil && reflect.TypeOf(data).Kind() == reflect.Slice && reflect.ValueOf(data).IsNil()) {
+		return []any{}
+	}
+	return data
+}
+
 func (s *Server) writeJSON(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
-	// Nil slices serialize as "null" in JSON — normalize to empty array "[]"
-	// to avoid frontend errors when the response is expected to be an array.
-	if data == nil || (reflect.TypeOf(data) != nil && reflect.TypeOf(data).Kind() == reflect.Slice && reflect.ValueOf(data).IsNil()) {
-		data = []any{}
-	}
+	data = normalizeNilSlice(data)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		// Can't change HTTP status at this point, but log for debugging
 		log.Printf("Failed to encode JSON response: %v", err)

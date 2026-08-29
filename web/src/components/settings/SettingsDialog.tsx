@@ -16,7 +16,7 @@ import {
   useOpenCostSummary,
 } from '../../api/client'
 import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
-import { Input, SelectMenu } from '@skyhook-io/k8s-ui'
+import { Input, ResourceRefBadge, SelectMenu, type ResourceRef } from '@skyhook-io/k8s-ui'
 import { Collapse, CollapseChevron } from '@skyhook-io/k8s-ui/components/ui/Collapse'
 import { Tooltip } from '../ui/Tooltip'
 import { AISettingsSection, type AIDraft } from '../diagnose/AISettings'
@@ -90,6 +90,7 @@ interface ConfigResponse {
 interface KubecostApplyResponse {
   source: 'prometheus' | 'kubecost'
   address?: string
+  service?: ResourceRef & { kind: 'Service'; port: number }
   apiKeySet: boolean
 }
 
@@ -97,6 +98,7 @@ interface SettingsDialogProps {
   open: boolean
   onClose: () => void
   initialSection?: SettingsSectionId
+  onNavigateToResource?: (resource: ResourceRef) => void
 }
 
 // The settings surface splits into three honest apply buckets:
@@ -128,6 +130,7 @@ export function SettingsDialog({
   open,
   onClose,
   initialSection = 'overview',
+  onNavigateToResource,
 }: SettingsDialogProps) {
   const queryClient = useQueryClient()
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -639,6 +642,7 @@ export function SettingsDialog({
                 managed={configData?.openCostCurrencyManaged ?? false}
                 effectiveCurrency={configData?.effective.opencostCurrency ?? ''}
                 deploymentMode={deploymentMode}
+                onNavigateToResource={onNavigateToResource}
                 onApplyCurrency={saveCostCurrency}
                 onChangeSource={(value) => updateConfigField('costSource', value)}
                 onChangeUrl={(value) => updateConfigField('kubecostUrl', value || undefined)}
@@ -1362,6 +1366,7 @@ function CostSection({
   managed,
   effectiveCurrency,
   deploymentMode,
+  onNavigateToResource,
   onApplyCurrency,
   onChangeSource,
   onChangeUrl,
@@ -1381,6 +1386,7 @@ function CostSection({
   managed: boolean
   effectiveCurrency: string
   deploymentMode: 'local' | 'in-cluster' | 'cloud'
+  onNavigateToResource?: (resource: ResourceRef) => void
   onApplyCurrency: (value: string) => Promise<void>
   onChangeSource: (value: 'auto' | 'prometheus' | 'kubecost') => void
   onChangeUrl: (value: string) => void
@@ -1457,7 +1463,21 @@ function CostSection({
         (data.source !== 'prometheus' && data.source !== 'kubecost') ||
         !('apiKeySet' in data) ||
         typeof data.apiKeySet !== 'boolean' ||
-        ('address' in data && data.address !== undefined && typeof data.address !== 'string')
+        ('address' in data && data.address !== undefined && typeof data.address !== 'string') ||
+        ('service' in data &&
+          data.service !== undefined &&
+          (data.service === null ||
+            typeof data.service !== 'object' ||
+            !('kind' in data.service) ||
+            data.service.kind !== 'Service' ||
+            !('namespace' in data.service) ||
+            typeof data.service.namespace !== 'string' ||
+            !('name' in data.service) ||
+            typeof data.service.name !== 'string' ||
+            !('port' in data.service) ||
+            typeof data.service.port !== 'number' ||
+            !Number.isInteger(data.service.port) ||
+            data.service.port <= 0))
       ) {
         throw new Error('Radar returned an invalid Kubecost configuration response')
       }
@@ -1466,7 +1486,7 @@ function CostSection({
       setApiKeyTouched(false)
       setApiKeyCleared(false)
       onApplied({ source, url: url.trim(), clusterId: clusterId.trim(), apiKeySet: applied.apiKeySet })
-      setApply({ status: 'connected', source: applied.source, address: applied.address })
+      setApply({ status: 'connected', source: applied.source, address: applied.address, service: applied.service })
     } catch (err) {
       setApply({ status: 'failed', error: String(err) })
     }
@@ -1648,10 +1668,27 @@ function CostSection({
           {apply.status === 'applying' ? 'Applying…' : costSourceApplyLabel(source)}
         </button>
         {apply.status === 'connected' && (
-          <p role="status" aria-live="polite" className="mt-1 flex items-center gap-1 text-xs text-green-600 dark:text-green-400/80">
-            <Check className="h-3 w-3" /> Applied · active source: {costSourceLabel(apply.source)}
-            {apply.address ? ` · ${apply.address}` : ''}
-          </p>
+          <div className="mt-1 text-xs">
+            <p role="status" aria-live="polite" className="flex items-center gap-1 text-green-600 dark:text-green-400/80">
+              <Check className="h-3 w-3" /> Applied · active source: {costSourceLabel(apply.source)}
+              <span className="sr-only">
+                {apply.service
+                  ? ` · Service ${apply.service.namespace}/${apply.service.name}, port ${apply.service.port}`
+                  : apply.address
+                    ? ` · ${apply.address}`
+                    : ''}
+              </span>
+            </p>
+            {apply.service ? (
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-theme-text-tertiary">
+                <ResourceRefBadge resourceRef={apply.service} onClick={onNavigateToResource} />
+                <span>in {apply.service.namespace}</span>
+                <span>· port <span className="font-mono">{apply.service.port}</span></span>
+              </div>
+            ) : apply.address ? (
+              <p className="mt-1 break-all font-mono text-theme-text-tertiary">{apply.address}</p>
+            ) : null}
+          </div>
         )}
         {apply.status === 'failed' && (
           <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400/80">{apply.error}</p>
@@ -1812,7 +1849,7 @@ type ApplyState =
 type CostApplyState =
   | { status: 'idle' }
   | { status: 'applying' }
-  | { status: 'connected'; source: 'prometheus' | 'kubecost'; address?: string }
+  | { status: 'connected'; source: 'prometheus' | 'kubecost'; address?: string; service?: KubecostApplyResponse['service'] }
   | { status: 'failed'; error: string }
 
 type CurrencySaveState =

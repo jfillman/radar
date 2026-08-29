@@ -20,14 +20,22 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/skyhook-io/radar/internal/auth"
+	"github.com/skyhook-io/radar/internal/cloud"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for local dev
-	},
+	CheckOrigin: checkWebSocketOrigin,
+}
+
+// The authenticated tunnel is server-to-server and carries a transport-bound
+// marker that browsers cannot forge, so its forwarded Origin is trusted.
+func checkWebSocketOrigin(r *http.Request) bool {
+	if cloud.IsAuthenticatedTunnelRequest(r.Context()) {
+		return true
+	}
+	return sameOriginOK(r)
 }
 
 const podExecHeartbeatInterval = 30 * time.Second

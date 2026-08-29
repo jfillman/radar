@@ -1795,6 +1795,11 @@ export const cloudInstallActive = (state: CloudInstallState | undefined): boolea
 export interface CloudConnectInfo {
   assurances?: string[]
   notice?: string
+  // Free-tier terms as a prose fragment completing "Radar Cloud is ___."
+  // (e.g. "free for 3 clusters"). Separate from assurances: chip copy and
+  // sentence copy have different grammar, and reusing one as the other breaks
+  // whenever either is reworded.
+  freeTier?: string
 }
 
 // Deliberately a bare cross-origin GET: no credentials, no identifiers, no

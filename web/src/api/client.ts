@@ -882,6 +882,7 @@ export type CostUnavailableReason =
   | "source_unavailable"
   | "authentication_error"
   | "configuration_mismatch"
+  | "deployment_configuration_error"
   | "history_unsupported";
 
 export type CostDataSource = "prometheus" | "kubecost";
@@ -897,6 +898,7 @@ export interface OpenCostSummary {
   totalStorageCost?: number;
   totalIdleCost?: number;
   clusterEfficiency?: number;
+  namespaceScope?: string[];
   namespaces?: OpenCostNamespaceCost[];
 }
 

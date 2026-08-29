@@ -25,20 +25,26 @@ import (
 //
 // Memoized — the value cannot change while this process runs.
 func InstalledAt(ctx context.Context) int64 {
-	installedAtOnce.Do(func() {
-		client := GetClient()
-		if client == nil {
-			return
-		}
-		installedAtCached = installedAtFrom(ctx, client, os.Getenv("MY_POD_NAMESPACE"), os.Getenv("MY_DEPLOYMENT_NAME"))
-	})
-	return installedAtCached
+	client := GetClient()
+	if client == nil {
+		return 0
+	}
+	return installedAtCachedFrom(ctx, client, os.Getenv("MY_POD_NAMESPACE"), os.Getenv("MY_DEPLOYMENT_NAME"))
 }
 
 var (
-	installedAtOnce   sync.Once
+	installedAtMu     sync.Mutex
 	installedAtCached int64
 )
+
+func installedAtCachedFrom(ctx context.Context, client kubernetes.Interface, namespace, name string) int64 {
+	installedAtMu.Lock()
+	defer installedAtMu.Unlock()
+	if installedAtCached == 0 {
+		installedAtCached = installedAtFrom(ctx, client, namespace, name)
+	}
+	return installedAtCached
+}
 
 func installedAtFrom(ctx context.Context, client kubernetes.Interface, namespace, name string) int64 {
 	if namespace == "" || name == "" || isNilClient(client) {

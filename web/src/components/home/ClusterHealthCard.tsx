@@ -13,6 +13,7 @@ import { MCPSetupDialog } from './MCPSetupDialog'
 import { assetUrl, pluralize, parseContextName } from '@skyhook-io/k8s-ui'
 import { Tooltip } from '../ui/Tooltip'
 import { routePath } from '../../api/config'
+import { parseMajorMinor } from '../../utils/version'
 import gkeIcon from '../../assets/platform-icons/google_kubernetes_engine.png'
 import eksIcon from '../../assets/platform-icons/aws_eks.png'
 import aksIcon from '../../assets/platform-icons/azure-aks.svg'
@@ -524,12 +525,6 @@ export function ClusterHealthCard({
       </div>
     </div>
   )
-}
-
-function parseMajorMinor(version: string): { major: number; minor: number } | null {
-  const m = /^v?(\d+)\.(\d+)/.exec(version.trim())
-  if (!m) return null
-  return { major: Number(m[1]), minor: Number(m[2]) }
 }
 
 // How many minors the running version trails the newest one the upgrade-impact

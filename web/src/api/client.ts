@@ -57,6 +57,8 @@ import type {
 import type { GitOpsOperationResponse } from '../types/gitops'
 import { getApiBase, getAuthHeaders, getCredentialsMode, getBasename, routePath, stripBasename } from './config'
 import { apiVersionToGroup, pluralToKind } from '../utils/navigation'
+import { claimBrowserUpdateReport, completeBrowserUpdateReport } from './update-report'
+import type { DeploymentMode } from '../types'
 
 // Auto-refresh cadences (ms) — named constants for each polled hook's
 // refetchInterval below, so the poll rate reads clearly at each call site.
@@ -1516,10 +1518,46 @@ export interface VersionInfo {
   error?: string;
 }
 
-export function useVersionCheck() {
+interface VersionCheckDependencies {
+  fetch: (path: string, options?: RequestInit) => Promise<VersionInfo>
+  claim: typeof claimBrowserUpdateReport
+  complete: typeof completeBrowserUpdateReport
+}
+
+export async function fetchVersionInfo(
+  deploymentMode: DeploymentMode | undefined,
+  dependencies: VersionCheckDependencies = {
+    fetch: fetchJSON,
+    claim: claimBrowserUpdateReport,
+    complete: completeBrowserUpdateReport,
+  },
+) {
+  if (deploymentMode !== 'in-cluster') {
+    return dependencies.fetch('/version-check')
+  }
+
+  const report = await dependencies.claim()
+  if (!report) {
+    return dependencies.fetch('/version-check/release')
+  }
+  try {
+    const info = await dependencies.fetch('/version-check/browser', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(report),
+    })
+    dependencies.complete(report)
+    return info
+  } catch {
+    return dependencies.fetch('/version-check/release')
+  }
+}
+
+export function useVersionCheck(deploymentMode?: DeploymentMode) {
   return useQuery<VersionInfo>({
-    queryKey: ["version-check"],
-    queryFn: () => fetchJSON("/version-check"),
+    queryKey: ["version-check", deploymentMode],
+    queryFn: () => fetchVersionInfo(deploymentMode),
+    enabled: deploymentMode !== undefined && deploymentMode !== 'cloud',
     staleTime: 60 * 60 * 1000, // 1 hour
     retry: false, // Don't retry on failure
   });
@@ -1842,15 +1880,22 @@ export interface CloudConnectSelf {
   deploymentName?: string
   chart?: string
   controller?: string
+  controllerRef?: {
+    group?: string
+    kind: string
+    namespace?: string
+    name: string
+  }
+  controllerVerified?: boolean
   wizardUrl?: string
 }
 
-export function useCloudConnectSelf(enabled: boolean) {
+export function useCloudConnectSelf(enabled: boolean, staleTime = 60000) {
   return useQuery<CloudConnectSelf>({
     queryKey: ['cloud-connect-self'],
     queryFn: () => fetchJSON('/cloud/connect/self'),
     enabled,
-    staleTime: 60000,
+    staleTime,
   })
 }
 

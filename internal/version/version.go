@@ -20,12 +20,10 @@ import (
 	"github.com/skyhook-io/radar/internal/k8s"
 )
 
-const (
+var (
 	releasesURL = "https://releases.skyhook.io/radar/latest"
 	githubURL   = "https://api.github.com/repos/skyhook-io/radar/releases/latest"
-)
 
-var (
 	// Current is the current version of Radar, set at build time
 	Current = "dev"
 
@@ -71,6 +69,15 @@ type githubRelease struct {
 	Body    string `json:"body"`
 }
 
+type checkOptions struct {
+	source      string
+	report      bool
+	reportDay   string
+	reportID    string
+	authEnabled bool
+	mode        string
+}
+
 // SetCurrent sets the current version (called from main)
 func SetCurrent(v string) {
 	Current = v
@@ -90,6 +97,43 @@ func IsDesktop() bool {
 
 // CheckForUpdate checks GitHub for the latest release
 func CheckForUpdate(_ context.Context) *UpdateInfo {
+	return checkForUpdateCached(checkOptions{})
+}
+
+// CheckForUpdateRelease returns release information without recording an
+// installation or browser analytics event.
+func CheckForUpdateRelease(_ context.Context) *UpdateInfo {
+	return checkForUpdateCached(checkOptions{source: "release-only"})
+}
+
+// CheckForUpdateBrowser records one browser-profile report while returning the
+// same release information as the ordinary update check. Browser reports
+// intentionally bypass the shared release cache so each accepted daily report
+// reaches the release service.
+func CheckForUpdateBrowser(_ context.Context, reportDay, reportID string, authEnabled bool) (*UpdateInfo, bool) {
+	if !IsReleaseVersion(Current) {
+		return CheckForUpdateRelease(context.Background()), true
+	}
+
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, proxySucceeded := fetchLatestRelease(fetchCtx, checkOptions{
+		source:      "browser-proxy",
+		report:      true,
+		reportDay:   reportDay,
+		reportID:    reportID,
+		authEnabled: authEnabled,
+		mode:        "in-cluster",
+	})
+
+	mu.Lock()
+	cachedResult = result
+	lastCheck = time.Now()
+	mu.Unlock()
+	return result, proxySucceeded
+}
+
+func checkForUpdateCached(options checkOptions) *UpdateInfo {
 	mu.Lock()
 
 	// Use shorter TTL for cached errors so transient failures recover quickly
@@ -109,7 +153,7 @@ func CheckForUpdate(_ context.Context) *UpdateInfo {
 	// Use a background context so request cancellation doesn't poison the cache.
 	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result := fetchLatestRelease(fetchCtx)
+	result, _ := fetchLatestRelease(fetchCtx, options)
 
 	mu.Lock()
 	cachedResult = result
@@ -119,7 +163,7 @@ func CheckForUpdate(_ context.Context) *UpdateInfo {
 	return result
 }
 
-func fetchLatestRelease(ctx context.Context) *UpdateInfo {
+func fetchLatestRelease(ctx context.Context, options checkOptions) (*UpdateInfo, bool) {
 	method := detectInstallMethod()
 	result := &UpdateInfo{
 		CurrentVersion: Current,
@@ -127,16 +171,18 @@ func fetchLatestRelease(ctx context.Context) *UpdateInfo {
 		UpdateCommand:  getUpdateCommand(method),
 	}
 
-	// Don't compare dev builds
 	if Current == "dev" {
-		return result
+		return result, false
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	mode := "local"
-	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
-		mode = "in-cluster"
+	mode := options.mode
+	if mode == "" {
+		mode = "local"
+		if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+			mode = "in-cluster"
+		}
 	}
 	params := url.Values{
 		"v":      {Current},
@@ -148,17 +194,29 @@ func fetchLatestRelease(ctx context.Context) *UpdateInfo {
 	if t := installTimestamp(ctx, mode); t != 0 {
 		params.Set("t", strconv.FormatInt(t, 10))
 	}
+	if options.source != "" {
+		params.Set("source", options.source)
+		if options.report {
+			params.Set("report", "1")
+			params.Set("day", options.reportDay)
+			params.Set("rid", options.reportID)
+			params.Set("auth", strconv.FormatBool(options.authEnabled))
+		} else {
+			params.Set("report", "0")
+		}
+	}
 	proxyURL := fmt.Sprintf("%s?%s", releasesURL, params.Encode())
 
 	req, err := http.NewRequestWithContext(ctx, "GET", proxyURL, nil)
 	if err != nil {
 		result.Error = fmt.Sprintf("failed to create request: %v", err)
 		log.Printf("[version] %s", result.Error)
-		return result
+		return result, false
 	}
 	req.Header.Set("User-Agent", fmt.Sprintf("radar/%s", Current))
 
 	resp, err := client.Do(req)
+	proxySucceeded := err == nil && resp.StatusCode == http.StatusOK
 	if err != nil || resp.StatusCode != http.StatusOK {
 		// Fallback to GitHub directly
 		if resp != nil {
@@ -169,14 +227,14 @@ func fetchLatestRelease(ctx context.Context) *UpdateInfo {
 		if err2 != nil {
 			result.Error = fmt.Sprintf("failed to create fallback request: %v", err2)
 			log.Printf("[version] %s", result.Error)
-			return result
+			return result, proxySucceeded
 		}
 		req2.Header.Set("User-Agent", fmt.Sprintf("radar/%s", Current))
 		resp, err = client.Do(req2)
 		if err != nil {
 			result.Error = fmt.Sprintf("failed to check for updates: %v", err)
 			log.Printf("[version] %s", result.Error)
-			return result
+			return result, proxySucceeded
 		}
 	}
 	defer resp.Body.Close()
@@ -184,14 +242,14 @@ func fetchLatestRelease(ctx context.Context) *UpdateInfo {
 	if resp.StatusCode != http.StatusOK {
 		result.Error = fmt.Sprintf("update check returned %d", resp.StatusCode)
 		log.Printf("[version] %s", result.Error)
-		return result
+		return result, proxySucceeded
 	}
 
 	var release githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
 		result.Error = fmt.Sprintf("failed to parse response: %v", err)
 		log.Printf("[version] %s", result.Error)
-		return result
+		return result, proxySucceeded
 	}
 
 	result.LatestVersion = strings.TrimPrefix(release.TagName, "v")
@@ -205,7 +263,14 @@ func fetchLatestRelease(ctx context.Context) *UpdateInfo {
 	}
 	result.UpdateAvail = newer
 
-	return result
+	return result, proxySucceeded
+}
+
+// IsReleaseVersion accepts only stable x.y.z builds. Development, dirty, and
+// prerelease builds should not participate in release analytics.
+func IsReleaseVersion(value string) bool {
+	v, err := semver.StrictNewVersion(strings.TrimPrefix(value, "v"))
+	return err == nil && v.Prerelease() == "" && v.Metadata() == ""
 }
 
 // isNewerVersion compares semver versions using Masterminds/semver
@@ -229,14 +294,11 @@ func truncateNotes(s string, maxLen int) string {
 }
 
 // installTimestamp reports when this install was set up. In-cluster that is the
-// Deployment's creation time; ~/.radar is an emptyDir whose birthtime resets
-// with the pod. The birthtime is the weaker answer but still a better one than
-// none when the Deployment can't be read.
+// Deployment's creation time; ~/.radar is commonly an emptyDir whose birthtime
+// resets with the pod and must not be mistaken for an installation identity.
 func installTimestamp(ctx context.Context, mode string) int64 {
 	if mode == "in-cluster" {
-		if installed := k8s.InstalledAt(ctx); installed != 0 {
-			return installed
-		}
+		return k8s.InstalledAt(ctx)
 	}
 	return radarDirBirthtime()
 }

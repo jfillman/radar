@@ -290,12 +290,20 @@ kubeconfig before these commands can run.
 
 ### What Radar sends
 
-Until you connect a cluster to Cloud, Radar makes exactly two outbound
-requests, both to Skyhook, neither containing cluster data:
+Until you connect a cluster to Cloud, Radar makes two kinds of outbound
+request, both to Skyhook, neither containing cluster data:
 
-- **Update check** — periodically, to `releases.skyhook.io`, with the Radar
-  version, OS/arch, install method, and whether it's running locally or
-  in-cluster. Skipped entirely on development builds.
+- **Update check** — to `releases.skyhook.io`, with the Radar version, OS/arch,
+  install method, whether it is running locally or in-cluster, and the
+  installation timestamp when Radar can determine it. Local and Desktop
+  installations use one cached server-level check. For in-cluster
+  installations, the server-level request only fetches release information and
+  is not recorded as an installation event. Instead, each browser profile that
+  opens Radar reports at most once per UTC day; that report contains a fresh
+  random daily UUID and whether authentication is enabled. It contains no
+  username, browser fingerprint, or Kubernetes data. Development builds skip
+  the request; prerelease builds fetch release information without sending a
+  browser report.
 - **Cloud dialog copy** — only when you *open* the Cloud dialog, to fetch the
   current terms shown in it. No identifiers are sent. `RADAR_CLOUD_FUNNEL=off`
   stops this request from ever happening.

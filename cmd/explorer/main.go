@@ -11,7 +11,6 @@ import (
 	neturl "net/url"
 	"os"
 	"os/signal"
-	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -39,10 +38,6 @@ import (
 var (
 	version = "dev"
 )
-
-// releaseVersionRe matches a published release version ("1.10.3", "v1.10.3").
-// Anything else - git-describe suffixes, "dev", "-dirty" - is a dev build.
-var releaseVersionRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
 
 func main() {
 	// Subcommand dispatch (before flag parsing — subcommands own their flags).
@@ -80,7 +75,7 @@ func main() {
 	// every in-cluster test. Fall back to the latest published release instead -
 	// only for dev-shaped versions; a released binary keeps its exact match.
 	// CheckForUpdate is cached and cheap relative to the probe run it precedes.
-	if !releaseVersionRe.MatchString(version) {
+	if !versionpkg.IsReleaseVersion(version) {
 		reachability.LatestReleaseImage = func() string {
 			if u := versionpkg.CheckForUpdate(context.Background()); u != nil && u.LatestVersion != "" {
 				return "ghcr.io/skyhook-io/radar:" + u.LatestVersion

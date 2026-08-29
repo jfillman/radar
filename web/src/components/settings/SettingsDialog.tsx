@@ -12,7 +12,7 @@ import { useAnimatedUnmount } from '../../hooks/useAnimatedUnmount'
 import { TRANSITION_BACKDROP, TRANSITION_PANEL } from '../../utils/animation'
 import { apiUrl, getAuthHeaders, getCredentialsMode, routePath } from '../../api/config'
 import {
-  useCloudRole, useVersionCheck, useClusterInfo, usePrometheusStatus, useArgoStatus,
+  useCloudRole, useVersionCheck, useClusterInfo, usePrometheusStatus, useArgoStatus, useCapabilities,
 } from '../../api/client'
 import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
 import { Input, SelectMenu } from '@skyhook-io/k8s-ui'
@@ -115,7 +115,9 @@ export function SettingsDialog({
   const queryClient = useQueryClient()
   const dialogRef = useRef<HTMLDivElement>(null)
   const { shouldRender, isOpen } = useAnimatedUnmount(open, 200)
-  const { data: versionInfo } = useVersionCheck()
+  const { data: capabilitiesData } = useCapabilities()
+  const versionDeploymentMode = capabilitiesData ? (capabilitiesData.deployment?.mode ?? 'local') : undefined
+  const { data: versionInfo } = useVersionCheck(versionDeploymentMode)
   // Radar configuration (kubeconfig, port, integrations…) is host-level and
   // affects every user of this instance, so it's gated to owners. Personal
   // sections (My permissions, AI diagnose) stay usable by everyone. Non-Cloud
@@ -911,7 +913,9 @@ function OverviewPanel({ active, onNavigate }: { active: boolean; onNavigate: (s
   const { data: cluster } = useClusterInfo()
   const { data: prom } = usePrometheusStatus()
   const { data: argo } = useArgoStatus(active)
-  const { data: version } = useVersionCheck()
+  const { data: capabilitiesData } = useCapabilities()
+  const deploymentMode = capabilitiesData ? (capabilitiesData.deployment?.mode ?? 'local') : undefined
+  const { data: version } = useVersionCheck(deploymentMode)
   const capabilities = useCapabilitiesContext()
   const diag = useDiagnose()
   const [copied, setCopied] = useState(false)

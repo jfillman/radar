@@ -2,13 +2,16 @@ package k8s
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 func TestInstalledAtReadsOwnDeployment(t *testing.T) {
@@ -24,6 +27,36 @@ func TestInstalledAtReadsOwnDeployment(t *testing.T) {
 	)
 	if got := installedAtFrom(context.Background(), kc, "radar", "radar"); got != created.Unix() {
 		t.Fatalf("installedAt = %d, want %d", got, created.Unix())
+	}
+}
+
+func TestInstalledAtRetriesAfterTransientReadFailure(t *testing.T) {
+	created := time.Date(2026, 3, 14, 9, 26, 53, 0, time.UTC)
+	kc := fake.NewSimpleClientset(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+		Name: "radar", Namespace: "radar", CreationTimestamp: metav1.NewTime(created),
+	}})
+	failed := false
+	kc.PrependReactor("get", "deployments", func(ktesting.Action) (bool, runtime.Object, error) {
+		if !failed {
+			failed = true
+			return true, nil, errors.New("temporary apiserver failure")
+		}
+		return false, nil, nil
+	})
+	installedAtMu.Lock()
+	installedAtCached = 0
+	installedAtMu.Unlock()
+	t.Cleanup(func() {
+		installedAtMu.Lock()
+		installedAtCached = 0
+		installedAtMu.Unlock()
+	})
+
+	if got := installedAtCachedFrom(context.Background(), kc, "radar", "radar"); got != 0 {
+		t.Fatalf("first installedAt = %d, want 0 after transient failure", got)
+	}
+	if got := installedAtCachedFrom(context.Background(), kc, "radar", "radar"); got != created.Unix() {
+		t.Fatalf("retried installedAt = %d, want %d", got, created.Unix())
 	}
 }
 

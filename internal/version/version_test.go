@@ -2,9 +2,12 @@ package version
 
 import (
 	"context"
-	"os"
-	"path/filepath"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
+	"time"
 )
 
 func TestIsNewerVersion(t *testing.T) {
@@ -124,21 +127,122 @@ func TestTruncateNotes(t *testing.T) {
 	}
 }
 
-// When the Deployment is unreadable, in-cluster must report the same timestamp a
-// local install would rather than reporting none. Asserted as equality with the
-// local path so the test holds on filesystems that don't record a birthtime at
-// all (where both are legitimately 0).
-func TestInstallTimestampFallsBackInCluster(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	t.Setenv("USERPROFILE", dir)
-	if err := os.MkdirAll(filepath.Join(dir, ".radar"), 0o755); err != nil {
-		t.Fatalf("seed ~/.radar: %v", err)
+func TestInstallTimestampDoesNotUseLocalDirectoryInCluster(t *testing.T) {
+	if got := installTimestamp(context.Background(), "in-cluster"); got != 0 {
+		t.Fatalf("in-cluster timestamp = %d, want no local-directory fallback", got)
+	}
+}
+
+func TestIsReleaseVersion(t *testing.T) {
+	tests := map[string]bool{
+		"1.2.3":       true,
+		"v1.2.3":      true,
+		"dev":         false,
+		"1.2.3-dirty": false,
+		"1.2.3-rc.1":  false,
+		"1.2":         false,
+		"":            false,
+	}
+	for value, want := range tests {
+		if got := IsReleaseVersion(value); got != want {
+			t.Errorf("IsReleaseVersion(%q) = %v, want %v", value, got, want)
+		}
+	}
+}
+
+func TestBrowserUpdateCheckReportsEveryAcceptedClaim(t *testing.T) {
+	var queries []url.Values
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query())
+		_ = json.NewEncoder(w).Encode(githubRelease{
+			TagName: "v1.3.0",
+			HTMLURL: "https://github.com/skyhook-io/radar/releases/tag/v1.3.0",
+		})
+	}))
+	defer proxy.Close()
+
+	previousURL, previousVersion := releasesURL, Current
+	releasesURL = proxy.URL
+	SetCurrent("1.2.3")
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+	t.Cleanup(func() {
+		releasesURL = previousURL
+		SetCurrent(previousVersion)
+		mu.Lock()
+		cachedResult = nil
+		lastCheck = time.Time{}
+		mu.Unlock()
+	})
+
+	if _, reported := CheckForUpdateBrowser(context.Background(), "2026-08-29", "c66ce4e8-fb90-4e0e-a2af-2172bb868b9e", true); !reported {
+		t.Fatal("first browser report was not acknowledged")
+	}
+	if _, reported := CheckForUpdateBrowser(context.Background(), "2026-08-29", "c66ce4e8-fb90-4e0e-a2af-2172bb868b9e", true); !reported {
+		t.Fatal("second browser report was not acknowledged")
 	}
 
-	ctx := context.Background()
-	local := installTimestamp(ctx, "local")
-	if got := installTimestamp(ctx, "in-cluster"); got != local {
-		t.Fatalf("in-cluster timestamp %d did not fall back to the local timestamp %d", got, local)
+	if len(queries) != 2 {
+		t.Fatalf("proxy calls = %d, want one per browser report", len(queries))
 	}
+	for _, query := range queries {
+		if query.Get("source") != "browser-proxy" || query.Get("report") != "1" {
+			t.Errorf("report routing query = %v", query)
+		}
+		if query.Get("day") != "2026-08-29" || query.Get("rid") != "c66ce4e8-fb90-4e0e-a2af-2172bb868b9e" {
+			t.Errorf("report identity query = %v", query)
+		}
+		if query.Get("auth") != "true" || query.Get("mode") != "in-cluster" {
+			t.Errorf("report context query = %v", query)
+		}
+	}
+
+	resetUpdateCache()
+	CheckForUpdateRelease(context.Background())
+	if len(queries) != 3 || queries[2].Get("source") != "release-only" || queries[2].Get("report") != "0" {
+		t.Fatalf("release-only routing query = %v", queries)
+	}
+
+	SetCurrent("1.2.3-rc.1")
+	resetUpdateCache()
+	if _, handled := CheckForUpdateBrowser(context.Background(), "2026-08-29", "c66ce4e8-fb90-4e0e-a2af-2172bb868b9e", true); !handled {
+		t.Fatal("prerelease browser report should be handled without retry")
+	}
+	if len(queries) != 4 || queries[3].Get("source") != "release-only" || queries[3].Get("report") != "0" {
+		t.Fatalf("prerelease routing query = %v", queries)
+	}
+}
+
+func TestBrowserUpdateCheckReportsProxyFailureDespiteGitHubFallback(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer proxy.Close()
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(githubRelease{TagName: "v1.3.0"})
+	}))
+	defer github.Close()
+
+	previousReleaseURL, previousGitHubURL, previousVersion := releasesURL, githubURL, Current
+	releasesURL, githubURL = proxy.URL, github.URL
+	SetCurrent("1.2.3")
+	t.Cleanup(func() {
+		releasesURL, githubURL = previousReleaseURL, previousGitHubURL
+		SetCurrent(previousVersion)
+		resetUpdateCache()
+	})
+
+	info, reported := CheckForUpdateBrowser(context.Background(), "2026-08-29", "c66ce4e8-fb90-4e0e-a2af-2172bb868b9e", false)
+	if reported {
+		t.Fatal("browser report was acknowledged after the release proxy failed")
+	}
+	if info.LatestVersion != "1.3.0" {
+		t.Fatalf("GitHub fallback latest version = %q, want 1.3.0", info.LatestVersion)
+	}
+}
+
+func resetUpdateCache() {
+	mu.Lock()
+	defer mu.Unlock()
+	cachedResult = nil
+	lastCheck = time.Time{}
 }

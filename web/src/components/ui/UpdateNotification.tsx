@@ -3,6 +3,7 @@ import { Download, X, Copy, Check, RotateCw, ArrowDownToLine, Loader2 } from 'lu
 import { useQueryClient } from '@tanstack/react-query'
 import {
   useVersionCheck,
+  useCapabilities,
   useStartDesktopUpdate,
   useDesktopUpdateStatus,
   useApplyDesktopUpdate,
@@ -14,7 +15,9 @@ const DISMISSED_KEY = 'radar-update-dismissed'
 
 export function UpdateNotification() {
   const queryClient = useQueryClient()
-  const { data: versionInfo } = useVersionCheck()
+  const { data: capabilities } = useCapabilities()
+  const deploymentMode = capabilities ? (capabilities.deployment?.mode ?? 'local') : undefined
+  const { data: versionInfo } = useVersionCheck(deploymentMode)
   const [dismissed, setDismissed] = useState(false)
   const [copied, setCopied] = useState(false)
   const [copyFailed, setCopyFailed] = useState(false)
@@ -98,8 +101,9 @@ export function UpdateNotification() {
     })
   }
 
-  // Don't show if no update available, dismissed, or error
-  if (!versionInfo?.updateAvailable || dismissed) {
+  // Shared in-cluster viewers get a persistent Home notice instead of a
+  // floating action prompt they may not be able to act on.
+  if (!versionInfo?.updateAvailable || dismissed || deploymentMode === 'in-cluster') {
     return null
   }
 

@@ -1,5 +1,5 @@
 import { useMemo, type ReactNode } from 'react'
-import { useDashboard, useDashboardCRDs, useDashboardHelm, useIssues, type IssuesResponse } from '../../api/client'
+import { useCapabilities, useCloudConnectSelf, useDashboard, useDashboardCRDs, useDashboardHelm, useIssues, useVersionCheck, type IssuesResponse } from '../../api/client'
 import { useConnection } from '../../context/ConnectionContext'
 import type { ClusterLoadState } from '../../types/clusterLoadState'
 import type { ExtendedMainView, Topology, SelectedResource } from '../../types'
@@ -30,6 +30,8 @@ import { formatCompactAge } from '@skyhook-io/k8s-ui/utils/format'
 import { ClusterHealthCard } from './ClusterHealthCard'
 import { AlertTriangle, CheckCircle, Loader2, Shield } from 'lucide-react'
 import { clsx } from 'clsx'
+import { isMinorOrMajorUpdate } from '../../utils/version'
+import { RadarUpdateNotice } from './RadarUpdateNotice'
 
 interface HomeViewProps {
   namespaces: string[]
@@ -47,9 +49,11 @@ interface HomeViewProps {
   onNavigateToCerts?: () => void
   // Omitted when an embedded host owns /checks, leaving the version as plain text.
   onNavigateToUpgradeImpact?: () => void
+  onNavigateToHelmRelease?: (namespace: string, release: string) => void
+  onNavigateToManagerPath?: (path: string) => void
 }
 
-export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNavigateToView, onNavigateToResourceKind, onNavigateToResource, onNavigateToCerts, onNavigateToUpgradeImpact }: HomeViewProps) {
+export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNavigateToView, onNavigateToResourceKind, onNavigateToResource, onNavigateToCerts, onNavigateToUpgradeImpact, onNavigateToHelmRelease, onNavigateToManagerPath }: HomeViewProps) {
   // The card itself decides whether the cluster has a capacity story
   // (available, softened-denied, or karpenterless-with-managers/groups) and
   // returns null otherwise — the outer gate only excludes states with nothing
@@ -63,6 +67,13 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
   const issues = issuesData?.issues ?? []
   const issueCount = issuesData?.total_matched ?? issuesData?.total ?? issues.length
   const hasCriticalIssues = issues.some((issue) => issue.severity === 'critical')
+  const { data: capabilities } = useCapabilities()
+  const deploymentMode = capabilities ? (capabilities.deployment?.mode ?? 'local') : undefined
+  const { data: versionInfo } = useVersionCheck(deploymentMode)
+  const showUpdateNotice = deploymentMode === 'in-cluster'
+    && !!versionInfo?.updateAvailable
+    && isMinorOrMajorUpdate(versionInfo.currentVersion, versionInfo.latestVersion)
+  const { data: installationManager, isLoading: installationManagerLoading } = useCloudConnectSelf(showUpdateNotice, 15 * 60 * 1000)
 
   // SSE is cluster-wide on small/medium clusters; the picker only narrows the
   // dashboard summary, so re-apply the filter here or the legend disagrees.
@@ -123,6 +134,15 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>{fallbackClusterLoadState.message}</span>
           </div>
+        )}
+        {showUpdateNotice && versionInfo && (
+          <RadarUpdateNotice
+            version={versionInfo}
+            manager={installationManager}
+            managerLoading={installationManagerLoading}
+            onNavigateToHelmRelease={onNavigateToHelmRelease}
+            onNavigateToGitOps={onNavigateToManagerPath}
+          />
         )}
         {/* Row 1: Cluster Health Card (combined health + resource counts) */}
         <ClusterHealthCard

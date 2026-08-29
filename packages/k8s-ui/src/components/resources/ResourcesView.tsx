@@ -623,6 +623,14 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
     { key: 'rules', label: 'Rules', width: 'w-16', hideOnMobile: true },
     { key: 'age', label: 'Age', width: 'w-24' },
   ],
+  istiogateways: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-48' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'servers', label: 'Servers', width: 'w-24' },
+    { key: 'selector', label: 'Selector', width: 'w-56' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
   gatewayclasses: [
     { key: 'name', label: 'Name' },
     { key: 'controller', label: 'Controller', width: 'w-64', tooltip: 'Gateway controller implementation (spec.controllerName)' },
@@ -2111,6 +2119,13 @@ const GROUP_QUALIFIED_COLUMN_KEYS: Record<string, Record<string, string>> = {
   // completely different shape (cluster + method, no storage location/expiry).
   backups: { 'postgresql.cnpg.io': 'cnpgbackups' },
   clusterpolicies: { 'nvidia.com': 'nvidiaclusterpolicies' },
+  // Kyverno's namespaced Policy. `policies` is a plural several projects use,
+  // so it is only Kyverno's when the group says so; the curated set and its
+  // cells already existed but nothing routed to them.
+  policies: { 'kyverno.io': 'kyvernopolicies' },
+  // Istio Gateway is not a Gateway API Gateway: it has servers and a workload
+  // selector, and none of Class/Listeners/Routes/Addresses.
+  gateways: { 'networking.istio.io': 'istiogateways' },
   services: { 'serving.knative.dev': 'knativeservices' },
   configurations: { 'serving.knative.dev': 'knativeconfigurations' },
   revisions: { 'serving.knative.dev': 'knativerevisions' },
@@ -2242,11 +2257,224 @@ function isLikelyCrossplaneMRGroup(kind: string, group: string): boolean {
   return false
 }
 
+/**
+ * API groups the Kubernetes API server reserves. A CRD cannot be created in
+ * one, so a curated set keyed on a core kind can never be claimed by a foreign
+ * resource and needs no ownership entry. Note the deliberate omissions:
+ * gateway.networking.k8s.io, snapshot.storage.k8s.io and cluster.x-k8s.io end
+ * in k8s.io but ARE CRD groups, so this is an explicit list, not a suffix test.
+ */
+const CORE_API_GROUPS = new Set([
+  '', 'apps', 'batch', 'autoscaling', 'policy', 'networking.k8s.io',
+  'rbac.authorization.k8s.io', 'storage.k8s.io', 'apiextensions.k8s.io',
+  'coordination.k8s.io', 'discovery.k8s.io', 'scheduling.k8s.io',
+  'admissionregistration.k8s.io', 'certificates.k8s.io', 'node.k8s.io',
+  'flowcontrol.apiserver.k8s.io', 'authentication.k8s.io', 'authorization.k8s.io',
+  'apiregistration.k8s.io', 'events.k8s.io', 'resource.k8s.io',
+  'internal.apiserver.k8s.io', 'storagemigration.k8s.io',
+])
+
+// ProviderConfig groups are unbounded — one per provider — so they are matched
+// by suffix. Managed resources take the isLikelyCrossplaneMRGroup branch above.
+function isCuratedUnboundedGroup(key: string, group: string): boolean {
+  if (key !== 'providerconfigs') return false
+  return group.endsWith('.crossplane.io') || group.endsWith('.upbound.io')
+}
+
+/**
+ * Which API group(s) each curated column set was written for.
+ *
+ * A CRD is not the kind Radar curated just because it reuses its plural:
+ * chaos-mesh ships workflows.chaos-mesh.org, Istio ships gateways, and Flux
+ * ships providers. Rendering Argo's or Gateway API's columns for those reads
+ * every field off a schema the object does not have. Anything not claimed here
+ * falls through to the generic set (and, for a CRD, to its own printer
+ * columns), which is the honest answer for a kind Radar has never seen.
+ *
+ * Core kinds need no entry: the API server reserves their groups, so a CRD
+ * cannot occupy one. See CORE_API_GROUPS.
+ */
+const CURATED_COLUMN_GROUPS: Record<string, readonly string[]> = {
+  challenges: ['acme.cert-manager.io'],
+  orders: ['acme.cert-manager.io'],
+  compositeresourcedefinitions: ['apiextensions.crossplane.io'],
+  compositions: ['apiextensions.crossplane.io'],
+  clustercompliancereports: ['aquasecurity.github.io'],
+  clusterinfraassessmentreports: ['aquasecurity.github.io'],
+  clusterrbacassessmentreports: ['aquasecurity.github.io'],
+  clustersbomreports: ['aquasecurity.github.io'],
+  configauditreports: ['aquasecurity.github.io'],
+  exposedsecretreports: ['aquasecurity.github.io'],
+  infraassessmentreports: ['aquasecurity.github.io'],
+  rbacassessmentreports: ['aquasecurity.github.io'],
+  sbomreports: ['aquasecurity.github.io'],
+  vulnerabilityreports: ['aquasecurity.github.io'],
+  analysisruns: ['argoproj.io'],
+  applications: ['argoproj.io'],
+  applicationsets: ['argoproj.io'],
+  appprojects: ['argoproj.io'],
+  clusterworkflowtemplates: ['argoproj.io'],
+  cronworkflows: ['argoproj.io'],
+  rollouts: ['argoproj.io'],
+  workflows: ['argoproj.io'],
+  workflowtemplates: ['argoproj.io'],
+  barmanobjectstores: ['barmancloud.cnpg.io'],
+  sealedsecrets: ['bitnami.com'],
+  certificaterequests: ['cert-manager.io'],
+  certificates: ['cert-manager.io'],
+  clusterissuers: ['cert-manager.io'],
+  issuers: ['cert-manager.io'],
+  capiclusters: ['cluster.x-k8s.io'],
+  clusterclasses: ['cluster.x-k8s.io'],
+  machinedeployments: ['cluster.x-k8s.io'],
+  machinehealthchecks: ['cluster.x-k8s.io'],
+  machinepools: ['cluster.x-k8s.io'],
+  machines: ['cluster.x-k8s.io'],
+  machinesets: ['cluster.x-k8s.io'],
+  kubeadmcontrolplanes: ['controlplane.cluster.x-k8s.io'],
+  brokers: ['eventing.knative.dev'],
+  eventtypes: ['eventing.knative.dev'],
+  triggers: ['eventing.knative.dev'],
+  clusterexternalsecrets: ['external-secrets.io'],
+  clustersecretstores: ['external-secrets.io'],
+  externalsecrets: ['external-secrets.io'],
+  secretstores: ['external-secrets.io'],
+  parallels: ['flows.knative.dev'],
+  sequences: ['flows.knative.dev'],
+  gatewayclasses: ['gateway.networking.k8s.io'],
+  gateways: ['gateway.networking.k8s.io'],
+  istiogateways: ['networking.istio.io'],
+  grpcroutes: ['gateway.networking.k8s.io'],
+  httproutes: ['gateway.networking.k8s.io'],
+  tcproutes: ['gateway.networking.k8s.io'],
+  tlsroutes: ['gateway.networking.k8s.io'],
+  helmreleases: ['helm.toolkit.fluxcd.io'],
+  awsmachines: ['infrastructure.cluster.x-k8s.io'],
+  awsmachinetemplates: ['infrastructure.cluster.x-k8s.io'],
+  awsmanagedclusters: ['infrastructure.cluster.x-k8s.io'],
+  awsmanagedcontrolplanes: ['controlplane.cluster.x-k8s.io'],
+  awsmanagedmachinepools: ['infrastructure.cluster.x-k8s.io'],
+  azuremachines: ['infrastructure.cluster.x-k8s.io'],
+  azuremachinetemplates: ['infrastructure.cluster.x-k8s.io'],
+  azuremanagedclusters: ['infrastructure.cluster.x-k8s.io'],
+  azuremanagedcontrolplanes: ['infrastructure.cluster.x-k8s.io'],
+  azuremanagedmachinepools: ['infrastructure.cluster.x-k8s.io'],
+  gcpmachines: ['infrastructure.cluster.x-k8s.io'],
+  gcpmachinetemplates: ['infrastructure.cluster.x-k8s.io'],
+  gcpmanagedclusters: ['infrastructure.cluster.x-k8s.io'],
+  gcpmanagedcontrolplanes: ['infrastructure.cluster.x-k8s.io'],
+  gcpmanagedmachinepools: ['infrastructure.cluster.x-k8s.io'],
+  ec2nodeclasses: ['karpenter.k8s.aws'],
+  nodeclaims: ['karpenter.sh'],
+  nodepools: ['karpenter.sh'],
+  clustertriggerauthentications: ['keda.sh'],
+  scaledjobs: ['keda.sh'],
+  scaledobjects: ['keda.sh'],
+  triggerauthentications: ['keda.sh'],
+  kustomizations: ['kustomize.toolkit.fluxcd.io'],
+  cleanuppolicies: ['kyverno.io'],
+  clustercleanuppolicies: ['kyverno.io'],
+  clusterpolicies: ['kyverno.io'],
+  kyvernopolicies: ['kyverno.io'],
+  updaterequests: ['kyverno.io'],
+  policyexceptions: ['kyverno.io', 'policies.kyverno.io'],
+  channels: ['messaging.knative.dev'],
+  inmemorychannels: ['messaging.knative.dev'],
+  knativesubscriptions: ['messaging.knative.dev'],
+  podmonitors: ['monitoring.coreos.com'],
+  prometheusrules: ['monitoring.coreos.com'],
+  servicemonitors: ['monitoring.coreos.com'],
+  knativecertificates: ['networking.internal.knative.dev'],
+  knativeingresses: ['networking.internal.knative.dev'],
+  serverlessservices: ['networking.internal.knative.dev'],
+  destinationrules: ['networking.istio.io'],
+  serviceentries: ['networking.istio.io'],
+  virtualservices: ['networking.istio.io'],
+  alerts: ['notification.toolkit.fluxcd.io'],
+  nvidiaclusterpolicies: ['nvidia.com'],
+  nvidiadrivers: ['nvidia.com'],
+  providers: ['pkg.crossplane.io'],
+  deletingpolicies: ['policies.kyverno.io'],
+  generatingpolicies: ['policies.kyverno.io'],
+  imagevalidatingpolicies: ['policies.kyverno.io'],
+  mutatingpolicies: ['policies.kyverno.io'],
+  namespaceddeletingpolicies: ['policies.kyverno.io'],
+  namespacedgeneratingpolicies: ['policies.kyverno.io'],
+  namespacedimagevalidatingpolicies: ['policies.kyverno.io'],
+  namespacedmutatingpolicies: ['policies.kyverno.io'],
+  namespacedvalidatingpolicies: ['policies.kyverno.io'],
+  validatingpolicies: ['policies.kyverno.io'],
+  cnpgbackups: ['postgresql.cnpg.io'],
+  cnpgclusterimagecatalogs: ['postgresql.cnpg.io'],
+  cnpgclusters: ['postgresql.cnpg.io'],
+  cnpgdatabases: ['postgresql.cnpg.io'],
+  cnpgimagecatalogs: ['postgresql.cnpg.io'],
+  cnpgpublications: ['postgresql.cnpg.io'],
+  cnpgsubscriptions: ['postgresql.cnpg.io'],
+  poolers: ['postgresql.cnpg.io'],
+  scheduledbackups: ['postgresql.cnpg.io'],
+  calicoglobalnetworkpolicies: ['projectcalico.org', 'crd.projectcalico.org'],
+  calicohostendpoints: ['projectcalico.org', 'crd.projectcalico.org'],
+  calicoippools: ['projectcalico.org', 'crd.projectcalico.org'],
+  caliconetworkpolicies: ['projectcalico.org', 'crd.projectcalico.org'],
+  calicostagedglobalnetworkpolicies: ['projectcalico.org', 'crd.projectcalico.org'],
+  calicostagedkubernetesnetworkpolicies: ['projectcalico.org', 'crd.projectcalico.org'],
+  calicostagednetworkpolicies: ['projectcalico.org', 'crd.projectcalico.org'],
+  calicotiers: ['projectcalico.org', 'crd.projectcalico.org'],
+  httpproxies: ['projectcontour.io'],
+  clusterephemeralreports: ['reports.kyverno.io'],
+  ephemeralreports: ['reports.kyverno.io'],
+  authorizationpolicies: ['security.istio.io'],
+  peerauthentications: ['security.istio.io'],
+  domainmappings: ['serving.knative.dev'],
+  knativeconfigurations: ['serving.knative.dev'],
+  knativerevisions: ['serving.knative.dev'],
+  knativeroutes: ['serving.knative.dev'],
+  knativeservices: ['serving.knative.dev'],
+  gitrepositories: ['source.toolkit.fluxcd.io'],
+  helmrepositories: ['source.toolkit.fluxcd.io'],
+  ocirepositories: ['source.toolkit.fluxcd.io'],
+  apiserversources: ['sources.knative.dev'],
+  containersources: ['sources.knative.dev'],
+  pingsources: ['sources.knative.dev'],
+  sinkbindings: ['sources.knative.dev'],
+  ingressroutes: ['traefik.io', 'traefik.containo.us'],
+  ingressroutetcps: ['traefik.io', 'traefik.containo.us'],
+  ingressrouteudps: ['traefik.io', 'traefik.containo.us'],
+  middlewares: ['traefik.io', 'traefik.containo.us'],
+  middlewaretcps: ['traefik.io', 'traefik.containo.us'],
+  serverstransports: ['traefik.io', 'traefik.containo.us'],
+  serverstransporttcps: ['traefik.io', 'traefik.containo.us'],
+  tlsoptions: ['traefik.io', 'traefik.containo.us'],
+  tlsstores: ['traefik.io', 'traefik.containo.us'],
+  traefikservices: ['traefik.io', 'traefik.containo.us'],
+  backuprepositories: ['velero.io'],
+  backups: ['velero.io'],
+  backupstoragelocations: ['velero.io'],
+  velerorestores: ['velero.io'],
+  veleroschedules: ['velero.io'],
+  volumesnapshotlocations: ['velero.io'],
+  clusterpolicyreports: ['wgpolicyk8s.io'],
+  policyreports: ['wgpolicyk8s.io'],
+}
+
 function getColumnsForKind(kind: string, group?: string): Column[] {
-  const key = normalizeKindToPlural(kind, group)
-  if (KNOWN_COLUMNS[key]) return KNOWN_COLUMNS[key]
+  // Ahead of the curated lookup: a provider ships one CRD per service, so a
+  // managed resource routinely collides with a curated plural (acm's
+  // Certificate, s3's Service). Resolving the collision the other way would
+  // return DEFAULT_COLUMNS and never reach this branch at all.
   if (group && isLikelyCrossplaneMRGroup(kind, group)) {
     return KNOWN_COLUMNS.crossplanemanagedresources
+  }
+  const key = normalizeKindToPlural(kind, group)
+  const curated = KNOWN_COLUMNS[key]
+  if (curated) {
+    // A core kind cannot be shadowed by a CRD, so it keeps its columns without
+    // an ownership entry. Anything else has to be claimed for this exact group.
+    if (!group || CORE_API_GROUPS.has(group)) return curated
+    if (CURATED_COLUMN_GROUPS[key]?.includes(group)) return curated
+    if (isCuratedUnboundedGroup(key, group)) return curated
+    return DEFAULT_COLUMNS
   }
   return DEFAULT_COLUMNS
 }
@@ -6203,8 +6431,12 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
       return <OrderCell resource={resource} column={column} />
     case 'challenges':
       return <ChallengeCell resource={resource} column={column} />
+    case 'istiogateways':
+      return <IstioGatewayCell resource={resource} column={column} />
     case 'gateways':
-      // Disambiguate Gateway API vs Istio Gateway by apiVersion
+      // Disambiguate Gateway API vs Istio Gateway by apiVersion. Retained
+      // alongside the case above because not every call site normalizes the
+      // kind through GROUP_QUALIFIED_COLUMN_KEYS before dispatching.
       if (resource.apiVersion?.includes('networking.istio.io')) {
         return <IstioGatewayCell resource={resource} column={column} />
       }

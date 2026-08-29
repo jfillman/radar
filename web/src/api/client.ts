@@ -878,6 +878,7 @@ export interface OpenCostNamespaceCost {
 
 export type CostUnavailableReason =
   | "no_prometheus"
+  | "no_cost_source"
   | "no_metrics"
   | "query_error"
   | "access_denied"
@@ -905,7 +906,7 @@ export interface OpenCostSummary {
   namespaces?: OpenCostNamespaceCost[];
 }
 
-const noPrometheusFirstSeenAt = new Map<string, number>();
+const costDiscoveryFirstSeenAt = new Map<string, number>();
 
 function costRefetchInterval(
   defaultInterval: number | false = COST_REFRESH_INTERVAL_MS,
@@ -921,15 +922,18 @@ function costRefetchInterval(
   }) => {
     const data = query.state.data;
     const queryID = `${contextName ?? "unknown"}:${query.queryHash ?? JSON.stringify(query.queryKey ?? "opencost")}`;
-    if (data?.available === false && data.reason === "no_prometheus") {
+    if (
+      data?.available === false &&
+      (data.reason === "no_prometheus" || data.reason === "no_cost_source")
+    ) {
       const now = Date.now();
-      const firstSeenAt = noPrometheusFirstSeenAt.get(queryID) ?? now;
-      noPrometheusFirstSeenAt.set(queryID, firstSeenAt);
+      const firstSeenAt = costDiscoveryFirstSeenAt.get(queryID) ?? now;
+      costDiscoveryFirstSeenAt.set(queryID, firstSeenAt);
       return now - firstSeenAt < COST_DISCOVERY_GRACE_MS
         ? COST_DISCOVERY_RETRY_INTERVAL_MS
         : defaultInterval;
     }
-    noPrometheusFirstSeenAt.delete(queryID);
+    costDiscoveryFirstSeenAt.delete(queryID);
     return defaultInterval;
   };
 }
@@ -970,6 +974,7 @@ export interface OpenCostWorkloadResponse {
   available: boolean;
   reason?: CostUnavailableReason;
   source?: CostDataSource;
+  window?: string;
   dataThrough?: string;
   currency?: string;
   namespace: string;
@@ -1000,6 +1005,7 @@ export interface OpenCostWorkloadDetailResponse {
   available: boolean;
   reason?: CostUnavailableReason;
   source?: CostDataSource;
+  window?: string;
   dataThrough?: string;
   currency?: string;
   namespace: string;
@@ -1144,6 +1150,7 @@ export interface OpenCostApplicationCostResponse {
   available: boolean;
   reason?: CostUnavailableReason;
   source?: CostDataSource;
+  window?: string;
   dataThrough?: string;
   currency?: string;
   partial?: boolean;

@@ -12,6 +12,8 @@ interface RadarVersionLineProps {
   onNavigateToGitOps?: (path: string) => void
 }
 
+const IN_CLUSTER_UPGRADE_URL = 'https://radarhq.io/docs/configuration/in-cluster#upgrading'
+
 function displayVersion(version: string): string {
   return version === 'dev' || version.startsWith('v') ? version : `v${version}`
 }
@@ -42,8 +44,8 @@ export function RadarVersionLine({
     : null
 
   let detail = managerLoading
-    ? 'Checking how this installation is managed.'
-    : 'The installation manager could not be confirmed. Open the release notes for upgrade guidance.'
+    ? 'Checking how this installation is managed. Open the in-cluster upgrade instructions.'
+    : 'The installation manager could not be confirmed. Open the in-cluster upgrade instructions.'
   let onClick: (() => void) | undefined
   const actionClassName = 'group inline-flex items-center gap-1 text-amber-600 transition-colors hover:text-amber-500 dark:text-amber-400'
 
@@ -60,8 +62,8 @@ export function RadarVersionLine({
     }
   } else if (manager?.ownership === 'gitops') {
     detail = manager.controller
-      ? `This installation appears to be managed by ${manager.controller}. Open the release notes and upgrade through its source of truth.`
-      : 'This installation appears to be managed through GitOps. Open the release notes and upgrade through its source of truth.'
+      ? `This installation appears to be managed by ${manager.controller}. Open the upgrade instructions and apply the change through its source of truth.`
+      : 'This installation appears to be managed through GitOps. Open the upgrade instructions and apply the change through its source of truth.'
   }
 
   const accessibleLabel = `Radar ${displayVersion(latestVersion)} is available. ${detail}`
@@ -74,9 +76,9 @@ export function RadarVersionLine({
     >
       <UpgradeLabel version={latestVersion} />
     </button>
-  ) : version.releaseUrl ? (
+  ) : (
     <a
-      href={version.releaseUrl}
+      href={IN_CLUSTER_UPGRADE_URL}
       target="_blank"
       rel="noreferrer"
       className={actionClassName}
@@ -84,10 +86,6 @@ export function RadarVersionLine({
     >
       <UpgradeLabel version={latestVersion} />
     </a>
-  ) : (
-    <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400" aria-label={accessibleLabel}>
-      <UpgradeLabel version={latestVersion} />
-    </span>
   )
 
   return (

@@ -39,6 +39,13 @@ describe('RadarVersionLine', () => {
     expect(html).not.toContain('could not be confirmed')
   })
 
+  it('opens actionable upgrade instructions when the installation manager is unknown', () => {
+    const html = renderToString(<RadarVersionLine version={version} />)
+    expect(html).toContain('https://radarhq.io/docs/configuration/in-cluster#upgrading')
+    expect(html).toContain('Open the in-cluster upgrade instructions')
+    expect(html).not.toContain(version.releaseUrl)
+  })
+
   it('deep-links exact Helm ownership when the host supports it', () => {
     const html = renderToString(
       <RadarVersionLine
@@ -71,7 +78,7 @@ describe('RadarVersionLine', () => {
       />,
     )
     expect(suspected).toContain('appears to be managed by Flux')
-    expect(suspected).toContain('Open the release notes')
+    expect(suspected).toContain('Open the upgrade instructions')
     expect(suspected).not.toContain('Managed by Kustomization')
   })
 })

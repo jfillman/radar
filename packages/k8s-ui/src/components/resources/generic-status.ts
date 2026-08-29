@@ -1,4 +1,5 @@
 import type { HealthLevel } from './resource-utils'
+import { getGatewayPolicyStatus, hasGatewayPolicyStatus } from './gateway-policy-status'
 
 /**
  * Derives a status for a resource with no dedicated renderer — a CRD Radar
@@ -89,6 +90,13 @@ function fromCondition(cond: any, polarityKnown: boolean): GenericStatus | null 
 export function getGenericResourceStatus(resource: any): GenericStatus | null {
   const status = resource?.status
   if (!status || typeof status !== 'object') return null
+
+  // Gateway API policies keep their conditions per-ancestor, one level below
+  // where the rest of this function looks. Dispatched on the shape and resolved
+  // by its own reader, because the rungs below would answer it wrongly: they
+  // take a positive condition before a negative one, and a policy that is
+  // `Accepted=True, Programmed=False` has been taken up and then failed.
+  if (hasGatewayPolicyStatus(resource)) return getGatewayPolicyStatus(resource)
 
   const phase = typeof status.phase === 'string' ? status.phase.trim() : ''
   if (phase) {

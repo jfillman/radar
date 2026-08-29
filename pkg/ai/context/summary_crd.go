@@ -452,6 +452,16 @@ func summarizeGenericCRD(obj *unstructured.Unstructured) *ResourceSummary {
 		Age:       age(obj.GetCreationTimestamp().Time),
 	}
 
+	// Gateway API policies (GEP-713) report per-ancestor, at
+	// status.ancestors[].conditions, so the top-level lookups below find
+	// nothing and the status comes back empty. Matched on the shape rather
+	// than on a list of kinds: every implementation shares it, and Radar
+	// should read one it has never heard of.
+	if status, ok := gatewayPolicyStatus(obj); ok {
+		s.Status = status
+		return s
+	}
+
 	// Try status.conditions — most CRDs follow this convention
 	s.Status = extractReadyCondition(obj)
 
@@ -462,6 +472,113 @@ func summarizeGenericCRD(obj *unstructured.Unstructured) *ResourceSummary {
 	}
 
 	return s
+}
+
+// gatewayPolicyStatus summarizes a Gateway API PolicyStatus, aggregated across
+// the ancestors a policy attaches to. The second return reports whether the
+// object carries one at all.
+//
+// Failures are checked before acceptance, which is the reverse of
+// extractReadyCondition. A policy is routinely Accepted=True and
+// Programmed=False — the controller took ownership and then could not apply it
+// — and reading acceptance first calls that healthy. Mirrors
+// getGatewayPolicyStatus in packages/k8s-ui.
+func gatewayPolicyStatus(obj *unstructured.Unstructured) (string, bool) {
+	// NoCopy rather than NestedSlice: this is a read-only summary on a request
+	// path, and NestedSlice deep-copies every ancestor — and panics outright on
+	// content it cannot copy rather than returning an error.
+	raw, found, err := unstructured.NestedFieldNoCopy(obj.Object, "status", "ancestors")
+	if !found || err != nil {
+		return "", false
+	}
+	ancestors, ok := raw.([]any)
+	if !ok {
+		return "", false
+	}
+	if len(ancestors) == 0 {
+		return "NoAncestors", true
+	}
+
+	failed, degraded, accepted := 0, 0, 0
+	problem := ""
+
+	for _, a := range ancestors {
+		aMap, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		rawConds, _, _ := unstructured.NestedFieldNoCopy(aMap, "conditions")
+		conds, _ := rawConds.([]any)
+
+		broke, warned := "", ""
+		hasAccepted := false
+		for _, c := range conds {
+			cond, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			condType, _ := cond["type"].(string)
+			condStatus, _ := cond["status"].(string)
+			switch {
+			case (condType == "Accepted" || condType == "Programmed") && condStatus == "False":
+				if broke == "" {
+					broke = policyProblem(cond, condType)
+				}
+			case (condType == "Degraded" || condType == "Warning") && condStatus == "True":
+				if warned == "" {
+					warned = policyProblem(cond, condType)
+				}
+			case condType == "Accepted" && condStatus == "True":
+				hasAccepted = true
+			}
+		}
+
+		switch {
+		case broke != "":
+			failed++
+			if problem == "" {
+				problem = broke
+			}
+		case warned != "":
+			degraded++
+			if problem == "" {
+				problem = warned
+			}
+		case hasAccepted:
+			accepted++
+		}
+	}
+
+	total := len(ancestors)
+	scope := func(n int) string {
+		if total > 1 {
+			return fmt.Sprintf(" (%d/%d)", n, total)
+		}
+		return ""
+	}
+
+	switch {
+	case failed > 0:
+		return problem + scope(failed), true
+	case degraded > 0:
+		return problem + scope(degraded), true
+	case accepted == total:
+		return "Accepted", true
+	default:
+		return "Pending" + scope(total-accepted), true
+	}
+}
+
+// policyProblem prefers the controller's reason, which names the actual
+// failure (ResourceNotFound, Conflicted, NotAllowed) where the type does not.
+func policyProblem(cond map[string]any, condType string) string {
+	if reason, _ := cond["reason"].(string); reason != "" {
+		return reason
+	}
+	if condType != "" {
+		return "Not" + condType
+	}
+	return "Failed"
 }
 
 // extractReadyCondition extracts the most informative condition from status.conditions.

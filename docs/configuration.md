@@ -297,13 +297,12 @@ request, both to Skyhook, neither containing cluster data:
   install method, whether it is running locally or in-cluster, and the
   installation timestamp when Radar can determine it. Local and Desktop
   installations use one cached server-level check. For in-cluster
-  installations, the server-level request only fetches release information and
-  is not recorded as an installation event. Instead, each browser profile that
-  opens Radar reports at most once per UTC day; that report contains a fresh
-  random daily UUID and whether authentication is enabled. It contains no
-  username, browser fingerprint, or Kubernetes data. Development builds skip
-  the request; prerelease builds fetch release information without sending a
-  browser report.
+  installations, the server-level request only fetches release information.
+  Each browser profile that opens Radar performs its own check at most once per
+  UTC day; the request contains a fresh random daily UUID and whether
+  authentication is enabled. It contains no username, browser fingerprint, or
+  Kubernetes data. Development builds skip the request; prerelease builds only
+  fetch release information.
 - **Cloud dialog copy** — only when you *open* the Cloud dialog, to fetch the
   current terms shown in it. No identifiers are sent. `RADAR_CLOUD_FUNNEL=off`
   stops this request from ever happening.

@@ -100,16 +100,16 @@ func CheckForUpdate(_ context.Context) *UpdateInfo {
 	return checkForUpdateCached(checkOptions{})
 }
 
-// CheckForUpdateRelease returns release information without recording an
-// installation or browser analytics event.
+// CheckForUpdateRelease returns release information without performing a
+// browser-scoped update check.
 func CheckForUpdateRelease(_ context.Context) *UpdateInfo {
 	return checkForUpdateCached(checkOptions{source: "release-only"})
 }
 
-// CheckForUpdateBrowser records one browser-profile report while returning the
-// same release information as the ordinary update check. Browser reports
-// intentionally bypass the shared release cache so each accepted daily report
-// reaches the release service.
+// CheckForUpdateBrowser performs one browser-scoped check while returning the
+// same release information as the ordinary update check. These checks bypass
+// the shared release cache so each accepted daily request reaches the release
+// service.
 func CheckForUpdateBrowser(_ context.Context, reportDay, reportID string, authEnabled bool) (*UpdateInfo, bool) {
 	if !IsReleaseVersion(Current) {
 		return CheckForUpdateRelease(context.Background()), true
@@ -267,7 +267,7 @@ func fetchLatestRelease(ctx context.Context, options checkOptions) (*UpdateInfo,
 }
 
 // IsReleaseVersion accepts only stable x.y.z builds. Development, dirty, and
-// prerelease builds should not participate in release analytics.
+// prerelease builds should only fetch release information.
 func IsReleaseVersion(value string) bool {
 	v, err := semver.StrictNewVersion(strings.TrimPrefix(value, "v"))
 	return err == nil && v.Prerelease() == "" && v.Metadata() == ""

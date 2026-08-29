@@ -2495,10 +2495,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         open={showSettings}
         initialSection={settingsSection}
         onClose={() => setShowSettings(false)}
-        onNavigateToResource={(resource) => {
-          setShowSettings(false)
-          navigateToResourceList(resource)
-        }}
+        onNavigateToResource={navigateToResourceList}
       />
 
       {/* Debug overlay — dev mode, standalone only. Embedded hosts (Radar Hub)

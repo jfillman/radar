@@ -1327,6 +1327,8 @@ Radar statically evaluates Calico selectors against workload pod templates and t
 
 Basic resource support for the GPU scheduling, batch, and inference-serving ecosystem: **status badges, smart table columns, status filters, and sidebar grouping** for every kind below. Detail views use the standard spec/status renderer; topology participation and typed detail views land with the deeper per-tool integrations.
 
+This is resource reconnaissance, not GPU accounting or end-to-end workload diagnosis. It does not inventory physical devices, distinguish virtual or fractional GPUs such as HAMi, report utilization, or explain the complete workload-to-queue-to-Pod scheduling path.
+
 ### Kueue + Cluster Autoscaler
 
 | Resource | Group | Status source |

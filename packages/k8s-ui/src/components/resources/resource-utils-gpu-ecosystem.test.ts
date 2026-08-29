@@ -6,6 +6,7 @@ import {
 } from './resource-utils-kueue'
 import { getRayClusterStatus, getRayJobStatus, getRayServiceStatus } from './resource-utils-ray'
 import {
+  getInferenceServiceStatus,
   getLLMInferenceServiceReplicas,
   getServingRuntimeStatus,
 } from './resource-utils-kserve'
@@ -90,6 +91,15 @@ describe('GPU ecosystem API contracts', () => {
     const enabled = getServingRuntimeStatus({ spec: {} })
     expect(enabled.text).toBe('Enabled')
     expect(enabled.level).toBe('neutral')
+  })
+
+  it('presents KServe transition failures as operator-readable status', () => {
+    expect(getInferenceServiceStatus({
+      status: { modelStatus: { transitionStatus: 'BlockedByFailedLoad' } },
+    }).text).toBe('Load failed')
+    expect(getInferenceServiceStatus({
+      status: { modelStatus: { transitionStatus: 'InvalidSpec' } },
+    }).text).toBe('Invalid spec')
   })
 
   it('reads the inline replicas field in both served LLMInferenceService versions', () => {

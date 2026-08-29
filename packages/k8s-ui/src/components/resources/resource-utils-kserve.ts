@@ -25,8 +25,11 @@ function truncateMiddle(value: string, max = 44): string {
 
 export function getInferenceServiceStatus(resource: any): StatusBadge {
   const transition = resource.status?.modelStatus?.transitionStatus
-  if (transition === 'BlockedByFailedLoad' || transition === 'InvalidSpec') {
-    return { text: transition, color: healthColors.unhealthy, level: 'unhealthy' }
+  if (transition === 'BlockedByFailedLoad') {
+    return { text: 'Load failed', color: healthColors.unhealthy, level: 'unhealthy' }
+  }
+  if (transition === 'InvalidSpec') {
+    return { text: 'Invalid spec', color: healthColors.unhealthy, level: 'unhealthy' }
   }
 
   const readyCond = findCondition(resource, 'Ready')

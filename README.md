@@ -273,6 +273,7 @@ Table-based resource browser with smart columns per resource kind.
 - Search by name, filter by status or problems (CrashLoopBackOff, ImagePullBackOff, etc.)
 - Add custom columns from any label or annotation — sortable, filterable, and resizable
 - Click any resource for YAML manifest, related resources, logs, and events
+- Set regular or init-container images on Deployments, StatefulSets, DaemonSets, and Argo Rollouts, with live rollout progress in tables, drawers, workload views, and Applications
 
 ### Image Filesystem Viewer
 

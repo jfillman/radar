@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	goruntime "runtime"
 	"time"
 
 	"github.com/skyhook-io/radar/internal/app"
@@ -159,40 +160,45 @@ func main() {
 	}
 
 	cfg := app.AppConfig{
-		Kubeconfig:               resolvedKubeconfig,
-		KubeconfigDirs:           resolvedKubeconfigDirs,
-		Namespace:                resolvedNamespace,
-		Namespaces:               resolvedNamespaces,
-		Port:                     fileCfg.PortOr(0), // Configured port, or random to avoid conflicts with CLI
-		ListenAddress:            "127.0.0.1",
-		DevMode:                  false,
-		HistoryLimit:             *historyLimit,
-		DebugEvents:              *debugEvents,
-		FakeInCluster:            *fakeInCluster,
-		DisableHelmWrite:         *disableHelmWrite,
-		DisableExec:              *disableExec,
-		PodShellDefault:          *podShellDefault,
-		TimelineStorage:          *timelineStorage,
-		TimelineDBPath:           *timelineDBPath,
-		TimelineRetention:        *timelineRetention,
-		TimelineMaxSizeBytes:     timelineMaxSizeBytes,
-		PrometheusURL:            *prometheusURL,
-		OpenCostCurrency:         normalizedOpenCostCurrency,
-		CostSource:               fileCfg.CostSource,
-		KubecostURL:              fileCfg.KubecostURL,
-		KubecostAPIKey:           fileCfg.KubecostAPIKey,
-		KubecostAPIKeyContext:    fileCfg.KubecostAPIKeyContext,
-		KubecostClusterID:        fileCfg.KubecostClusterID,
-		KubecostClusterIDContext: fileCfg.KubecostClusterIDContext,
-		OpenCostFlagSet:          openCostCurrencyFlagSet,
-		PrometheusHeaders:        resolvedPrometheusHeaders,
-		PrometheusHeadersFromEnv: fileCfg.PrometheusHeadersFromEnv,
-		Version:                  version,
-		HubAPIURL:                hubAPIURL,
-		HubAppURL:                hubAppURL,
-		MCPEnabled:               fileCfg.MCPEnabledOr(true),
-		AIHistory:                fileCfg.AIHistoryOr(true),
-		AIHistoryDBPath:          fileCfg.AIHistoryDBPath,
+		Kubeconfig:                resolvedKubeconfig,
+		KubeconfigDirs:            resolvedKubeconfigDirs,
+		RestoreLastDesktopContext: fileCfg.RestoreLastDesktopContextOr(true),
+		Namespace:                 resolvedNamespace,
+		Namespaces:                resolvedNamespaces,
+		Port:                      fileCfg.PortOr(0), // Configured port, or random to avoid conflicts with CLI
+		ListenAddress:             "127.0.0.1",
+		DevMode:                   false,
+		HistoryLimit:              *historyLimit,
+		DebugEvents:               *debugEvents,
+		FakeInCluster:             *fakeInCluster,
+		DisableHelmWrite:          *disableHelmWrite,
+		DisableExec:               *disableExec,
+		PodShellDefault:           *podShellDefault,
+		TimelineStorage:           *timelineStorage,
+		TimelineDBPath:            *timelineDBPath,
+		TimelineRetention:         *timelineRetention,
+		TimelineMaxSizeBytes:      timelineMaxSizeBytes,
+		PrometheusURL:             *prometheusURL,
+		OpenCostCurrency:          normalizedOpenCostCurrency,
+		CostSource:                fileCfg.CostSource,
+		KubecostURL:               fileCfg.KubecostURL,
+		KubecostAPIKey:            fileCfg.KubecostAPIKey,
+		KubecostAPIKeyContext:     fileCfg.KubecostAPIKeyContext,
+		KubecostClusterID:         fileCfg.KubecostClusterID,
+		KubecostClusterIDContext:  fileCfg.KubecostClusterIDContext,
+		OpenCostFlagSet:           openCostCurrencyFlagSet,
+		PrometheusHeaders:         resolvedPrometheusHeaders,
+		PrometheusHeadersFromEnv:  fileCfg.PrometheusHeadersFromEnv,
+		Version:                   version,
+		HubAPIURL:                 hubAPIURL,
+		HubAppURL:                 hubAppURL,
+		MCPEnabled:                fileCfg.MCPEnabledOr(true),
+		AIHistory:                 fileCfg.AIHistoryOr(true),
+		AIHistoryDBPath:           fileCfg.AIHistoryDBPath,
+	}
+
+	if !cfg.RestoreLastDesktopContext {
+		app.ForgetLastContext()
 	}
 
 	app.SetGlobals(cfg)
@@ -246,6 +252,12 @@ func main() {
 	windowTitle := formatWindowTitle(k8s.GetContextName())
 
 	desktopApp := NewDesktopApp(srv, timelineStoreCfg)
+	// macOS only. Wails maps this to `[NSApp hide:]`, which leaves the dock icon
+	// in place, so a dock click or Cmd+Tab brings the window back. The other
+	// platforms have no such affordance: GTK hides the window on delete-event and
+	// Windows drops the taskbar entry, and Wails v2 ships no tray icon, so a
+	// hidden window there is only recoverable by killing the process.
+	hideOnClose := goruntime.GOOS == "darwin"
 
 	// Run Wails application
 	err = wails.Run(&options.App{
@@ -258,11 +270,15 @@ func main() {
 		MaxHeight:        4320,
 		WindowStartState: options.Maximised,
 
+		// Closing the window leaves the server running. Quit is explicit
+		// (Cmd+Q / File → Quit).
+		HideWindowOnClose: hideOnClose,
+
 		AssetServer: &assetserver.Options{
 			Handler: NewRedirectHandler(srv.ActualAddr(), cfg.Namespace, cfg.Namespaces),
 		},
 
-		Menu: createMenu(desktopApp, version),
+		Menu: createMenu(desktopApp, version, goruntime.GOOS),
 
 		BackgroundColour: options.NewRGBA(10, 10, 15, 255),
 
@@ -279,7 +295,7 @@ func main() {
 			TitleBar: mac.TitleBarDefault(),
 			About: &mac.AboutInfo{
 				Title:   "Radar",
-				Message: "Kubernetes Visibility Tool\nBuilt by Skyhook\n\nVersion: " + version,
+				Message: "Kubernetes Visibility Tool\nBuilt by Skyhook\n\nVersion: " + version + "\n\nhttps://github.com/skyhook-io/radar",
 			},
 		},
 

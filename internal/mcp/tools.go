@@ -541,7 +541,8 @@ func registerTools(server *mcp.Server, includeWrites bool) {
 			"'abort' reverts traffic to the last stable version at once without touching spec, and stays " +
 			"aborted until retried — the incident-response verb; " +
 			"'retry' clears an abort; 'promote' clears the current pause to advance one step; " +
-			"'promote-full' skips ALL remaining steps, pauses, and analysis (emergency hotfix); " +
+			"'promote-full' skips ALL remaining steps, pauses, and analysis (emergency hotfix) — straight after a " +
+			"rollback it may report that the Argo Rollouts controller has not caught up, which is safe to retry; " +
 			"'skip-step' advances exactly one canary step (canary only). " +
 			"For rollback, restart, or scale use manage_workload with kind=rollout. " +
 			"A Rollout paused on InconclusiveAnalysisRun names its AnalysisRun in " +

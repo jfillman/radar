@@ -14,23 +14,26 @@ import (
 // Config holds startup configuration persisted across restarts.
 // Values are used as flag defaults; explicit CLI flags always take precedence.
 type Config struct {
-	Kubeconfig        string   `json:"kubeconfig,omitempty"`
-	KubeconfigDirs    []string `json:"kubeconfigDirs,omitempty"`
-	Namespace         string   `json:"namespace,omitempty"`
-	Namespaces        []string `json:"namespaces,omitempty"`
-	Port              int      `json:"port,omitempty"`
-	NoBrowser         bool     `json:"noBrowser,omitempty"`
-	Browser           string   `json:"browser,omitempty"`
-	TimelineStorage   string   `json:"timelineStorage,omitempty"`
-	TimelineDBPath    string   `json:"timelineDbPath,omitempty"`
-	TimelineRetention string   `json:"timelineRetention,omitempty"` // Go duration (e.g. "168h" for 7d); "0" disables age cleanup
-	TimelineMaxSize   string   `json:"timelineMaxSize,omitempty"`   // Byte size (e.g. "800Mi", "8Gi"); "0" disables
-	HistoryLimit      int      `json:"historyLimit,omitempty"`
-	PrometheusURL     string   `json:"prometheusUrl,omitempty"`
-	OpenCostCurrency  string   `json:"opencostCurrency,omitempty"`
-	CostSource        string   `json:"costSource,omitempty"`
-	KubecostURL       string   `json:"kubecostUrl,omitempty"`
-	KubecostAPIKey    string   `json:"kubecostApiKey,omitempty"`
+	Kubeconfig     string   `json:"kubeconfig,omitempty"`
+	KubeconfigDirs []string `json:"kubeconfigDirs,omitempty"`
+	// nil = on. No CLI equivalent, deliberately — that would put a Desktop
+	// switch in the path of a command typed after `kubectl config use-context`.
+	RestoreLastDesktopContext *bool    `json:"restoreLastDesktopContext,omitempty"`
+	Namespace                 string   `json:"namespace,omitempty"`
+	Namespaces                []string `json:"namespaces,omitempty"`
+	Port                      int      `json:"port,omitempty"`
+	NoBrowser                 bool     `json:"noBrowser,omitempty"`
+	Browser                   string   `json:"browser,omitempty"`
+	TimelineStorage           string   `json:"timelineStorage,omitempty"`
+	TimelineDBPath            string   `json:"timelineDbPath,omitempty"`
+	TimelineRetention         string   `json:"timelineRetention,omitempty"` // Go duration (e.g. "168h" for 7d); "0" disables age cleanup
+	TimelineMaxSize           string   `json:"timelineMaxSize,omitempty"`   // Byte size (e.g. "800Mi", "8Gi"); "0" disables
+	HistoryLimit              int      `json:"historyLimit,omitempty"`
+	PrometheusURL             string   `json:"prometheusUrl,omitempty"`
+	OpenCostCurrency          string   `json:"opencostCurrency,omitempty"`
+	CostSource                string   `json:"costSource,omitempty"`
+	KubecostURL               string   `json:"kubecostUrl,omitempty"`
+	KubecostAPIKey            string   `json:"kubecostApiKey,omitempty"`
 	// KubecostAPIKeyContext binds a credential used with local auto-discovery to
 	// the kubeconfig context where it was configured. Explicit-URL credentials
 	// remain portable because their origin is stable across context switches.
@@ -222,6 +225,15 @@ func (c Config) HistoryLimitOr(def int) int {
 func (c Config) MCPEnabledOr(def bool) bool {
 	if c.MCP != nil {
 		return *c.MCP
+	}
+	return def
+}
+
+// RestoreLastDesktopContextOr returns *c.RestoreLastDesktopContext if non-nil, otherwise the
+// provided default.
+func (c Config) RestoreLastDesktopContextOr(def bool) bool {
+	if c.RestoreLastDesktopContext != nil {
+		return *c.RestoreLastDesktopContext
 	}
 	return def
 }

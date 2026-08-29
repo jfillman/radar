@@ -24,6 +24,27 @@ listener must be reachable through a published container port or Kubernetes
 Service. Desktop Radar and temporary `radar diagnose` servers remain
 loopback-only.
 
+## Desktop Window Behavior
+
+On macOS, closing the Radar window hides the app rather than quitting it. The
+Dock icon stays; a Dock click, Cmd+Tab, or Radar → Show All brings the window
+back with the session intact. File → Close Window (Cmd+W) hides it the same way
+the close button does. To quit, use Radar → Quit Radar (Cmd+Q).
+
+Radar keeps running while hidden. That is the point — MCP clients stay
+connected across a window close — but it means a hidden Radar still:
+
+- serves its loopback HTTP and MCP endpoints, under your kubeconfig identity;
+- holds watches open against the API server for every cached resource kind;
+- holds the memory backing those caches.
+
+None of that stops until you quit. If you close the window expecting Radar to
+release its cluster access, quit explicitly.
+
+On Linux and Windows, closing the window always quits. Neither gives Radar
+anything to reopen from — no Dock, and Wails v2 ships no tray icon — so hiding
+there would leave a running process with no way to reach it.
+
 ## Persistent Configuration
 
 Radar stores configuration in two files under `~/.radar/`:
@@ -63,6 +84,7 @@ All fields are optional — omitted fields use built-in defaults.
 |-------|-------------|
 | `kubeconfig` | Primary kubeconfig file (same as `--kubeconfig`) |
 | `kubeconfigDirs` | Directories containing additional kubeconfig files (same as `--kubeconfig-dir`) |
+| `restoreLastDesktopContext` | Desktop app only: reopen on the cluster last used (default: enabled). `false` always opens on the kubeconfig's `current-context` — see [Startup Context](#startup-context) |
 | `namespace` | Initial namespace filter |
 | `namespaces` | Initial namespace filters as a list (same as `--namespaces ns1,ns2,ns3`) |
 | `port` | Server port (default 9280) |
@@ -110,6 +132,7 @@ User preferences for the UI. Managed via the Settings dialog or `PUT /api/settin
 |-------|--------|-------------|
 | `theme` | `light`, `dark`, `system` | UI theme preference |
 | `pinnedKinds` | Array of `{name, kind, group}` | Resource kinds pinned to the sidebar |
+| `lastDesktopContext` | `{name, sourceFile, inFileName}` | Written by the Desktop app for itself: the cluster its window last used, reopened on the next launch. Stripped from `/api/settings`, and never read by `kubectl radar` or the `radar` CLI — see [Startup Context](#startup-context) |
 
 ## Cluster Connection Precedence
 
@@ -206,9 +229,37 @@ Radar supports switching between Kubernetes contexts at runtime through the UI. 
 
 When running in-cluster (using the pod's service account), context switching is disabled.
 
+Switching contexts in the UI never rewrites your kubeconfig — `kubectl` keeps pointing wherever it pointed before.
+
 ### Expired credentials
 
 If an active context's credentials expire or are rejected, Radar disconnects cluster-backed work and retries automatically. After you re-authenticate, exec-based credentials are re-probed and static credentials are reloaded from kubeconfig on disk, so Radar can reconnect without a restart. Retries start after 30 seconds and back off to 5 minutes; a credential plugin that stops responding is retried less frequently.
+
+## Startup Context
+
+Which cluster Radar comes up on depends on how you launched it.
+
+**The Desktop app reopens where you left off.** The context selected at startup and every successful context switch are recorded as `lastDesktopContext` in `~/.radar/settings.json`, and the next launch reconnects to it — the natural behaviour for a window you closed and reopened.
+
+**`kubectl radar`, `radar`, and `radar diagnose --standalone` start on the kubeconfig's `current-context`**, as `kubectl` would. A command typed right after `kubectl config use-context staging` runs against staging, and a cluster picked in the Desktop app days ago never redirects it. Terminal runs don't record switches either, so nothing you do in one moves where the Desktop app reopens.
+
+The separation is not a preference: the remembered cluster is written under a Desktop-scoped key that the CLI never reads, and there is no setting that opts the CLI in.
+
+To stop the Desktop app reopening on the last cluster, turn off **Reopen on the last used cluster** in Settings → Connection, or set in `~/.radar/config.json`:
+
+```json
+{
+  "restoreLastDesktopContext": false
+}
+```
+
+Details worth knowing:
+
+- The remembered context records the kubeconfig file it came from, not just its name — the name alone is not a stable handle. With several kubeconfigs loaded, two files can define the same context name, and which one keeps the unqualified name depends on the order the files are read, so adding a file can hand that name to a different cluster.
+- Radar reopens only on an exact match: the same context, in the same file. Anything else — the context renamed or deleted, the file moved or no longer loaded — opens the kubeconfig's `current-context` instead, and says so in Diagnostics. A same-named context in another file is not treated as evidence that it is the same cluster; losing the convenience costs a click, landing on the wrong cluster costs more.
+- If the remembered cluster is unreachable (VPN down, for instance), Radar reports the connection failure rather than silently connecting to a different cluster. Pick another cluster from the header.
+- Clusters connected through CAPI are never remembered: their kubeconfig is a temporary file that no longer exists on the next run.
+- Turning the memory off takes effect on the next Desktop start: it clears the remembered cluster as well as stopping new recording, so turning it back on later starts fresh rather than reopening a cluster you stopped using months ago.
 
 ## Namespace Picker
 

@@ -177,6 +177,26 @@ func SetTestContextName(name string) string {
 	return prev
 }
 
+// SetTestRegistryEntry is a test-only helper that registers one context in the
+// isolated-load registry, so callers can exercise resolution against a
+// multi-kubeconfig layout. Returns a restore func.
+func SetTestRegistryEntry(qualifiedName, sourceFile, inFileName string) func() {
+	clientMu.Lock()
+	prev := contextRegistry
+	next := make(map[string]contextEntry, len(prev)+1)
+	for k, v := range prev {
+		next[k] = v
+	}
+	next[qualifiedName] = contextEntry{SourceFile: sourceFile, InFileName: inFileName}
+	contextRegistry = next
+	clientMu.Unlock()
+	return func() {
+		clientMu.Lock()
+		contextRegistry = prev
+		clientMu.Unlock()
+	}
+}
+
 // SetTestContextNamespace is a test-only helper that overrides the package-level
 // kubeconfig context namespace. Returns the previous value so callers can
 // restore it on cleanup.
@@ -246,6 +266,13 @@ func ResetTestState() {
 	connectionCallbacksMu.Lock()
 	connectionCallbacks = nil
 	connectionCallbacksMu.Unlock()
+
+	contextSwitchMu.Lock()
+	beforeContextSwitchCallbacks = nil
+	contextSwitchCallbacks = nil
+	namespaceRescopeCallbacks = nil
+	contextSwitchProgressCallbacks = nil
+	contextSwitchMu.Unlock()
 
 	runtimeAuthChecksMu.Lock()
 	runtimeAuthChecks = make(map[uint64]struct{})

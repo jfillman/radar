@@ -41,7 +41,8 @@ describe('RadarVersionLine', () => {
 
   it('opens actionable upgrade instructions when the installation manager is unknown', () => {
     const html = renderToString(<RadarVersionLine version={version} />)
-    expect(html).toContain('https://radarhq.io/docs/configuration/in-cluster#upgrading')
+    expect(html).toContain('https://radarhq.io/docs/configuration/in-cluster')
+    expect(html).not.toContain('#upgrading')
     expect(html).toContain('Open the in-cluster upgrade instructions')
     expect(html).not.toContain(version.releaseUrl)
   })

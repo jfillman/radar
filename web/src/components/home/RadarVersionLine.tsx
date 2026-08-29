@@ -12,7 +12,7 @@ interface RadarVersionLineProps {
   onNavigateToGitOps?: (path: string) => void
 }
 
-const IN_CLUSTER_UPGRADE_URL = 'https://radarhq.io/docs/configuration/in-cluster#upgrading'
+const IN_CLUSTER_UPGRADE_URL = 'https://radarhq.io/docs/configuration/in-cluster'
 
 function displayVersion(version: string): string {
   return version === 'dev' || version.startsWith('v') ? version : `v${version}`

@@ -18,6 +18,7 @@
 
 import { memo, useEffect, useMemo, useState } from 'react'
 import {
+  Controls,
   Handle,
   MarkerType,
   Position,
@@ -219,12 +220,15 @@ export function PipelineDagView({ tasks, height, onTaskClick }: PipelineDagViewP
             nodesDraggable={false}
             nodesConnectable={false}
             elementsSelectable={false}
-            panOnScroll
+            minZoom={0.15}
+            maxZoom={1.5}
             zoomOnScroll
             zoomOnPinch
             zoomOnDoubleClick={false}
             proOptions={{ hideAttribution: true }}
-          />
+          >
+            <Controls className="!border-theme-border !bg-theme-surface" showInteractive={false} />
+          </ReactFlow>
         </ReactFlowProvider>
       )}
     </div>

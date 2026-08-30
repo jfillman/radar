@@ -1,11 +1,13 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Search, Workflow } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, Search, Workflow } from 'lucide-react'
 import { clsx } from 'clsx'
 import {
   SummaryTile,
   Facet,
   Input,
+  PageHeader,
+  FreshnessControl,
   getTektonPipelineRunStatus,
   tektonRefName,
   formatAge,
@@ -49,6 +51,16 @@ const STATUS_TONE: Record<StatusFacet, 'success' | 'error' | 'info' | 'warning' 
   cancelled: 'warning',
   pending: 'neutral',
 }
+// Sort rank for the Status column — most-actionable states first (running,
+// failed) rather than alphabetical, so ascending reads as "needs attention"
+// first.
+const STATUS_SORT_RANK: Record<StatusFacet, number> = {
+  running: 0,
+  failed: 1,
+  pending: 2,
+  cancelled: 3,
+  succeeded: 4,
+}
 
 function runStartTime(run: any): number {
   const t = run?.status?.startTime
@@ -71,14 +83,21 @@ function taskProgress(run: any): { started: number; total: number } {
   return { started, total }
 }
 
+// A `matrix`-strategy task expands into several childReferences from one
+// declared pipeline task, so `started` can legitimately exceed `total` —
+// display/sort against whichever is larger so the fraction never reads
+// backwards (e.g. "12/7"), without pretending the declared count was
+// actually 12.
+function progressFraction(run: any, facet: StatusFacet): number {
+  const { started, total } = taskProgress(run)
+  const displayTotal = Math.max(total, started)
+  return displayTotal > 0 ? Math.min(1, started / displayTotal) : facet === 'succeeded' ? 1 : 0
+}
+
 function ProgressBar({ run, facet }: { run: any; facet: StatusFacet }) {
   const { started, total } = taskProgress(run)
-  // A `matrix`-strategy task expands into several childReferences from one
-  // declared pipeline task, so `started` can legitimately exceed `total` —
-  // display against whichever is larger so the fraction never reads backwards
-  // (e.g. "12/7"), without pretending the declared count was actually 12.
   const displayTotal = Math.max(total, started)
-  const fraction = displayTotal > 0 ? Math.min(1, started / displayTotal) : facet === 'succeeded' ? 1 : 0
+  const fraction = progressFraction(run, facet)
   const fillClass = {
     running: 'bg-sky-500',
     succeeded: 'bg-emerald-500',
@@ -110,11 +129,77 @@ function ProgressBar({ run, facet }: { run: any; facet: StatusFacet }) {
   )
 }
 
+type SortKey = 'name' | 'status' | 'pipeline' | 'progress' | 'duration' | 'started'
+type SortDir = 'asc' | 'desc'
+
+const SORT_COLUMNS: { key: SortKey; label: string; className: string }[] = [
+  { key: 'name', label: 'Name', className: 'w-64 min-w-0 shrink-0' },
+  { key: 'status', label: 'Status', className: 'w-40 shrink-0' },
+  { key: 'pipeline', label: 'Pipeline', className: 'w-40 shrink-0' },
+  { key: 'progress', label: 'Progress', className: 'min-w-[140px] flex-1' },
+  { key: 'duration', label: 'Duration', className: 'w-28 shrink-0 text-right' },
+  { key: 'started', label: 'Started', className: 'w-24 shrink-0 text-right' },
+]
+
+function sortValue(run: any, key: SortKey): number | string {
+  const facet = statusFacet(run)
+  switch (key) {
+    case 'name':
+      return (run?.metadata?.name ?? '').toLowerCase()
+    case 'status':
+      return STATUS_SORT_RANK[facet]
+    case 'pipeline':
+      return tektonRefName(run?.spec?.pipelineRef).toLowerCase()
+    case 'progress':
+      return progressFraction(run, facet)
+    case 'duration':
+      // Still-running/unstarted rows sort as smallest — reads as "shortest so
+      // far" ascending, "longest-running" descending, without a separate
+      // null bucket.
+      return runDurationMs(run) ?? -1
+    case 'started':
+      return runStartTime(run)
+  }
+}
+
+function SortHeaderCell({
+  column,
+  sort,
+  onSort,
+}: {
+  column: (typeof SORT_COLUMNS)[number]
+  sort: { key: SortKey; dir: SortDir }
+  onSort: (key: SortKey) => void
+}) {
+  const active = sort.key === column.key
+  const Icon = active ? (sort.dir === 'asc' ? ArrowUp : ArrowDown) : ArrowUpDown
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(column.key)}
+      className={clsx(
+        column.className,
+        'group flex items-center gap-1 text-xs font-medium uppercase tracking-wide',
+        column.key === 'duration' || column.key === 'started' ? 'justify-end' : '',
+        active ? 'text-theme-text-primary' : 'text-theme-text-tertiary hover:text-theme-text-secondary',
+      )}
+    >
+      {column.label}
+      <Icon className={clsx('h-3 w-3', !active && 'opacity-0 group-hover:opacity-100')} />
+    </button>
+  )
+}
+
 export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
   const namespacesParam = namespaces.join(',')
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<Set<StatusFacet>>(new Set())
   const [pipelineFilter, setPipelineFilter] = useState<Set<string>>(new Set())
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'started', dir: 'desc' })
+  const handleSort = (key: SortKey) =>
+    setSort((prev) =>
+      prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'name' || key === 'pipeline' ? 'asc' : 'desc' },
+    )
 
   const runsQuery = useQuery({
     queryKey: ['cicd-pipelineruns', namespacesParam],
@@ -173,8 +258,15 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
       }
       return true
     })
-    return [...rows].sort((a, b) => runStartTime(b) - runStartTime(a))
-  }, [runs, search, statusFilter, pipelineFilter])
+    const dirMul = sort.dir === 'asc' ? 1 : -1
+    return [...rows].sort((a, b) => {
+      const av = sortValue(a, sort.key)
+      const bv = sortValue(b, sort.key)
+      if (av < bv) return -1 * dirMul
+      if (av > bv) return 1 * dirMul
+      return 0
+    })
+  }, [runs, search, statusFilter, pipelineFilter, sort])
 
   const toggleStatus = (v: StatusFacet) => setStatusFilter((prev) => {
     const next = new Set(prev)
@@ -188,72 +280,99 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
     else next.add(v)
     return next
   })
+  const hasFacetFilters = statusFilter.size > 0 || pipelineFilter.size > 0
+  const clearFacetFilters = () => {
+    setStatusFilter(new Set())
+    setPipelineFilter(new Set())
+  }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-theme-border bg-theme-surface/70 px-4 py-3">
-        <div className="mb-3 flex items-center gap-2">
-          <Workflow className="h-4 w-4 text-theme-text-tertiary" />
-          <h1 className="text-sm font-semibold text-theme-text-primary">CI/CD</h1>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <SummaryTile label="Total Runs" value={stats.total} loading={runsQuery.isLoading} />
-          <SummaryTile
-            label="Running"
-            value={stats.counts.running}
-            tone="info"
-            loading={runsQuery.isLoading}
-            active={statusFilter.has('running')}
-            onClick={() => toggleStatus('running')}
-          />
-          <SummaryTile
-            label="Succeeded"
-            value={stats.counts.succeeded}
-            tone="success"
-            loading={runsQuery.isLoading}
-            active={statusFilter.has('succeeded')}
-            onClick={() => toggleStatus('succeeded')}
-          />
-          <SummaryTile
-            label="Failed"
-            value={stats.counts.failed}
-            tone="error"
-            loading={runsQuery.isLoading}
-            active={statusFilter.has('failed')}
-            onClick={() => toggleStatus('failed')}
-          />
-          <SummaryTile
-            label="Success Rate"
-            value={stats.successRate ?? 0}
-            tone={(stats.successRate == null ? 'neutral' : stats.successRate >= 90 ? 'success' : stats.successRate >= 70 ? 'warning' : 'error') as SummaryTone}
-            loading={runsQuery.isLoading}
-          />
-          <SummaryTile label="Tasks Running" value={tasksRunningQuery.data ?? 0} tone="info" loading={tasksRunningQuery.isLoading} />
-        </div>
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-theme-base">
+      <div className="shrink-0 border-b border-theme-border bg-theme-base px-4 py-4">
+        <PageHeader
+          icon={Workflow}
+          title="CI/CD"
+          description="Tekton PipelineRuns and TaskRuns across your pipelines, with live per-task progress."
+          actions={
+            <>
+              <FreshnessControl
+                mode="auto"
+                dataUpdatedAt={runsQuery.dataUpdatedAt}
+                isFetching={runsQuery.isFetching}
+                onRefresh={() => runsQuery.refetch()}
+              />
+              <SummaryTile label="Total Runs" value={stats.total} loading={runsQuery.isLoading} />
+              <SummaryTile
+                label="Running"
+                value={stats.counts.running}
+                tone="info"
+                loading={runsQuery.isLoading}
+                active={statusFilter.has('running')}
+                onClick={() => toggleStatus('running')}
+              />
+              <SummaryTile
+                label="Succeeded"
+                value={stats.counts.succeeded}
+                tone="success"
+                loading={runsQuery.isLoading}
+                active={statusFilter.has('succeeded')}
+                onClick={() => toggleStatus('succeeded')}
+              />
+              <SummaryTile
+                label="Failed"
+                value={stats.counts.failed}
+                tone="error"
+                loading={runsQuery.isLoading}
+                active={statusFilter.has('failed')}
+                onClick={() => toggleStatus('failed')}
+              />
+              <SummaryTile
+                label="Success Rate"
+                value={stats.successRate ?? 0}
+                tone={(stats.successRate == null ? 'neutral' : stats.successRate >= 90 ? 'success' : stats.successRate >= 70 ? 'warning' : 'error') as SummaryTone}
+                loading={runsQuery.isLoading}
+              />
+              <SummaryTile label="Tasks Running" value={tasksRunningQuery.data ?? 0} tone="info" loading={tasksRunningQuery.isLoading} />
+            </>
+          }
+        />
       </div>
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="w-56 shrink-0 overflow-y-auto border-r border-theme-border bg-theme-surface/50">
-          <Facet
-            title="Status"
-            options={(Object.keys(STATUS_LABEL) as StatusFacet[]).map((v) => ({
-              value: v,
-              label: STATUS_LABEL[v],
-              count: stats.counts[v],
-              tone: STATUS_TONE[v],
-            }))}
-            selected={statusFilter}
-            onToggle={toggleStatus}
-          />
-          <Facet
-            title="Pipeline"
-            options={[...pipelineCounts.entries()].map(([name, count]) => ({ value: name, label: name, count }))}
-            selected={pipelineFilter}
-            onToggle={togglePipeline}
-          />
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <aside className="flex w-56 shrink-0 flex-col overflow-hidden border-r border-theme-border bg-theme-surface/90">
+          <div className="flex items-center justify-between border-b border-theme-border px-3 py-2">
+            <span className="text-sm font-medium text-theme-text-secondary">Filters</span>
+            <button
+              type="button"
+              onClick={clearFacetFilters}
+              disabled={!hasFacetFilters}
+              className="text-[10px] font-medium text-blue-500 hover:text-blue-400 disabled:opacity-40 disabled:hover:text-blue-500"
+            >
+              Clear
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <Facet
+              title="Status"
+              options={(Object.keys(STATUS_LABEL) as StatusFacet[]).map((v) => ({
+                value: v,
+                label: STATUS_LABEL[v],
+                count: stats.counts[v],
+                tone: STATUS_TONE[v],
+              }))}
+              selected={statusFilter}
+              onToggle={toggleStatus}
+            />
+            <Facet
+              title="Pipeline"
+              options={[...pipelineCounts.entries()].map(([name, count]) => ({ value: name, label: name, count }))}
+              selected={pipelineFilter}
+              onToggle={togglePipeline}
+            />
+          </div>
         </aside>
 
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="shrink-0 border-b border-theme-border px-4 py-2">
             <div className="relative max-w-md">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-theme-text-tertiary" />
@@ -265,6 +384,14 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
               />
             </div>
           </div>
+
+          {filteredRuns.length > 0 && (
+            <div className="flex shrink-0 items-center gap-4 border-b border-theme-border bg-theme-surface/40 px-4 py-2">
+              {SORT_COLUMNS.map((column) => (
+                <SortHeaderCell key={column.key} column={column} sort={sort} onSort={handleSort} />
+              ))}
+            </div>
+          )}
 
           <div className="min-h-0 flex-1 overflow-y-auto">
             {runsQuery.isLoading ? (

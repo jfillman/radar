@@ -2410,10 +2410,22 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           // control closes the resource (returns to the list) instead.
           onCollapse={isMobile ? closeDrawer : handleCollapseFromExpanded}
           onNavigateToResource={(resource) => {
+            const pluralKind = kindToPluralWithGroup(resource.kind, resource.group ?? '')
+            // A peek opened outside /resources (CICD, GitOps, Applications via
+            // navigateToResource) is not URL-backed — its backdrop is whatever
+            // page it was opened on, tracked only by peekOwnerKeyRef, not by
+            // pathname. Drilling further from it must stay state-only too:
+            // navigating to /resources/<kind> here would silently relocate the
+            // backdrop into the Resources page, so the peek's "Go back" would
+            // permanently land on the Resources list instead of back on the
+            // origin page, even many hops later.
+            if (!location.pathname.startsWith('/resources')) {
+              setSelectedResource({ ...resource, kind: pluralKind })
+              return
+            }
             // Drill into a related resource while expanded: stay in the over-list
             // overlay for the new resource (pushed, so Back walks resource→resource
             // still expanded). The backdrop list follows to the new kind.
-            const pluralKind = kindToPluralWithGroup(resource.kind, resource.group ?? '')
             setSelectedResource({ ...resource, kind: pluralKind })
             const p = new URLSearchParams()
             const ns = searchParams.get('namespaces')

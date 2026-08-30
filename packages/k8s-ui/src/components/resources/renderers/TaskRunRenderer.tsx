@@ -1,8 +1,9 @@
-import { CheckCircle2, CircleDashed, ListChecks, Loader2, Terminal, XCircle } from 'lucide-react'
+import { ArrowUp, CheckCircle2, CircleDashed, ListChecks, Loader2, Terminal, XCircle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { AlertBanner, PropertyList, Property, Section, useOperationalIssuesShown } from '../../ui/drawer-components'
 import { formatAge, formatDuration } from '../resource-utils'
 import { tektonRefName } from '../resource-utils-tekton'
+import type { ResourceRef } from '../../../types/core'
 
 interface TaskRunRendererProps {
   data: any
@@ -10,6 +11,20 @@ interface TaskRunRendererProps {
   // common by the time someone opens an old TaskRun) or the host doesn't
   // wire log viewing for this kind.
   onViewLogs?: (podName: string, containerName: string) => void
+  onNavigate?: (ref: ResourceRef) => void
+}
+
+// Clicking a task node in a PipelineRun's DAG opens its TaskRun via the
+// app's generic "drill into a related resource while expanded" navigation,
+// which (by design, for every kind, not just Tekton) points the backdrop
+// route at the TaskRun's own list rather than back at the PipelineRun — so
+// browser/drawer "Go back" lands on the TaskRun list, not the run you came
+// from. Rather than fight that shared mechanism, surface an explicit way
+// back — same idea as GitOps's parent-lineage breadcrumb: TaskRuns always
+// carry an ownerReference to their PipelineRun, so this needs no click-time
+// breadcrumb param and works from any entry point (direct link, search, …).
+function parentPipelineRunName(data: any): string | undefined {
+  return (data?.metadata?.ownerReferences ?? []).find((o: any) => o?.kind === 'PipelineRun')?.name
 }
 
 // Tekton names each step's container `step-<stepName>` inside the TaskRun's
@@ -58,13 +73,14 @@ function StepRow({ step, podName, onViewLogs }: { step: any; podName?: string; o
   )
 }
 
-export function TaskRunRenderer({ data, onViewLogs }: TaskRunRendererProps) {
+export function TaskRunRenderer({ data, onViewLogs, onNavigate }: TaskRunRendererProps) {
   const spec = data?.spec ?? {}
   const status = data?.status ?? {}
   const conditions = status.conditions ?? []
   const succeededCond = conditions.find((c: any) => c?.type === 'Succeeded')
   const isFailed = succeededCond?.status === 'False'
   const operationalIssuesShown = useOperationalIssuesShown()
+  const pipelineRunName = parentPipelineRunName(data)
 
   const steps = status.steps ?? []
   const results = status.results ?? []
@@ -78,6 +94,17 @@ export function TaskRunRenderer({ data, onViewLogs }: TaskRunRendererProps) {
 
   return (
     <>
+      {pipelineRunName && onNavigate && (
+        <button
+          type="button"
+          onClick={() => onNavigate({ kind: 'pipelineruns', namespace: data?.metadata?.namespace ?? '', name: pipelineRunName, group: 'tekton.dev' })}
+          className="mb-2 flex items-center gap-1 text-xs text-theme-text-secondary hover:text-theme-text-primary hover:underline"
+        >
+          <ArrowUp className="h-3 w-3" />
+          Back to PipelineRun {pipelineRunName}
+        </button>
+      )}
+
       {isFailed && !operationalIssuesShown && (
         <AlertBanner
           variant="error"

@@ -1,26 +1,26 @@
-import { GitBranch, ListChecks, Package } from 'lucide-react'
+import { ListChecks, Package } from 'lucide-react'
 import { Section, PropertyList, Property } from '../../ui/drawer-components'
-import { buildPipelineTaskGraph } from '../resource-utils-tekton'
-import { PipelineDagView } from './PipelineDagView'
 
 interface PipelineRendererProps {
   data: any
 }
 
-// A Pipeline is a template — no run to be "in progress," no conditions of
-// its own. The DAG here is the declared task graph only (every node renders
-// with unknown/pending styling); see PipelineRunRenderer for the live,
-// per-task-status version of the same graph.
+// The task-dependency DAG lives only in the fullscreen "full view" (see
+// PipelineDagView + web/src/components/execution/TektonPipelineFullscreen.tsx,
+// wired via renderExpandedOverview) — the compact drawer has no room to
+// render it legibly, so this overview stays graph-free.
 export function PipelineRenderer({ data }: PipelineRendererProps) {
   const spec = data?.spec ?? {}
-  const tasks = buildPipelineTaskGraph(spec)
   const params = spec.params ?? []
   const workspaces = spec.workspaces ?? []
+  const taskCount = (spec.tasks ?? []).length
 
   return (
     <>
-      <Section title="Task Graph" icon={GitBranch}>
-        <PipelineDagView tasks={tasks} />
+      <Section title="Pipeline Info">
+        <PropertyList>
+          <Property label="Tasks" value={String(taskCount)} />
+        </PropertyList>
       </Section>
 
       {params.length > 0 && (

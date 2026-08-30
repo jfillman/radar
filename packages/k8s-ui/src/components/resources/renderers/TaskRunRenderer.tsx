@@ -6,9 +6,19 @@ import { tektonRefName } from '../resource-utils-tekton'
 
 interface TaskRunRendererProps {
   data: any
+  // Absent when the TaskRun's pod is already gone (GC'd after completion —
+  // common by the time someone opens an old TaskRun) or the host doesn't
+  // wire log viewing for this kind.
+  onViewLogs?: (podName: string, containerName: string) => void
 }
 
-function StepRow({ step }: { step: any }) {
+// Tekton names each step's container `step-<stepName>` inside the TaskRun's
+// pod — stable across Tekton versions, not something the API reports back.
+function stepContainerName(stepName: string): string {
+  return `step-${stepName}`
+}
+
+function StepRow({ step, podName, onViewLogs }: { step: any; podName?: string; onViewLogs?: (podName: string, containerName: string) => void }) {
   const terminated = step.terminated
   const running = 'running' in step
   const waiting = step.waiting
@@ -20,6 +30,7 @@ function StepRow({ step }: { step: any }) {
     : running
       ? 'text-sky-500'
       : 'text-theme-text-tertiary'
+  const canViewLogs = Boolean(onViewLogs && podName)
   return (
     <div className="flex items-start gap-2 py-1.5 text-sm">
       <Icon className={clsx('mt-0.5 h-4 w-4 shrink-0', tone, running && 'animate-spin')} />
@@ -32,11 +43,22 @@ function StepRow({ step }: { step: any }) {
         )}
         {waiting?.reason && <div className="text-xs text-theme-text-tertiary">Waiting: {waiting.reason}</div>}
       </div>
+      {canViewLogs && (
+        <button
+          type="button"
+          onClick={() => onViewLogs!(podName!, stepContainerName(step.name))}
+          className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-theme-text-secondary hover:bg-theme-elevated hover:text-theme-text-primary"
+          title={`View logs for step "${step.name}"`}
+        >
+          <Terminal className="h-3.5 w-3.5" />
+          Logs
+        </button>
+      )}
     </div>
   )
 }
 
-export function TaskRunRenderer({ data }: TaskRunRendererProps) {
+export function TaskRunRenderer({ data, onViewLogs }: TaskRunRendererProps) {
   const spec = data?.spec ?? {}
   const status = data?.status ?? {}
   const conditions = status.conditions ?? []
@@ -67,7 +89,9 @@ export function TaskRunRenderer({ data }: TaskRunRendererProps) {
       {steps.length > 0 && (
         <Section title="Steps" icon={Terminal}>
           <div className="divide-y divide-theme-border">
-            {steps.map((step: any) => <StepRow key={step.name} step={step} />)}
+            {steps.map((step: any) => (
+              <StepRow key={step.name} step={step} podName={status.podName} onViewLogs={onViewLogs} />
+            ))}
           </div>
         </Section>
       )}

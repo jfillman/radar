@@ -1,41 +1,25 @@
 import { GitBranch, ListChecks } from 'lucide-react'
 import { Section, PropertyList, Property, AlertBanner, useOperationalIssuesShown } from '../../ui/drawer-components'
 import { formatAge, formatDuration } from '../resource-utils'
-import {
-  applyTaskRunStatuses,
-  buildPipelineTaskGraph,
-  tektonRefName,
-  type TektonTaskNodeStatus,
-} from '../resource-utils-tekton'
-import { PipelineDagView } from './PipelineDagView'
+import { buildPipelineTaskGraph, tektonRefName } from '../resource-utils-tekton'
 
 interface PipelineRunRendererProps {
   data: any
-  // Keyed by pipelineTaskName (not TaskRun name) — injected by the host,
-  // which fans out one fetch per status.childReferences entry (a
-  // PipelineRun's status only names its child TaskRuns, not their outcome;
-  // tekton.dev/v1 dropped the inline per-task status map v1beta1 had).
-  // Absent entirely (undefined) on the DAG-only Pipeline view; present here
-  // once the host resolves it, even if individual entries are still loading.
-  taskStatuses?: Map<string, { status: TektonTaskNodeStatus; reason?: string }>
 }
 
-// Renders the DAG only — not the DAG plus a separate linear step list.
-// Unlike Argo Rollouts' canary steps (one sequential promotion path, where a
-// list reads naturally), Tekton tasks form a genuine DAG with parallel
-// branches; a linear list would misrepresent the concurrency the graph
-// already shows. Node color is the progress indicator.
-export function PipelineRunRenderer({ data, taskStatuses }: PipelineRunRendererProps) {
+// The live task-progress DAG lives only in the fullscreen "full view" (see
+// PipelineDagView + web/src/components/execution/TektonPipelineFullscreen.tsx,
+// wired via renderExpandedOverview) — the compact drawer has no room to
+// render a DAG legibly, and clicking a task there needs to open that task's
+// own drawer, which the compact view can't do without stacking drawers.
+export function PipelineRunRenderer({ data }: PipelineRunRendererProps) {
   const status = data?.status ?? {}
   const conditions = status.conditions ?? []
   const succeededCond = conditions.find((c: any) => c?.type === 'Succeeded')
   const operationalIssuesShown = useOperationalIssuesShown()
 
-  // v1 embeds the Pipeline's spec.tasks into status.pipelineSpec at run
-  // time — no second fetch of the Pipeline object needed to draw the graph.
   const pipelineSpec = status.pipelineSpec ?? {}
-  const declaredTasks = buildPipelineTaskGraph(pipelineSpec)
-  const tasks = taskStatuses ? applyTaskRunStatuses(declaredTasks, taskStatuses) : declaredTasks
+  const taskCount = buildPipelineTaskGraph(pipelineSpec).length
 
   const isFailed = succeededCond?.status === 'False'
   const startTime = status.startTime
@@ -54,10 +38,6 @@ export function PipelineRunRenderer({ data, taskStatuses }: PipelineRunRendererP
         />
       )}
 
-      <Section title="Task Progress" icon={GitBranch}>
-        <PipelineDagView tasks={tasks} />
-      </Section>
-
       <Section title="Run Info" icon={ListChecks}>
         <PropertyList>
           <Property label="Pipeline" value={tektonRefName(data?.spec?.pipelineRef)} />
@@ -66,6 +46,14 @@ export function PipelineRunRenderer({ data, taskStatuses }: PipelineRunRendererP
           {durationMs !== null && <Property label="Duration" value={formatDuration(durationMs, true)} />}
         </PropertyList>
       </Section>
+
+      {taskCount > 0 && (
+        <Section title="Task Progress" icon={GitBranch}>
+          <p className="text-sm text-theme-text-tertiary">
+            {taskCount} task{taskCount === 1 ? '' : 's'} — open the full view (expand icon above) for the live task graph.
+          </p>
+        </Section>
+      )}
     </>
   )
 }

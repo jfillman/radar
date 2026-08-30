@@ -80,6 +80,11 @@ export interface TektonTaskNode {
   dependsOn: string[]
   status?: TektonTaskNodeStatus
   reason?: string
+  // Set once a live PipelineRun has actually created this task's TaskRun —
+  // absent for a Pipeline's static template graph, and for a task the run
+  // hasn't reached yet. Presence is what makes a DAG node clickable: nothing
+  // to open for a task that never ran.
+  taskRunName?: string
 }
 
 // Tekton infers task ordering two ways: an explicit `runAfter` list, and
@@ -150,13 +155,16 @@ export function tektonNodeStatusFromConditions(conditions: any[] | undefined): {
 }
 
 // Merges the Pipeline's declared task graph with live per-task status. Tasks
-// with no matching child (not yet reached) render as 'pending'.
+// with no matching child (not yet reached) render as 'pending' and stay
+// non-clickable (no taskRunName — there's genuinely nothing to open yet).
 export function applyTaskRunStatuses(
   tasks: TektonTaskNode[],
-  statusByTaskName: Map<string, { status: TektonTaskNodeStatus; reason?: string }>,
+  statusByTaskName: Map<string, { status: TektonTaskNodeStatus; reason?: string; taskRunName?: string }>,
 ): TektonTaskNode[] {
   return tasks.map((task) => {
     const live = statusByTaskName.get(task.name)
-    return live ? { ...task, status: live.status, reason: live.reason } : { ...task, status: 'pending' }
+    return live
+      ? { ...task, status: live.status, reason: live.reason, taskRunName: live.taskRunName }
+      : { ...task, status: 'pending' }
   })
 }

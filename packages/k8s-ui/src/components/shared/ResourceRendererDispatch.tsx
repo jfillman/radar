@@ -294,7 +294,6 @@ import {
   CalicoTierRenderer,
 } from '../resources/renderers'
 import type { ComposedRefStatus } from '../resources/renderers/CompositeRenderer'
-import type { TektonTaskNodeStatus } from '../resources/resource-utils-tekton'
 import {
   getCrossplaneStatus,
   getProviderStatus,
@@ -356,15 +355,12 @@ export interface RendererOverrides {
     onNavigate?: (ref: ResourceRef) => void
     composedRefStatuses?: Map<string, ComposedRefStatus>
   }>
-  // Optional override for Tekton PipelineRun — host wraps the package
-  // renderer to fan out one fetch per status.childReferences entry (a
-  // PipelineRun only names its child TaskRuns; their outcome lives on the
-  // TaskRun object itself, not inline). Package renderer degrades to a
-  // pending-styled DAG (no live status) when this isn't provided.
-  PipelineRunRenderer?: React.ComponentType<{
-    data: any
-    taskStatuses?: Map<string, { status: TektonTaskNodeStatus; reason?: string }>
-  }>
+  // Optional override for Tekton TaskRun — host wires step "View Logs"
+  // buttons to a floating dock log tab (useOpenLogs), independent of the
+  // resource's own Logs tab (that tab's pod-discovery is built around
+  // BatchExecutionFullscreen's multi-run model, which a single TaskRun with
+  // exactly one pod and no run history doesn't need).
+  TaskRunRenderer?: React.ComponentType<{ data: any }>
   // CNPG Publication / Subscription: the host resolves the PostgreSQL-side
   // names in their spec back to the CRs that declare them. Database and
   // ImageCatalog get the reverse lookup, which the API only models one way.
@@ -808,7 +804,7 @@ export function ResourceRendererDispatch({
   const reflectionRefs = showsReflection ? [relationships?.reflection?.source, ...(relationships?.reflection?.mirrors ?? [])].filter((ref): ref is ResourceRef => !!ref) : []
   const withoutReflection = (refs: ResourceRef[] | undefined) => refs?.filter(ref => !reflectionRefs.some(mirror => mirror.kind === ref.kind && mirror.namespace === ref.namespace && mirror.name === ref.name && (mirror.group ?? '') === (ref.group ?? '')))
   const sidebarRelationships = showsReflection && relationships ? { ...relationships, configRefs: withoutReflection(relationships.configRefs), consumers: withoutReflection(relationships.consumers) } : relationships
-  const PipelineRunComp = rendererOverrides?.PipelineRunRenderer ?? PipelineRunRenderer
+  const TaskRunComp = rendererOverrides?.TaskRunRenderer ?? TaskRunRenderer
   const scaleBlockedBy = replicaScalers(relationships?.scalers)
 
   const sidebarContent = showCommonSections && (
@@ -865,8 +861,8 @@ export function ResourceRendererDispatch({
         {kind === 'certificates' && !data?.apiVersion?.includes('networking.internal.knative.dev') && <CertificateRenderer data={data} />}
         {kind === 'workflows' && <WorkflowRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'pipelines' && <PipelineRenderer data={data} />}
-        {kind === 'pipelineruns' && <PipelineRunComp data={data} />}
-        {kind === 'taskruns' && <TaskRunRenderer data={data} />}
+        {kind === 'pipelineruns' && <PipelineRunRenderer data={data} />}
+        {kind === 'taskruns' && <TaskRunComp data={data} />}
         {kind === 'persistentvolumes' && <PersistentVolumeRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'storageclasses' && <StorageClassRenderer data={data} />}
         {kind === 'certificaterequests' && <CertificateRequestRenderer data={data} />}

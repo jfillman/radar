@@ -462,8 +462,17 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
       // The tree's root node is this page's own subject — clicking it must not
       // open a nested copy of the same detail page (which stacks an identical
       // "GitOps / X / X" breadcrumb, and again, ad infinitum). A self-reference
-      // is a no-op; the header already represents this resource.
+      // opens the standard resource drawer instead, matching how every other
+      // resource in Radar responds to a click — the header already represents
+      // this resource, so a full navigation would be redundant, but a raw
+      // metadata/YAML drawer is not.
       if (detailKind === kind && (ref.namespace || '') === (namespace || '') && ref.name === name) {
+        onOpenResource({
+          kind: kindToPluralWithGroup(ref.kind, ref.group ?? ''),
+          namespace: ref.namespace || '',
+          name: ref.name,
+          group: ref.group,
+        })
         return
       }
       const params = new URLSearchParams()

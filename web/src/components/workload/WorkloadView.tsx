@@ -121,6 +121,7 @@ import { NamespaceRenderer } from '../resources/renderers/NamespaceRenderer'
 import { HPARenderer } from '../resources/renderers/HPARenderer'
 import { PVCRenderer } from '../resources/renderers/PVCRenderer'
 import { RolloutRenderer } from '../resources/renderers/RolloutRenderer'
+import { PipelineRunRenderer } from '../resources/renderers/PipelineRunRenderer'
 import { KyvernoPolicyCoverage } from '../resources/renderers/KyvernoPolicyCoverage'
 import { KyvernoPolicyQueued } from '../resources/renderers/KyvernoPolicyQueued'
 import { CNPGObjectStoreRenderer } from '../resources/renderers/CNPGObjectStoreRenderer'
@@ -166,6 +167,7 @@ const rendererOverrides: RendererOverrides = {
   HPARenderer,
   PVCRenderer,
   RolloutRenderer,
+  PipelineRunRenderer,
   KyvernoPolicyCoverage,
   KyvernoPolicyQueued,
   CNPGObjectStoreRenderer,

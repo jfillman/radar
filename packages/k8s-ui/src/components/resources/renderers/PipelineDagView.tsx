@@ -16,7 +16,7 @@
 // Topology view, without extending the shared NodeKind enum or wiring
 // Tekton into pkg/topology/builder.go — that stays a separate, larger PR.
 
-import { memo, useEffect, useMemo, useState } from 'react'
+import { Component, memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Controls,
   Handle,
@@ -102,6 +102,27 @@ async function layoutNodes(tasks: TektonTaskNode[]): Promise<{ nodes: Node[]; ed
     data: { task },
     draggable: false,
     selectable: true,
+    // Every card is the same fixed size, declared up front instead of
+    // discovered via ResizeObserver. Two reasons this matters, both from
+    // @xyflow/system's adoptUserNodes: (1) it rebuilds a node's internal
+    // record from scratch whenever the incoming node object isn't the exact
+    // same reference as last time (true on every poll here, since task
+    // status is rebuilt fresh each time) — the rebuild resets `measured` to
+    // undefined and leaves the node visibility:hidden until a resize fires;
+    // since the card's on-screen size never actually changes, no resize
+    // event ever comes and it stays hidden for good. (2) edge connection
+    // points normally come from parseHandles() reading each Handle's live
+    // DOM position — also reset on the same rebuild — so edges vanish too.
+    // Setting `measured` and `handles` directly here answers both from data
+    // instead of a DOM measurement, so neither ever depends on catching a
+    // ResizeObserver callback that has nothing new to report.
+    width: NODE_WIDTH,
+    height: NODE_HEIGHT,
+    measured: { width: NODE_WIDTH, height: NODE_HEIGHT },
+    handles: [
+      { type: 'target' as const, position: Position.Left, x: 0, y: NODE_HEIGHT / 2 },
+      { type: 'source' as const, position: Position.Right, x: NODE_WIDTH, y: NODE_HEIGHT / 2 },
+    ],
   }))
 
   const edges: Edge[] = elkEdges.map((e) => ({
@@ -165,6 +186,28 @@ const TektonTaskCard = memo(function TektonTaskCard({ data }: NodeProps<Node<Tek
 
 const NODE_TYPES: NodeTypes = { tektonTask: TektonTaskCard }
 
+// Isolates a ReactFlow render failure to this panel — a bad status/edge
+// combination here shouldn't blank the rest of the drawer with no signal.
+class DagErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null }
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+  componentDidCatch(error: Error, info: { componentStack?: string | null }) {
+    console.error('[PipelineDagView] render error', error, info.componentStack)
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex h-full items-center justify-center text-sm text-red-400">
+          DAG render error: {this.state.error.message}
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 export interface PipelineDagViewProps {
   tasks: TektonTaskNode[]
   height?: number
@@ -210,26 +253,28 @@ export function PipelineDagView({ tasks, height, onTaskClick }: PipelineDagViewP
           Laying out task graph…
         </div>
       ) : (
-        <ReactFlowProvider>
-          <ReactFlow
-            nodes={nodes}
-            edges={layout.edges}
-            nodeTypes={NODE_TYPES}
-            fitView
-            fitViewOptions={{ padding: 0.2, maxZoom: 1.5 }}
-            nodesDraggable={false}
-            nodesConnectable={false}
-            elementsSelectable={false}
-            minZoom={0.15}
-            maxZoom={1.5}
-            zoomOnScroll
-            zoomOnPinch
-            zoomOnDoubleClick={false}
-            proOptions={{ hideAttribution: true }}
-          >
-            <Controls className="!border-theme-border !bg-theme-surface" showInteractive={false} />
-          </ReactFlow>
-        </ReactFlowProvider>
+        <DagErrorBoundary>
+          <ReactFlowProvider>
+            <ReactFlow
+              nodes={nodes}
+              edges={layout.edges}
+              nodeTypes={NODE_TYPES}
+              fitView
+              fitViewOptions={{ padding: 0.2, maxZoom: 1.5 }}
+              nodesDraggable={false}
+              nodesConnectable={false}
+              elementsSelectable={false}
+              minZoom={0.15}
+              maxZoom={1.5}
+              zoomOnScroll
+              zoomOnPinch
+              zoomOnDoubleClick={false}
+              proOptions={{ hideAttribution: true }}
+            >
+              <Controls className="!border-theme-border !bg-theme-surface" showInteractive={false} />
+            </ReactFlow>
+          </ReactFlowProvider>
+        </DagErrorBoundary>
       )}
     </div>
   )

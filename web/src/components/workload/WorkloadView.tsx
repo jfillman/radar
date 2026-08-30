@@ -89,6 +89,7 @@ import { WorkloadLogsViewer } from '../logs/WorkloadLogsViewer'
 import { ScheduledWorkloadLogsViewer } from '../logs/ScheduledWorkloadLogsViewer'
 import { LogsViewer } from '../logs/LogsViewer'
 import { BatchExecutionFullscreen } from '../execution/BatchExecutionView'
+import { TektonPipelineFullscreen } from '../execution/TektonPipelineFullscreen'
 import { workloadRunTimelineEvents } from '../execution/batch-timeline'
 import {
   useCanUpdateSecrets,
@@ -121,7 +122,7 @@ import { NamespaceRenderer } from '../resources/renderers/NamespaceRenderer'
 import { HPARenderer } from '../resources/renderers/HPARenderer'
 import { PVCRenderer } from '../resources/renderers/PVCRenderer'
 import { RolloutRenderer } from '../resources/renderers/RolloutRenderer'
-import { PipelineRunRenderer } from '../resources/renderers/PipelineRunRenderer'
+import { TaskRunRenderer } from '../resources/renderers/TaskRunRenderer'
 import { KyvernoPolicyCoverage } from '../resources/renderers/KyvernoPolicyCoverage'
 import { KyvernoPolicyQueued } from '../resources/renderers/KyvernoPolicyQueued'
 import { CNPGObjectStoreRenderer } from '../resources/renderers/CNPGObjectStoreRenderer'
@@ -167,7 +168,7 @@ const rendererOverrides: RendererOverrides = {
   HPARenderer,
   PVCRenderer,
   RolloutRenderer,
-  PipelineRunRenderer,
+  TaskRunRenderer,
   KyvernoPolicyCoverage,
   KyvernoPolicyQueued,
   CNPGObjectStoreRenderer,
@@ -1194,6 +1195,14 @@ export function WorkloadView({
               onSelectRun={handleSelectedRunChange}
               onSwitchToLogs={() => handleTabChange('logs')}
               onSwitchToTimeline={() => handleTabChange('timeline')}
+              onNavigateToResource={rest.onNavigateToResource}
+            />
+          ) : (k === 'Pipeline' || k === 'PipelineRun') && res ? (
+            <TektonPipelineFullscreen
+              kind={apiKind}
+              namespace={ns}
+              name={n}
+              resource={res}
               onNavigateToResource={rest.onNavigateToResource}
             />
           ) : null

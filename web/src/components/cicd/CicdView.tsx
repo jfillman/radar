@@ -1,20 +1,24 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowDown, ArrowUp, ArrowUpDown, Search, Workflow } from 'lucide-react'
+import { Ban, ArrowDown, ArrowUp, ArrowUpDown, Search, Trash2, Workflow } from 'lucide-react'
 import { clsx } from 'clsx'
+import yamlLib from 'yaml'
 import {
   SummaryTile,
   Facet,
   Input,
   PageHeader,
   FreshnessControl,
+  RowActionMenu,
+  ConfirmDialog,
   getTektonPipelineRunStatus,
   tektonRefName,
   formatAge,
   formatDuration,
   type SummaryTone,
+  type RowActionItem,
 } from '@skyhook-io/k8s-ui'
-import { fetchJSON } from '../../api/client'
+import { fetchJSON, useDeleteResource, useUpdateResource } from '../../api/client'
 
 interface CicdViewProps {
   namespaces: string[]
@@ -200,6 +204,9 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
     setSort((prev) =>
       prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'name' || key === 'pipeline' ? 'asc' : 'desc' },
     )
+  const [deleteTarget, setDeleteTarget] = useState<{ namespace: string; name: string } | null>(null)
+  const cancelRun = useUpdateResource()
+  const deleteRun = useDeleteResource()
 
   const runsQuery = useQuery({
     queryKey: ['cicd-pipelineruns', namespacesParam],
@@ -390,6 +397,7 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
               {SORT_COLUMNS.map((column) => (
                 <SortHeaderCell key={column.key} column={column} sort={sort} onSort={handleSort} />
               ))}
+              <span className="w-8 shrink-0" aria-hidden />
             </div>
           )}
 
@@ -408,12 +416,48 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
                   const durationMs = runDurationMs(run)
                   const name = run.metadata?.name ?? ''
                   const namespace = run.metadata?.namespace ?? ''
+                  const rowKey = `${namespace}/${name}`
+                  const actionItems: RowActionItem[] = [
+                    {
+                      key: 'cancel',
+                      label: 'Cancel run',
+                      icon: Ban,
+                      disabled: facet !== 'running',
+                      disabledReason: facet !== 'running' ? 'Only running PipelineRuns can be cancelled' : undefined,
+                      pending: cancelRun.isPending && cancelRun.variables?.name === name,
+                      onClick: () => {
+                        const patched = { ...run, spec: { ...run.spec, status: 'Cancelled' } }
+                        cancelRun.mutate(
+                          { kind: 'pipelineruns', namespace, name, yaml: yamlLib.stringify(patched) },
+                          { onSuccess: () => runsQuery.refetch() },
+                        )
+                      },
+                    },
+                    {
+                      key: 'delete',
+                      label: 'Delete PipelineRun',
+                      icon: Trash2,
+                      danger: true,
+                      divider: true,
+                      onClick: () => setDeleteTarget({ namespace, name }),
+                    },
+                  ]
                   return (
-                    <button
-                      key={`${namespace}/${name}`}
-                      type="button"
+                    // A real <button> can't host the nested RowActionMenu button
+                    // (invalid nested-interactive HTML), so the row is a
+                    // keyboard-accessible div instead.
+                    <div
+                      key={rowKey}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => onOpenPipelineRun({ namespace, name })}
-                      className="flex w-full items-center gap-4 px-4 py-3 text-left hover:bg-theme-hover"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          onOpenPipelineRun({ namespace, name })
+                        }
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-4 px-4 py-3 text-left hover:bg-theme-hover"
                     >
                       <div className="w-64 min-w-0 shrink-0">
                         <div className="truncate text-sm font-medium text-theme-text-primary">{name}</div>
@@ -434,7 +478,10 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
                       <div className="w-24 shrink-0 text-right text-xs text-theme-text-tertiary tabular-nums">
                         {run?.status?.startTime ? formatAge(run.status.startTime) : '—'}
                       </div>
-                    </button>
+                      <div className="w-8 shrink-0 text-right">
+                        <RowActionMenu items={actionItems} ariaLabel={`Actions for ${name}`} />
+                      </div>
+                    </div>
                   )
                 })}
               </div>
@@ -442,6 +489,23 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (!deleteTarget) return
+          deleteRun.mutate(
+            { kind: 'pipelineruns', group: 'tekton.dev', namespace: deleteTarget.namespace, name: deleteTarget.name },
+            { onSuccess: () => runsQuery.refetch() },
+          )
+          setDeleteTarget(null)
+        }}
+        title="Delete PipelineRun"
+        message={deleteTarget ? `Delete "${deleteTarget.name}" in ${deleteTarget.namespace}?` : ''}
+        confirmLabel="Delete"
+        variant="danger"
+      />
     </div>
   )
 }

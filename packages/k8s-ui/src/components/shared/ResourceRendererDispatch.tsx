@@ -330,7 +330,7 @@ export interface RendererOverrides {
   // resource's own Logs tab (that tab's pod-discovery is built around
   // BatchExecutionFullscreen's multi-run model, which a single TaskRun with
   // exactly one pod and no run history doesn't need).
-  TaskRunRenderer?: React.ComponentType<{ data: any }>
+  TaskRunRenderer?: React.ComponentType<{ data: any; onNavigate?: (ref: ResourceRef) => void }>
   // CNPG Publication / Subscription: the host resolves the PostgreSQL-side
   // names in their spec back to the CRs that declare them. Database and
   // ImageCatalog get the reverse lookup, which the API only models one way.
@@ -767,7 +767,7 @@ export function ResourceRendererDispatch({
         {kind === 'workflows' && <WorkflowRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'pipelines' && <PipelineRenderer data={data} />}
         {kind === 'pipelineruns' && <PipelineRunRenderer data={data} />}
-        {kind === 'taskruns' && <TaskRunComp data={data} />}
+        {kind === 'taskruns' && <TaskRunComp data={data} onNavigate={onNavigate} />}
         {kind === 'persistentvolumes' && <PersistentVolumeRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'storageclasses' && <StorageClassRenderer data={data} />}
         {kind === 'certificaterequests' && <CertificateRequestRenderer data={data} />}

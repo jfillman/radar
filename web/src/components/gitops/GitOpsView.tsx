@@ -25,6 +25,7 @@ import {
   initNavigationMap,
   kindToPluralWithGroup,
   normalizeArgoApplication,
+  normalizeArgoApplicationSet,
   normalizeFluxHelmRelease,
   normalizeFluxKustomization,
   parseArgoRollbackID,
@@ -159,6 +160,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
 
   const hasGitOpsRowResource = useMemo(() => (
     hasAPIResource(apiResources, 'applications', 'argoproj.io') ||
+    hasAPIResource(apiResources, 'applicationsets', 'argoproj.io') ||
     hasAPIResource(apiResources, 'kustomizations', 'kustomize.toolkit.fluxcd.io') ||
     hasAPIResource(apiResources, 'helmreleases', 'helm.toolkit.fluxcd.io')
   ), [apiResources])
@@ -186,6 +188,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
     queryKey: ['gitops-rows-main', namespaces, apiResources?.length ?? 0],
     queryFn: async () => {
       const hasApplications = hasAPIResource(apiResources, 'applications', 'argoproj.io')
+      const hasApplicationSets = hasAPIResource(apiResources, 'applicationsets', 'argoproj.io')
       const hasKustomizations = hasAPIResource(apiResources, 'kustomizations', 'kustomize.toolkit.fluxcd.io')
       const hasHelmReleases = hasAPIResource(apiResources, 'helmreleases', 'helm.toolkit.fluxcd.io')
       const hasFluxSources = hasKustomizations || hasHelmReleases
@@ -193,8 +196,9 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
       const hasHelmRepos = hasFluxSources && hasAPIResource(apiResources, 'helmrepositories', 'source.toolkit.fluxcd.io')
       const hasOCIRepos = hasFluxSources && hasAPIResource(apiResources, 'ocirepositories', 'source.toolkit.fluxcd.io')
       const hasBuckets = hasFluxSources && hasAPIResource(apiResources, 'buckets', 'source.toolkit.fluxcd.io')
-      const [applications, kustomizations, helmReleases, gitRepos, helmRepos, ociRepos, buckets] = await Promise.all([
+      const [applications, applicationSets, kustomizations, helmReleases, gitRepos, helmRepos, ociRepos, buckets] = await Promise.all([
         hasApplications ? fetchResourceList('applications', 'argoproj.io', namespacesParam) : Promise.resolve([]),
+        hasApplicationSets ? fetchResourceList('applicationsets', 'argoproj.io', namespacesParam) : Promise.resolve([]),
         hasKustomizations ? fetchResourceList('kustomizations', 'kustomize.toolkit.fluxcd.io', namespacesParam) : Promise.resolve([]),
         hasHelmReleases ? fetchResourceList('helmreleases', 'helm.toolkit.fluxcd.io', namespacesParam) : Promise.resolve([]),
         hasGitRepos ? fetchResourceList('gitrepositories', 'source.toolkit.fluxcd.io', '') : Promise.resolve([]),
@@ -205,6 +209,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
       const fluxSourceUrls = buildFluxSourceUrlMap([...gitRepos, ...helmRepos, ...ociRepos, ...buckets])
       return [
         ...applications.map((r) => normalizeArgoApplication(r)),
+        ...applicationSets.map((r) => normalizeArgoApplicationSet(r)),
         ...kustomizations.map((r) => normalizeFluxKustomization(r, fluxSourceUrls)),
         ...helmReleases.map((r) => normalizeFluxHelmRelease(r, fluxSourceUrls)),
       ]
@@ -920,6 +925,7 @@ function tryParseYaml(value: string): unknown {
 
 function normalizeDetailResource(kind: string, group: string, resource: any): GitOpsRow | null {
   if (kind === 'applications') return normalizeArgoApplication(resource)
+  if (kind === 'applicationsets') return normalizeArgoApplicationSet(resource)
   if (kind === 'kustomizations') return normalizeFluxKustomization(resource)
   if (kind === 'helmreleases') return normalizeFluxHelmRelease(resource)
   const status = getGitOpsResourceStatus(kind, resource)

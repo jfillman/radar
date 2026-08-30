@@ -2322,6 +2322,12 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
               params.set('full', '1')
               setSearchParams(params)
             }}
+            onOpenPipeline={({ namespace, name }) => {
+              // Small drawer, not straight-to-fullscreen: a Pipeline is a
+              // template (not progressing), so the compact view's summary is
+              // enough on open — the full DAG is still one expand away.
+              navigateToResource({ kind: 'pipelines', namespace, name, group: 'tekton.dev' })
+            }}
           />
         )}
 

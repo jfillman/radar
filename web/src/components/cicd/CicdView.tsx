@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Ban, ArrowDown, ArrowUp, ArrowUpDown, Search, Trash2, Workflow } from 'lucide-react'
+import { Ban, ArrowDown, ArrowUp, ArrowUpDown, ListChecks, Search, Trash2, Workflow } from 'lucide-react'
 import { clsx } from 'clsx'
 import yamlLib from 'yaml'
 import {
@@ -11,6 +11,7 @@ import {
   FreshnessControl,
   RowActionMenu,
   ConfirmDialog,
+  Tooltip,
   getTektonPipelineRunStatus,
   tektonRefName,
   formatAge,
@@ -18,7 +19,7 @@ import {
   type SummaryTone,
   type RowActionItem,
 } from '@skyhook-io/k8s-ui'
-import { fetchJSON, useDeleteResource, useUpdateResource } from '../../api/client'
+import { fetchJSON, useBulkDeleteResources, useDeleteResource, useUpdateResource } from '../../api/client'
 
 interface CicdViewProps {
   namespaces: string[]
@@ -208,6 +209,23 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
   const cancelRun = useUpdateResource()
   const deleteRun = useDeleteResource()
 
+  const [bulkMode, setBulkMode] = useState(false)
+  const [checkedKeys, setCheckedKeys] = useState<Set<string>>(new Set())
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false)
+  const bulkDeleteRuns = useBulkDeleteResources()
+  const exitBulkMode = useCallback(() => {
+    setBulkMode(false)
+    setCheckedKeys(new Set())
+  }, [])
+  const toggleChecked = useCallback((key: string) => {
+    setCheckedKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+
   const runsQuery = useQuery({
     queryKey: ['cicd-pipelineruns', namespacesParam],
     queryFn: async () => {
@@ -274,6 +292,19 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
       return 0
     })
   }, [runs, search, statusFilter, pipelineFilter, sort])
+
+  const allVisibleChecked = filteredRuns.length > 0 && filteredRuns.every((r) => checkedKeys.has(`${r.metadata?.namespace ?? ''}/${r.metadata?.name ?? ''}`))
+  const toggleCheckAll = useCallback(() => {
+    setCheckedKeys(
+      allVisibleChecked
+        ? new Set()
+        : new Set(filteredRuns.map((r) => `${r.metadata?.namespace ?? ''}/${r.metadata?.name ?? ''}`)),
+    )
+  }, [allVisibleChecked, filteredRuns])
+  const checkedRuns = useMemo(
+    () => filteredRuns.filter((r) => checkedKeys.has(`${r.metadata?.namespace ?? ''}/${r.metadata?.name ?? ''}`)),
+    [filteredRuns, checkedKeys],
+  )
 
   const toggleStatus = (v: StatusFacet) => setStatusFilter((prev) => {
     const next = new Set(prev)
@@ -380,8 +411,8 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
         </aside>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="shrink-0 border-b border-theme-border px-4 py-2">
-            <div className="relative max-w-md">
+          <div className="flex shrink-0 items-center gap-2 border-b border-theme-border px-4 py-2">
+            <div className="relative max-w-md flex-1">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-theme-text-tertiary" />
               <Input
                 value={search}
@@ -390,10 +421,59 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
                 className="h-8 w-full rounded-md border border-theme-border bg-theme-base pl-8 pr-3 text-sm text-theme-text-primary placeholder:text-theme-text-tertiary focus:outline-none focus:ring-1 focus:ring-blue-500/50"
               />
             </div>
+            <Tooltip content={bulkMode ? 'Exit bulk select mode' : 'Select multiple resources'}>
+              <button
+                type="button"
+                onClick={() => (bulkMode ? exitBulkMode() : setBulkMode(true))}
+                aria-pressed={bulkMode}
+                className={clsx(
+                  'rounded-lg p-2 transition-colors',
+                  bulkMode
+                    ? 'border border-skyhook-400/50 bg-skyhook-500/15 text-skyhook-300'
+                    : 'text-theme-text-secondary hover:bg-theme-elevated hover:text-theme-text-primary',
+                )}
+              >
+                <ListChecks className="h-4 w-4" />
+              </button>
+            </Tooltip>
           </div>
+
+          {bulkMode && (
+            <div className="flex shrink-0 items-center gap-3 border-b border-skyhook-400/20 bg-skyhook-500/10 px-4 py-2">
+              <span className="text-sm font-medium text-theme-text-primary">{checkedRuns.length} selected</span>
+              <button
+                type="button"
+                onClick={() => setShowBulkDeleteConfirm(true)}
+                disabled={checkedRuns.length === 0 || bulkDeleteRuns.isPending}
+                className="flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:pointer-events-none disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {bulkDeleteRuns.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+              <button
+                type="button"
+                onClick={exitBulkMode}
+                className="rounded-lg px-3 py-1.5 text-xs text-theme-text-secondary transition-colors hover:bg-theme-elevated hover:text-theme-text-primary"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
 
           {filteredRuns.length > 0 && (
             <div className="flex shrink-0 items-center gap-4 border-b border-theme-border bg-theme-surface/40 px-4 py-2">
+              {bulkMode && (
+                <span className="flex w-5 shrink-0 items-center justify-center">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleChecked}
+                    ref={(el) => { if (el) el.indeterminate = checkedRuns.length > 0 && !allVisibleChecked }}
+                    onChange={toggleCheckAll}
+                    className="h-3.5 w-3.5 cursor-pointer rounded border-theme-border accent-skyhook-500"
+                    title={allVisibleChecked ? 'Deselect all' : 'Select all'}
+                  />
+                </span>
+              )}
               {SORT_COLUMNS.map((column) => (
                 <SortHeaderCell key={column.key} column={column} sort={sort} onSort={handleSort} />
               ))}
@@ -417,6 +497,7 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
                   const name = run.metadata?.name ?? ''
                   const namespace = run.metadata?.namespace ?? ''
                   const rowKey = `${namespace}/${name}`
+                  const checked = checkedKeys.has(rowKey)
                   const actionItems: RowActionItem[] = [
                     {
                       key: 'cancel',
@@ -450,15 +531,30 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
                       key={rowKey}
                       role="button"
                       tabIndex={0}
-                      onClick={() => onOpenPipelineRun({ namespace, name })}
+                      onClick={() => (bulkMode ? toggleChecked(rowKey) : onOpenPipelineRun({ namespace, name }))}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault()
-                          onOpenPipelineRun({ namespace, name })
+                          if (bulkMode) toggleChecked(rowKey)
+                          else onOpenPipelineRun({ namespace, name })
                         }
                       }}
-                      className="flex w-full cursor-pointer items-center gap-4 px-4 py-3 text-left hover:bg-theme-hover"
+                      className={clsx(
+                        'flex w-full cursor-pointer items-center gap-4 px-4 py-3 text-left hover:bg-theme-hover',
+                        checked && 'bg-skyhook-500/5',
+                      )}
                     >
+                      {bulkMode && (
+                        <span className="flex w-5 shrink-0 items-center justify-center">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleChecked(rowKey)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="h-3.5 w-3.5 cursor-pointer rounded border-theme-border accent-skyhook-500"
+                          />
+                        </span>
+                      )}
                       <div className="w-64 min-w-0 shrink-0">
                         <div className="truncate text-sm font-medium text-theme-text-primary">{name}</div>
                         <div className="truncate text-xs text-theme-text-tertiary">{namespace}</div>
@@ -479,7 +575,7 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
                         {run?.status?.startTime ? formatAge(run.status.startTime) : '—'}
                       </div>
                       <div className="w-8 shrink-0 text-right">
-                        <RowActionMenu items={actionItems} ariaLabel={`Actions for ${name}`} />
+                        {!bulkMode && <RowActionMenu items={actionItems} ariaLabel={`Actions for ${name}`} />}
                       </div>
                     </div>
                   )
@@ -505,6 +601,37 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
         message={deleteTarget ? `Delete "${deleteTarget.name}" in ${deleteTarget.namespace}?` : ''}
         confirmLabel="Delete"
         variant="danger"
+      />
+
+      <ConfirmDialog
+        open={showBulkDeleteConfirm}
+        onClose={() => setShowBulkDeleteConfirm(false)}
+        onConfirm={() => {
+          bulkDeleteRuns.mutate(
+            {
+              items: checkedRuns.map((r) => ({
+                kind: 'pipelineruns',
+                group: 'tekton.dev',
+                namespace: r.metadata?.namespace ?? '',
+                name: r.metadata?.name ?? '',
+              })),
+            },
+            {
+              onSettled: () => {
+                runsQuery.refetch()
+                exitBulkMode()
+                setShowBulkDeleteConfirm(false)
+              },
+            },
+          )
+        }}
+        title={`Delete ${checkedRuns.length} PipelineRun${checkedRuns.length === 1 ? '' : 's'}?`}
+        message={`You are about to delete ${checkedRuns.length} PipelineRun${checkedRuns.length === 1 ? '' : 's'}. This action cannot be undone.`}
+        details={checkedRuns.map((r) => `${r.metadata?.namespace}/${r.metadata?.name}`).join('\n')}
+        confirmLabel={`Delete ${checkedRuns.length} PipelineRun${checkedRuns.length === 1 ? '' : 's'}`}
+        variant="danger"
+        isLoading={bulkDeleteRuns.isPending}
+        isClosable
       />
     </div>
   )

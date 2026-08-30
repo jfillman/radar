@@ -1000,7 +1000,7 @@ function LogLine({
       )}
       {showContainerName && entry.container && (
         <span
-          className={`${palette.textTertiary} select-none pr-2 whitespace-nowrap min-w-[80px] max-w-[140px] truncate`}
+          className={`${palette.textTertiary} select-none pr-2 whitespace-nowrap min-w-[140px] max-w-[260px] truncate`}
           title={entry.container}
         >
           [{entry.container}]

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo, useRef } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { PipelineDagView } from '@skyhook-io/k8s-ui/components/resources/renderers/PipelineDagView'
 import {
@@ -48,7 +48,7 @@ export function TektonPipelineFullscreen({ kind, namespace, name, resource, onNa
     })),
   })
 
-  const tasks: TektonTaskNode[] = useMemo(() => {
+  const rawTasks: TektonTaskNode[] = useMemo(() => {
     if (!isRun) return declaredTasks
     const statusByTaskName = new Map<string, { status: TektonTaskNodeStatus; reason?: string; taskRunName?: string }>()
     entries.forEach(([pipelineTaskName, ref], i) => {
@@ -68,7 +68,36 @@ export function TektonPipelineFullscreen({ kind, namespace, name, resource, onNa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRun, declaredTasks, entries, queries])
 
+  // Stabilize the array reference by content, not just recompute on every
+  // render. `queries` is a fresh array from useQueries every render (even
+  // when no query's data actually changed), so rawTasks above is a brand-new
+  // array on every single poll tick. Feeding ReactFlow a "new" nodes array
+  // that frequently — even when every task's status is byte-identical to
+  // before — makes it re-enter its measure-via-ResizeObserver path, which
+  // can get stuck hiding nodes/edges indefinitely (the on-screen size never
+  // actually changes, so the observer has nothing to report back).
+  const tasksSigRef = useRef('')
+  const tasksRef = useRef(rawTasks)
+  const sig = rawTasks.map((t) => `${t.name}:${t.status ?? ''}:${t.reason ?? ''}:${t.taskRunName ?? ''}`).join('|')
+  if (sig !== tasksSigRef.current) {
+    tasksSigRef.current = sig
+    tasksRef.current = rawTasks
+  }
+  const tasks = tasksRef.current
+
   const pipelineRefLabel = isRun ? tektonRefName(resource?.spec?.pipelineRef) : name
+
+  // Stable across renders (as long as namespace/onNavigateToResource don't
+  // change) — an inline arrow prop here would, like the unstabilized tasks
+  // array above, hand ReactFlow a "new" nodes array on every poll tick even
+  // when nothing visible changed.
+  const handleTaskClick = useCallback(
+    (task: TektonTaskNode) => {
+      if (!task.taskRunName || !onNavigateToResource) return
+      onNavigateToResource({ kind: 'taskruns', namespace, name: task.taskRunName, group: 'tekton.dev' })
+    },
+    [namespace, onNavigateToResource],
+  )
 
   return (
     <div className="flex h-full flex-col gap-3 p-4">
@@ -80,13 +109,7 @@ export function TektonPipelineFullscreen({ kind, namespace, name, resource, onNa
         )}
       </div>
       <div className="min-h-0 flex-1">
-        <PipelineDagView
-          tasks={tasks}
-          onTaskClick={(task) => {
-            if (!task.taskRunName || !onNavigateToResource) return
-            onNavigateToResource({ kind: 'taskruns', namespace, name: task.taskRunName, group: 'tekton.dev' })
-          }}
-        />
+        <PipelineDagView tasks={tasks} onTaskClick={handleTaskClick} />
       </div>
     </div>
   )

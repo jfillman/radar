@@ -595,6 +595,32 @@ See the main [README](../README.md#gitops) for the user-facing overview. This se
 
 ---
 
+## Tekton Pipelines
+
+[Tekton Pipelines](https://tekton.dev/) is a Kubernetes-native CI/CD building block: Pipelines declare a DAG of Tasks, PipelineRuns execute them, and TaskRuns carry out each individual Task.
+
+### What Radar Shows
+
+**Pipeline Detail View:** An embedded task-dependency graph — same visual language as the Topology view, scaled down to fit the drawer — built from `spec.tasks[].runAfter` plus any implicit ordering inferred from `$(tasks.<name>.results.*)` references in params or `when` expressions. Parameters and workspaces are listed alongside.
+
+**PipelineRun Detail View:** The same task graph, live — each node colored by its TaskRun's outcome (succeeded / failed / running / pending / skipped), read from `status.childReferences` (targets `tekton.dev/v1`; a task absent from `childReferences` hasn't been reached yet, not an error). The graph is deliberately the only progress indicator — a Pipeline's tasks form a real DAG with parallel branches, so a linear step list would misrepresent the concurrency the graph already shows.
+
+**TaskRun Detail View:** Per-step status (running / completed / waiting, with exit codes), parameters, and results.
+
+**Resource Browser:** Pipeline rows show task count; PipelineRun/TaskRun rows show status, the referenced Pipeline/Task (resolver-based refs included), and duration.
+
+Topology-graph integration (Pipeline/PipelineRun/TaskRun nodes in the main cluster Topology view) isn't wired up yet — this is detail-view only for now.
+
+### Supported CRDs
+
+| CRD | Group | Topology | Detail View | AI Summary |
+|-----|-------|----------|-------------|------------|
+| Pipeline | `tekton.dev/v1` | — | Yes | — |
+| PipelineRun | `tekton.dev/v1` | — | Yes | — |
+| TaskRun | `tekton.dev/v1` | — | Yes | — |
+
+---
+
 ## Istio
 
 [Istio](https://istio.io/) is the most widely adopted service mesh, providing traffic management, security (mTLS), and observability for microservices.

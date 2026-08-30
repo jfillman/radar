@@ -27,6 +27,7 @@ import { CapacityView } from './components/capacity/CapacityView'
 import { AuditView } from './components/audit/AuditView'
 import { IssuesPane } from './components/issues/IssuesPane'
 import { GitOpsView } from './components/gitops/GitOpsView'
+import { CicdView } from './components/cicd/CicdView'
 import { ApplicationsView } from './components/applications/ApplicationsView'
 import { HelmReleaseDrawer } from './components/helm/HelmReleaseDrawer'
 import { PortForwardProvider, PortForwardIndicator, PortForwardPanel } from './components/portforward/PortForwardManager'
@@ -125,7 +126,7 @@ const FLEET_MODE_KINDS = new Set<NodeKind>([
 
 // Convert API resource name back to topology node ID prefix
 // Extended MainView type that includes traffic and cost
-type ExtendedMainView = MainView | 'traffic' | 'cost' | 'capacity' | 'workload' | 'checks' | 'gitops' | 'compare' | 'helmCompare' | 'issues' | 'applications' | 'investigations'
+type ExtendedMainView = MainView | 'traffic' | 'cost' | 'capacity' | 'workload' | 'checks' | 'gitops' | 'compare' | 'helmCompare' | 'issues' | 'applications' | 'investigations' | 'cicd'
 
 // Extract view from URL path
 function getViewFromPath(pathname: string): ExtendedMainView {
@@ -142,6 +143,7 @@ function getViewFromPath(pathname: string): ExtendedMainView {
   if (path === 'workload') return 'workload'
   if (path === 'checks' || path === 'audit') return 'checks'  // /audit = legacy → checks
   if (path === 'gitops') return 'gitops'
+  if (path === 'cicd') return 'cicd'
   if (path === 'applications') return 'applications'
   if (path === 'compare') return 'compare'
   if (path === 'issues') return 'issues'
@@ -167,7 +169,7 @@ const CRASH_LABELS: Record<ExtendedMainView, string> = {
   home: 'Home', topology: 'Topology', resources: 'Resources', timeline: 'Timeline',
   issues: 'Issues', helm: 'Helm', helmCompare: 'HelmCompare', traffic: 'Traffic',
   cost: 'Cost', capacity: 'Capacity', checks: 'Checks', gitops: 'GitOps',
-  applications: 'Applications', workload: 'Workload', compare: 'Compare',
+  applications: 'Applications', cicd: 'CI/CD', workload: 'Workload', compare: 'Compare',
   investigations: 'Investigations',
 }
 
@@ -283,6 +285,7 @@ function radarPageTitle(pathname: string, search = '', apiResources?: APIResourc
     if (pathSegments[1] === 'activity') return 'Capacity Activity'
   }
 
+  if (view === 'cicd') return 'CI/CD'
   if (view === 'home') return 'Overview'
   // Every other view's label is its id capitalized — getViewFromPath has already
   // normalized aliases (e.g. /audit → 'checks'), so no lookup table is needed.
@@ -873,7 +876,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   const VIEW_SHORTCUT_KEYS: Record<ExtendedMainView, string> = {
     home: 'g h', resources: 'g r', issues: 'g i', topology: 'g t',
     applications: 'g a', timeline: 'g l', traffic: 'g f', helm: 'g m',
-    gitops: 'g o', checks: 'g u', cost: 'g c', capacity: 'g p',
+    gitops: 'g o', checks: 'g u', cost: 'g c', capacity: 'g p', cicd: 'g d',
     // Non-rail views (reachable via deep links / actions, not the rail) get no
     // dedicated mnemonic — listed for exhaustiveness so the type stays total.
     workload: '', compare: '', helmCompare: '', investigations: '',
@@ -2286,6 +2289,24 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
                 navigate({ pathname: window.location.pathname, search: params.toString() }, { replace: true })
               }
               navigateToResource(resource)
+            }}
+          />
+        )}
+
+        {/* CI/CD view — Tekton PipelineRun fleet: stats, filters, and a row
+            click that opens straight into the expanded drawer (the DAG only
+            renders there, not the compact drawer — see PipelineDagView). */}
+        {mainView === 'cicd' && (
+          <CicdView
+            namespaces={namespaces}
+            onOpenPipelineRun={({ namespace, name }) => {
+              // Same navigateToResource-records-the-peek-owner mechanism GitOps
+              // uses above, so the header's "Go back"/collapse returns here
+              // instead of orphaning on /resources/pipelineruns.
+              navigateToResource({ kind: 'pipelineruns', namespace, name, group: 'tekton.dev' })
+              const params = new URLSearchParams(window.location.search)
+              params.set('full', '1')
+              setSearchParams(params)
             }}
           />
         )}

@@ -1,6 +1,6 @@
 import { ArrowUp, CheckCircle2, CircleDashed, ListChecks, Loader2, Terminal, XCircle } from 'lucide-react'
 import { clsx } from 'clsx'
-import { AlertBanner, PropertyList, Property, Section, useOperationalIssuesShown } from '../../ui/drawer-components'
+import { AlertBanner, PropertyList, Property, ResourceLink, Section, useOperationalIssuesShown } from '../../ui/drawer-components'
 import { formatAge, formatDuration } from '../resource-utils'
 import { tektonRefName } from '../resource-utils-tekton'
 import type { ResourceRef } from '../../../types/core'
@@ -126,7 +126,12 @@ export function TaskRunRenderer({ data, onViewLogs, onNavigate }: TaskRunRendere
       <Section title="Run Info" icon={ListChecks}>
         <PropertyList>
           <Property label="Task" value={tektonRefName(spec.taskRef)} />
-          <Property label="Pod" value={status.podName} />
+          <Property
+            label="Pod"
+            value={status.podName && (
+              <ResourceLink kind="pods" namespace={data?.metadata?.namespace ?? ''} name={status.podName} onNavigate={onNavigate} />
+            )}
+          />
           <Property label="Started" value={startTime ? formatAge(startTime) : undefined} />
           {completionTime && <Property label="Completed" value={formatAge(completionTime)} />}
           {durationMs !== null && <Property label="Duration" value={formatDuration(durationMs, true)} />}

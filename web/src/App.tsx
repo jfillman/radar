@@ -605,6 +605,13 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   // Owner-key (pathname + ?app) a non-URL-backed peek was opened on; see
   // navigateToResource and peekOwnerKey.
   const peekOwnerKeyRef = useRef<string | null>(null)
+  // True when the current peek skipped the small drawer and opened straight
+  // to fullscreen (e.g. a CICD table row) rather than being expanded from an
+  // already-open small drawer (Topology/Applications). "Go back" on a
+  // never-small peek should close it outright — there is no small state to
+  // collapse back to. Reset on every normal (small) open; the CICD-style
+  // opener flips it back to true right after.
+  const peekOpenedFullRef = useRef(false)
   const currentResourceKindSlug = normalizedResourcesKindSlug.toLowerCase()
   const currentResourceGroup = searchParams.get('apiGroup') ?? ''
   const selectedResourceKindSlug = selectedResource ? kindToPluralWithGroup(selectedResource.kind, selectedResource.group ?? '').toLowerCase() : ''
@@ -691,6 +698,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     // read (not the `location` closure) so the value is always current
     // regardless of this callback's memoization.
     peekOwnerKeyRef.current = peekOwnerKey(window.location.pathname, window.location.search)
+    peekOpenedFullRef.current = false
     const update = () => { setDrawerInitialTab(tab); setSelectedResource(res) }
     // Skip the cross-fade animation entirely on first open (no
     // `selectedResource`); otherwise route through
@@ -2309,6 +2317,9 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
               // uses above, so the header's "Go back"/collapse returns here
               // instead of orphaning on /resources/pipelineruns.
               navigateToResource({ kind: 'pipelineruns', namespace, name, group: 'tekton.dev' })
+              // Opened straight to fullscreen — there's no small-drawer state
+              // to collapse back to, so "Go back" should close outright.
+              peekOpenedFullRef.current = true
               const params = new URLSearchParams(window.location.search)
               params.set('full', '1')
               setSearchParams(params)
@@ -2410,7 +2421,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           }}
           // On mobile there's no drawer to collapse back to, so the collapse/back
           // control closes the resource (returns to the list) instead.
-          onCollapse={isMobile ? closeDrawer : handleCollapseFromExpanded}
+          onCollapse={isMobile || peekOpenedFullRef.current ? closeDrawer : handleCollapseFromExpanded}
           onNavigateToResource={(resource) => {
             const pluralKind = kindToPluralWithGroup(resource.kind, resource.group ?? '')
             // A peek opened outside /resources (CICD, GitOps, Applications via

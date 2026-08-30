@@ -105,6 +105,7 @@ import { getClusterStatus as getCAPIClusterStatus, getMachineStatus, getMachineD
 import { getAWSMCPStatus, getAWSMMPStatus, getAWSMachineStatus, getAWSManagedClusterStatus } from '../resources/resource-utils-aws-capi'
 import { getGCPMCPStatus, getGCPMMPStatus, getGCPMachineStatus, getGCPManagedClusterStatus } from '../resources/resource-utils-gcp-capi'
 import { getAzureMCPStatus, getAzureMMPStatus, getAzureMachineStatus, getAzureManagedClusterStatus } from '../resources/resource-utils-azure-capi'
+import { getTektonPipelineStatus, getTektonPipelineRunStatus, getTektonTaskRunStatus } from '../resources/resource-utils-tekton'
 import {
   PodRenderer,
   WorkloadRenderer,
@@ -134,6 +135,9 @@ import {
   ExperimentRenderer,
   CertificateRenderer,
   WorkflowRenderer,
+  PipelineRenderer,
+  PipelineRunRenderer,
+  TaskRunRenderer,
   PersistentVolumeRenderer,
   StorageClassRenderer,
   CertificateRequestRenderer,
@@ -290,6 +294,7 @@ import {
   CalicoTierRenderer,
 } from '../resources/renderers'
 import type { ComposedRefStatus } from '../resources/renderers/CompositeRenderer'
+import type { TektonTaskNodeStatus } from '../resources/resource-utils-tekton'
 import {
   getCrossplaneStatus,
   getProviderStatus,
@@ -350,6 +355,15 @@ export interface RendererOverrides {
     data: any
     onNavigate?: (ref: ResourceRef) => void
     composedRefStatuses?: Map<string, ComposedRefStatus>
+  }>
+  // Optional override for Tekton PipelineRun — host wraps the package
+  // renderer to fan out one fetch per status.childReferences entry (a
+  // PipelineRun only names its child TaskRuns; their outcome lives on the
+  // TaskRun object itself, not inline). Package renderer degrades to a
+  // pending-styled DAG (no live status) when this isn't provided.
+  PipelineRunRenderer?: React.ComponentType<{
+    data: any
+    taskStatuses?: Map<string, { status: TektonTaskNodeStatus; reason?: string }>
   }>
   // CNPG Publication / Subscription: the host resolves the PostgreSQL-side
   // names in their spec back to the CRs that declare them. Database and
@@ -526,6 +540,8 @@ const KNOWN_KINDS = new Set([
   'providers', 'providerconfigs',
   'compositeresourcedefinitions', 'compositions', 'compositionrevisions',
   'functions', 'configurations',
+  // Tekton Pipelines
+  'pipelines', 'pipelineruns', 'taskruns',
 ])
 
 // Cluster topology owns resources across the core, bootstrap, control-plane,
@@ -792,6 +808,7 @@ export function ResourceRendererDispatch({
   const reflectionRefs = showsReflection ? [relationships?.reflection?.source, ...(relationships?.reflection?.mirrors ?? [])].filter((ref): ref is ResourceRef => !!ref) : []
   const withoutReflection = (refs: ResourceRef[] | undefined) => refs?.filter(ref => !reflectionRefs.some(mirror => mirror.kind === ref.kind && mirror.namespace === ref.namespace && mirror.name === ref.name && (mirror.group ?? '') === (ref.group ?? '')))
   const sidebarRelationships = showsReflection && relationships ? { ...relationships, configRefs: withoutReflection(relationships.configRefs), consumers: withoutReflection(relationships.consumers) } : relationships
+  const PipelineRunComp = rendererOverrides?.PipelineRunRenderer ?? PipelineRunRenderer
   const scaleBlockedBy = replicaScalers(relationships?.scalers)
 
   const sidebarContent = showCommonSections && (
@@ -847,6 +864,9 @@ export function ResourceRendererDispatch({
         {kind === 'experiments' && isApiGroup(data?.apiVersion, 'argoproj.io') && <ExperimentRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'certificates' && !data?.apiVersion?.includes('networking.internal.knative.dev') && <CertificateRenderer data={data} />}
         {kind === 'workflows' && <WorkflowRenderer data={data} onNavigate={onNavigate} />}
+        {kind === 'pipelines' && <PipelineRenderer data={data} />}
+        {kind === 'pipelineruns' && <PipelineRunComp data={data} />}
+        {kind === 'taskruns' && <TaskRunRenderer data={data} />}
         {kind === 'persistentvolumes' && <PersistentVolumeRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'storageclasses' && <StorageClassRenderer data={data} />}
         {kind === 'certificaterequests' && <CertificateRequestRenderer data={data} />}
@@ -1172,6 +1192,9 @@ export function getResourceStatus(kind: string, data: any): { text: string; colo
   if (k === 'experiments' && isApiGroup(data?.apiVersion, 'argoproj.io')) return getAnalysisRunStatus(data)
   if (k === 'workflows') return getWorkflowStatus(data)
   if (k === 'cronworkflows') return getCronWorkflowStatus(data)
+  if (k === 'pipelines') return getTektonPipelineStatus(data)
+  if (k === 'pipelineruns') return getTektonPipelineRunStatus(data)
+  if (k === 'taskruns') return getTektonTaskRunStatus(data)
   if (k === 'certificates') {
     if (data.apiVersion?.includes('networking.internal.knative.dev')) {
       const status = getKnativeConditionStatus(data)

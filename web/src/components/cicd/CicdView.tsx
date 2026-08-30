@@ -24,6 +24,26 @@ import { fetchJSON, useBulkDeleteResources, useDeleteResource, useUpdateResource
 interface CicdViewProps {
   namespaces: string[]
   onOpenPipelineRun: (ref: { namespace: string; name: string }) => void
+  onOpenPipeline: (ref: { namespace: string; name: string }) => void
+}
+
+// Resolves a PipelineRun's pipelineRef to a real, navigable Pipeline object —
+// null when there's nothing to navigate to. A direct name ref lives in the
+// PipelineRun's own namespace; a cluster resolver ref carries its own
+// namespace param (platform-cicd's catalog pipelines live in a shared
+// namespace, not the run's). Other resolvers (git/http/bundle) fetch the
+// spec from outside the cluster — there's no live Pipeline object for them.
+function resolvePipelineTarget(run: any): { namespace: string; name: string } | null {
+  const ref = run?.spec?.pipelineRef
+  if (!ref) return null
+  if (ref.name) return { namespace: run?.metadata?.namespace ?? '', name: ref.name }
+  if (ref.resolver === 'cluster') {
+    const params = ref.params ?? []
+    const name = params.find((p: any) => p?.name === 'name')?.value
+    const namespace = params.find((p: any) => p?.name === 'namespace')?.value
+    if (name && namespace) return { namespace, name }
+  }
+  return null
 }
 
 type StatusFacet = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'pending'
@@ -197,7 +217,7 @@ function SortHeaderCell({
   )
 }
 
-export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
+export function CicdView({ namespaces, onOpenPipelineRun, onOpenPipeline }: CicdViewProps) {
   const namespacesParam = namespaces.join(',')
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<Set<StatusFacet>>(new Set())
@@ -502,6 +522,8 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
                   const namespace = run.metadata?.namespace ?? ''
                   const rowKey = `${namespace}/${name}`
                   const checked = checkedKeys.has(rowKey)
+                  const pipelineTarget = resolvePipelineTarget(run)
+                  const pipelineLabel = tektonRefName(run?.spec?.pipelineRef)
                   const actionItems: RowActionItem[] = [
                     {
                       key: 'cancel',
@@ -566,8 +588,27 @@ export function CicdView({ namespaces, onOpenPipelineRun }: CicdViewProps) {
                       <div className="w-40 shrink-0">
                         <span className={clsx('badge', status.color)}>{status.text}</span>
                       </div>
-                      <div className="w-40 shrink-0 truncate text-xs text-theme-text-secondary" title={tektonRefName(run?.spec?.pipelineRef)}>
-                        {tektonRefName(run?.spec?.pipelineRef)}
+                      <div className="w-40 shrink-0 truncate text-xs">
+                        {pipelineTarget ? (
+                          <Tooltip content={`Open Pipeline ${pipelineLabel}`} delay={400} wrapperClassName="min-w-0">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onOpenPipeline(pipelineTarget)
+                              }}
+                              className="truncate text-theme-text-secondary hover:text-skyhook-400 hover:underline"
+                            >
+                              {pipelineLabel}
+                            </button>
+                          </Tooltip>
+                        ) : (
+                          <Tooltip content={pipelineLabel} delay={400} wrapperClassName="min-w-0">
+                            <span className="truncate text-theme-text-secondary">
+                              {pipelineLabel}
+                            </span>
+                          </Tooltip>
+                        )}
                       </div>
                       <div className="min-w-[140px] flex-1">
                         <ProgressBar run={run} facet={facet} />

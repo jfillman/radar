@@ -34,7 +34,7 @@ import { ResourceBar } from '../ui/ResourceBar'
 import type { SelectedResource, APIResource } from '../../types'
 import { isForbiddenError } from '../../types/fetch-error'
 import type { NavigateToResource } from '../../utils/navigation'
-import { categorizeResources, CORE_RESOURCES, findAPIResourceForRoute } from '../../utils/api-resources'
+import { categorizeResources, CORE_RESOURCES, findAPIResourceForRoute, isCoreBatchJob } from '../../utils/api-resources'
 import { copyText } from '../../utils/clipboard'
 import {
   getPodStatus,
@@ -165,6 +165,18 @@ import { NodePoolCell, NodeClaimCell, EC2NodeClassCell } from './renderers/karpe
 import { ScaledObjectCell, ScaledJobCell, TriggerAuthenticationCell, ClusterTriggerAuthenticationCell } from './renderers/keda-cells'
 import { ResourceClaimCell, ResourceClaimTemplateCell, DeviceClassCell, ResourceSliceCell } from './renderers/dra-cells'
 import { NvidiaClusterPolicyCell, NvidiaDriverCell } from './renderers/nvidia-cells'
+import { ClusterQueueCell, LocalQueueCell, KueueWorkloadCell, ResourceFlavorCell, AdmissionCheckCell, ProvisioningRequestCell } from './renderers/kueue-cells'
+import { RayClusterCell, RayJobCell, RayServiceCell, RayCronJobCell } from './renderers/ray-cells'
+import { LeaderWorkerSetCell, JobSetCell } from './renderers/jobset-lws-cells'
+import { getJobSetReadyJobs, getJobSetRestarts } from './resource-utils-jobset-lws'
+import { InferenceServiceCell, ServingRuntimeCell, InferenceGraphCell, TrainedModelCell, LLMInferenceServiceCell } from './renderers/kserve-cells'
+import { InferencePoolCell, InferenceObjectiveCell } from './renderers/inference-gateway-cells'
+import { VolcanoJobCell, VolcanoQueueCell, VolcanoPodGroupCell, JobFlowCell, JobTemplateCell } from './renderers/volcano-cells'
+import { KaiQueueCell, KaiPodGroupCell } from './renderers/kai-cells'
+import { KaitoWorkspaceCell, RAGEngineCell } from './renderers/kaito-cells'
+import { NIMServiceCell, NIMCacheCell, NIMPipelineCell } from './renderers/nim-cells'
+import { AMDDeviceConfigCell } from './renderers/amd-gpu-cells'
+import { PyTorchJobCell, TFJobCell, MPIJobCell, TrainJobCell } from './renderers/kubeflow-training-cells'
 import { ServiceMonitorCell, PrometheusRuleCell, PodMonitorCell } from './renderers/prometheus-cells'
 import { PolicyReportCell, ClusterPolicyReportCell, KyvernoPolicyCell, ClusterPolicyCell,
   KyvernoUpdateRequestCell,
@@ -523,6 +535,23 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
     { key: 'metrics', label: 'Metrics', width: 'w-40', hideOnMobile: true, tooltip: 'Per-metric verdicts' },
     { key: 'age', label: 'Age', width: 'w-24' },
   ],
+  analysistemplates: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-48' },
+    { key: 'metricCount', label: 'Metrics', width: 'w-24' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  clusteranalysistemplates: [
+    { key: 'name', label: 'Name' },
+    { key: 'metricCount', label: 'Metrics', width: 'w-24' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  experiments: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-48' },
+    { key: 'status', label: 'Phase', width: 'w-28' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
   workflows: [
     { key: 'name', label: 'Name' },
     { key: 'namespace', label: 'Namespace', width: 'w-48' },
@@ -739,6 +768,314 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
     { key: 'status', label: 'Status', width: 'w-28' },
     { key: 'driverType', label: 'Type', width: 'w-28' },
     { key: 'version', label: 'Version', width: 'w-32' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  clusterqueues: [
+    { key: 'name', label: 'Name' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'cohort', label: 'Cohort', width: 'w-32' },
+    { key: 'pendingWorkloads', label: 'Pending', width: 'w-24', tooltip: 'Pending workloads' },
+    { key: 'admittedWorkloads', label: 'Admitted', width: 'w-24', tooltip: 'Admitted workloads' },
+    { key: 'flavors', label: 'Flavors', width: 'w-40' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  localqueues: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'clusterQueue', label: 'Cluster Queue', width: 'w-40' },
+    { key: 'pendingWorkloads', label: 'Pending', width: 'w-24' },
+    { key: 'admittedWorkloads', label: 'Admitted', width: 'w-24' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  workloads: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'queueName', label: 'Queue', width: 'w-36' },
+    { key: 'admittedBy', label: 'Admitted By', width: 'w-36', tooltip: 'Admitting ClusterQueue' },
+    { key: 'priority', label: 'Priority', width: 'w-24' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  resourceflavors: [
+    { key: 'name', label: 'Name' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'nodeLabels', label: 'Node Labels', width: 'w-28', tooltip: 'Node label selector count' },
+    { key: 'taints', label: 'Taints', width: 'w-24' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  admissionchecks: [
+    { key: 'name', label: 'Name' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'controllerName', label: 'Controller', width: 'w-64' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  provisioningrequests: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'provisioningClassName', label: 'Class', width: 'w-56' },
+    { key: 'podSets', label: 'Pod Sets', width: 'w-24' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  rayclusters: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'rayVersion', label: 'Ray Version', width: 'w-28' },
+    { key: 'workers', label: 'Workers', width: 'w-24', tooltip: 'Available/desired worker replicas' },
+    { key: 'headService', label: 'Head Service', width: 'w-48' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  rayjobs: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'jobStatus', label: 'Job Status', width: 'w-28' },
+    { key: 'deploymentStatus', label: 'Deployment', width: 'w-32' },
+    { key: 'cluster', label: 'Cluster', width: 'w-48' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  rayservices: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'serviceStatus', label: 'Service Status', width: 'w-28' },
+    { key: 'clusters', label: 'Clusters', width: 'w-56', tooltip: 'Active and pending RayCluster names' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  raycronjobs: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'schedule', label: 'Schedule', width: 'w-32' },
+    { key: 'suspend', label: 'Suspend', width: 'w-20' },
+    { key: 'lastSchedule', label: 'Last Schedule', width: 'w-28' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  leaderworkersets: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'replicas', label: 'Groups', width: 'w-20', tooltip: 'Desired leader-worker groups' },
+    { key: 'size', label: 'Size', width: 'w-20', tooltip: 'Pods per group' },
+    { key: 'ready', label: 'Ready', width: 'w-20', tooltip: 'Ready groups / desired groups' },
+    { key: 'updated', label: 'Updated', width: 'w-20' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  jobsets: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'replicatedJobs', label: 'Repl. Jobs', width: 'w-24', tooltip: 'Number of replicated job templates' },
+    { key: 'ready', label: 'Ready', width: 'w-20' },
+    { key: 'succeeded', label: 'Succeeded', width: 'w-24' },
+    { key: 'failed', label: 'Failed', width: 'w-20' },
+    { key: 'restarts', label: 'Restarts', width: 'w-24' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  inferenceservices: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-36', tooltip: 'Ready condition + model load state' },
+    { key: 'url', label: 'URL', width: 'w-64' },
+    { key: 'modelFormat', label: 'Format', width: 'w-28' },
+    { key: 'runtime', label: 'Runtime', width: 'w-40' },
+    { key: 'deploymentMode', label: 'Mode', width: 'w-28', tooltip: 'Serverless, RawDeployment, or ModelMesh' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  servingruntimes: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'modelFormats', label: 'Model Formats', width: 'w-44', tooltip: 'Supported model formats' },
+    { key: 'image', label: 'Image', width: 'w-64' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  clusterservingruntimes: [
+    { key: 'name', label: 'Name' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'modelFormats', label: 'Model Formats', width: 'w-44', tooltip: 'Supported model formats' },
+    { key: 'image', label: 'Image', width: 'w-64' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  inferencegraphs: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'nodes', label: 'Nodes', width: 'w-20', tooltip: 'Router nodes in the graph' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  trainedmodels: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'framework', label: 'Framework', width: 'w-28' },
+    { key: 'storageUri', label: 'Storage URI', width: 'w-56' },
+    { key: 'inferenceService', label: 'Inference Service', width: 'w-40', tooltip: 'Parent InferenceService' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  llminferenceservices: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'model', label: 'Model', width: 'w-56', tooltip: 'Model name or URI' },
+    { key: 'replicas', label: 'Replicas', width: 'w-24' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  inferencepools: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-36', tooltip: 'Gateway acceptance and EPP resolution' },
+    { key: 'selector', label: 'Selector', width: 'w-48' },
+    { key: 'targetPorts', label: 'Target Ports', width: 'w-28' },
+    { key: 'extensionRef', label: 'Endpoint Picker', width: 'w-40', tooltip: 'EPP extension service' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  inferenceobjectives: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'poolRef', label: 'Pool', width: 'w-40', tooltip: 'Target InferencePool' },
+    { key: 'priority', label: 'Priority', width: 'w-24' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  volcanojobs: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'queue', label: 'Queue', width: 'w-32' },
+    { key: 'minAvailable', label: 'Min Available', width: 'w-28' },
+    { key: 'pods', label: 'Pods', width: 'w-44', tooltip: 'Running / succeeded / failed pod counts' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  volcanoqueues: [
+    { key: 'name', label: 'Name' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'weight', label: 'Weight', width: 'w-20' },
+    { key: 'capability', label: 'Capability', width: 'w-48' },
+    { key: 'allocated', label: 'Allocated', width: 'w-48' },
+    { key: 'podGroups', label: 'PodGroups', width: 'w-44', tooltip: 'PodGroup counts by state' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  volcanopodgroups: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-32' },
+    { key: 'queue', label: 'Queue', width: 'w-32' },
+    { key: 'minMember', label: 'Min Member', width: 'w-28' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  jobflows: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'flows', label: 'Flows', width: 'w-20' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  jobtemplates: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'tasks', label: 'Tasks', width: 'w-20' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  kaiqueues: [
+    { key: 'name', label: 'Name' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'parentQueue', label: 'Parent', width: 'w-32' },
+    { key: 'priority', label: 'Priority', width: 'w-20' },
+    { key: 'quota', label: 'Quota', width: 'w-52', tooltip: 'GPU fractions, CPU millicpus, memory MB; -1 = unlimited' },
+    { key: 'allocated', label: 'Allocated', width: 'w-48' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  kaipodgroups: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-32' },
+    { key: 'queue', label: 'Queue', width: 'w-32' },
+    { key: 'minMember', label: 'Min Member', width: 'w-28' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  kaitoworkspaces: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'instanceType', label: 'Instance Type', width: 'w-40', tooltip: 'GPU node SKU provisioned for the workspace' },
+    { key: 'preset', label: 'Model', width: 'w-44', tooltip: 'Preset model (inference or tuning)' },
+    { key: 'nodes', label: 'Nodes', width: 'w-20', tooltip: 'Worker nodes ready / target' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  ragengines: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'embedding', label: 'Embedding Model', width: 'w-56', tooltip: 'Local model ID/image or remote endpoint' },
+    { key: 'instanceType', label: 'Instance Type', width: 'w-40' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  nimservices: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'model', label: 'Model / Image', width: 'w-64', tooltip: 'Served model name (falls back to NIM image)' },
+    { key: 'replicas', label: 'Replicas', width: 'w-28', tooltip: 'Available / desired (HPA range when autoscaling)' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  nimcaches: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'source', label: 'Model Source', width: 'w-64', tooltip: 'NGC model puller image, or DataStore/HF model name' },
+    { key: 'storage', label: 'Storage', width: 'w-24', tooltip: 'Requested PVC size' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  nimpipelines: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'services', label: 'Services', width: 'w-28', tooltip: 'NIM services in pipeline' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  deviceconfigs: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-24' },
+    { key: 'driver', label: 'Driver', width: 'w-40', tooltip: 'Out-of-tree driver install enabled (version)' },
+    { key: 'devicePluginImage', label: 'Device Plugin', width: 'w-64' },
+    { key: 'nodes', label: 'Nodes', width: 'w-20', tooltip: 'Device plugin DaemonSet available / desired' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  pytorchjobs: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'replicas', label: 'Progress', width: 'w-48', tooltip: 'Active + succeeded / desired per replica type; failures shown separately' },
+    { key: 'elapsed', label: 'Elapsed', width: 'w-24', tooltip: 'Start to completion (or now)' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  tfjobs: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'replicas', label: 'Progress', width: 'w-56', tooltip: 'Active + succeeded / desired per replica type; failures shown separately' },
+    { key: 'elapsed', label: 'Elapsed', width: 'w-24', tooltip: 'Start to completion (or now)' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  mpijobs: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'replicas', label: 'Progress', width: 'w-48', tooltip: 'Active + succeeded / desired per replica type; failures shown separately' },
+    { key: 'elapsed', label: 'Elapsed', width: 'w-24', tooltip: 'Start to completion (or now)' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  trainjobs: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-36' },
+    { key: 'status', label: 'Status', width: 'w-28' },
+    { key: 'runtime', label: 'Runtime', width: 'w-44', tooltip: 'Training runtime reference' },
+    { key: 'suspended', label: 'Suspended', width: 'w-24' },
     { key: 'age', label: 'Age', width: 'w-24' },
   ],
   scaledjobs: [
@@ -2151,6 +2488,14 @@ const GROUP_QUALIFIED_COLUMN_KEYS: Record<string, Record<string, string>> = {
   // Istio Gateway is not a Gateway API Gateway: it has servers and a workload
   // selector, and none of Class/Listeners/Routes/Addresses.
   gateways: { 'networking.istio.io': 'istiogateways' },
+  job: { batch: 'jobs', 'batch.volcano.sh': 'volcanojobs' },
+  jobs: { batch: 'jobs', 'batch.volcano.sh': 'volcanojobs' },
+  queue: { 'scheduling.volcano.sh': 'volcanoqueues', 'scheduling.run.ai': 'kaiqueues' },
+  queues: { 'scheduling.volcano.sh': 'volcanoqueues', 'scheduling.run.ai': 'kaiqueues' },
+  podgroup: { 'scheduling.volcano.sh': 'volcanopodgroups', 'scheduling.run.ai': 'kaipodgroups' },
+  podgroups: { 'scheduling.volcano.sh': 'volcanopodgroups', 'scheduling.run.ai': 'kaipodgroups' },
+  workspace: { 'kaito.sh': 'kaitoworkspaces' },
+  workspaces: { 'kaito.sh': 'kaitoworkspaces' },
   services: { 'serving.knative.dev': 'knativeservices' },
   configurations: { 'serving.knative.dev': 'knativeconfigurations' },
   revisions: { 'serving.knative.dev': 'knativerevisions' },
@@ -2219,6 +2564,7 @@ const GROUP_QUALIFIED_COLUMN_KEYS: Record<string, Record<string, string>> = {
 
 const GROUP_QUALIFIED_ONLY_COLUMN_KEYS = new Set([
   'networkpolicy', 'networkpolicies',
+  'job', 'jobs',
   // Other projects serve their own IPPool CRD, so only a Calico group earns the
   // Calico columns.
   'ippool', 'ippools',
@@ -2227,6 +2573,7 @@ const GROUP_QUALIFIED_ONLY_COLUMN_KEYS = new Set([
   'stagedglobalnetworkpolicy', 'stagedglobalnetworkpolicies',
   'stagedkubernetesnetworkpolicy', 'stagedkubernetesnetworkpolicies',
 ])
+
 const CALICO_ONLY_COLUMN_KEYS = new Set([
   'globalnetworkpolicy', 'globalnetworkpolicies',
   'stagednetworkpolicy', 'stagednetworkpolicies',
@@ -2237,7 +2584,7 @@ const CALICO_ONLY_COLUMN_KEYS = new Set([
 // Normalize a kind name to its plural API form used in KNOWN_COLUMNS keys.
 // Handles CRD singular names from URLs: 'ScaledObject' → 'scaledobjects', 'NodePool' → 'nodepools'
 // When group is provided, resolves collisions (e.g., 'services' + 'serving.knative.dev' → 'knativeservices')
-function normalizeKindToPlural(kind: string, group?: string): string {
+export function normalizeKindToPlural(kind: string, group?: string): string {
   const lower = kind.toLowerCase()
   // Check group-qualified mapping first for collision resolution
   if (group && GROUP_QUALIFIED_COLUMN_KEYS[lower]?.[group]) {
@@ -2335,6 +2682,9 @@ const CURATED_COLUMN_GROUPS: Record<string, readonly string[]> = {
   sbomreports: ['aquasecurity.github.io'],
   vulnerabilityreports: ['aquasecurity.github.io'],
   analysisruns: ['argoproj.io'],
+  analysistemplates: ['argoproj.io'],
+  clusteranalysistemplates: ['argoproj.io'],
+  experiments: ['argoproj.io'],
   applications: ['argoproj.io'],
   applicationsets: ['argoproj.io'],
   appprojects: ['argoproj.io'],
@@ -2484,6 +2834,43 @@ const CURATED_COLUMN_GROUPS: Record<string, readonly string[]> = {
   volumesnapshotlocations: ['velero.io'],
   clusterpolicyreports: ['wgpolicyk8s.io'],
   policyreports: ['wgpolicyk8s.io'],
+  deviceconfigs: ['amd.com'],
+  nimcaches: ['apps.nvidia.com'],
+  nimpipelines: ['apps.nvidia.com'],
+  nimservices: ['apps.nvidia.com'],
+  provisioningrequests: ['autoscaling.x-k8s.io'],
+  volcanojobs: ['batch.volcano.sh'],
+  jobflows: ['flow.volcano.sh'],
+  jobtemplates: ['flow.volcano.sh'],
+  inferencepools: ['inference.networking.k8s.io', 'inference.networking.x-k8s.io'],
+  inferenceobjectives: ['inference.networking.x-k8s.io', 'llm-d.ai'],
+  jobsets: ['jobset.x-k8s.io'],
+  kaitoworkspaces: ['kaito.sh'],
+  ragengines: ['kaito.sh'],
+  admissionchecks: ['kueue.x-k8s.io'],
+  clusterqueues: ['kueue.x-k8s.io'],
+  localqueues: ['kueue.x-k8s.io'],
+  resourceflavors: ['kueue.x-k8s.io'],
+  workloads: ['kueue.x-k8s.io'],
+  mpijobs: ['kubeflow.org'],
+  pytorchjobs: ['kubeflow.org'],
+  tfjobs: ['kubeflow.org'],
+  leaderworkersets: ['leaderworkerset.x-k8s.io'],
+  rayclusters: ['ray.io'],
+  raycronjobs: ['ray.io'],
+  rayjobs: ['ray.io'],
+  rayservices: ['ray.io'],
+  kaipodgroups: ['scheduling.run.ai'],
+  kaiqueues: ['scheduling.run.ai'],
+  volcanopodgroups: ['scheduling.volcano.sh'],
+  volcanoqueues: ['scheduling.volcano.sh'],
+  clusterservingruntimes: ['serving.kserve.io'],
+  inferencegraphs: ['serving.kserve.io'],
+  inferenceservices: ['serving.kserve.io'],
+  llminferenceservices: ['serving.kserve.io'],
+  servingruntimes: ['serving.kserve.io'],
+  trainedmodels: ['serving.kserve.io'],
+  trainjobs: ['trainer.kubeflow.org'],
 }
 
 function getColumnsForKind(kind: string, group?: string): Column[] {
@@ -2497,10 +2884,11 @@ function getColumnsForKind(kind: string, group?: string): Column[] {
   const key = normalizeKindToPlural(kind, group)
   const curated = KNOWN_COLUMNS[key]
   if (curated) {
+    const owners = CURATED_COLUMN_GROUPS[key]
+    if (group && owners) return owners.includes(group) ? curated : DEFAULT_COLUMNS
     // A core kind cannot be shadowed by a CRD, so it keeps its columns without
     // an ownership entry. Anything else has to be claimed for this exact group.
     if (!group || CORE_API_GROUPS.has(group)) return curated
-    if (CURATED_COLUMN_GROUPS[key]?.includes(group)) return curated
     if (isCuratedUnboundedGroup(key, group)) return curated
     return DEFAULT_COLUMNS
   }
@@ -2516,6 +2904,12 @@ function getColumnsForKind(kind: string, group?: string): Column[] {
  */
 export function hasCuratedColumns(kind: string, group?: string): boolean {
   return getColumnsForKind(kind, group) !== DEFAULT_COLUMNS
+}
+
+export function getCellFilterKind(kind: string, group?: string): string {
+  const normalized = normalizeKindToPlural(kind, group)
+  if (!group || hasCuratedColumns(kind, group) || normalized.startsWith('__generic_')) return normalized
+  return `__generic_${normalized}`
 }
 
 // Get the default visible columns for a kind
@@ -3725,11 +4119,14 @@ export function ResourcesView({
           if (containers.length > 0) {
             openLogs?.({ namespace: ns, podName: name, containers })
           }
-        } else if (['deployments', 'statefulsets', 'daemonsets', 'replicasets', 'jobs', 'workflows', 'cronjobs', 'cronworkflows', 'workflowtemplates', 'clusterworkflowtemplates', 'scaledjobs'].includes(kindLower)) {
+        } else if (['deployments', 'statefulsets', 'daemonsets', 'replicasets', 'workflows', 'cronjobs', 'cronworkflows', 'workflowtemplates', 'clusterworkflowtemplates', 'scaledjobs'].includes(kindLower) || isCoreBatchJob(kindLower, selectedKind.group)) {
           openWorkloadLogs?.({ namespace: ns, workloadKind: selectedKind.kind, workloadName: name })
         }
       },
-      enabled: highlightedIndex >= 0 && !compareMode && ['pods', 'deployments', 'statefulsets', 'daemonsets', 'replicasets', 'jobs', 'workflows', 'cronjobs', 'cronworkflows', 'workflowtemplates', 'clusterworkflowtemplates', 'scaledjobs'].includes(selectedKind.name.toLowerCase()),
+      enabled: highlightedIndex >= 0 && !compareMode && (
+        ['pods', 'deployments', 'statefulsets', 'daemonsets', 'replicasets', 'workflows', 'cronjobs', 'cronworkflows', 'workflowtemplates', 'clusterworkflowtemplates', 'scaledjobs'].includes(selectedKind.name.toLowerCase()) ||
+        isCoreBatchJob(selectedKind.name, selectedKind.group)
+      ),
     },
     {
       id: 'resources-sort-name',
@@ -4468,6 +4865,7 @@ export function ResourcesView({
         }
         return 0
       case 'ready':
+        if (kindLower === 'jobsets') return getJobSetReadyJobs(resource)
         // For DaemonSets, use numberReady/desiredNumberScheduled
         if (kindLower === 'daemonsets') {
           const desired = status.desiredNumberScheduled ?? 0
@@ -4488,6 +4886,7 @@ export function ResourcesView({
         // DaemonSet: updatedNumberScheduled, others: updatedReplicas
         return status.updatedNumberScheduled ?? status.updatedReplicas ?? 0
       case 'restarts':
+        if (kindLower === 'jobsets') return getJobSetRestarts(resource)
         return getPodRestarts(resource)
       case 'lastSeen': {
         const lastTs = resource.lastTimestamp || meta.creationTimestamp
@@ -4590,11 +4989,11 @@ export function ResourcesView({
     // when the parent supplied a custom getFilterValue.
     const activeColFilters = Object.entries(columnFilters).filter(([, vals]) => vals.length > 0)
     if (activeColFilters.length > 0) {
-      const kindLower = normalizeKindToPlural(selectedKind.name, selectedKind.group)
+      const cellFilterKind = getCellFilterKind(selectedKind.name, selectedKind.group)
       result = result.filter((r: any) =>
         activeColFilters.every(([col, vals]) => {
           const extra = extraColumnsByKey.get(col)
-          const cellVal = extra?.getFilterValue ? extra.getFilterValue(r) : getCellFilterValue(r, col, kindLower)
+          const cellVal = extra?.getFilterValue ? extra.getFilterValue(r) : getCellFilterValue(r, col, cellFilterKind)
           const match = vals.includes(cellVal)
           return columnFilterExcludes[col] ? !match : match
         })
@@ -4659,7 +5058,9 @@ export function ResourcesView({
       // Normalized, matching the filter call sites: a group-qualified kind
       // (istiogateways, cnpgclusters) otherwise arrives here as its bare plural
       // and misses its own sort readers. Hoisted out of the comparator.
-      const sortKind = normalizeKindToPlural(selectedKind.name, selectedKind.group)
+      // The ownership-aware wrapper also keeps a foreign CRD that reuses a
+      // curated plural on the generic reader used by its cells and filters.
+      const sortKind = getCellFilterKind(selectedKind.name, selectedKind.group)
       const keyOf = extra?.getSortValue ?? ((r: any) => getSortValue(r, sortColumn, sortKind))
       // Derived once per row, not once per comparison: a sort visits O(n log n)
       // pairs, and the status key now runs a per-kind status derivation.
@@ -4945,6 +5346,7 @@ export function ResourcesView({
     if (!resources || resources.length === 0) return null
 
     const kindLower = normalizeKindToPlural(selectedKind.name, selectedKind.group)
+    const cellFilterKind = getCellFilterKind(selectedKind.name, selectedKind.group)
     // Iterate over allColumns (built-ins + injected extras) so an
     // ExtraColumn with getFilterValue gets a column-filter dropdown like
     // any built-in does. The previous formulation iterated KNOWN_COLUMNS
@@ -4971,7 +5373,7 @@ export function ResourcesView({
       // Count distinct values for this column
       const valueCounts: Record<string, number> = {}
       for (const r of resources) {
-        const val = extra?.getFilterValue ? extra.getFilterValue(r) : getCellFilterValue(r, col.key, kindLower)
+        const val = extra?.getFilterValue ? extra.getFilterValue(r) : getCellFilterValue(r, col.key, cellFilterKind)
         if (val) {
           valueCounts[val] = (valueCounts[val] || 0) + 1
         }
@@ -6396,6 +6798,9 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
 
   // Kind-specific columns (normalize CRD singular names like 'ScaledObject' → 'scaledobjects')
   const kindLower = normalizeKindToPlural(kind, group)
+  if (group && !hasCuratedColumns(kind, group)) {
+    return <GenericCell resource={resource} column={column} />
+  }
 
   // Kyverno cells are group-gated ahead of the switch so a non-matching CR
   // falls through to the switch's default (GenericCell) instead of being
@@ -6457,6 +6862,11 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
       return <RolloutCell resource={resource} column={column} />
     case 'analysisruns':
       return <AnalysisRunCell resource={resource} column={column} />
+    case 'analysistemplates':
+    case 'clusteranalysistemplates':
+      return <AnalysisTemplateCell resource={resource} column={column} />
+    case 'experiments':
+      return <GenericCell resource={resource} column={column} />
     case 'workflows':
       return <WorkflowCell resource={resource} column={column} />
     case 'cronworkflows':
@@ -6594,6 +7004,90 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
       return <NvidiaClusterPolicyCell resource={resource} column={column} />
     case 'nvidiadrivers':
       return <NvidiaDriverCell resource={resource} column={column} />
+    // Kueue + Cluster Autoscaler
+    case 'clusterqueues':
+      return <ClusterQueueCell resource={resource} column={column} />
+    case 'localqueues':
+      return <LocalQueueCell resource={resource} column={column} />
+    case 'workloads':
+      return <KueueWorkloadCell resource={resource} column={column} />
+    case 'resourceflavors':
+      return <ResourceFlavorCell resource={resource} column={column} />
+    case 'admissionchecks':
+      return <AdmissionCheckCell resource={resource} column={column} />
+    case 'provisioningrequests':
+      return <ProvisioningRequestCell resource={resource} column={column} />
+    // KubeRay
+    case 'rayclusters':
+      return <RayClusterCell resource={resource} column={column} />
+    case 'rayjobs':
+      return <RayJobCell resource={resource} column={column} />
+    case 'rayservices':
+      return <RayServiceCell resource={resource} column={column} />
+    case 'raycronjobs':
+      return <RayCronJobCell resource={resource} column={column} />
+    // LeaderWorkerSet + JobSet
+    case 'leaderworkersets':
+      return <LeaderWorkerSetCell resource={resource} column={column} />
+    case 'jobsets':
+      return <JobSetCell resource={resource} column={column} />
+    // KServe
+    case 'inferenceservices':
+      return <InferenceServiceCell resource={resource} column={column} />
+    case 'servingruntimes':
+    case 'clusterservingruntimes':
+      return <ServingRuntimeCell resource={resource} column={column} />
+    case 'inferencegraphs':
+      return <InferenceGraphCell resource={resource} column={column} />
+    case 'trainedmodels':
+      return <TrainedModelCell resource={resource} column={column} />
+    case 'llminferenceservices':
+      return <LLMInferenceServiceCell resource={resource} column={column} />
+    // Gateway API Inference Extension
+    case 'inferencepools':
+      return <InferencePoolCell resource={resource} column={column} />
+    case 'inferenceobjectives':
+      return <InferenceObjectiveCell resource={resource} column={column} />
+    // Volcano (group-qualified keys disambiguate from batch Jobs and KAI)
+    case 'volcanojobs':
+      return <VolcanoJobCell resource={resource} column={column} />
+    case 'volcanoqueues':
+      return <VolcanoQueueCell resource={resource} column={column} />
+    case 'volcanopodgroups':
+      return <VolcanoPodGroupCell resource={resource} column={column} />
+    case 'jobflows':
+      return <JobFlowCell resource={resource} column={column} />
+    case 'jobtemplates':
+      return <JobTemplateCell resource={resource} column={column} />
+    // KAI Scheduler
+    case 'kaiqueues':
+      return <KaiQueueCell resource={resource} column={column} />
+    case 'kaipodgroups':
+      return <KaiPodGroupCell resource={resource} column={column} />
+    // KAITO
+    case 'kaitoworkspaces':
+      return <KaitoWorkspaceCell resource={resource} column={column} />
+    case 'ragengines':
+      return <RAGEngineCell resource={resource} column={column} />
+    // NVIDIA NIM Operator
+    case 'nimservices':
+      return <NIMServiceCell resource={resource} column={column} />
+    case 'nimcaches':
+      return <NIMCacheCell resource={resource} column={column} />
+    case 'nimpipelines':
+      return <NIMPipelineCell resource={resource} column={column} />
+    // AMD GPU Operator
+    case 'deviceconfigs':
+      return <AMDDeviceConfigCell resource={resource} column={column} />
+    // Kubeflow training
+    case 'pytorchjobs':
+      return <PyTorchJobCell resource={resource} column={column} />
+    case 'tfjobs':
+      return <TFJobCell resource={resource} column={column} />
+    case 'mpijobs':
+      return <MPIJobCell resource={resource} column={column} />
+    case 'trainjobs':
+      return <TrainJobCell resource={resource} column={column} />
     // ArgoCD GitOps resources
     case 'applications':
       return <ArgoApplicationCell resource={resource} column={column} />
@@ -8076,6 +8570,17 @@ function AnalysisRunCell({ resource, column }: { resource: any; column: string }
           </span>
         </Tooltip>
       )
+    }
+    default:
+      return <span className="text-sm text-theme-text-tertiary">-</span>
+  }
+}
+
+function AnalysisTemplateCell({ resource, column }: { resource: any; column: string }) {
+  switch (column) {
+    case 'metricCount': {
+      const count = (resource.spec?.metrics || []).length
+      return <span className="text-sm text-theme-text-secondary">{count}</span>
     }
     default:
       return <span className="text-sm text-theme-text-tertiary">-</span>

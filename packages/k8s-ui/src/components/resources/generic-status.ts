@@ -1,4 +1,5 @@
 import type { HealthLevel } from './resource-utils'
+import { getGatewayPolicyStatus } from './gateway-policy-status'
 
 /**
  * Derives a status for a resource with no dedicated renderer — a CRD Radar
@@ -89,6 +90,18 @@ function fromCondition(cond: any, polarityKnown: boolean): GenericStatus | null 
 export function getGenericResourceStatus(resource: any): GenericStatus | null {
   const status = resource?.status
   if (!status || typeof status !== 'object') return null
+
+  // Gateway API policies keep their conditions per-ancestor, one level below
+  // where the rest of this function looks. Dispatched on the shape and resolved
+  // by its own reader, because the rungs below would answer it wrongly: they
+  // take a positive condition before a negative one, and a policy that is
+  // `Accepted=True, Programmed=False` has been taken up and then failed.
+  // Returns null when the ancestors say nothing, so a policy that also
+  // publishes top-level conditions still gets read — GCPBackendPolicy declares
+  // both, and suppressing its conditions would hide a Ready=False behind an
+  // empty ancestor list.
+  const policy = getGatewayPolicyStatus(resource)
+  if (policy) return policy
 
   const phase = typeof status.phase === 'string' ? status.phase.trim() : ''
   if (phase) {

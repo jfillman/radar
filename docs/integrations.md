@@ -565,9 +565,9 @@ See the main [README](../README.md#gitops) for the user-facing overview. This se
 |-----|-------|----------|-------------|------------|
 | Rollout | `argoproj.io/v1alpha1` | Yes | Yes | Yes |
 | AnalysisRun | `argoproj.io/v1alpha1` | Yes | Yes | Yes |
-| AnalysisTemplate | `argoproj.io/v1alpha1` | — | Generic | — |
-| ClusterAnalysisTemplate | `argoproj.io/v1alpha1` | — | Generic | — |
-| Experiment | `argoproj.io/v1alpha1` | — | Generic | — |
+| AnalysisTemplate | `argoproj.io/v1alpha1` | — | Yes | — |
+| ClusterAnalysisTemplate | `argoproj.io/v1alpha1` | — | Yes | — |
+| Experiment | `argoproj.io/v1alpha1` | — | Yes | — |
 
 ### What Radar Shows
 
@@ -575,9 +575,17 @@ See the main [README](../README.md#gitops) for the user-facing overview. This se
 
 **Rollout visibility:** Radar keeps serving readiness separate from transient rollout activity. Resource tables, drawers, full workload views, and Applications show the active step, progress, pause, or failure without marking capacity served by the stable revision as unavailable.
 
+**Canary/blueGreen progression:** The Rollout detail page renders a connected step timeline — every canary step in declaration order, with the current step highlighted and, for an analysis step, its live AnalysisRun status shown inline alongside a clickable link to the AnalysisTemplate/ClusterAnalysisTemplate it references. A blueGreen Rollout gets an equivalent derived phase list (preview scaled up → pre/post-promotion analysis → awaiting promotion → active cutover), since blueGreen has no `steps[]` array of its own to render directly.
+
+**ReplicaSet progression:** A ReplicaSets section lists every revision the Rollout owns (newest first), each with its Current/Stable/Rolling-out role badge, image, replica count, and — expandable per revision — its live pods with ready/phase status. Read-only; rollback stays on the existing revision-history dialog. Built entirely from the same `useWorkloadRevisions`/`useWorkloadPods` endpoints already used elsewhere for workload rollback, joined client-side by each pod's own pod-template-hash label — no new backend endpoint needed for this part.
+
+**AnalysisRun history:** Beyond the four "currently active" analysis slots (step / background / pre-promotion / post-promotion), an AnalysisRun History section lists the Rollout's full AnalysisRun history — phase, trigger, and metrics passing/total — via a dedicated `GET /api/rollouts/{ns}/{name}/analysisruns` endpoint gated on listing AnalysisRuns directly (a separate RBAC grant from the Rollout's own `patch` capability).
+
+**AnalysisTemplate / ClusterAnalysisTemplate / Experiment:** Full detail renderers — metric definitions (provider, interval, count, success/failure conditions) for the templates; templates, duration, and per-template replica/analysis status for Experiment. Reached both directly and via the step-timeline/Analysis-section links above.
+
 **Why it's stuck:** `InconclusiveAnalysisRun` names nothing on its own, so Radar resolves the AnalysisRun the controller recorded and surfaces the deciding metric — its success/failure condition, latest measured value, and message. The same verdict reaches AI agents through the Rollout's `issue` field.
 
-**Topology:** Rollout → active AnalysisRun (`uses`), labelled by trigger (step / background / pre-promotion / post-promotion). Only the runs the Rollout's status points at are graphed — historical runs would grow the graph without bound.
+**Topology:** Rollout → active AnalysisRun (`uses`), labelled by trigger (step / background / pre-promotion / post-promotion). Only the runs the Rollout's status points at are graphed — historical runs would grow the graph without bound. (The full AnalysisRun history above is a detail-page list, not a topology change — the graph's "only active runs" bound is unchanged.)
 
 **Timeline:** Step index, traffic weights, pause conditions, abort/promote-full, and stable-ReplicaSet moves are all recorded as distinct events; a Rollout sits in `Progressing` for the whole canary, so phase alone would show nothing.
 
@@ -1346,6 +1354,78 @@ either grant is enough to read it.
 ### Calico Coverage Limits
 
 Radar statically evaluates Calico selectors against workload pod templates and the Namespace and ServiceAccount objects it can read. The result describes declared policy coverage, not live CNI enforcement or packet-level behavior. Missing labels or RBAC-restricted resources can prevent a relationship from being inferred, and staged policies are never included in enforced coverage. The projected "if staged" figure assumes every staged policy is promoted at once; it is a projection of the declared rules, not a simulation of what the data plane would do.
+
+---
+
+## GPU & Batch Ecosystem (basic support)
+
+Basic resource support for the GPU scheduling, batch, and inference-serving ecosystem: **status badges, smart table columns, status filters, and sidebar grouping** for every kind below. Detail views use the standard spec/status renderer; topology participation and typed detail views land with the deeper per-tool integrations.
+
+This is resource reconnaissance, not GPU accounting or end-to-end workload diagnosis. It does not inventory physical devices, distinguish virtual or fractional GPUs such as HAMi, report utilization, or explain the complete workload-to-queue-to-Pod scheduling path.
+
+### Kueue + Cluster Autoscaler
+
+| Resource | Group | Status source |
+|----------|-------|---------------|
+| ClusterQueue | `kueue.x-k8s.io` (v1beta2, v1beta1) | `Active` condition |
+| LocalQueue | `kueue.x-k8s.io` | `Active` condition |
+| Workload | `kueue.x-k8s.io` | Admitted / Evicted / Preempted / Finished conditions |
+| ResourceFlavor | `kueue.x-k8s.io` | — |
+| AdmissionCheck | `kueue.x-k8s.io` | `Active` condition |
+| ProvisioningRequest | `autoscaling.x-k8s.io` (v1, v1beta1) | Provisioned / Failed / CapacityRevoked / BookingExpired conditions |
+
+### KubeRay
+
+| Resource | Group | Status source |
+|----------|-------|---------------|
+| RayCluster | `ray.io/v1` | state + provisioning conditions |
+| RayJob | `ray.io/v1` | jobStatus + jobDeploymentStatus |
+| RayService | `ray.io/v1` | serviceStatus + upgrade/rollback conditions |
+| RayCronJob | `ray.io/v1` | suspend |
+
+### KServe
+
+| Resource | Group | Status source |
+|----------|-------|---------------|
+| InferenceService | `serving.kserve.io/v1beta1` | Ready condition + modelStatus.transitionStatus |
+| ServingRuntime / ClusterServingRuntime | `serving.kserve.io/v1alpha1` | spec.disabled |
+| InferenceGraph | `serving.kserve.io/v1alpha1` | Ready condition |
+| TrainedModel | `serving.kserve.io/v1alpha1` | Ready condition |
+| LLMInferenceService | `serving.kserve.io` (v1alpha2, v1alpha1) | Ready / aggregate conditions |
+
+### Gateway API Inference Extension
+
+| Resource | Group | Status source |
+|----------|-------|---------------|
+| InferencePool | `inference.networking.k8s.io/v1` and `inference.networking.x-k8s.io/v1alpha2` | per-parent Accepted + ResolvedRefs |
+| InferenceObjective | `llm-d.ai/v1alpha2` and `inference.networking.x-k8s.io/v1alpha2` | Accepted / Ready condition |
+
+### Batch: LeaderWorkerSet, JobSet, Volcano, Kubeflow Training
+
+| Resource | Group | Status source |
+|----------|-------|---------------|
+| LeaderWorkerSet | `leaderworkerset.x-k8s.io/v1` | Available / Progressing conditions |
+| JobSet | `jobset.x-k8s.io/v1alpha2` | Completed / Failed / Suspended conditions |
+| Job (Volcano) | `batch.volcano.sh/v1alpha1` | state.phase — disambiguated from batch/v1 Jobs by group |
+| Queue (Volcano) | `scheduling.volcano.sh/v1beta1` | state (Open/Closed) |
+| PodGroup (Volcano) | `scheduling.volcano.sh/v1beta1` | phase + Unschedulable condition |
+| JobFlow / JobTemplate | `flow.volcano.sh/v1alpha1` | state.phase / — |
+| Queue (KAI) | `scheduling.run.ai/v2` | Orphan / OverQuota conditions + allocation |
+| PodGroup (KAI) | `scheduling.run.ai/v2alpha2` | phase + scheduling conditions |
+| PyTorchJob / TFJob | `kubeflow.org/v1` | JobCondition pattern |
+| MPIJob | `kubeflow.org` (v1, v2beta1) | JobCondition pattern |
+| TrainJob | `trainer.kubeflow.org/v1alpha1` | Complete / Failed / Suspended conditions + active child jobs |
+
+Volcano Job, the Volcano/KAI Queues and PodGroups, and KAITO Workspaces share kind names with other resources — Radar disambiguates by API group in tables, filters, and status badges.
+
+### Model serving operators: KAITO, NVIDIA NIM, AMD
+
+| Resource | Group | Status source |
+|----------|-------|---------------|
+| Workspace (KAITO) | `kaito.sh` (v1beta1) | ResourceReady / InferenceReady / WorkspaceSucceeded conditions |
+| RAGEngine (KAITO) | `kaito.sh` (v1beta1, v1alpha1) | ResourceReady / ServiceReady conditions |
+| NIMService / NIMCache / NIMPipeline | `apps.nvidia.com/v1alpha1` | status.state |
+| DeviceConfig (AMD GPU Operator) | `amd.com/v1alpha1` | Ready condition + component DaemonSet rollout counts |
 
 ---
 

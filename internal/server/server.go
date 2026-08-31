@@ -38,6 +38,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/skyhook-io/radar/internal/ai"
 	"github.com/skyhook-io/radar/internal/argocd"
@@ -89,8 +90,13 @@ type Server struct {
 	permCache          *auth.PermissionCache
 	oidcHandler        *auth.OIDCHandler
 	saveFileFunc       func(defaultFilename string, data []byte) (string, error)
-	cloudConnectCfg    CloudConnectConfig
-	cloudInstall       *cloudInstallManager
+	saveFileStreamFunc func(defaultFilename string, r io.Reader) (string, error)
+	// newExecutor builds the exec client for pod file transfers. Nil in
+	// production, where the package default is used; tests substitute a fake so
+	// the transfer can be driven end to end without a cluster.
+	newExecutor     func(*rest.Config, *url.URL) (remotecommand.Executor, error)
+	cloudConnectCfg CloudConnectConfig
+	cloudInstall    *cloudInstallManager
 
 	// nsPreferences holds each user's active-namespace pick from the in-app
 	// switcher. Key shape: "<username>\x00<contextName>" when auth is enabled,
@@ -474,6 +480,10 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 		r.Get("/pods/{namespace}/{name}/exec", s.handlePodExec)
 		r.Get("/local-terminal", s.handleLocalTerminal)
 		r.Get("/pods/{namespace}/{name}/files/download", s.handlePodFileDownload)
+		// Desktop-only: streams a pod file to disk server-side. Sits outside the
+		// 60s timeout group for the same reason the download does — a large file
+		// over a slow cluster link legitimately takes longer than that.
+		r.Post("/pods/{namespace}/{name}/files/save", s.handlePodFileSave)
 		r.Get("/workloads/{kind}/{namespace}/{name}/logs/stream", s.handleWorkloadLogsStream)
 		// AI investigation event stream via SSE — long-lived; lives outside the
 		// 60s timeout group. The run keeps going server-side after disconnect.
@@ -1135,6 +1145,16 @@ func (s *Server) SetSaveFileFunc(fn func(defaultFilename string, data []byte) (s
 	s.saveFileFunc = fn
 }
 
+// SetSaveFileStreamFunc attaches a native save callback that consumes the file
+// as a stream, enabling the /api/pods/{ns}/{name}/files/save endpoint. It exists
+// so a large file can go from the cluster to disk without a copy of it passing
+// through the webview. The callback should write the stream to the chosen path
+// and return that path, leaving nothing behind if the write fails.
+// Only used by the desktop app.
+func (s *Server) SetSaveFileStreamFunc(fn func(defaultFilename string, r io.Reader) (string, error)) {
+	s.saveFileStreamFunc = fn
+}
+
 // Handler returns the full application handler for the authenticated Cloud
 // tunnel and httptest. In Cloud mode, Start exposes only the health-only wrapper
 // on the ordinary TCP listener.
@@ -1519,7 +1539,7 @@ func (s *Server) canReadDecision(r *http.Request, group, resource, namespace, ve
 	if user == nil || s.permCache == nil {
 		return true, true
 	}
-	if s.permCache.Get(user.Username) == nil {
+	if s.permCache.Get(user.Username, user.Groups) == nil {
 		// Trigger namespace discovery so SAR cache has a parent UserPermissions
 		// entry. parseNamespacesForUser is the canonical path that populates
 		// this; if it hasn't run yet, canReadUser falls through to a fresh SAR.
@@ -1548,7 +1568,7 @@ func (s *Server) canReadUserDecision(ctx context.Context, user *auth.User, group
 	if user == nil || s.permCache == nil {
 		return true, true
 	}
-	perms := s.permCache.Get(user.Username)
+	perms := s.permCache.Get(user.Username, user.Groups)
 	if perms != nil {
 		if v, ok := perms.CanI(verb, group, resource, namespace); ok {
 			return v, true
@@ -3637,7 +3657,7 @@ func (s *Server) filterEventsByRBAC(r *http.Request, events []timeline.TimelineE
 
 	// Prime the parent UserPermissions entry once so the parallel canReadUser
 	// calls below share its SAR memo instead of racing to populate it.
-	if s.permCache.Get(user.Username) == nil {
+	if s.permCache.Get(user.Username, user.Groups) == nil {
 		_ = s.getUserNamespaces(r, []string{})
 	}
 
@@ -4870,7 +4890,7 @@ func (s *Server) getUserNamespaces(r *http.Request, requested []string) []string
 		return requested
 	}
 
-	perms := s.permCache.Get(user.Username)
+	perms := s.permCache.Get(user.Username, user.Groups)
 	if perms != nil {
 		log.Printf("[auth] Using cached permissions for %s: allowed=%v", user.Username, perms.AllowedNamespaces == nil)
 	}
@@ -4913,7 +4933,7 @@ func (s *Server) getUserNamespaces(r *http.Request, requested []string) []string
 
 		log.Printf("[auth] DiscoverNamespaces result for %s: allowed=%v (nil=all, []=none)", user.Username, allowed)
 		perms = &auth.UserPermissions{AllowedNamespaces: allowed}
-		s.permCache.Set(user.Username, perms)
+		s.permCache.Set(user.Username, user.Groups, perms)
 	}
 
 	return auth.FilterNamespacesForUser(requested, user, perms)
@@ -4967,7 +4987,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// available) so the closure's canReadUser calls hit the memo. When auth is
 	// off, UserFromContext is nil and canReadUser short-circuits to allow.
 	user := auth.UserFromContext(r.Context())
-	if user != nil && s.permCache != nil && s.permCache.Get(user.Username) == nil {
+	if user != nil && s.permCache != nil && s.permCache.Get(user.Username, user.Groups) == nil {
 		_ = s.getUserNamespaces(r, []string{})
 	}
 	s.broadcaster.HandleSSE(w, r, deny, s.newSSEChangeAuthorizer(r.Context(), user))

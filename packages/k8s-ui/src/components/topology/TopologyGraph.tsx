@@ -68,19 +68,30 @@ const EDGE_LEGEND: { label: string; color: string }[] = [
 // Memoized edge style cache to avoid creating new objects on every render
 const edgeStyleCache = new Map<string, React.CSSProperties>()
 
-function getEdgeStyle(type: string, isTrafficView: boolean, isTrafficEdge: boolean, animated: boolean, partial: boolean): React.CSSProperties {
-  const cacheKey = `${type}-${isTrafficView}-${isTrafficEdge}-${animated}-${partial}`
+function getEdgeStyle(type: string, isTrafficView: boolean, isTrafficEdge: boolean, animated: boolean, partial: boolean, isRolloutTrafficEdge: boolean): React.CSSProperties {
+  const cacheKey = `${type}-${isTrafficView}-${isTrafficEdge}-${animated}-${partial}-${isRolloutTrafficEdge}`
   let style = edgeStyleCache.get(cacheKey)
   if (!style) {
     const edgeColor = getEdgeColor(type, isTrafficView)
+    const dashed = (isTrafficView && isTrafficEdge && animated) || (isRolloutTrafficEdge && animated)
     style = {
       stroke: edgeColor,
       strokeWidth: isTrafficView ? 2 : 1.5,
-      strokeDasharray: partial ? '6 3' : isTrafficView && isTrafficEdge && animated ? '5 5' : undefined,
+      strokeDasharray: partial ? '6 3' : dashed ? '5 5' : undefined,
     }
     edgeStyleCache.set(cacheKey, style)
   }
   return style
+}
+
+// A Rollout canary/stable (weighted) or blue-green active/preview Service
+// edge — set server-side via a fixed label vocabulary (pkg/topology
+// builder.go's "Check Rollouts" block). These carry a live traffic split
+// worth animating even outside the separate Network Flow view, since that
+// view doesn't build Rollout nodes/edges at all — this is the only place
+// they render.
+function isRolloutTrafficEdgeLabel(label: TopologyEdge['label']): boolean {
+  return typeof label === 'string' && (label === 'Active' || label === 'Preview' || label.startsWith('Canary') || label.startsWith('Stable'))
 }
 
 // Reachability outcome → edge color/dash, set by the Reachability view via
@@ -175,8 +186,14 @@ function buildEdges(
     const reach = edge.reachOutcome
     const edgeColor = reach ? (REACH_COLORS[reach] || '#94a3b8') : getEdgeColor(edge.type, isTrafficView)
     const isTrafficEdge = edge.type === 'routes-to' || edge.type === 'exposes'
+    const isRolloutTrafficEdge = edge.type === 'exposes' && isRolloutTrafficEdgeLabel(edge.label)
     // A reachability edge never animates (a dashed "blocked" must not look like flow).
-    const animated = enableAnimations && isTrafficView && isTrafficEdge && !reach && !edge.partial
+    // Rollout canary/stable/active/preview edges animate regardless of view mode —
+    // they only exist in the resources-view topology, so gating on isTrafficView
+    // (the separate Network Flow view) would mean they never animate at all.
+    const animated = enableAnimations && !reach && !edge.partial && (
+      (isTrafficView && isTrafficEdge) || isRolloutTrafficEdge
+    )
 
     edges.push({
       id: edgeId,
@@ -196,7 +213,7 @@ function buildEdges(
         width: 12,
         height: 12,
       },
-      style: reach ? reachEdgeStyle(reach) : getEdgeStyle(edge.type, isTrafficView, isTrafficEdge, animated, edge.partial === true),
+      style: reach ? reachEdgeStyle(reach) : getEdgeStyle(edge.type, isTrafficView, isTrafficEdge, animated, edge.partial === true, isRolloutTrafficEdge),
     })
   }
 

@@ -1,0 +1,280 @@
+package topology
+
+import (
+	"testing"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+)
+
+func rolloutGVR() schema.GroupVersionResource {
+	return schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "rollouts"}
+}
+
+func findEdge(topo *Topology, source, target string) *Edge {
+	for i := range topo.Edges {
+		if topo.Edges[i].Source == source && topo.Edges[i].Target == target {
+			return &topo.Edges[i]
+		}
+	}
+	return nil
+}
+
+func TestBuildResourcesTopology_CanaryServiceEdgesCarryWeightAndRole(t *testing.T) {
+	rollout := karpenterTopologyObject("argoproj.io/v1alpha1", "Rollout", "web", "web-uid", map[string]any{
+		"spec": map[string]any{
+			"replicas": int64(3),
+			"strategy": map[string]any{
+				"canary": map[string]any{
+					"canaryService": "web-canary",
+					"stableService": "web-stable",
+				},
+			},
+		},
+		"status": map[string]any{
+			"canary": map[string]any{
+				"weights": map[string]any{
+					"canary": map[string]any{"weight": int64(20)},
+					"stable": map[string]any{"weight": int64(80)},
+				},
+			},
+			"currentPodHash": "abc123",
+			"stableRS":       "def456",
+		},
+	})
+	rollout.SetNamespace("prod")
+
+	dynamic := &rolloutDynamicProvider{gvr: rolloutGVR(), rollouts: []*unstructured.Unstructured{rollout}}
+	provider := &mockProvider{
+		services: []*corev1.Service{
+			{ObjectMeta: metav1.ObjectMeta{Name: "web-canary", Namespace: "prod"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "web-stable", Namespace: "prod"}},
+		},
+	}
+
+	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	rolloutID := "rollout/prod/web"
+
+	canaryEdge := findEdge(topo, "service/prod/web-canary", rolloutID)
+	if canaryEdge == nil {
+		t.Fatalf("no edge from canary service to rollout; edges=%+v", topo.Edges)
+	}
+	if canaryEdge.Label != "Canary · 20%" {
+		t.Errorf("canary edge label = %q, want %q", canaryEdge.Label, "Canary · 20%")
+	}
+
+	stableEdge := findEdge(topo, "service/prod/web-stable", rolloutID)
+	if stableEdge == nil {
+		t.Fatalf("no edge from stable service to rollout; edges=%+v", topo.Edges)
+	}
+	if stableEdge.Label != "Stable · 80%" {
+		t.Errorf("stable edge label = %q, want %q", stableEdge.Label, "Stable · 80%")
+	}
+
+	canarySvcNode := findNode(topo, "service/prod/web-canary")
+	if canarySvcNode == nil || canarySvcNode.Data["trafficRole"] != "canary" {
+		t.Errorf("canary service node trafficRole = %v, want %q", canarySvcNode.Data["trafficRole"], "canary")
+	}
+	stableSvcNode := findNode(topo, "service/prod/web-stable")
+	if stableSvcNode == nil || stableSvcNode.Data["trafficRole"] != "stable" {
+		t.Errorf("stable service node trafficRole = %v, want %q", stableSvcNode.Data["trafficRole"], "stable")
+	}
+
+	rolloutNode := findNode(topo, rolloutID)
+	if rolloutNode == nil {
+		t.Fatalf("missing rollout node")
+	}
+	if rolloutNode.Data["canaryWeight"] != int64(20) {
+		t.Errorf("rollout node canaryWeight = %v, want 20", rolloutNode.Data["canaryWeight"])
+	}
+	if rolloutNode.Data["stableWeight"] != int64(80) {
+		t.Errorf("rollout node stableWeight = %v, want 80", rolloutNode.Data["stableWeight"])
+	}
+}
+
+func TestBuildResourcesTopology_BlueGreenServiceEdgesHaveNoWeight(t *testing.T) {
+	rollout := karpenterTopologyObject("argoproj.io/v1alpha1", "Rollout", "web", "web-uid", map[string]any{
+		"spec": map[string]any{
+			"replicas": int64(2),
+			"strategy": map[string]any{
+				"blueGreen": map[string]any{
+					"activeService":  "web-active",
+					"previewService": "web-preview",
+				},
+			},
+		},
+		"status": map[string]any{
+			"blueGreen": map[string]any{
+				"activeSelector":  "hash-active",
+				"previewSelector": "hash-preview",
+			},
+		},
+	})
+	rollout.SetNamespace("prod")
+
+	dynamic := &rolloutDynamicProvider{gvr: rolloutGVR(), rollouts: []*unstructured.Unstructured{rollout}}
+	provider := &mockProvider{
+		services: []*corev1.Service{
+			{ObjectMeta: metav1.ObjectMeta{Name: "web-active", Namespace: "prod"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "web-preview", Namespace: "prod"}},
+		},
+	}
+
+	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	rolloutID := "rollout/prod/web"
+
+	activeEdge := findEdge(topo, "service/prod/web-active", rolloutID)
+	if activeEdge == nil || activeEdge.Label != "Active" {
+		t.Fatalf("active edge = %+v, want label %q", activeEdge, "Active")
+	}
+	previewEdge := findEdge(topo, "service/prod/web-preview", rolloutID)
+	if previewEdge == nil || previewEdge.Label != "Preview" {
+		t.Fatalf("preview edge = %+v, want label %q", previewEdge, "Preview")
+	}
+}
+
+func TestBuildResourcesTopology_RolloutOwnedReplicaSetsShowOnlyWhenLive(t *testing.T) {
+	rollout := karpenterTopologyObject("argoproj.io/v1alpha1", "Rollout", "web", "web-uid", map[string]any{
+		"spec": map[string]any{
+			"replicas": int64(2),
+			"strategy": map[string]any{"canary": map[string]any{}},
+		},
+		"status": map[string]any{
+			"currentPodHash": "newhash",
+			"stableRS":       "newhash",
+		},
+	})
+	rollout.SetNamespace("prod")
+
+	dynamic := &rolloutDynamicProvider{gvr: rolloutGVR(), rollouts: []*unstructured.Unstructured{rollout}}
+
+	liveReplicas := int32(2)
+	deadReplicas := int32(0)
+	provider := &mockProvider{
+		replicaSets: []*appsv1.ReplicaSet{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-newhash", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "newhash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web"}},
+				},
+				Spec: appsv1.ReplicaSetSpec{Replicas: &liveReplicas},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-oldhash", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "oldhash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web"}},
+				},
+				Spec: appsv1.ReplicaSetSpec{Replicas: &deadReplicas},
+			},
+		},
+	}
+
+	opts := DefaultBuildOptions()
+	if opts.IncludeReplicaSets {
+		t.Fatal("test assumes IncludeReplicaSets defaults to false")
+	}
+
+	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(opts)
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	liveNode := findNode(topo, "replicaset/prod/web-newhash")
+	if liveNode == nil {
+		t.Fatalf("live rollout-owned ReplicaSet should be visible without IncludeReplicaSets; nodes=%+v", topo.Nodes)
+	}
+	if liveNode.Data["trafficRole"] != "stable" {
+		t.Errorf("live ReplicaSet trafficRole = %v, want %q", liveNode.Data["trafficRole"], "stable")
+	}
+
+	if findNode(topo, "replicaset/prod/web-oldhash") != nil {
+		t.Fatalf("scaled-to-zero ReplicaSet should stay hidden")
+	}
+}
+
+func TestBuildResourcesTopology_PodTrafficRoleForCanaryAndStable(t *testing.T) {
+	rollout := karpenterTopologyObject("argoproj.io/v1alpha1", "Rollout", "web", "web-uid", map[string]any{
+		"spec": map[string]any{
+			"replicas": int64(2),
+			"strategy": map[string]any{"canary": map[string]any{}},
+		},
+		"status": map[string]any{
+			"currentPodHash": "canaryhash",
+			"stableRS":       "stablehash",
+		},
+	})
+	rollout.SetNamespace("prod")
+
+	dynamic := &rolloutDynamicProvider{gvr: rolloutGVR(), rollouts: []*unstructured.Unstructured{rollout}}
+
+	replicas := int32(1)
+	provider := &mockProvider{
+		replicaSets: []*appsv1.ReplicaSet{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-canaryhash", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "canaryhash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web"}},
+				},
+				Spec: appsv1.ReplicaSetSpec{Replicas: &replicas},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-stablehash", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "stablehash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web"}},
+				},
+				Spec: appsv1.ReplicaSetSpec{Replicas: &replicas},
+			},
+		},
+		pods: []*corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-canaryhash-abc", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "canaryhash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-canaryhash"}},
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-stablehash-abc", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "stablehash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-stablehash"}},
+				},
+			},
+		},
+	}
+
+	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	canaryPod := findNode(topo, "pod/prod/web-canaryhash-abc")
+	if canaryPod == nil || canaryPod.Data["trafficRole"] != "canary" {
+		t.Errorf("canary pod trafficRole = %v, want %q", canaryPod.Data["trafficRole"], "canary")
+	}
+	stablePod := findNode(topo, "pod/prod/web-stablehash-abc")
+	if stablePod == nil || stablePod.Data["trafficRole"] != "stable" {
+		t.Errorf("stable pod trafficRole = %v, want %q", stablePod.Data["trafficRole"], "stable")
+	}
+
+	// Pods connect straight to their (now-visible) ReplicaSet, not via the
+	// Deployment/Rollout shortcut, once the owning ReplicaSet is live.
+	if findEdge(topo, "replicaset/prod/web-canaryhash", "pod/prod/web-canaryhash-abc") == nil {
+		t.Errorf("expected Pod->ReplicaSet edge for the live canary ReplicaSet; edges=%+v", topo.Edges)
+	}
+}

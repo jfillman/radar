@@ -214,6 +214,12 @@ func TestBuildResourcesTopology_PodTrafficRoleForCanaryAndStable(t *testing.T) {
 		"status": map[string]any{
 			"currentPodHash": "canaryhash",
 			"stableRS":       "stablehash",
+			"canary": map[string]any{
+				"weights": map[string]any{
+					"canary": map[string]any{"weight": int64(30)},
+					"stable": map[string]any{"weight": int64(70)},
+				},
+			},
 		},
 	})
 	rollout.SetNamespace("prod")
@@ -274,7 +280,32 @@ func TestBuildResourcesTopology_PodTrafficRoleForCanaryAndStable(t *testing.T) {
 
 	// Pods connect straight to their (now-visible) ReplicaSet, not via the
 	// Deployment/Rollout shortcut, once the owning ReplicaSet is live.
-	if findEdge(topo, "replicaset/prod/web-canaryhash", "pod/prod/web-canaryhash-abc") == nil {
-		t.Errorf("expected Pod->ReplicaSet edge for the live canary ReplicaSet; edges=%+v", topo.Edges)
+	podEdge := findEdge(topo, "replicaset/prod/web-canaryhash", "pod/prod/web-canaryhash-abc")
+	if podEdge == nil {
+		t.Fatalf("expected Pod->ReplicaSet edge for the live canary ReplicaSet; edges=%+v", topo.Edges)
+	}
+
+	// The same "Canary · 20%" style label rides every hop of the traffic
+	// path, not just the Service->Rollout edge - Rollout->ReplicaSet and
+	// ReplicaSet->Pod carry it too, so a weight is visible however far down
+	// the graph the user is looking (the actual ask this test guards against
+	// regressing: a blinking-but-unlabeled edge told the user nothing about
+	// which revision was carrying which share of traffic).
+	if podEdge.Label != "Canary · 30%" {
+		t.Errorf("canary Pod edge label = %q, want %q", podEdge.Label, "Canary · 30%")
+	}
+	stablePodEdge := findEdge(topo, "replicaset/prod/web-stablehash", "pod/prod/web-stablehash-abc")
+	if stablePodEdge == nil || stablePodEdge.Label != "Stable · 70%" {
+		t.Fatalf("stable Pod edge = %+v, want label %q", stablePodEdge, "Stable · 70%")
+	}
+
+	rolloutID := "rollout/prod/web"
+	rsEdge := findEdge(topo, rolloutID, "replicaset/prod/web-canaryhash")
+	if rsEdge == nil || rsEdge.Label != "Canary · 30%" {
+		t.Fatalf("Rollout->ReplicaSet canary edge = %+v, want label %q", rsEdge, "Canary · 30%")
+	}
+	stableRsEdge := findEdge(topo, rolloutID, "replicaset/prod/web-stablehash")
+	if stableRsEdge == nil || stableRsEdge.Label != "Stable · 70%" {
+		t.Fatalf("Rollout->ReplicaSet stable edge = %+v, want label %q", stableRsEdge, "Stable · 70%")
 	}
 }

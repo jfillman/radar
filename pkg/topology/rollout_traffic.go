@@ -1,6 +1,8 @@
 package topology
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -51,6 +53,34 @@ func rolloutTrafficRole(podTemplateHash string, info rolloutTrafficInfo) string 
 		return "active"
 	case info.previewSelector:
 		return "preview"
+	default:
+		return ""
+	}
+}
+
+// rolloutTrafficEdgeLabel builds the "Canary · 20%" / "Stable · 80%" /
+// "Active" / "Preview" edge label for a given role — the single place this
+// text is built, used for every edge along the traffic path (Service->
+// Rollout, Rollout->ReplicaSet, ReplicaSet->Pod) so the same role always
+// reads identically no matter which hop it's labeling. Returns "" for a
+// role the switch doesn't recognize (defensive; every caller already only
+// invokes this with a value rolloutTrafficRole itself returned).
+func rolloutTrafficEdgeLabel(role string, info rolloutTrafficInfo) string {
+	switch role {
+	case "canary":
+		if info.canaryWeight != nil {
+			return fmt.Sprintf("Canary · %d%%", *info.canaryWeight)
+		}
+		return "Canary"
+	case "stable":
+		if info.stableWeight != nil {
+			return fmt.Sprintf("Stable · %d%%", *info.stableWeight)
+		}
+		return "Stable"
+	case "active":
+		return "Active"
+	case "preview":
+		return "Preview"
 	default:
 		return ""
 	}

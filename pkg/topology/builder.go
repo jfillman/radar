@@ -444,6 +444,14 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					stableWeight = &w
 				}
 			}
+			if canaryWeight == nil {
+				// No trafficRouting plugin configured — status.canary.weights is
+				// never populated for a basic (replica-ratio) canary Rollout, the
+				// common case. Derive the target split from the step definition
+				// instead; see canaryStepWeight's own comment for why this is
+				// the actual live value in that mode, not an approximation.
+				canaryWeight, stableWeight = canaryStepWeight(spec, status)
+			}
 			currentPodHash, _, _ := unstructured.NestedString(status, "currentPodHash")
 			stableRS, _, _ := unstructured.NestedString(status, "stableRS")
 			activeSelector, _, _ := unstructured.NestedString(status, "blueGreen", "activeSelector")

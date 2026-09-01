@@ -309,3 +309,106 @@ func TestBuildResourcesTopology_PodTrafficRoleForCanaryAndStable(t *testing.T) {
 		t.Fatalf("Rollout->ReplicaSet stable edge = %+v, want label %q", stableRsEdge, "Stable · 70%")
 	}
 }
+
+// A "basic canary" Rollout - no trafficRouting plugin (Istio/SMI/ALB/NGINX)
+// configured, traffic split purely by replica ratio - never populates
+// status.canary.weights at all. Confirmed live against a real Rollout on
+// the demo cluster mid-progression: user-reported bug, edges showed a bare
+// "Canary"/"Stable" role with no percentage the entire time it was
+// progressing, because the original design only ever read
+// status.canary.weights and had no fallback for the (far more common)
+// case where that field is simply never written.
+func TestBuildResourcesTopology_BasicCanaryWeightFallsBackToStepDefinition(t *testing.T) {
+	rollout := karpenterTopologyObject("argoproj.io/v1alpha1", "Rollout", "web", "web-uid", map[string]any{
+		"spec": map[string]any{
+			"replicas": int64(4),
+			"strategy": map[string]any{
+				"canary": map[string]any{
+					// No trafficRouting: block - matches the real demo fixture.
+					"steps": []any{
+						map[string]any{"setWeight": int64(20)},
+						map[string]any{"analysis": map[string]any{}},
+						map[string]any{"setWeight": int64(60)},
+						map[string]any{"pause": map[string]any{}},
+					},
+				},
+			},
+		},
+		"status": map[string]any{
+			// currentStepIndex 1 = just past the first setWeight(20) step,
+			// not yet at setWeight(60) - 20% is the controller's live target.
+			// No status.canary.weights at all, the real-world shape.
+			"currentStepIndex": int64(1),
+			"currentPodHash":   "canaryhash",
+			"stableRS":         "stablehash",
+		},
+	})
+	rollout.SetNamespace("prod")
+
+	dynamic := &rolloutDynamicProvider{gvr: rolloutGVR(), rollouts: []*unstructured.Unstructured{rollout}}
+	provider := &mockProvider{
+		services: []*corev1.Service{
+			{ObjectMeta: metav1.ObjectMeta{Name: "web-canary", Namespace: "prod"}},
+		},
+	}
+	// canaryService isn't set in this fixture (matching the demo, which has
+	// no named split either) - use the Rollout node's own Data instead of an
+	// edge, since that's reachable regardless of whether a Service exists.
+
+	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	rolloutNode := findNode(topo, "rollout/prod/web")
+	if rolloutNode == nil {
+		t.Fatalf("missing rollout node")
+	}
+	if rolloutNode.Data["canaryWeight"] != int64(20) {
+		t.Errorf("rollout node canaryWeight = %v, want 20 (derived from the last setWeight step reached)", rolloutNode.Data["canaryWeight"])
+	}
+	if rolloutNode.Data["stableWeight"] != int64(80) {
+		t.Errorf("rollout node stableWeight = %v, want 80", rolloutNode.Data["stableWeight"])
+	}
+}
+
+// Once a canary Rollout fully promotes (currentStepIndex past the end of
+// steps), there's no active split to report - canaryStepWeight must not
+// keep returning the LAST step's weight as if it were still in effect.
+func TestBuildResourcesTopology_BasicCanaryWeightOmittedOncePromoted(t *testing.T) {
+	rollout := karpenterTopologyObject("argoproj.io/v1alpha1", "Rollout", "web", "web-uid", map[string]any{
+		"spec": map[string]any{
+			"replicas": int64(4),
+			"strategy": map[string]any{
+				"canary": map[string]any{
+					"steps": []any{
+						map[string]any{"setWeight": int64(50)},
+						map[string]any{"pause": map[string]any{}},
+					},
+				},
+			},
+		},
+		"status": map[string]any{
+			// Past the end of a 2-step array - fully promoted.
+			"currentStepIndex": int64(2),
+			"currentPodHash":   "samehash",
+			"stableRS":         "samehash",
+		},
+	})
+	rollout.SetNamespace("prod")
+
+	dynamic := &rolloutDynamicProvider{gvr: rolloutGVR(), rollouts: []*unstructured.Unstructured{rollout}}
+
+	topo, err := NewBuilder(&mockProvider{}).WithDynamic(dynamic).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	rolloutNode := findNode(topo, "rollout/prod/web")
+	if rolloutNode == nil {
+		t.Fatalf("missing rollout node")
+	}
+	if _, ok := rolloutNode.Data["canaryWeight"]; ok {
+		t.Errorf("rollout node canaryWeight = %v, want absent once fully promoted", rolloutNode.Data["canaryWeight"])
+	}
+}

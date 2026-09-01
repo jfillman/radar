@@ -3,12 +3,20 @@
 // web/src/components/workload/WorkloadView.tsx) — never in the compact
 // drawer, which has no room to render a DAG legibly.
 //
-// Layout uses the same ELK.js engine and options as the main Topology view
+// Layout uses the same ELK.js engine as the main Topology view
 // (packages/k8s-ui/src/components/topology/layout.ts: layered, RIGHT,
 // ORTHOGONAL edge routing, NETWORK_SIMPLEX placement) rather than a hand-
 // rolled rank/row placement — NETWORK_SIMPLEX minimizes edge crossings,
 // which a same-order placement does not, and that crossing-minimization is
 // exactly what was missing (overlapping, hard-to-follow lines).
+//
+// Spacing/merge options below deliberately go further than Topology's own
+// (40/85/25): a Pipeline's task graph is a much denser fan-out/fan-in shape
+// than a typical ownership hierarchy — several governance-check tasks (sast,
+// sbom, image-scan, policy-check, ...) commonly all depend on one upstream
+// task and converge on one downstream task, which is exactly the shape that
+// reads as "overlapping arrows" without extra edge/node breathing room and
+// edge merging at the shared endpoints.
 //
 // Node cards intentionally mirror K8sResourceNode's visual language
 // (topology-node-card CSS, icon + kind-label header row, status dot) so a
@@ -64,11 +72,26 @@ const elkOptions = {
   'elk.algorithm': 'layered',
   'elk.direction': 'RIGHT',
   'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
-  'elk.spacing.nodeNode': '32',
-  'elk.layered.spacing.nodeNodeBetweenLayers': '70',
-  'elk.layered.spacing.edgeNodeBetweenLayers': '20',
+  'elk.spacing.nodeNode': '48',
+  'elk.layered.spacing.nodeNodeBetweenLayers': '100',
+  'elk.layered.spacing.edgeNodeBetweenLayers': '32',
+  // Not set at all before - default edge-edge/edge-node spacing is tight
+  // enough that several parallel edges between the same two layers (a
+  // build task with 4-5 direct dependents, say) visually run together.
+  'elk.spacing.edgeEdge': '24',
+  'elk.spacing.edgeNode': '24',
   'elk.edgeRouting': 'ORTHOGONAL',
   'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+  // Edges sharing a source or target bundle into one trunk near that shared
+  // endpoint instead of fanning out as separate parallel lines the whole
+  // way - the single most direct fix for a fan-out/fan-in task depended on
+  // by (or converging from) several siblings at once.
+  'elk.layered.mergeEdges': 'true',
+  // Default (7) is tuned for large graphs where more iterations cost real
+  // time; a pipeline's task count is small enough that a much more thorough
+  // crossing-minimization pass is still instant, and crossing minimization
+  // is exactly the lever for "hard to see what goes where".
+  'elk.layered.thoroughness': '30',
 }
 
 async function layoutNodes(tasks: TektonTaskNode[]): Promise<{ nodes: Node[]; edges: Edge[] }> {

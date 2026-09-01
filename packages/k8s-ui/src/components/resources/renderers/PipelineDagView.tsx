@@ -178,7 +178,12 @@ const TektonTaskCard = memo(function TektonTaskCard({ data }: NodeProps<Node<Tek
       <Handle type="target" position={Position.Left} className="!h-0 !w-0 !border-0 !bg-transparent" />
       <div
         className={clsx(
-          'topology-node-card relative rounded-lg bg-theme-surface transition-opacity',
+          'topology-node-card relative rounded-lg transition-opacity',
+          // A running task previously relied on the pulsing opacity + spinning
+          // icon alone to stand out - easy to miss at a glance across a busy
+          // DAG. A background wash + ring in the same sky hue as the icon
+          // makes it readable without having to spot the animation.
+          status === 'running' ? 'bg-sky-500/10 ring-1 ring-sky-500/40 dark:bg-sky-500/15' : 'bg-theme-surface',
           clickable && 'cursor-pointer hover:ring-1 hover:ring-skyhook-500/50',
           status === 'running' && 'animate-pulse',
         )}

@@ -2924,10 +2924,18 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				"totalReplicas": total,
 				"labels":        rs.Labels,
 			}
+			// Hoisted out of the trafficRole-setting block below so the
+			// Rollout->ReplicaSet edge (built right after) can reuse it for
+			// its own "Canary · 20%" style label — same role, same text,
+			// wherever it's shown along the traffic path.
+			var rsTrafficRole string
+			var rsTrafficInfo rolloutTrafficInfo
 			if isRolloutOwnedRS {
 				if info, ok := rolloutTrafficByID[rolloutOwnedRSID]; ok {
 					if role := rolloutTrafficRole(rs.Labels[rolloutPodTemplateHashLabel], info); role != "" {
 						rsData["trafficRole"] = role
+						rsTrafficRole = role
+						rsTrafficInfo = info
 					}
 				}
 			}
@@ -2951,11 +2959,16 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					ownerID, found = rolloutIDs[ownerKey]
 				}
 				if found {
+					var label string
+					if ownerRef.Kind == "Rollout" && rsTrafficRole != "" {
+						label = rolloutTrafficEdgeLabel(rsTrafficRole, rsTrafficInfo)
+					}
 					edges = append(edges, Edge{
 						ID:     fmt.Sprintf("%s-to-%s", ownerID, rsID),
 						Source: ownerID,
 						Target: rsID,
 						Type:   EdgeManages,
+						Label:  label,
 					})
 				}
 			}
@@ -3029,7 +3042,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					nodes = append(nodes, podNode)
 
 					// Connect to owner (resources view specific)
-					edges = append(edges, b.createPodOwnerEdges(pod, podID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow)...)
+					edges = append(edges, b.createPodOwnerEdges(pod, podID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, rolloutTrafficByID, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow)...)
 				}
 			} else {
 				// Large group - create PodGroup
@@ -3042,7 +3055,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					podGroupNode.Data["trafficRole"] = role
 				}
 				nodes = append(nodes, podGroupNode)
-				edges = append(edges, b.createPodOwnerEdges(firstPod, podGroupID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow)...)
+				edges = append(edges, b.createPodOwnerEdges(firstPod, podGroupID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, rolloutTrafficByID, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow)...)
 			}
 		}
 	}
@@ -3169,24 +3182,15 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					switch {
 					case info.canaryService != "" && svc.Name == info.canaryService:
 						role = "canary"
-						if info.canaryWeight != nil {
-							label = fmt.Sprintf("Canary · %d%%", *info.canaryWeight)
-						} else {
-							label = "Canary"
-						}
 					case info.stableService != "" && svc.Name == info.stableService:
 						role = "stable"
-						if info.stableWeight != nil {
-							label = fmt.Sprintf("Stable · %d%%", *info.stableWeight)
-						} else {
-							label = "Stable"
-						}
 					case info.activeService != "" && svc.Name == info.activeService:
 						role = "active"
-						label = "Active"
 					case info.previewService != "" && svc.Name == info.previewService:
 						role = "preview"
-						label = "Preview"
+					}
+					if role != "" {
+						label = rolloutTrafficEdgeLabel(role, info)
 					}
 				}
 
@@ -7360,6 +7364,7 @@ func (b *Builder) createPodOwnerEdges(
 	replicaSetIDs map[string]string,
 	replicaSetToDeployment map[string]string,
 	replicaSetToRollout map[string]string,
+	rolloutTrafficByID map[string]rolloutTrafficInfo,
 	jobIDs map[string]string,
 	jobToCronJob map[string]string,
 	jobToScaledJob map[string]string,
@@ -7400,11 +7405,20 @@ func (b *Builder) createPodOwnerEdges(
 			if opts.IncludeReplicaSets || isLiveRolloutRS {
 				// ReplicaSets visible: connect to ReplicaSet
 				if ownerID, ok := replicaSetIDs[ownerKey]; ok {
+					var label string
+					if isLiveRolloutRS {
+						if info, ok := rolloutTrafficByID[replicaSetToRollout[ownerKey]]; ok {
+							if role := rolloutTrafficRole(pod.Labels[rolloutPodTemplateHashLabel], info); role != "" {
+								label = rolloutTrafficEdgeLabel(role, info)
+							}
+						}
+					}
 					edges = append(edges, Edge{
 						ID:     fmt.Sprintf("%s-to-%s", ownerID, targetID),
 						Source: ownerID,
 						Target: targetID,
 						Type:   EdgeManages,
+						Label:  label,
 					})
 				}
 			} else {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // rolloutPodTemplateHashLabel mirrors pkg/rollouts.PodTemplateHashLabel — kept
@@ -83,6 +84,65 @@ func rolloutTrafficEdgeLabel(role string, info rolloutTrafficInfo) string {
 		return "Preview"
 	default:
 		return ""
+	}
+}
+
+// canaryStepWeight derives the canary/stable split from the step definition
+// itself when status.canary.weights is absent — which, confirmed live on the
+// demo cluster, is EVERY canary Rollout that has no trafficRouting plugin
+// configured (Istio/SMI/ALB/NGINX). That's the common "basic canary" case:
+// the controller drives the split purely by scaling the canary ReplicaSet's
+// replica count to approximate the last setWeight step reached, and never
+// writes status.canary.weights at all — only a service-mesh-routed Rollout
+// gets that field, since only then can the live routed percentage actually
+// differ from the replica ratio. Without this fallback, a basic-canary
+// Rollout's traffic edges showed a bare "Canary"/"Stable" role with no
+// percentage for the entire time it was progressing.
+//
+// Walks backward from currentStepIndex to the most recent setWeight step —
+// intervening pause/analysis/experiment steps don't change the target ratio,
+// so the last setWeight passed is still the one in effect. Returns (nil, nil)
+// when currentStepIndex is past the end of steps (fully promoted — no
+// active canary split to report; the settled "Stable" label correctly shows
+// no percentage, implying 100%) or when no setWeight has been reached yet.
+func canaryStepWeight(spec, status map[string]any) (canaryWeight, stableWeight *int64) {
+	steps, _, _ := unstructured.NestedSlice(spec, "strategy", "canary", "steps")
+	stepIdx, ok, _ := unstructured.NestedInt64(status, "currentStepIndex")
+	if !ok || len(steps) == 0 || stepIdx < 0 || stepIdx >= int64(len(steps)) {
+		return nil, nil
+	}
+	for i := stepIdx; i >= 0; i-- {
+		step, ok := steps[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		raw, ok := step["setWeight"]
+		if !ok {
+			continue
+		}
+		w, ok := toInt64Value(raw)
+		if !ok {
+			continue
+		}
+		stable := int64(100) - w
+		return &w, &stable
+	}
+	return nil, nil
+}
+
+// toInt64Value normalizes a JSON-decoded numeric value (unstructured objects
+// decode integers as int64, but a step read back out of a slice literal in
+// tests may arrive as a plain int) to int64.
+func toInt64Value(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case float64:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	default:
+		return 0, false
 	}
 }
 

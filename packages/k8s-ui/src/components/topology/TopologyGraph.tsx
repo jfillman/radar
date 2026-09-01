@@ -136,6 +136,7 @@ function buildEdges(
   nodeCount?: number,
   groupLevels?: Map<string, GroupDisplayLevel>,
   smartDefaultActive = false,
+  nodes?: TopologyNode[],
 ): Edge[] {
   const edges: Edge[] = []
   const seenEdgeIds = new Set<string>() // O(1) duplicate detection
@@ -150,6 +151,21 @@ function buildEdges(
       const groupId = `group-${groupingMode}-${groupKey}`
       for (const nodeId of memberIds) {
         nodeGroupMap.set(nodeId, groupId)
+      }
+    }
+  }
+
+  // nodeId -> trafficRole, so a Rollout->ReplicaSet or ReplicaSet/Rollout->Pod
+  // ownership edge can animate too when it leads to a canary/stable/active/
+  // preview node - the "active DAG" should read as a continuous path from the
+  // Service all the way down to the pods actually serving that role, not stop
+  // at the Rollout.
+  const nodeTrafficRoleById = new Map<string, string>()
+  if (nodes) {
+    for (const n of nodes) {
+      const role = (n.data as Record<string, unknown> | undefined)?.trafficRole
+      if (typeof role === 'string' && role) {
+        nodeTrafficRoleById.set(n.id, role)
       }
     }
   }
@@ -186,7 +202,15 @@ function buildEdges(
     const reach = edge.reachOutcome
     const edgeColor = reach ? (REACH_COLORS[reach] || '#94a3b8') : getEdgeColor(edge.type, isTrafficView)
     const isTrafficEdge = edge.type === 'routes-to' || edge.type === 'exposes'
-    const isRolloutTrafficEdge = edge.type === 'exposes' && isRolloutTrafficEdgeLabel(edge.label)
+    // Exposes: detected via the fixed label vocabulary (Canary/Stable/Active/
+    // Preview) set server-side on Service->Rollout edges. Manages: the SAME
+    // path continued down through Rollout->ReplicaSet and ReplicaSet/Rollout->
+    // Pod ownership edges, detected via the target node's own trafficRole
+    // (also set server-side) rather than a label, since an ownership edge
+    // carries no label today and doesn't need one just for this.
+    const isRolloutTrafficEdge =
+      (edge.type === 'exposes' && isRolloutTrafficEdgeLabel(edge.label)) ||
+      (edge.type === 'manages' && nodeTrafficRoleById.has(edge.target))
     // A reachability edge never animates (a dashed "blocked" must not look like flow).
     // Rollout canary/stable/active/preview edges animate regardless of view mode —
     // they only exist in the resources-view topology, so gating on isTrafficView
@@ -788,7 +812,8 @@ export function TopologyGraph({
           nodeToGroup,
           nodesWithHandlers.length,
           groupLevels,
-          smartDefaultActive
+          smartDefaultActive,
+          workingNodes
         )
         setEdges(builtEdges)
       }
@@ -837,7 +862,7 @@ export function TopologyGraph({
       })
       return changed ? next : prev
     })
-    setEdges(prev => (prev.length === 0 ? prev : buildEdges(workingEdges, collapsedGroups, groupMapRef.current ?? new Map(), groupingMode, isTrafficView, undefined, prev.length, groupLevels, false)))
+    setEdges(prev => (prev.length === 0 ? prev : buildEdges(workingEdges, collapsedGroups, groupMapRef.current ?? new Map(), groupingMode, isTrafficView, undefined, prev.length, groupLevels, false, workingNodes)))
     // layoutEpoch is a dep so this re-applies AFTER any in-flight ELK layout lands -
     // a stale layout closure can't leave the canvas painted with pre-probe styles.
     // eslint-disable-next-line react-hooks/exhaustive-deps

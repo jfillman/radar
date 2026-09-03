@@ -2261,6 +2261,7 @@ function ArgoCDEditableField({
   onChangeInsecureTls: (value: boolean) => void
   onApplied?: (v: { url: string; insecureTls: boolean; tokenSet: boolean }) => void
 }) {
+  const queryClient = useQueryClient()
   const [state, setState] = useState<ArgoState>({ status: 'idle' })
   // Token editor three-way state: `touched` = user typed a value (replaces the
   // stored token); `cleared` = user hit Clear (send "" to wipe it); neither =
@@ -2306,6 +2307,17 @@ function ArgoCDEditableField({
         tokenSet: resultingTokenSet ?? effectiveTokenSet,
       })
       setState({ status: 'connected' })
+      // gitops-insights has no refetchInterval for a settled app (only polls
+      // while an operation is Running/Terminating), so a GitOps app view
+      // opened before this connect — or before an earlier probe finally
+      // landed — would otherwise keep showing capabilities.argoConfigured:
+      // false, and the resource-diff feature, indefinitely. Bug report: Argo
+      // CD showed connected in Settings but "Connect Argo CD for the full
+      // Git-rendered diff" never went away on an already-open app.
+      void queryClient.invalidateQueries({ queryKey: ['argocd-status'] })
+      void queryClient.invalidateQueries({
+        predicate: (query) => query.queryKey[0] === 'gitops-insights',
+      })
     } catch (err) {
       setState({ status: 'error', error: String(err) })
     }

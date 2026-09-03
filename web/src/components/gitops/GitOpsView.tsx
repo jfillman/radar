@@ -801,6 +801,7 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
                 onQueryChange={setGraphSearch}
                 filters={graphFilters}
                 showToolbar={false}
+                issues={insightsQ.data?.issues}
               />
             </div>
           </div>

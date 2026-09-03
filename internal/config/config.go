@@ -31,6 +31,17 @@ type Config struct {
 	HistoryLimit              int      `json:"historyLimit,omitempty"`
 	PrometheusURL             string   `json:"prometheusUrl,omitempty"`
 	OpenCostCurrency          string   `json:"opencostCurrency,omitempty"`
+	CostSource                string   `json:"costSource,omitempty"`
+	KubecostURL               string   `json:"kubecostUrl,omitempty"`
+	KubecostAPIKey            string   `json:"kubecostApiKey,omitempty"`
+	// KubecostAPIKeyContext binds a credential used with local auto-discovery to
+	// the kubeconfig context where it was configured. Explicit-URL credentials
+	// remain portable because their origin is stable across context switches.
+	KubecostAPIKeyContext string `json:"kubecostApiKeyContext,omitempty"`
+	KubecostClusterID     string `json:"kubecostClusterId,omitempty"`
+	// KubecostClusterIDContext prevents a cluster-specific central-Aggregator
+	// filter from silently following a local kubeconfig switch.
+	KubecostClusterIDContext string `json:"kubecostClusterIdContext,omitempty"`
 	// PrometheusHeaders are sent with every request to the Prometheus API.
 	// Required for auth-protected backends (Bearer tokens, X-Scope-OrgID, etc.).
 	// Stored in plain text in ~/.radar/config.json — protect the file accordingly.
@@ -84,7 +95,7 @@ var aiConsentVersions = map[string]string{
 	"claude:full-local":       "v1",
 	"codex:safeguarded":       "v1",
 	"codex:full-local":        "v1",
-	"cursor-agent:full-local": "v1",
+	"cursor-agent:full-local": "v2",
 }
 
 // AIConsentVersion returns the current disclosure version for a surface

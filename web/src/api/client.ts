@@ -55,8 +55,9 @@ import type {
   PodEnvironmentRevealResponse,
 } from '../types'
 import type { GitOpsOperationResponse } from '../types/gitops'
-import { getApiBase, getAuthHeaders, getCredentialsMode, getBasename, routePath, stripBasename } from './config'
+import { apiUrl, getApiBase, getAuthHeaders, getCredentialsMode, getBasename, routePath, stripBasename } from './config'
 import { apiVersionToGroup, pluralToKind } from '../utils/navigation'
+import type { DeploymentMode } from '../types'
 
 // Auto-refresh cadences (ms) — named constants for each polled hook's
 // refetchInterval below, so the poll rate reads clearly at each call site.
@@ -881,24 +882,36 @@ export interface OpenCostNamespaceCost {
 
 export type CostUnavailableReason =
   | "no_prometheus"
+  | "no_cost_source"
   | "no_metrics"
   | "query_error"
   | "access_denied"
-  | "not_found";
+  | "not_found"
+  | "source_unavailable"
+  | "authentication_error"
+  | "configuration_mismatch"
+  | "deployment_configuration_error"
+  | "history_unsupported"
+  | "insufficient_history";
+
+export type CostDataSource = "prometheus" | "kubecost";
 
 export interface OpenCostSummary {
   available: boolean;
   reason?: CostUnavailableReason;
+  source?: CostDataSource;
+  dataThrough?: string;
   currency?: string;
   window?: string;
   totalHourlyCost?: number;
   totalStorageCost?: number;
   totalIdleCost?: number;
   clusterEfficiency?: number;
+  namespaceScope?: string[];
   namespaces?: OpenCostNamespaceCost[];
 }
 
-const noPrometheusFirstSeenAt = new Map<string, number>();
+const costDiscoveryFirstSeenAt = new Map<string, number>();
 
 function costRefetchInterval(
   defaultInterval: number | false = COST_REFRESH_INTERVAL_MS,
@@ -914,15 +927,18 @@ function costRefetchInterval(
   }) => {
     const data = query.state.data;
     const queryID = `${contextName ?? "unknown"}:${query.queryHash ?? JSON.stringify(query.queryKey ?? "opencost")}`;
-    if (data?.available === false && data.reason === "no_prometheus") {
+    if (
+      data?.available === false &&
+      (data.reason === "no_prometheus" || data.reason === "no_cost_source")
+    ) {
       const now = Date.now();
-      const firstSeenAt = noPrometheusFirstSeenAt.get(queryID) ?? now;
-      noPrometheusFirstSeenAt.set(queryID, firstSeenAt);
+      const firstSeenAt = costDiscoveryFirstSeenAt.get(queryID) ?? now;
+      costDiscoveryFirstSeenAt.set(queryID, firstSeenAt);
       return now - firstSeenAt < COST_DISCOVERY_GRACE_MS
         ? COST_DISCOVERY_RETRY_INTERVAL_MS
         : defaultInterval;
     }
-    noPrometheusFirstSeenAt.delete(queryID);
+    costDiscoveryFirstSeenAt.delete(queryID);
     return defaultInterval;
   };
 }
@@ -962,6 +978,9 @@ export interface OpenCostWorkloadCost {
 export interface OpenCostWorkloadResponse {
   available: boolean;
   reason?: CostUnavailableReason;
+  source?: CostDataSource;
+  window?: string;
+  dataThrough?: string;
   currency?: string;
   namespace: string;
   workloads: OpenCostWorkloadCost[];
@@ -990,6 +1009,9 @@ export function useOpenCostWorkloads(
 export interface OpenCostWorkloadDetailResponse {
   available: boolean;
   reason?: CostUnavailableReason;
+  source?: CostDataSource;
+  window?: string;
+  dataThrough?: string;
   currency?: string;
   namespace: string;
   kind: string;
@@ -1035,8 +1057,12 @@ export interface OpenCostTrendSeries {
 export interface OpenCostTrendResponse {
   available: boolean;
   reason?: CostUnavailableReason;
+  source?: CostDataSource;
   currency?: string;
   range: string;
+  windowStart?: number;
+  windowEnd?: number;
+  dataThrough?: string;
   series?: OpenCostTrendSeries[];
 }
 
@@ -1057,6 +1083,7 @@ export function useOpenCostTrend(range_: CostTimeRange = "24h") {
 export interface OpenCostWorkloadTrendResponse {
   available: boolean;
   reason?: CostUnavailableReason;
+  source?: CostDataSource;
   currency?: string;
   namespace: string;
   kind: string;
@@ -1130,6 +1157,9 @@ export interface OpenCostApplicationWorkloadCost extends OpenCostApplicationWork
 export interface OpenCostApplicationCostResponse {
   available: boolean;
   reason?: CostUnavailableReason;
+  source?: CostDataSource;
+  window?: string;
+  dataThrough?: string;
   currency?: string;
   partial?: boolean;
   totals: OpenCostApplicationCostTotals;
@@ -1145,6 +1175,7 @@ export interface OpenCostApplicationCostTrendSeries extends OpenCostApplicationW
 export interface OpenCostApplicationCostTrendResponse {
   available: boolean;
   reason?: CostUnavailableReason;
+  source?: CostDataSource;
   currency?: string;
   range: string;
   partial?: boolean;
@@ -1237,6 +1268,8 @@ export interface OpenCostNodeCost {
 export interface OpenCostNodeResponse {
   available: boolean;
   reason?: CostUnavailableReason;
+  source?: CostDataSource;
+  dataThrough?: string;
   currency?: string;
   nodes?: OpenCostNodeCost[];
 }
@@ -1516,13 +1549,68 @@ export interface VersionInfo {
   error?: string;
 }
 
+const UPDATE_CHECK_STORAGE_KEY_PREFIX = 'radar-update-check';
+
+export function utcDay(now: Date): string {
+  return now.toISOString().slice(0, 10)
+}
+
+export function markDailyUpdateCheckAttempt(
+  storage: Pick<Storage, 'getItem' | 'setItem'>,
+  apiBase: string,
+  now: Date,
+): boolean {
+  const storageKey = `${UPDATE_CHECK_STORAGE_KEY_PREFIX}:${apiBase}`
+  const day = utcDay(now)
+  try {
+    if (storage.getItem(storageKey) === day) return false
+
+    storage.setItem(storageKey, day)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function markUpdateCheckAttempt(): boolean {
+  try {
+    return markDailyUpdateCheckAttempt(localStorage, getApiBase(), new Date())
+  } catch {
+    return false
+  }
+}
+
+export async function triggerDailyUpdateCheck(
+  deploymentMode: DeploymentMode | undefined,
+): Promise<void> {
+  if (deploymentMode !== 'in-cluster' || !markUpdateCheckAttempt()) return
+  await fetch(apiUrl('/version-check/browser'), {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    credentials: getCredentialsMode(),
+    keepalive: true,
+  })
+}
+
 export function useVersionCheck() {
-  return useQuery<VersionInfo>({
-    queryKey: ["version-check"],
-    queryFn: () => fetchJSON("/version-check"),
+  const capabilities = useCapabilities()
+  const apiBase = getApiBase()
+  const deploymentMode = capabilities.data
+    ? (capabilities.data.deployment?.mode ?? 'local')
+    : undefined
+
+  const query = useQuery<VersionInfo>({
+    queryKey: ["version-check", apiBase],
+    queryFn: () => fetchJSON('/version-check'),
     staleTime: 60 * 60 * 1000, // 1 hour
     retry: false, // Don't retry on failure
   });
+
+  useEffect(() => {
+    if (query.isSuccess) void triggerDailyUpdateCheck(deploymentMode).catch(() => {})
+  }, [apiBase, deploymentMode, query.isSuccess])
+
+  return query;
 }
 
 // ============================================================================
@@ -1847,6 +1935,12 @@ export interface CloudConnectSelf {
   deploymentName?: string
   chart?: string
   controller?: string
+  controllerRef?: {
+    group?: string
+    kind: string
+    namespace?: string
+    name: string
+  }
   wizardUrl?: string
 }
 

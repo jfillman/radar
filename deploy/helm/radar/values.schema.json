@@ -305,10 +305,39 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["", "auto", "prometheus", "kubecost"],
+          "description": "Cost source selection. Empty uses Auto; source controls remain editable only when source, kubecost.url, kubecost.clusterId, and kubecost.existingSecret are all empty."
+        },
         "currency": {
           "type": "string",
           "pattern": "^$|^[A-Za-z]{3}$",
           "description": "Optional ISO 4217 override for OpenCost/Kubecost values; empty auto-detects from a running cost tool, then uses USD."
+        },
+        "kubecost": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "pattern": "^$|^https?://[^?#]+$",
+              "description": "Kubecost 3 Aggregator base URL; empty auto-discovers tcp-api:9004 and, without an API key, can fall back to the same Service's tcp-api-rbac:9008 when 9004 requires SAML/OIDC."
+            },
+            "clusterId": {
+              "type": "string",
+              "description": "Cluster ID used to filter central/federated Aggregator results; empty detects CLUSTER_ID from a local FinOps Agent or Aggregator."
+            },
+            "existingSecret": {
+              "type": "string",
+              "description": "Name of a Secret holding an optional Kubecost service-account API key. A configured key is never bypassed through auto-discovered port 9008."
+            },
+            "existingSecretKey": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Key within existingSecret holding the API key sent as X-API-KEY."
+            }
+          }
         }
       }
     },

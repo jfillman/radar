@@ -828,7 +828,7 @@ They roll up under three categories, split by what you'd go and look at: `backup
 - Phase, backup method, duration, start/stop timestamps
 - Cluster reference with clickable link
 - Destination path and server name
-- Recovery target
+- Backup target
 - Failure detection (AlertBanner with error message)
 
 **ScheduledBackup Detail View:**
@@ -1027,8 +1027,8 @@ Deferred to a future "full Crossplane" pass:
 ### What Radar Shows
 
 **Policy / ClusterPolicy Detail View:**
-- Failure action badge (Enforce in red, Audit in yellow)
-- Configuration: background scanning, webhook timeout, failure policy, schema validation
+- Enforcement badge: what the policy does at admission, not just what `validationFailureAction` reads. Enforce in red, Audit in yellow, and **Background only** (or **Inactive**, when background scanning is off too) in orange for a policy that declares Enforce but is kept out of the admission webhook by `spec.admission: false`
+- Configuration: admission and background scanning, webhook timeout, failure policy, schema validation
 - Rule type summary (validate/mutate/generate/verifyImages counts)
 - Individual rules with type badges and match/exclude indicators
 - Auto-generated rules list
@@ -1040,7 +1040,7 @@ Deferred to a future "full Crossplane" pass:
 - Expandable details: message, category, source, affected resources
 - Problem detection (AlertBanner for failures or errors)
 
-**Resource Browser:** Smart columns show status (colored by worst outcome), failure action, rule counts, and pass/fail/warn/error/skip breakdowns.
+**Resource Browser:** Smart columns show status (colored by worst outcome), enforcement at admission, rule counts, and pass/fail/warn/error/skip breakdowns.
 
 ### The per-policy resource view
 
@@ -1185,15 +1185,52 @@ PolicyReport findings are policy posture, not live operational failure, so they 
 | Certificate | `networking.internal.knative.dev/v1alpha1` | — | Yes | — |
 | ServerlessService | `networking.internal.knative.dev/v1alpha1` | — | Yes | — |
 
-## OpenCost
+## OpenCost and Kubecost
 
 [OpenCost](https://www.opencost.io/) is a CNCF tool for Kubernetes cost monitoring, exposing cloud provider pricing and workload resource allocation as Prometheus metrics.
 
-Radar discovers if OpenCost metrics are available in the already-discovered Prometheus. If OpenCost is installed and scraping into Prometheus, cost data appears automatically. The integration is passive and read-only.
+Radar supports two read-only cost paths. Auto mode keeps OpenCost-compatible metrics from the
+already-discovered Prometheus when representative cost data is usable; when those metrics are
+absent, it tries the current allocation and asset APIs of a Kubecost 3 Aggregator. Source selection
+can also be pinned to `prometheus` or `kubecost` in Settings → Cost, `config.json`, or Helm. When
+Auto positively finds neither source, Radar reports that state and retries discovery; it does not
+label an absent Prometheus source as active. Settings tests Auto and Kubecost before saving, while an
+explicit Prometheus selection remains a saveable preference for installations being configured in
+stages.
 
-OpenCost's Prometheus metrics contain numeric values but no currency metadata. When Radar auto-discovers Prometheus in the connected cluster, it looks for `currencyCode` in the pricing ConfigMap referenced by an active OpenCost or Kubecost workload, or a literal `DISPLAY_CURRENCY` on an active Kubecost Deployment or StatefulSet. `DISPLAY_CURRENCY` takes precedence over ConfigMap evidence; conflicting or indirect values are treated as ambiguous. If the evidence is unavailable or ambiguous, Radar uses USD. Radar skips cluster inference for a manually configured Prometheus URL because it may serve another cluster. Override the label in Settings → Cost or `opencostCurrency` (CLI: `--opencost-currency`; Helm: `cost.currency`). CLI and Helm overrides remain authoritative while Radar runs and after restart. Radar labels the values but does not convert them.
+For Kubecost, Radar auto-discovers only an active Aggregator StatefulSet and its matching Service.
+It tries the official named `tcp-api` port 9004 first. When that port rejects unauthenticated access
+and no API key is configured, Radar falls back only to the same Service's exact `tcp-api-rbac` port
+9008, which Kubecost exposes for internal clients when SAML or OIDC is enabled. An explicitly
+configured key is never bypassed this way: a rejected key remains an authentication error.
+In-cluster Radar connects through Service DNS; local Radar uses a scoped port-forward to the selected
+port. An explicit URL is required for federated agent-only clusters, which have a FinOps Agent but no
+local Aggregator. A Service exposing only port 9008 is not auto-discovered; configure that endpoint
+explicitly. Radar accepts either a root API URL or one ending in `/model`, can send an optional
+service-account key as `X-API-KEY`, and requires an exact cluster ID
+to filter a central Aggregator. It detects one literal `CLUSTER_ID` from an active FinOps Agent or
+Aggregator; indirect, missing, or conflicting values require an override. Radar binds a cluster-ID
+override saved in Settings to the active kubeconfig context. It also binds a saved API key when the
+URL is blank and Radar auto-discovers a local Aggregator. Both fail closed after a context switch
+until the cluster-specific value is cleared or updated; an explicit central Aggregator URL and its
+key may still be shared.
 
-Kubecost Enterprise 3.x agent-only federated clusters do not have the Aggregator workload or its Prometheus cost metrics in the connected cluster. Those clusters need an explicit currency override, and their cost data is outside this Prometheus-backed integration.
+OpenCost-compatible Prometheus data powers current cost and historical charts. Kubecost REST powers
+the current namespace summary, workload/application compute allocation, node costs, and the cluster
+namespace trend from the allocation history retained by its Aggregator. Workload and application
+history remain unavailable for Kubecost. Radar never mixes current data from one source with history
+from another.
+
+Cost values contain no reliable per-response currency metadata. When the selected source is tied to
+the connected cluster, Radar looks for `currencyCode` in the pricing ConfigMap referenced by an
+active OpenCost/Kubecost workload, or literal `DISPLAY_CURRENCY` on an active Kubecost Deployment or
+StatefulSet. `DISPLAY_CURRENCY` takes precedence; conflicting or indirect values are treated as
+ambiguous. A manually configured Prometheus URL skips cluster inference because it may serve another
+cluster, while a selected Kubecost source still uses its connected-cluster workload evidence. If
+evidence is unavailable, Radar uses USD. Override the label in Settings → Cost or
+`opencostCurrency` (CLI: `--opencost-currency`; Helm: `cost.currency`). Radar labels values but does
+not convert them. The Settings currency preference saves independently of the live source action,
+so changing its label never requires the source probe to succeed.
 
 ### What Radar Shows
 
@@ -1204,16 +1241,23 @@ Kubecost Enterprise 3.x agent-only federated clusters do not have the Aggregator
 **Cost Insights View (`/cost`):**
 - Header: cluster hourly/monthly cost, efficiency %, idle cost projection
 - Resource cost split bar: CPU / Memory / Storage percentage breakdown
-- Cost trend chart with 6h/24h/7d range selector and per-namespace hover tooltips
+- Cost trend chart with 6h/24h/7d range selector and per-namespace hover tooltips for OpenCost or retained Kubecost allocation history
 - Namespace breakdown table (sortable by cost, efficiency, CPU/memory split) — click any row to expand per-workload costs on demand
 - Node costs table: instance type, region, and hourly/monthly pricing per machine
 - Efficiency color coding: green (50%+), amber (25–50%), red (below 25%)
 
 ### Prerequisites
 
-1. OpenCost (or Kubecost) deployed in your cluster, with its metrics being scraped by Prometheus
+One of:
 
-OpenCost cost data is not CRD-based — no custom resources are required. Cost views appear automatically when metrics are detected; they are hidden when no OpenCost metrics are found in Prometheus.
+1. OpenCost-compatible cost metrics scraped into Prometheus; or
+2. A Kubecost 3 Aggregator in the connected cluster; or
+3. An explicit central Kubecost Aggregator URL and cluster ID for a federated agent-only cluster.
+
+Cost data is not CRD-based — no custom resources are required. Cost views appear when either path
+returns usable current allocation data. Configure declarative Kubecost access with
+`cost.source`, `cost.kubecost.url`, `cost.kubecost.clusterId`, and an optional Secret in the Helm
+chart.
 
 ---
 
@@ -1373,6 +1417,39 @@ This is resource reconnaissance, not GPU accounting or end-to-end workload diagn
 | ResourceFlavor | `kueue.x-k8s.io` | — |
 | AdmissionCheck | `kueue.x-k8s.io` | `Active` condition |
 | ProvisioningRequest | `autoscaling.x-k8s.io` (v1, v1beta1) | Provisioned / Failed / CapacityRevoked / BookingExpired conditions |
+
+For an exact `kueue.x-k8s.io/v1beta2` Workload, the REST AI resource endpoint
+and MCP `get_resource` also project a bounded admission summary into
+`resourceContext.scheduling.observations`. The first adapter emits one Kueue
+`admission` observation: a controller-neutral `satisfied`, `unsatisfied`,
+`held`, or `unknown` decision; the most useful native condition; LocalQueue and
+ClusterQueue facts with submission/entitlement roles; AdmissionCheck and
+preemption-gate evidence; and affirmative disruption conditions from the
+current snapshot. Resource names remain useful facts when RBAC withholds an
+optional navigation reference.
+
+`held` requires evidence of an explicit pause: `spec.active=false`, an `OnHold`
+condition, or `AdmissionGated` together with the current non-empty
+`kueue.x-k8s.io/admission-gated-by` annotation. The overloaded
+preemption-gated `AdmissionGated` reason remains `unsatisfied`, as does
+`Suspended` by itself: Kueue uses that reason for an inactive ClusterQueue,
+which may reflect broken dependencies rather than an intentional stop policy.
+
+Typed Kueue detail retains the controller's `pending` / `quota_reserved` /
+`admitted` / `finished` phase, PodsReady and replacement-Pod evidence,
+per-PodSet resource-to-ResourceFlavor assignments and usage, requeue state,
+and an exact concurrent-admission Parent reference for a Variant. Each
+observation carries the Workload's `subjectGeneration`, and projected
+conditions retain `observedGeneration`, so consumers can detect stale
+controller evidence. The compact projection keeps the first eight PodSets in
+name order and up to seven resource assignments per PodSet, prioritizing
+extended resources before core resources; explicit truncation flags point
+consumers back to the returned raw Workload for the complete status. Normal
+unsatisfied admission is scheduling context rather than an operational Issue.
+Radar does not infer feature-gate state, queue position, fairness math, Pod
+placement, or physical capacity. This is a bounded projection of the returned
+Workload's current status, not condition history, queue-wide observation
+coverage, or support for other Kueue API versions.
 
 ### KubeRay
 

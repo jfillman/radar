@@ -97,7 +97,6 @@ type Server struct {
 	newExecutor     func(*rest.Config, *url.URL) (remotecommand.Executor, error)
 	cloudConnectCfg CloudConnectConfig
 	cloudInstall    *cloudInstallManager
-
 	// nsPreferences holds each user's active-namespace pick from the in-app
 	// switcher. Key shape: "<username>\x00<contextName>" when auth is enabled,
 	// "\x00<contextName>" when auth is disabled. Cleared on context switch
@@ -411,6 +410,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 	// Middleware (applied to all routes)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(s.protectUnauthenticatedLoopback)
 	// Note: Timeout middleware is applied per-group below to exempt streaming endpoints
 
 	// gzip response compression (content-type aware: JSON yes, SSE/WS no).
@@ -517,6 +517,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Get("/diagnostics", s.handleDiagnostics)
 			r.Get("/auth/me", s.handleAuthMe)
 			r.Get("/version-check", s.handleVersionCheck)
+			r.Post("/version-check/browser", s.handleVersionCheckBrowser)
 			r.Get("/dashboard", s.handleDashboard)
 			r.Get("/vitals", s.handleVitals)
 			r.Get("/dashboard/crds", s.handleDashboardCRDs)
@@ -728,7 +729,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Post("/opencost/application/trend", s.handleOpenCostApplicationTrend)
 			r.Get("/opencost/workload/{kind}/{namespace}/{name}", s.handleOpenCostWorkload)
 			r.Get("/opencost/workload/{kind}/{namespace}/{name}/trend", s.handleOpenCostWorkloadTrend)
-			opencost.RegisterRoutes(r, s.resolvedOpenCostCurrency)
+			opencost.RegisterRoutes(r, s.resolvedOpenCostCurrency, s.openCostRouteScope())
 
 			// FluxCD routes
 			r.Post("/flux/{kind}/{namespace}/{name}/reconcile", s.handleFluxReconcile)
@@ -817,6 +818,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Get("/config", s.handleGetConfig)
 			r.Put("/config", s.handlePutConfig)
 			r.Put("/integrations/prometheus", s.handleApplyPrometheusURL)
+			r.Put("/integrations/cost", s.handleApplyCostSource)
 			r.Put("/integrations/argocd", s.handleApplyArgoCDConfig)
 			r.Get("/integrations/argocd/status", s.handleArgoCDStatus)
 
@@ -878,6 +880,27 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 	} else if s.devMode {
 		// In dev mode, serve from web/dist
 		r.Handle("/*", frontendHandler(http.Dir("web/dist"), s.basePath))
+	}
+}
+
+func (s *Server) openCostRouteScope() opencost.RouteScope {
+	return opencost.RouteScope{
+		AllowedNamespaces: func(req *http.Request, requested []string) []string {
+			if requested != nil {
+				if k8s.ForceNamespaceScope {
+					target := k8s.GetNamespaceScopeTarget()
+					if target == "" || !slices.Contains(requested, target) {
+						return []string{}
+					}
+					requested = []string{target}
+				}
+				return s.getUserNamespaces(req, requested)
+			}
+			return s.parseNamespacesForUser(req)
+		},
+		CanReadNodes: func(req *http.Request) bool {
+			return s.canRead(req, "", "nodes", "", "list")
+		},
 	}
 }
 
@@ -1228,8 +1251,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVersionCheck(w http.ResponseWriter, r *http.Request) {
-	info := version.CheckForUpdate(r.Context())
-	s.writeJSON(w, info)
+	if deploymentMode() == k8s.DeploymentModeCloud {
+		s.writeJSON(w, version.CheckForUpdateRelease(r.Context()))
+		return
+	}
+	s.writeJSON(w, version.CheckForUpdate(r.Context()))
 }
 
 func (s *Server) handleClusterInfo(w http.ResponseWriter, r *http.Request) {
@@ -1255,6 +1281,8 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	responseCaps := *caps
+	caps = &responseCaps
 
 	caps.MCPEnabled = s.mcpHandler != nil
 	caps.Deployment = k8s.DeploymentInfo{Mode: deploymentMode()}
@@ -1265,6 +1293,8 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		WorkloadImages: true,
 	}
 	caps.AuthEnabled = s.authConfig.Enabled()
+	status, _ := s.localTerminalUnavailable(r)
+	caps.LocalTerminal = status == 0
 	if user := auth.UserFromContext(r.Context()); user != nil {
 		caps.Username = user.Username
 	}
@@ -5221,7 +5251,10 @@ type configResponse struct {
 	// can show what's set without ever receiving the (secret) values.
 	PrometheusHeaderKeys []string `json:"prometheusHeaderKeys,omitempty"`
 	// ArgoCDTokenSet tells the UI a token is configured without exposing it.
-	ArgoCDTokenSet bool `json:"argoCdTokenSet,omitempty"`
+	ArgoCDTokenSet     bool   `json:"argoCdTokenSet,omitempty"`
+	KubecostAPIKeySet  bool   `json:"kubecostApiKeySet,omitempty"`
+	KubecostEnvManaged bool   `json:"kubecostEnvManaged,omitempty"`
+	KubecostEnvError   string `json:"kubecostEnvError,omitempty"`
 	// ArgoCDEnvManaged marks the integration as provisioned from the environment
 	// (RADAR_ARGOCD_TOKEN / _TOKEN_FILE) — the UI renders it read-only, since the
 	// PUT handler refuses changes to a declaratively-configured integration.
@@ -5251,6 +5284,22 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(headerKeys)
 	file.PrometheusHeaders = nil
+	kubecostAPIKeySet := file.KubecostAPIKey != ""
+	file.KubecostAPIKey = ""
+	kubecostEnvManaged := opencost.IsEnvManaged()
+	kubecostEnvError := opencost.EnvManagedError()
+	if kubecostEnvManaged {
+		effectiveCost := opencost.ConfigSnapshot()
+		file.CostSource = string(effectiveCost.Source)
+		file.KubecostURL = effectiveCost.URL
+		file.KubecostClusterID = effectiveCost.ClusterID
+		file.KubecostAPIKeyContext = effectiveCost.APIKeyContext
+		file.KubecostClusterIDContext = effectiveCost.ClusterIDContext
+		kubecostAPIKeySet = effectiveCost.APIKey != ""
+		if kubecostEnvError != "" {
+			kubecostAPIKeySet = false
+		}
+	}
 	tokenSet := file.ArgoCDToken != ""
 	file.ArgoCDToken = ""
 	// When the integration is environment-managed, the on-disk URL/TLS are ignored;
@@ -5279,6 +5328,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		OpenCostManaged:      s.currencyManaged,
 		PrometheusHeaderKeys: headerKeys,
 		ArgoCDTokenSet:       tokenSet,
+		KubecostAPIKeySet:    kubecostAPIKeySet,
+		KubecostEnvManaged:   kubecostEnvManaged,
+		KubecostEnvError:     kubecostEnvError,
 		ArgoCDEnvManaged:     envManaged,
 		ArgoCDEnvError:       envError,
 	}
@@ -5289,7 +5341,14 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.effectiveConfig != nil {
 		effective := *s.effectiveConfig
+		effectiveCost := opencost.ConfigSnapshot()
+		effective.CostSource = string(effectiveCost.Source)
+		effective.KubecostURL = effectiveCost.URL
+		effective.KubecostClusterID = effectiveCost.ClusterID
+		effective.KubecostAPIKeyContext = effectiveCost.APIKeyContext
+		effective.KubecostClusterIDContext = effectiveCost.ClusterIDContext
 		effective.PrometheusHeaders = nil
+		effective.KubecostAPIKey = ""
 		effective.ArgoCDToken = ""
 		resp.Effective = effective
 	}
@@ -5299,9 +5358,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 // handlePutConfig replaces the entire config file. Most changes take effect on next restart;
 // the OpenCost currency override is also applied unless an explicit startup flag owns it.
 // Unlike handlePutSettings (which merges fields), this is a full replacement.
-// PrometheusHeaders and the Argo CD token are preserved from the on-disk file: the GET
-// response redacts them, so a UI round-trip would otherwise silently wipe the user's
-// credentials.
+// Live integration fields are preserved from the on-disk file: their dedicated endpoints
+// apply them, and GET redacts their credentials, so a UI round-trip must not replace them.
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCloudRole(w, r, auth.RoleOwner, "modify Radar configuration") {
 		return
@@ -5324,23 +5382,35 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		// never disturb a live integration — even if it races an in-flight
 		// Apply/Connect or echoes back the redacted token as empty.
 		preserved := struct {
-			promHeaders      map[string]string
-			promHeadersEnv   map[string]string
-			promURL          string
-			argoURL          string
-			argoToken        string
-			argoInsecure     bool
-			argoTokenContext string
-			argoTokenBinding string
+			promHeaders              map[string]string
+			promHeadersEnv           map[string]string
+			promURL                  string
+			argoURL                  string
+			argoToken                string
+			argoInsecure             bool
+			argoTokenContext         string
+			argoTokenBinding         string
+			costSource               string
+			kubecostURL              string
+			kubecostAPIKey           string
+			kubecostAPIKeyContext    string
+			kubecostClusterID        string
+			kubecostClusterIDContext string
 		}{
-			promHeaders:      c.PrometheusHeaders,
-			promHeadersEnv:   c.PrometheusHeadersFromEnv,
-			promURL:          c.PrometheusURL,
-			argoURL:          c.ArgoCDURL,
-			argoToken:        c.ArgoCDToken,
-			argoInsecure:     c.ArgoCDInsecureTLS,
-			argoTokenContext: c.ArgoCDTokenContext,
-			argoTokenBinding: c.ArgoCDTokenBinding,
+			promHeaders:              c.PrometheusHeaders,
+			promHeadersEnv:           c.PrometheusHeadersFromEnv,
+			promURL:                  c.PrometheusURL,
+			argoURL:                  c.ArgoCDURL,
+			argoToken:                c.ArgoCDToken,
+			argoInsecure:             c.ArgoCDInsecureTLS,
+			argoTokenContext:         c.ArgoCDTokenContext,
+			argoTokenBinding:         c.ArgoCDTokenBinding,
+			costSource:               c.CostSource,
+			kubecostURL:              c.KubecostURL,
+			kubecostAPIKey:           c.KubecostAPIKey,
+			kubecostAPIKeyContext:    c.KubecostAPIKeyContext,
+			kubecostClusterID:        c.KubecostClusterID,
+			kubecostClusterIDContext: c.KubecostClusterIDContext,
 		}
 		*c = updated
 		c.PrometheusHeaders = preserved.promHeaders
@@ -5351,6 +5421,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		c.ArgoCDInsecureTLS = preserved.argoInsecure
 		c.ArgoCDTokenContext = preserved.argoTokenContext
 		c.ArgoCDTokenBinding = preserved.argoTokenBinding
+		c.CostSource = preserved.costSource
+		c.KubecostURL = preserved.kubecostURL
+		c.KubecostAPIKey = preserved.kubecostAPIKey
+		c.KubecostAPIKeyContext = preserved.kubecostAPIKeyContext
+		c.KubecostClusterID = preserved.kubecostClusterID
+		c.KubecostClusterIDContext = preserved.kubecostClusterIDContext
 	})
 	if err != nil {
 		log.Printf("[config] Failed to save config: %v", err)
@@ -5362,6 +5438,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	result.PrometheusHeaders = nil
 	result.ArgoCDToken = ""
+	result.KubecostAPIKey = ""
 	s.writeJSON(w, result)
 }
 

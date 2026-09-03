@@ -61,6 +61,7 @@ type Options struct {
 	// Pre-computed summaries — pass-through into the response.
 	IssueSummary  *IssueSummary
 	AuditSummary  *AuditSummary
+	Scheduling    *SchedulingSummary
 	PolicyReports PolicyReportLookup // nil = Kyverno not installed / no findings
 	AppReferences *AppReferences
 	// Attached only after the evidence Job and Pod pass the access gate.
@@ -317,6 +318,7 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 	}
 	rc.HPASummary = buildHPASummary(obj)
 	rc.StatusSummary = buildStatusSummary(obj)
+	rc.Scheduling = filterSchedulingSummary(ctx, opts.Scheduling, opts.AccessChecker, omitted)
 
 	// 4. Pre-computed summaries — pass-through.
 	rc.IssueSummary = opts.IssueSummary
@@ -1318,6 +1320,9 @@ func buildStatusSummary(obj runtime.Object) *StatusSummary {
 				Message:            truncateRunes(stringField(cond, "message"), 300),
 				LastTransitionTime: stringField(cond, "lastTransitionTime"),
 			}
+			if observedGeneration, ok, _ := unstructured.NestedInt64(cond, "observedGeneration"); ok {
+				summary.ObservedGeneration = observedGeneration
+			}
 			if summary.Type == "" && summary.Status == "" {
 				continue
 			}
@@ -1473,6 +1478,137 @@ func filterRefs(ctx context.Context, ac RefAccessChecker, refs []ContextRef, fie
 		return nil
 	}
 	return out
+}
+
+func filterSchedulingSummary(ctx context.Context, summary *SchedulingSummary, ac RefAccessChecker, omitted *omittedTracker) *SchedulingSummary {
+	if summary == nil || len(summary.Observations) == 0 {
+		return nil
+	}
+	out := &SchedulingSummary{Observations: make([]SchedulingObservation, 0, len(summary.Observations))}
+	for i := range summary.Observations {
+		observation := summary.Observations[i]
+		if !checkRef(ctx, ac, &observation.Subject) {
+			omitted.add("scheduling.observations.subject", OmittedRBACDenied)
+			continue
+		}
+		filtered := observation
+		if observation.PrimaryCondition != nil {
+			condition := *observation.PrimaryCondition
+			filtered.PrimaryCondition = &condition
+		}
+		filtered.Disruptions = append([]ConditionSummary(nil), observation.Disruptions...)
+
+		filtered.Queues = nil
+		for _, queue := range observation.Queues {
+			filteredQueue := queue
+			filteredQueue.Roles = append([]SchedulingQueueRole(nil), queue.Roles...)
+			filteredQueue.Ref = nil
+			if queue.Ref != nil {
+				ref := *queue.Ref
+				if checkRef(ctx, ac, &ref) {
+					filteredQueue.Ref = &ref
+				} else {
+					omitted.add("scheduling.observations.queues.ref", OmittedRBACDenied)
+				}
+			}
+			filtered.Queues = append(filtered.Queues, filteredQueue)
+		}
+
+		filtered.Gates = nil
+		for _, gate := range observation.Gates {
+			filteredGate := gate
+			filteredGate.Ref = nil
+			if gate.Ref != nil {
+				ref := *gate.Ref
+				if checkRef(ctx, ac, &ref) {
+					filteredGate.Ref = &ref
+				} else {
+					omitted.add("scheduling.observations.gates.ref", OmittedRBACDenied)
+				}
+			}
+			if gate.RequeueAfterSeconds != nil {
+				requeueAfter := *gate.RequeueAfterSeconds
+				filteredGate.RequeueAfterSeconds = &requeueAfter
+			}
+			if gate.RetryCount != nil {
+				retryCount := *gate.RetryCount
+				filteredGate.RetryCount = &retryCount
+			}
+			filtered.Gates = append(filtered.Gates, filteredGate)
+		}
+
+		filtered.Kueue = filterKueueScheduling(ctx, observation.Kueue, ac, omitted)
+		out.Observations = append(out.Observations, filtered)
+	}
+	if len(out.Observations) == 0 {
+		return nil
+	}
+	return out
+}
+
+func filterKueueScheduling(ctx context.Context, scheduling *KueueScheduling, ac RefAccessChecker, omitted *omittedTracker) *KueueScheduling {
+	if scheduling == nil {
+		return nil
+	}
+	out := *scheduling
+	if scheduling.Active != nil {
+		active := *scheduling.Active
+		out.Active = &active
+	}
+	if scheduling.PodsReady != nil {
+		condition := *scheduling.PodsReady
+		out.PodsReady = &condition
+	}
+	if scheduling.WaitingForReplacementPods != nil {
+		condition := *scheduling.WaitingForReplacementPods
+		out.WaitingForReplacementPods = &condition
+	}
+	if scheduling.RequeueState != nil {
+		requeue := *scheduling.RequeueState
+		if scheduling.RequeueState.Count != nil {
+			count := *scheduling.RequeueState.Count
+			requeue.Count = &count
+		}
+		out.RequeueState = &requeue
+	}
+	if scheduling.ConcurrentAdmission != nil {
+		concurrent := *scheduling.ConcurrentAdmission
+		concurrent.ParentRef = nil
+		if scheduling.ConcurrentAdmission.ParentRef != nil {
+			parent := *scheduling.ConcurrentAdmission.ParentRef
+			if checkRef(ctx, ac, &parent) {
+				concurrent.ParentRef = &parent
+			} else {
+				omitted.add("scheduling.observations.kueue.concurrentAdmission.parentRef", OmittedRBACDenied)
+			}
+		}
+		out.ConcurrentAdmission = &concurrent
+	}
+
+	out.PodSetAssignments = nil
+	for _, assignment := range scheduling.PodSetAssignments {
+		filteredAssignment := assignment
+		if assignment.Count != nil {
+			count := *assignment.Count
+			filteredAssignment.Count = &count
+		}
+		filteredAssignment.Resources = nil
+		for _, resource := range assignment.Resources {
+			filteredResource := resource
+			filteredResource.FlavorRef = nil
+			if resource.FlavorRef != nil {
+				flavor := *resource.FlavorRef
+				if checkRef(ctx, ac, &flavor) {
+					filteredResource.FlavorRef = &flavor
+				} else {
+					omitted.add("scheduling.observations.kueue.podSetAssignments.resources.flavorRef", OmittedRBACDenied)
+				}
+			}
+			filteredAssignment.Resources = append(filteredAssignment.Resources, filteredResource)
+		}
+		out.PodSetAssignments = append(out.PodSetAssignments, filteredAssignment)
+	}
+	return &out
 }
 
 func filterAppReferences(ctx context.Context, refs *AppReferences, ac RefAccessChecker, omitted *omittedTracker) *AppReferences {

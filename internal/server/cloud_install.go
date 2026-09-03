@@ -33,7 +33,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -968,14 +967,10 @@ func sameOriginOK(r *http.Request) bool {
 	if err != nil || u.Host == "" {
 		return false
 	}
-	if u.Host == r.Host {
+	if strings.EqualFold(u.Host, r.Host) {
 		return true
 	}
-	requestHost := r.Host
-	if h, _, splitErr := net.SplitHostPort(requestHost); splitErr == nil {
-		requestHost = h
-	}
-	return cloud.IsLoopbackHostname(u.Hostname()) && cloud.IsLoopbackHostname(requestHost)
+	return browserLoopbackHostname(u.Hostname()) && requestHostIsLoopback(r)
 }
 
 // redactCloudToken removes a cluster token that an upstream error may have

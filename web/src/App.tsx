@@ -2058,6 +2058,8 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
             topology={topology}
             fallbackClusterLoadState={showHomeClusterLoadFallback ? clusterLoadState : undefined}
             onNavigateToView={setMainView}
+            onNavigateToHelmRelease={navCustomization.embedded ? undefined : navigateToHelmRelease}
+            onNavigateToManagerPath={navCustomization.embedded || takeover.gitops ? undefined : (path) => navigate(path)}
             // Upgrade impact lives under /checks, which a Cloud host takes
             // over wholesale — its fleet pages have no upgrade sub-route, so
             // the version line stays plain text there.
@@ -2555,6 +2557,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         open={showSettings}
         initialSection={settingsSection}
         onClose={() => setShowSettings(false)}
+        onNavigateToResource={navigateToResourceList}
       />
 
       {/* Debug overlay — dev mode, standalone only. Embedded hosts (Radar Hub)

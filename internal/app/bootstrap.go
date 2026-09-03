@@ -20,6 +20,7 @@ import (
 	"github.com/skyhook-io/radar/internal/helm"
 	"github.com/skyhook-io/radar/internal/k8s"
 	mcppkg "github.com/skyhook-io/radar/internal/mcp"
+	internalopencost "github.com/skyhook-io/radar/internal/opencost"
 	prometheuspkg "github.com/skyhook-io/radar/internal/prometheus"
 	"github.com/skyhook-io/radar/internal/server"
 	"github.com/skyhook-io/radar/internal/settings"
@@ -65,6 +66,12 @@ type AppConfig struct {
 	PrometheusURL             string
 	OpenCostCurrency          string
 	OpenCostFlagSet           bool
+	CostSource                string
+	KubecostURL               string
+	KubecostAPIKey            string
+	KubecostAPIKeyContext     string
+	KubecostClusterID         string
+	KubecostClusterIDContext  string
 	PrometheusHeaders         map[string]string
 	PrometheusHeadersFromEnv  map[string]string
 	BeylaJobSelector          string
@@ -258,6 +265,17 @@ func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) {
 		traffic.SetMetricsHeaders(cfg.PrometheusHeaders)
 		prometheuspkg.SetHeaders(cfg.PrometheusHeaders)
 	}
+	cfg = persistKubecostContextBindings(cfg)
+	if err := internalopencost.ConfigureStartup(internalopencost.ManagerConfig{
+		Source:           internalopencost.Source(cfg.CostSource),
+		URL:              cfg.KubecostURL,
+		APIKey:           cfg.KubecostAPIKey,
+		APIKeyContext:    cfg.KubecostAPIKeyContext,
+		ClusterID:        cfg.KubecostClusterID,
+		ClusterIDContext: cfg.KubecostClusterIDContext,
+	}); err != nil {
+		log.Printf("[opencost] Invalid cost source configuration: %v", err)
+	}
 	if cfg.BeylaJobSelector != "" {
 		traffic.SetBeylaJobSelector(cfg.BeylaJobSelector)
 	}
@@ -273,11 +291,61 @@ func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) {
 		prometheuspkg.Reinitialize(k8s.GetClient(), k8s.GetConfig(), k8s.GetContextName())
 		return nil
 	})
+	k8s.RegisterCostResetFunc(internalopencost.Reset)
+}
+
+func persistKubecostContextBindings(cfg AppConfig) AppConfig {
+	contextName := strings.TrimSpace(k8s.GetContextName())
+	if contextName == "" {
+		return cfg
+	}
+	stored := config.Load()
+	bindAPIKey := strings.TrimSpace(cfg.KubecostURL) == "" && cfg.KubecostAPIKey != "" && strings.TrimSpace(cfg.KubecostAPIKeyContext) == "" &&
+		strings.TrimSpace(stored.KubecostURL) == "" && stored.KubecostAPIKey == cfg.KubecostAPIKey && strings.TrimSpace(stored.KubecostAPIKeyContext) == ""
+	bindClusterID := strings.TrimSpace(cfg.KubecostClusterID) != "" && strings.TrimSpace(cfg.KubecostClusterIDContext) == "" &&
+		stored.KubecostClusterID == cfg.KubecostClusterID && strings.TrimSpace(stored.KubecostClusterIDContext) == ""
+	if !bindAPIKey && !bindClusterID {
+		return cfg
+	}
+	updated, err := config.Update(func(c *config.Config) {
+		if bindAPIKey && strings.TrimSpace(c.KubecostURL) == "" && c.KubecostAPIKey == cfg.KubecostAPIKey && strings.TrimSpace(c.KubecostAPIKeyContext) == "" {
+			c.KubecostAPIKeyContext = contextName
+		}
+		if bindClusterID && c.KubecostClusterID == cfg.KubecostClusterID && strings.TrimSpace(c.KubecostClusterIDContext) == "" {
+			c.KubecostClusterIDContext = contextName
+		}
+	})
+	if err != nil {
+		log.Printf("[opencost] Failed to persist Kubecost context binding: %v", err)
+		return cfg
+	}
+	if updated.KubecostAPIKey == cfg.KubecostAPIKey && strings.TrimSpace(updated.KubecostURL) == strings.TrimSpace(cfg.KubecostURL) {
+		cfg.KubecostAPIKeyContext = updated.KubecostAPIKeyContext
+	}
+	if updated.KubecostClusterID == cfg.KubecostClusterID {
+		cfg.KubecostClusterIDContext = updated.KubecostClusterIDContext
+	}
+	return cfg
 }
 
 // CreateServer creates the HTTP server with the given configuration.
 func CreateServer(cfg AppConfig) *server.Server {
 	restoreLastDesktopContext := remembersLastContext(cfg)
+	costSource := cfg.CostSource
+	kubecostURL := cfg.KubecostURL
+	kubecostAPIKey := cfg.KubecostAPIKey
+	kubecostAPIKeyContext := cfg.KubecostAPIKeyContext
+	kubecostClusterID := cfg.KubecostClusterID
+	kubecostClusterIDContext := cfg.KubecostClusterIDContext
+	if internalopencost.IsEnvManaged() {
+		costConfig := internalopencost.ConfigSnapshot()
+		costSource = string(costConfig.Source)
+		kubecostURL = costConfig.URL
+		kubecostAPIKey = costConfig.APIKey
+		kubecostAPIKeyContext = costConfig.APIKeyContext
+		kubecostClusterID = costConfig.ClusterID
+		kubecostClusterIDContext = costConfig.ClusterIDContext
+	}
 	effectiveCfg := &config.Config{
 		Kubeconfig:                cfg.Kubeconfig,
 		KubeconfigDirs:            cfg.KubeconfigDirs,
@@ -292,6 +360,12 @@ func CreateServer(cfg AppConfig) *server.Server {
 		HistoryLimit:              cfg.HistoryLimit,
 		PrometheusURL:             cfg.PrometheusURL,
 		OpenCostCurrency:          cfg.OpenCostCurrency,
+		CostSource:                costSource,
+		KubecostURL:               kubecostURL,
+		KubecostAPIKey:            kubecostAPIKey,
+		KubecostAPIKeyContext:     kubecostAPIKeyContext,
+		KubecostClusterID:         kubecostClusterID,
+		KubecostClusterIDContext:  kubecostClusterIDContext,
 		PrometheusHeaders:         cfg.PrometheusHeaders,
 		PrometheusHeadersFromEnv:  cfg.PrometheusHeadersFromEnv,
 		DebugImage:                cfg.DebugImage,

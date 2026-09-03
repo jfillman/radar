@@ -11,7 +11,6 @@ import (
 	neturl "net/url"
 	"os"
 	"os/signal"
-	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -39,10 +38,6 @@ import (
 var (
 	version = "dev"
 )
-
-// releaseVersionRe matches a published release version ("1.10.3", "v1.10.3").
-// Anything else - git-describe suffixes, "dev", "-dirty" - is a dev build.
-var releaseVersionRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
 
 func main() {
 	// Subcommand dispatch (before flag parsing — subcommands own their flags).
@@ -79,10 +74,10 @@ func main() {
 	// published image tag, so its version-matched default ImagePullBackOffs on
 	// every in-cluster test. Fall back to the latest published release instead -
 	// only for dev-shaped versions; a released binary keeps its exact match.
-	// CheckForUpdate is cached and cheap relative to the probe run it precedes.
-	if !releaseVersionRe.MatchString(version) {
+	// The release-only lookup is cached and cheap relative to the probe run it precedes.
+	if !versionpkg.IsReleaseVersion(version) {
 		reachability.LatestReleaseImage = func() string {
-			if u := versionpkg.CheckForUpdate(context.Background()); u != nil && u.LatestVersion != "" {
+			if u := versionpkg.CheckForUpdateRelease(context.Background()); u != nil && u.LatestVersion != "" {
 				return "ghcr.io/skyhook-io/radar:" + u.LatestVersion
 			}
 			return ""
@@ -117,7 +112,7 @@ func main() {
 	fakeInCluster := flag.Bool("fake-in-cluster", false, "Simulate in-cluster mode for testing (shows kubectl copy buttons instead of port-forward)")
 	disableHelmWrite := flag.Bool("disable-helm-write", false, "Simulate restricted Helm permissions (disables install/upgrade/rollback/uninstall)")
 	disableExec := flag.Bool("disable-exec", false, "Simulate restricted exec permissions (disables terminal, debug shell)")
-	disableLocalTerminal := flag.Bool("disable-local-terminal", false, "Disable local terminal feature")
+	disableLocalTerminal := flag.Bool("disable-local-terminal", false, "Disable the host local terminal")
 	podShellDefault := flag.String("pod-shell-default", "", "Override the default pod exec shell command (runs as 'sh -c <value>'; empty = built-in bash -il → ash → sh cascade)")
 	debugImage := flag.String("debug-image", fileCfg.DebugImage, "Image for ephemeral debug containers and node debug pods (empty = busybox:latest; point at a mirror for air-gapped/private-registry clusters)")
 	reachabilityImage := flag.String("reachability-image", fileCfg.ReachabilityImage, "Image for the in-cluster reachability probe Job (empty = RADAR_IMAGE env, then the version-matched published Radar image; point at a mirror for air-gapped clusters)")
@@ -365,6 +360,12 @@ func main() {
 		PrometheusURL:            *prometheusURL,
 		OpenCostCurrency:         normalizedOpenCostCurrency,
 		OpenCostFlagSet:          openCostCurrencyFlagSet,
+		CostSource:               fileCfg.CostSource,
+		KubecostURL:              fileCfg.KubecostURL,
+		KubecostAPIKey:           fileCfg.KubecostAPIKey,
+		KubecostAPIKeyContext:    fileCfg.KubecostAPIKeyContext,
+		KubecostClusterID:        fileCfg.KubecostClusterID,
+		KubecostClusterIDContext: fileCfg.KubecostClusterIDContext,
 		PrometheusHeaders:        resolvedPrometheusHeaders,
 		PrometheusHeadersFromEnv: promHeadersFromEnv.value(),
 		BeylaJobSelector:         *beylaJobSelector,

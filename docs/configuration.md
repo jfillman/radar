@@ -6,7 +6,13 @@ This document covers Radar's cluster connection behavior. For commands and flags
 
 Radar listens on `127.0.0.1:9280` by default, so an unauthenticated local
 instance is reachable only from the same network namespace. `localhost` is
-accepted as an equivalent spelling.
+accepted as an equivalent spelling. Requests to this loopback-only,
+unauthenticated listener must also use a loopback `Host`; Radar rejects other
+hostnames so DNS rebinding cannot turn an untrusted site into a local client.
+The reserved `*.localhost` family is accepted; arbitrary local DNS and
+`/etc/hosts` aliases are not.
+To put a non-loopback hostname or reverse proxy in front of Radar, enable Radar
+authentication; do not switch to `0.0.0.0` merely to bypass this check.
 
 To reach Radar through a VM, WSL, dev container, jump host, or another machine,
 opt into a shared listener explicitly:
@@ -17,7 +23,12 @@ radar --listen-address=0.0.0.0
 
 An all-interface listener can be reached by non-browser clients; CORS is not an
 authentication boundary. Enable Radar authentication and restrict network
-access whenever using `0.0.0.0`.
+access whenever using `0.0.0.0`. The loopback `Host` protection above does not
+apply to a shared listener, and Origin checks alone do not stop DNS rebinding
+there. Treat an unauthenticated shared listener as accessible to any browser
+that can reach the network and do not expose it outside a fully trusted network.
+The host local terminal is unavailable on a shared listener even if a client
+sends a loopback `Host` value.
 
 The Docker image and Helm chart set `0.0.0.0` explicitly because their HTTP
 listener must be reachable through a published container port or Kubernetes
@@ -68,6 +79,10 @@ Persistent defaults for CLI flags. CLI flags always override these values. Manag
   "historyLimit": 10000,
   "prometheusUrl": "",
   "opencostCurrency": "",
+  "costSource": "auto",
+  "kubecostUrl": "",
+  "kubecostClusterId": "",
+  "kubecostApiKey": "",
   "prometheusHeaders": {},
   "mcp": true,
   "debugImage": ""
@@ -90,8 +105,12 @@ All fields are optional — omitted fields use built-in defaults.
 | `timelineDbPath` | Path to SQLite database |
 | `timelineMaxSize` | Max SQLite DB + WAL size before pruning oldest events (`0` disables) |
 | `historyLimit` | Max timeline events to retain |
-| `prometheusUrl` | Manual Prometheus/VictoriaMetrics URL — skips auto-discovery. Useful when Prometheus is not in the same cluster or uses a non-standard service name. |
-| `opencostCurrency` | Optional ISO 4217 override for values produced by OpenCost or Kubecost. Empty reads `currencyCode` from the pricing ConfigMap referenced by an active OpenCost/Kubecost workload, or literal `DISPLAY_CURRENCY` from an active Kubecost Deployment or StatefulSet, when Radar auto-discovers cluster Prometheus; otherwise it falls back to `USD`. Radar labels values but does not convert them. Equivalent CLI: `--opencost-currency`; an explicit CLI value remains authoritative while Radar runs and after restart. |
+| `prometheusUrl` | Manual PromQL-compatible query URL — works with Prometheus, VictoriaMetrics, Thanos, Mimir, and similar backends. Skips auto-discovery; useful when the backend is not in the same cluster or uses a non-standard service name. |
+| `opencostCurrency` | Optional ISO 4217 override for values produced by OpenCost or Kubecost. Empty reads `currencyCode` from the pricing ConfigMap referenced by an active OpenCost/Kubecost workload, or literal `DISPLAY_CURRENCY` from an active Kubecost Deployment or StatefulSet, when the selected cost source is tied to the connected cluster; otherwise it falls back to `USD`. In Settings this preference saves through the dialog footer, independently of source testing, so it can be changed while a source is unavailable. Radar labels values but does not convert them. Equivalent CLI: `--opencost-currency`; an explicit CLI value remains authoritative while Radar runs and after restart. |
+| `costSource` | `auto` (default), `prometheus`, or `kubecost`. Auto keeps working OpenCost metrics from a PromQL-compatible backend, then tries a Kubecost 3 Aggregator; if neither is present, selection remains unavailable and retries instead of reporting an absent source as active. Settings validates Auto and Kubecost before saving. An explicit `prometheus` value is a persisted preference and can be saved before its metrics are installed. |
+| `kubecostUrl` | Optional Kubecost 3 Aggregator base URL. Empty discovers an active local Aggregator Service and tries its named `tcp-api` port (9004). When that port requires SAML/OIDC and no API key is configured, Radar can fall back to the same Service's exact `tcp-api-rbac` port (9008). Federated agent-only clusters need the central URL; root API URLs and URLs ending in `/model` are accepted. |
+| `kubecostClusterId` | Cluster ID used to filter a central Aggregator. Empty detects one distinct literal `CLUSTER_ID` from an active FinOps Agent or Aggregator; indirect or conflicting values require an override. An override saved in Settings is bound to the active kubeconfig context so switching clusters cannot silently reuse the wrong cluster's costs. A value added directly to the config file is bound and persisted on its first startup with an available kubeconfig context. |
+| `kubecostApiKey` | Optional Kubecost service-account key sent as `X-API-KEY`. Stored in the unencrypted `0600` config file and redacted from `GET /api/config`; changing the URL origin clears a stored key unless it is supplied again. With a blank URL, a key saved in Settings is bound to the active kubeconfig context because Radar will auto-discover that cluster's local Aggregator; a key added directly to the config file is bound and persisted on its first startup with an available kubeconfig context. An explicit key is never bypassed through an auto-discovered unauthenticated port: authentication failure remains visible. A key paired with an explicit central Aggregator URL can be reused across contexts. In the Helm deployment, the UI-written config lives on the pod's temporary `emptyDir` and does not survive pod replacement; use a Kubernetes Secret with `cost.kubecost.existingSecret` instead. |
 | `prometheusHeaders` | HTTP headers sent with every Prometheus request. Required for auth-protected backends — e.g. `{"X-Scope-OrgID": "my-org"}`. Equivalent CLI: `--prometheus-header Key=Value` (repeatable). Stored in plain text in `config.json` — protect the file accordingly. |
 | `argoCdUrl` | Manual argocd-server URL for the Argo CD API integration — skips auto-discovery. |
 | `argoCdToken` | Argo CD API token (get-only account recommended). Stored in plain text — the file is written `0600`; the token is redacted from `GET /api/config`. |
@@ -99,6 +118,13 @@ All fields are optional — omitted fields use built-in defaults.
 | `prometheusHeadersFromEnv` | Header values read from environment variables at startup — e.g. `{"Authorization": "PROMETHEUS_TOKEN"}`. Equivalent CLI: `--prometheus-header-from-env Key=ENV_VAR` (repeatable). Use this with Kubernetes Secret-backed env vars in Helm deployments. |
 | `mcp` | Enable/disable MCP server for AI tools (default: enabled) |
 | `debugImage` | Image for ephemeral debug containers and node debug pods (same as `--debug-image`). Empty = `busybox:latest`; point at a mirror for air-gapped / private-registry clusters. |
+
+For declarative deployments, `RADAR_COST_SOURCE`, `RADAR_KUBECOST_URL`,
+`RADAR_KUBECOST_CLUSTER_ID`, and `RADAR_KUBECOST_API_KEY` override these cost
+source fields. When any is set, the source controls are read-only in Settings;
+edit the deployment and restart Radar. `RADAR_KUBECOST_URL` does not carry an
+API key over from the config file; set `RADAR_KUBECOST_API_KEY` explicitly when
+the environment-managed endpoint requires one. The currency override remains separate.
 
 ### Settings File (`~/.radar/settings.json`)
 
@@ -290,12 +316,13 @@ kubeconfig before these commands can run.
 
 ### What Radar sends
 
-Until you connect a cluster to Cloud, Radar makes exactly two outbound
-requests, both to Skyhook, neither containing cluster data:
+Until you connect a cluster to Cloud, Radar makes two kinds of outbound
+request, both to Skyhook, neither containing cluster data:
 
-- **Update check** — periodically, to `releases.skyhook.io`, with the Radar
-  version, OS/arch, install method, and whether it's running locally or
-  in-cluster. Skipped entirely on development builds.
+- **Update check** — to `releases.skyhook.io`, with the Radar version, OS/arch,
+  install method, whether it is running locally or in-cluster, and the
+  installation timestamp when Radar can determine it. Radar caches the release
+  result for one hour. Development builds are excluded.
 - **Cloud dialog copy** — only when you *open* the Cloud dialog, to fetch the
   current terms shown in it. No identifiers are sent. `RADAR_CLOUD_FUNNEL=off`
   stops this request from ever happening.

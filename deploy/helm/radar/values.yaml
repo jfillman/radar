@@ -473,9 +473,27 @@ mcp:
 
 # OpenCost/Kubecost display configuration
 cost:
+  # Cost data source: "auto", "prometheus", or "kubecost". Empty uses Auto;
+  # source controls stay editable only when the Kubecost URL, cluster ID, and
+  # existing Secret are also empty.
+  source: ""
   # Optional ISO 4217 override for OpenCost/Kubecost values. Empty detects the
   # running cost tool's configured currency when available, then uses USD.
   currency: ""
+  kubecost:
+    # Kubecost 3 Aggregator base URL. Empty auto-discovers tcp-api:9004 in the
+    # connected cluster and, without an API key, can fall back to the same
+    # Service's tcp-api-rbac:9008 when 9004 requires SAML/OIDC. Federated
+    # agent-only clusters need the central URL. Root and /model URLs are accepted.
+    url: ""
+    # Cluster ID used to filter central/federated Aggregator results. Empty
+    # detects a literal CLUSTER_ID from an active FinOps Agent or Aggregator.
+    clusterId: ""
+    # Optional Secret containing a Kubecost service-account API key. Radar sends
+    # it only to the configured origin as X-API-KEY. When a key is configured,
+    # Radar will not bypass a failed authentication attempt through port 9008.
+    existingSecret: ""
+    existingSecretKey: "api-key"
 
 # Traffic source configuration
 traffic:

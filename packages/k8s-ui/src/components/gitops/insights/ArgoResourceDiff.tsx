@@ -106,12 +106,17 @@ function ArgoResourceDiffOverlay({ diff, onClose }: { diff: GitOpsResourceDiff; 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        e.stopPropagation()
         onClose()
       }
     }
-    document.addEventListener('keydown', onKey, true)
-    return () => document.removeEventListener('keydown', onKey, true)
+    // Bubble phase, not capture: the embedded CodeViewer's own search bar
+    // (Live/Desired manifest mode) handles Escape on its input and calls
+    // stopPropagation to close just the search, not this whole overlay — a
+    // capture-phase listener here would run before that input ever sees the
+    // event and always win, closing the full-screen view out from under an
+    // in-progress search instead.
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
   }, [onClose])
 
   const [viewMode, setViewMode] = useState<ViewMode>('diff')
@@ -328,7 +333,12 @@ function SplitCell({ cell, side }: { cell?: SplitCellData; side: 'left' | 'right
   return (
     <div
       className={clsx(
-        'flex whitespace-pre',
+        // min-w-0 lets this flex item actually shrink to its grid track's
+        // width (Tailwind's grid-cols-2 tracks are already minmax(0, 1fr),
+        // but a flex child still defaults to its content's intrinsic width
+        // unless told otherwise) — without it, a long unwrapped line bleeds
+        // past its own column into the adjacent one instead of scrolling.
+        'flex min-w-0 overflow-x-auto whitespace-pre',
         side === 'left' && 'border-r border-theme-border',
         cell.type === 'removal' && 'bg-red-500/10 text-red-700 dark:text-red-400',
         cell.type === 'addition' && 'bg-green-500/10 text-green-700 dark:text-green-400',

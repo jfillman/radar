@@ -111,13 +111,48 @@ function resultRefsIn(value: unknown, out: Set<string>): void {
 
 export function buildPipelineTaskGraph(pipelineSpec: any): TektonTaskNode[] {
   const tasks: any[] = pipelineSpec?.tasks ?? []
-  return tasks.map((task) => {
+  const nodes = tasks.map((task) => {
     const deps = new Set<string>(task.runAfter ?? [])
     resultRefsIn(task.params, deps)
     resultRefsIn(task.when, deps)
     resultRefsIn(task.matrix, deps)
     deps.delete(task.name)
     return { name: task.name, dependsOn: [...deps] }
+  })
+  return reduceToDirectDeps(nodes)
+}
+
+// reduceToDirectDeps computes the transitive reduction of the dependency
+// graph: drops a dep `d` from a task whenever `d` is already an ancestor of
+// one of that task's *other* deps, since the ordering it implies is already
+// guaranteed by that longer path. Real Tekton pipelines commonly pipe a
+// value (a trace ID, a shared config blob) from an early task like
+// start-flow into nearly every later task's params — each of those is a
+// genuine result-ref dependency (correct per Tekton's own scheduling), but
+// drawing it as a direct edge alongside the task's actual immediate
+// runAfter parent produces a fan of redundant arrows into one node instead
+// of the single "what does this run right after" edge a reader expects.
+function reduceToDirectDeps(nodes: TektonTaskNode[]): TektonTaskNode[] {
+  const depsByName = new Map(nodes.map((n) => [n.name, n.dependsOn]))
+  const ancestorsCache = new Map<string, Set<string>>()
+  function ancestorsOf(name: string, seen: Set<string> = new Set()): Set<string> {
+    const cached = ancestorsCache.get(name)
+    if (cached) return cached
+    if (seen.has(name)) return new Set()
+    seen.add(name)
+    const result = new Set<string>()
+    for (const dep of depsByName.get(name) ?? []) {
+      result.add(dep)
+      for (const anc of ancestorsOf(dep, seen)) result.add(anc)
+    }
+    ancestorsCache.set(name, result)
+    return result
+  }
+  return nodes.map((node) => {
+    const direct = node.dependsOn.filter((dep) =>
+      !node.dependsOn.some((other) => other !== dep && ancestorsOf(other).has(dep)),
+    )
+    return { ...node, dependsOn: direct }
   })
 }
 

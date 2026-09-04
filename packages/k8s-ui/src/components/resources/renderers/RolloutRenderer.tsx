@@ -63,10 +63,10 @@ interface RolloutRendererProps {
   // subsection just doesn't render; a library consumer that skips the fetch
   // loses nothing else.
   analysisRunHistory?: AnalysisRunHistoryEntry[]
-  // Host-fetched — the Rollout's ReplicaSet revision history + its pods,
-  // already-shipped generic workload hooks (useWorkloadRevisions/
-  // useWorkloadPods), joined client-side by the host. Read-only here; the
-  // rollback action stays exclusively in the existing history dialog.
+  // Host-fetched — the Rollout's ReplicaSet revision history + its pods, via
+  // the generic workload hooks (useWorkloadRevisions/useWorkloadPods) shared
+  // with every other workload kind, joined client-side by the host. Read-only
+  // here; the rollback action stays exclusively in the existing history dialog.
   revisions?: WorkloadRevision[]
   pods?: WorkloadPodInfo[]
 }
@@ -306,18 +306,18 @@ export function canaryStepLabel(step: any): string {
   return key ? `Unrecognized step: ${key}` : 'Unknown step'
 }
 
-/** AnalysisTemplate/ClusterAnalysisTemplate references on an analysis step or
- *  experiment templates[].analyses[] entry — same shape either way. */
+/** AnalysisTemplate/ClusterAnalysisTemplate references on either a canary
+ *  step's analysis.templates[] array, or a single Experiment spec.analyses[]
+ *  entry — the Experiment entry carries templateName/clusterScope flat on
+ *  itself rather than nested under its own templates array, so it's wrapped
+ *  into a one-element list to share the same mapping below. Both shapes use
+ *  the SAME field name for the ref (templateName) regardless of scope —
+ *  clusterScope is a separate boolean on the entry, not a distinct field
+ *  name, so it's read directly rather than inferred from which field is set. */
 export function canaryStepTemplateRefs(step: any): Array<{ name: string; clusterScoped: boolean }> {
-  const templates = step?.analysis?.templates || step?.templates || []
+  const templates = step?.analysis?.templates || step?.templates || (step?.templateName ? [step] : [])
   return templates
-    .map((t: any) =>
-      t.templateName
-        ? { name: t.templateName, clusterScoped: false }
-        : t.clusterTemplateName
-          ? { name: t.clusterTemplateName, clusterScoped: true }
-          : null
-    )
+    .map((t: any) => (t.templateName ? { name: t.templateName, clusterScoped: !!t.clusterScope } : null))
     .filter(Boolean)
 }
 
@@ -328,7 +328,15 @@ export function blueGreenPhases(data: any): Array<{ label: string; state: 'compl
   const spec = data?.spec?.strategy?.blueGreen || {}
   const status = data?.status || {}
   const bg = status.blueGreen || {}
-  const promoted = !!bg.activeSelector && bg.activeSelector === bg.previewSelector
+  // previewSelector is transient — Argo Rollouts clears it once there's no
+  // active preview to track (a settled, fully-promoted blueGreen commonly
+  // has none), so activeSelector === previewSelector alone under-detects
+  // completion for anything but the narrow just-promoted window. currentPodHash
+  // is a generic, always-populated status field (used by every strategy, not
+  // just blueGreen) naming the newest ReplicaSet's hash — activeSelector
+  // matching IT is the more durable "the latest revision is live" signal,
+  // true both right after cutover and indefinitely after.
+  const promoted = !!bg.activeSelector && (bg.activeSelector === status.currentPodHash || bg.activeSelector === bg.previewSelector)
 
   // scaleUpPreviewCheckPoint is only set in a narrow preview-replica-count
   // configuration and is absent on most real blueGreen Rollouts (confirmed
@@ -699,7 +707,7 @@ export function RolloutRenderer({ data, onNavigate, capabilities, onAction, pend
       )}
 
       {analysisRunHistory && analysisRunHistory.length > 0 && (
-        <Section title={`AnalysisRun History (${analysisRunHistory.length})`} icon={Activity} defaultExpanded={false}>
+        <Section title={`AnalysisRun History (${analysisRunHistory.length})`} icon={Activity}>
           <div className="space-y-1">
             {analysisRunHistory.map((run) => (
               <div key={run.name} className="flex items-center gap-2 rounded px-2 py-1.5 text-sm">
@@ -736,7 +744,6 @@ export function RolloutRenderer({ data, onNavigate, capabilities, onAction, pend
         </Section>
       )}
 
-      {/* Canary Steps visual */}
       {isCanary && steps.length > 0 && (
         <Section title={`Canary Steps (${steps.length})`} defaultExpanded>
           <CanaryStepTimeline
@@ -749,16 +756,14 @@ export function RolloutRenderer({ data, onNavigate, capabilities, onAction, pend
         </Section>
       )}
 
-      {/* BlueGreen progression visual */}
       {!isCanary && blueGreenStrategy && blueGreenPhaseList.length > 0 && (
         <Section title="Progression" defaultExpanded>
           <BlueGreenTimeline phases={blueGreenPhaseList} />
         </Section>
       )}
 
-      {/* ReplicaSet progression */}
       {(revisions?.length ?? 0) > 0 && (
-        <Section title={`ReplicaSets (${revisions!.length})`} defaultExpanded={false}>
+        <Section title={`ReplicaSets (${revisions!.length})`}>
           <ReplicaSetProgression
             revisions={revisions!}
             pods={pods}

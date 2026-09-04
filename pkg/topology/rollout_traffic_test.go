@@ -2,6 +2,7 @@ package topology
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -438,6 +439,31 @@ func TestBuildResourcesTopology_LargePodGroupWithMixedTrafficRoles(t *testing.T)
 	stableEdge := findEdge(topo, "replicaset/prod/web-stablehash", podGroupID)
 	if stableEdge == nil {
 		t.Errorf("expected an edge from the stable ReplicaSet to the pod group; edges=%+v", topo.Edges)
+	}
+
+	// Each pod must carry ONLY its own owner's edge source, not every
+	// distinct owner in the group — otherwise expanding the group on the
+	// frontend draws a canary pod as owned by the stable ReplicaSet too
+	// (and vice versa). See TopologyGraph.tsx's expandPodGroup.
+	pods, ok := groupNode.Data["pods"].([]map[string]any)
+	if !ok || len(pods) != 7 {
+		t.Fatalf("expected 7 pod detail entries, got %#v", groupNode.Data["pods"])
+	}
+	for _, pd := range pods {
+		name, _ := pd["name"].(string)
+		ownerIDs, _ := pd["ownerIds"].([]string)
+		switch {
+		case strings.HasPrefix(name, "web-canaryhash-"):
+			if len(ownerIDs) != 1 || ownerIDs[0] != "replicaset/prod/web-canaryhash" {
+				t.Errorf("canary pod %s ownerIds = %v, want [replicaset/prod/web-canaryhash]", name, ownerIDs)
+			}
+		case strings.HasPrefix(name, "web-stablehash-"):
+			if len(ownerIDs) != 1 || ownerIDs[0] != "replicaset/prod/web-stablehash" {
+				t.Errorf("stable pod %s ownerIds = %v, want [replicaset/prod/web-stablehash]", name, ownerIDs)
+			}
+		default:
+			t.Errorf("unexpected pod name %s", name)
+		}
 	}
 }
 

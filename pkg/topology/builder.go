@@ -3088,11 +3088,29 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 				nodes = append(nodes, podGroupNode)
 				seenEdgeID := map[string]bool{}
-				for _, p := range ownerReps {
+				// ownerKeyToSourceIDs records which edge source(s) each
+				// distinct owner actually resolved to (a ReplicaSet's edge
+				// is skipped entirely when it's not visible, for instance),
+				// so expanding the group on the frontend can reconnect each
+				// individual pod to only ITS owner's edge(s) instead of
+				// every owner in the group — see the per-pod "ownerId" set
+				// below and pod_grouping.go's "ownerKey" on each pod.
+				ownerKeyToSourceIDs := map[string][]string{}
+				for ownerKey, p := range ownerReps {
 					for _, e := range b.createPodOwnerEdges(p, podGroupID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, rolloutTrafficByID, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow) {
+						ownerKeyToSourceIDs[ownerKey] = append(ownerKeyToSourceIDs[ownerKey], e.Source)
 						if !seenEdgeID[e.ID] {
 							seenEdgeID[e.ID] = true
 							edges = append(edges, e)
+						}
+					}
+				}
+				if pods, ok := podGroupNode.Data["pods"].([]map[string]any); ok {
+					for _, pd := range pods {
+						if ownerKey, ok := pd["ownerKey"].(string); ok {
+							if sourceIDs := ownerKeyToSourceIDs[ownerKey]; len(sourceIDs) > 0 {
+								pd["ownerIds"] = sourceIDs
+							}
 						}
 					}
 				}

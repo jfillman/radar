@@ -1,5 +1,6 @@
 import { Activity, Server } from 'lucide-react'
 import { Section, PropertyList, Property } from '../../ui/drawer-components'
+import { Badge } from '../../ui/Badge'
 
 interface AnalysisTemplateRendererProps {
   data: any
@@ -101,7 +102,7 @@ export function AnalysisTemplateRenderer({ data }: AnalysisTemplateRendererProps
                 <div key={metric.name} className="card-inner space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-mono text-sm text-theme-text-primary">{metric.name}</span>
-                    {provider && <span className="badge-sm status-neutral">{providerLabel(provider.name)}</span>}
+                    {provider && <Badge severity="neutral" size="sm">{providerLabel(provider.name)}</Badge>}
                   </div>
                   <PropertyList>
                     {metric.interval && <Property label="Interval" value={metric.interval} />}
@@ -128,7 +129,7 @@ export function AnalysisTemplateRenderer({ data }: AnalysisTemplateRendererProps
       )}
 
       {args.length > 0 && (
-        <Section title={`Arguments (${args.length})`} icon={Server} defaultExpanded={false}>
+        <Section title={`Arguments (${args.length})`} icon={Server}>
           <PropertyList>
             {args.map((arg: any) => (
               <Property

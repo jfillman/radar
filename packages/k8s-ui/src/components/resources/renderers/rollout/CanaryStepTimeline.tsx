@@ -1,6 +1,7 @@
 import { Check, X, AlertTriangle, Minus, Clock } from 'lucide-react'
 import { clsx } from 'clsx'
 import { canaryStepLabel, canaryStepTemplateRefs } from '../RolloutRenderer'
+import { healthColors, type HealthLevel } from '../../resource-utils'
 
 export interface StepAnalysisStatus {
   name?: string
@@ -21,26 +22,32 @@ interface CanaryStepTimelineProps {
 
 type StepState = 'completed' | 'current' | 'pending'
 
-function stepDotTone(state: StepState, analysisTone?: 'ok' | 'warning' | 'fail') {
-  if (state === 'current' && analysisTone) {
-    if (analysisTone === 'fail') return 'bg-red-500/25 text-red-500 dark:bg-red-500/35'
-    if (analysisTone === 'warning') return 'bg-amber-500/25 text-amber-600 dark:text-amber-400 dark:bg-amber-500/35'
+// analysisLevel only ever arrives as 'unhealthy' (Failed/Error) or 'alert'
+// (Inconclusive) — a Successful analysis on the current step deliberately
+// gets no special color; the step itself may still be paused/in-progress
+// regardless, so it stays the same "current" tone as any other in-progress
+// step rather than reading as done. Reuses the shared HealthLevel/
+// healthColors vocabulary + theme tokens instead of a parallel ok/warning/
+// fail set and hand-picked Tailwind colors.
+function stepDotTone(state: StepState, analysisLevel?: HealthLevel) {
+  if (state === 'current' && (analysisLevel === 'unhealthy' || analysisLevel === 'alert')) {
+    return healthColors[analysisLevel]
   }
   switch (state) {
     case 'completed':
-      return 'bg-emerald-500/20 text-emerald-500 dark:bg-emerald-500/30'
+      return healthColors.healthy
     case 'current':
-      return 'bg-blue-500/20 text-blue-400 dark:bg-blue-500/30'
+      return healthColors.neutral
     default:
       return 'bg-theme-hover text-theme-text-tertiary'
   }
 }
 
-function StepDot({ state, analysisTone }: { state: StepState; analysisTone?: 'ok' | 'warning' | 'fail' }) {
-  const tone = stepDotTone(state, analysisTone)
+function StepDot({ state, analysisLevel }: { state: StepState; analysisLevel?: HealthLevel }) {
+  const tone = stepDotTone(state, analysisLevel)
   let Icon = Minus
-  if (state === 'current' && analysisTone === 'fail') Icon = X
-  else if (state === 'current' && analysisTone === 'warning') Icon = AlertTriangle
+  if (state === 'current' && analysisLevel === 'unhealthy') Icon = X
+  else if (state === 'current' && analysisLevel === 'alert') Icon = AlertTriangle
   else if (state === 'completed') Icon = Check
   else if (state === 'current') Icon = Clock
   return (
@@ -67,19 +74,19 @@ export function CanaryStepTimeline({ steps, currentStepIndex, stepAnalysisStatus
           const label = canaryStepLabel(step)
           const templateRefs = step.analysis ? canaryStepTemplateRefs(step) : []
           const showAnalysisStatus = isCurrent && step.analysis && stepAnalysisStatus?.status
-          const analysisTone: 'ok' | 'warning' | 'fail' | undefined = showAnalysisStatus
+          const analysisLevel: HealthLevel | undefined = showAnalysisStatus
             ? stepAnalysisStatus!.status === 'Successful'
-              ? 'ok'
+              ? 'healthy'
               : stepAnalysisStatus!.status === 'Failed' || stepAnalysisStatus!.status === 'Error'
-                ? 'fail'
+                ? 'unhealthy'
                 : stepAnalysisStatus!.status === 'Inconclusive'
-                  ? 'warning'
+                  ? 'alert'
                   : undefined
             : undefined
 
           return (
             <div key={index} className="relative flex items-start gap-2 py-1.5 pr-1 text-sm">
-              <StepDot state={state} analysisTone={analysisTone} />
+              <StepDot state={state} analysisLevel={analysisLevel} />
               <div className="min-w-0 flex-1 pl-1">
                 <div className="flex items-center gap-2">
                   <span className="text-[11px] text-theme-text-tertiary">#{index}</span>
@@ -87,12 +94,7 @@ export function CanaryStepTimeline({ steps, currentStepIndex, stepAnalysisStatus
                     {label}
                   </span>
                   {showAnalysisStatus && (
-                    <span
-                      className={clsx(
-                        'badge-sm',
-                        analysisTone === 'ok' ? 'status-healthy' : analysisTone === 'fail' ? 'status-unhealthy' : 'status-alert'
-                      )}
-                    >
+                    <span className={clsx('badge-sm', healthColors[analysisLevel ?? 'alert'])}>
                       {stepAnalysisStatus!.status}
                     </span>
                   )}

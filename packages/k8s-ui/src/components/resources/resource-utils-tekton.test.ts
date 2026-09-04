@@ -207,6 +207,26 @@ describe('aggregateMatrixStatuses', () => {
     ])
     expect(got.status).toBe('succeeded')
   })
+
+  // A matrix sibling whose TaskRun/pod was already garbage-collected fetches
+  // as 'unknown' forever (not just while loading) — that one permanently-
+  // unresolvable child must not mask that the other nine are known-succeeded.
+  it('a known status wins over unknown — one GC-raced sibling does not mask the rest', () => {
+    const got = aggregateMatrixStatuses([
+      { status: 'succeeded', taskRunName: 'a' },
+      { status: 'succeeded', taskRunName: 'b' },
+      { status: 'unknown', taskRunName: 'c' },
+    ])
+    expect(got.status).toBe('succeeded')
+  })
+
+  it('unknown only wins when every sibling is unknown', () => {
+    const got = aggregateMatrixStatuses([
+      { status: 'unknown', taskRunName: 'a' },
+      { status: 'unknown', taskRunName: 'b' },
+    ])
+    expect(got.status).toBe('unknown')
+  })
 })
 
 describe('buildSkippedTaskReasons', () => {

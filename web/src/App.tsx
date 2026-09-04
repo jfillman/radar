@@ -820,6 +820,18 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     }
   }, [navigationType, drawerExpanded, selectedResource])
 
+  // peekOpenedFullRef is otherwise cleared only at the top of navigateToResource
+  // (a fresh peek open) — every one of the many other setSelectedResource(null)
+  // call sites throughout this file (list-kind change, route mismatch, Escape,
+  // etc.) leaves it untouched. Left stale-true after one CI/CD fullscreen visit,
+  // it would misclassify a LATER, legitimately small-drawer-backed peek as
+  // never-small the next time either this effect or the collapse button (below)
+  // consults it — closing outright instead of collapsing. Reset it the instant
+  // there's no peek left to be stale about, regardless of which path closed it.
+  useEffect(() => {
+    if (!selectedResource) peekOpenedFullRef.current = false
+  }, [selectedResource])
+
   // Theme toggle for keyboard shortcut
   const { toggleTheme } = useTheme()
 

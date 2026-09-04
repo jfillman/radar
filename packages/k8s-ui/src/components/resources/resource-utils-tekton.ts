@@ -217,13 +217,22 @@ export function buildChildTaskRunRefs(pipelineRunStatus: any): Map<string, Tekto
 // node has to summarize several TaskRuns at once (a matrix task's parallel
 // expansions) — the worst outcome wins, matching how any CI dashboard reads
 // a fan-out: one failure is the headline even if the other nine succeeded.
+//
+// unknown ranks last (least severe), not first — it means "this one
+// sibling's fetch hasn't resolved (still loading) or never will (its
+// TaskRun/pod was already garbage-collected)," not "something is wrong."
+// Ranking it above a genuinely-known state would let one permanently-404ing
+// matrix child (a common GC race, not an error) mask the fact that the
+// other nine are known to have succeeded — every other status here is
+// itself an actual outcome Tekton reported, so any of them is more
+// informative than "we don't know" and should win.
 const STATUS_SEVERITY: Record<TektonTaskNodeStatus, number> = {
   failed: 0,
   running: 1,
-  unknown: 2,
-  pending: 3,
-  skipped: 4,
-  succeeded: 5,
+  pending: 2,
+  skipped: 3,
+  succeeded: 4,
+  unknown: 5,
 }
 
 // aggregateMatrixStatuses collapses a matrix task's several live statuses

@@ -91,4 +91,55 @@ describe('buildPipelineTaskGraph', () => {
     })
     expect(depsOf(nodes, 'join').sort()).toEqual(['left', 'right'])
   })
+
+  describe('finally tasks', () => {
+    it('includes a finally task as a node, tagged isFinally', () => {
+      const nodes = buildPipelineTaskGraph({
+        tasks: [{ name: 'build', params: [] }],
+        finally: [{ name: 'notify', params: [] }],
+      })
+      expect(nodes.map((n) => n.name).sort()).toEqual(['build', 'notify'])
+      expect(nodes.find((n) => n.name === 'notify')?.isFinally).toBe(true)
+      expect(nodes.find((n) => n.name === 'build')?.isFinally).toBeUndefined()
+    })
+
+    it('depends on every terminal regular task, since Tekton waits for all of them regardless of result-refs', () => {
+      // build and lint both run after start and don't feed each other —
+      // notify has to wait for both, even though it only reads build's result.
+      const nodes = buildPipelineTaskGraph({
+        tasks: [
+          { name: 'start', params: [] },
+          { name: 'build', runAfter: ['start'], params: [] },
+          { name: 'lint', runAfter: ['start'], params: [] },
+        ],
+        finally: [
+          { name: 'notify', params: [{ name: 'status', value: '$(tasks.build.results.outcome)' }] },
+        ],
+      })
+      expect(depsOf(nodes, 'notify').sort()).toEqual(['build', 'lint'])
+    })
+
+    it('depends only on the single terminal task in a linear pipeline (no fan-out to prune)', () => {
+      const nodes = buildPipelineTaskGraph({
+        tasks: [
+          { name: 'clone', params: [] },
+          { name: 'build', runAfter: ['clone'], params: [] },
+        ],
+        finally: [{ name: 'cleanup', params: [] }],
+      })
+      expect(depsOf(nodes, 'cleanup')).toEqual(['build'])
+    })
+
+    it('never depends on another finally task', () => {
+      const nodes = buildPipelineTaskGraph({
+        tasks: [{ name: 'build', params: [] }],
+        finally: [
+          { name: 'notify-slack', params: [] },
+          { name: 'notify-email', params: [] },
+        ],
+      })
+      expect(depsOf(nodes, 'notify-slack')).toEqual(['build'])
+      expect(depsOf(nodes, 'notify-email')).toEqual(['build'])
+    })
+  })
 })

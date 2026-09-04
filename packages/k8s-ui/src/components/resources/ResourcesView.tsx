@@ -139,7 +139,7 @@ import {
   SEVERITY_DOT_COLOR,
   healthColors,
 } from './resource-utils'
-import { getTektonPipelineRunStatus, getTektonTaskRunStatus, tektonRefName } from './resource-utils-tekton'
+import { buildPipelineTaskGraph, getTektonPipelineRunStatus, getTektonTaskRunStatus, tektonRefName } from './resource-utils-tekton'
 import { getGenericResourceStatus } from './generic-status'
 import { getIstioGatewayServerCount, getIstioGatewaySelectorString } from './resource-utils-istio'
 import {
@@ -8612,7 +8612,10 @@ function CronWorkflowCell({ resource, column }: { resource: any; column: string 
 function PipelineCell({ resource, column }: { resource: any; column: string }) {
   switch (column) {
     case 'tasks':
-      return <span className="text-sm text-theme-text-secondary">{(resource.spec?.tasks ?? []).length}</span>
+      // buildPipelineTaskGraph, not a bare spec.tasks.length, so finally
+      // tasks count toward the total — Tekton runs them and includes their
+      // outcome in the PipelineRun result same as any regular task.
+      return <span className="text-sm text-theme-text-secondary">{buildPipelineTaskGraph(resource.spec).length}</span>
     default:
       return <span className="text-sm text-theme-text-tertiary">-</span>
   }

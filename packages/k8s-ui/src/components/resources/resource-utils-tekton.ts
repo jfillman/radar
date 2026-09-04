@@ -45,7 +45,7 @@ function runStatus(conditions: any[] | undefined, noRunsYetText: string): Status
 // its own. "status" here just means "is this a well-formed, usable
 // template," which in practice means it has at least one task.
 export function getTektonPipelineStatus(pipeline: any): StatusBadge {
-  const taskCount = (pipeline?.spec?.tasks ?? []).length
+  const taskCount = (pipeline?.spec?.tasks ?? []).length + (pipeline?.spec?.finally ?? []).length
   if (taskCount === 0) return { text: 'Empty', color: healthColors.degraded, level: 'degraded' }
   return { text: `${taskCount} task${taskCount === 1 ? '' : 's'}`, color: healthColors.healthy, level: 'healthy' }
 }

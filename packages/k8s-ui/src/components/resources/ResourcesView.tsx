@@ -6866,7 +6866,7 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
     case 'clusteranalysistemplates':
       return <AnalysisTemplateCell resource={resource} column={column} />
     case 'experiments':
-      return <GenericCell resource={resource} column={column} />
+      return <ExperimentCell resource={resource} column={column} />
     case 'workflows':
       return <WorkflowCell resource={resource} column={column} />
     case 'cronworkflows':
@@ -8532,6 +8532,23 @@ function RolloutCell({ resource, column }: { resource: any; column: string }) {
           <span className="text-sm text-theme-text-secondary truncate">{display}</span>
         </Tooltip>
       )
+    }
+    default:
+      return <span className="text-sm text-theme-text-tertiary">-</span>
+  }
+}
+
+// An Experiment reports status.phase from the same AnalysisPhase vocabulary
+// as AnalysisRun (Successful/Running/Pending/Inconclusive/Failed/Error), so
+// getAnalysisRunStatus's mapping applies directly — routing here instead of
+// GenericCell avoids the generic phase heuristic's HEALTHY_PHASES set, which
+// doesn't recognize 'Successful' and treats 'Running' as healthy (neither
+// true for this vocabulary).
+function ExperimentCell({ resource, column }: { resource: any; column: string }) {
+  switch (column) {
+    case 'status': {
+      const status = getAnalysisRunStatus(resource)
+      return <span className={clsx('badge', status.color)}>{status.text}</span>
     }
     default:
       return <span className="text-sm text-theme-text-tertiary">-</span>

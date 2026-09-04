@@ -449,6 +449,12 @@ export function TopologyGraph({
       phase: string
       restarts: number
       containers: number
+      // Present only when the group spans more than one owner (e.g. a
+      // Rollout's canary + stable ReplicaSets) — the specific edge
+      // source(s) that actually own this pod, from the backend's own
+      // per-pod owner resolution. See pkg/topology/builder.go's
+      // ownerKeyToSourceIDs.
+      ownerIds?: string[]
     }>
 
     // Find edges pointing to this pod group
@@ -477,8 +483,13 @@ export function TopologyGraph({
         },
       })
 
-      // Add edges from all sources to this pod
-      for (const sourceId of sourceIds) {
+      // A group with a single owner has every source apply to every pod —
+      // the common case. A mixed-owner group (pod.ownerIds present) instead
+      // connects each pod only to the source(s) that are actually its own
+      // owner, so e.g. a canary pod doesn't end up drawn as owned by the
+      // stable ReplicaSet too.
+      const podSourceIds = pod.ownerIds?.filter(id => sourceIds.includes(id)) ?? sourceIds
+      for (const sourceId of podSourceIds) {
         newEdges.push({
           id: `${sourceId}-to-${podId}`,
           source: sourceId,

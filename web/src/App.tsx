@@ -804,6 +804,22 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     }
   }, [searchParams, setSearchParams])
 
+  // Browser Back popping ?full=1 away is normally exactly right — it's the
+  // history entry a small-drawer expand pushed, so losing it "collapses" the
+  // peek back to the small drawer it came from (see handleCollapseFromExpanded's
+  // comment). A never-small peek (peekOpenedFullRef, e.g. a CI/CD table row —
+  // see its opener above) has no small-drawer state to collapse back to
+  // though, so the same Back would otherwise leave selectedResource set with
+  // no ?full=1, which renders as a compact drawer reappearing over the CI/CD
+  // table instead of actually closing. Close it outright in that case,
+  // mirroring what the collapse button already does via peekOpenedFullRef.
+  useEffect(() => {
+    if (navigationType !== NavigationType.Pop) return
+    if (peekOpenedFullRef.current && selectedResource && !drawerExpanded) {
+      setSelectedResource(null)
+    }
+  }, [navigationType, drawerExpanded, selectedResource])
+
   // Theme toggle for keyboard shortcut
   const { toggleTheme } = useTheme()
 

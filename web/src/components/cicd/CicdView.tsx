@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Ban, ArrowDown, ArrowUp, ArrowUpDown, ListChecks, Search, Trash2, Workflow } from 'lucide-react'
+import { AlertTriangle, Ban, ArrowDown, ArrowUp, ArrowUpDown, ListChecks, RefreshCw, Search, Trash2, Workflow } from 'lucide-react'
 import { clsx } from 'clsx'
 import yamlLib from 'yaml'
 import {
@@ -20,7 +20,7 @@ import {
   type SummaryTone,
   type RowActionItem,
 } from '@skyhook-io/k8s-ui'
-import { fetchJSON, useBulkDeleteResources, useDeleteResource, useUpdateResource } from '../../api/client'
+import { fetchJSON, isForbiddenError, useBulkDeleteResources, useDeleteResource, useUpdateResource } from '../../api/client'
 
 interface CicdViewProps {
   namespaces: string[]
@@ -394,7 +394,7 @@ export function CicdView({ namespaces, onOpenPipelineRun, onOpenPipeline }: Cicd
                 tone={(stats.successRate == null ? 'neutral' : stats.successRate >= 90 ? 'success' : stats.successRate >= 70 ? 'warning' : 'error') as SummaryTone}
                 loading={runsQuery.isLoading}
               />
-              <SummaryTile label="Tasks Running" value={tasksRunningQuery.data ?? 0} tone="info" loading={tasksRunningQuery.isLoading} />
+              <SummaryTile label="Tasks Running" value={tasksRunningQuery.data ?? 0} tone="info" loading={tasksRunningQuery.isLoading || tasksRunningQuery.isError} />
             </>
           }
         />
@@ -508,6 +508,23 @@ export function CicdView({ namespaces, onOpenPipelineRun, onOpenPipeline }: Cicd
           <div className="min-h-0 flex-1 overflow-y-auto">
             {runsQuery.isLoading ? (
               <div className="p-4 text-sm text-theme-text-tertiary">Loading PipelineRuns…</div>
+            ) : runsQuery.isError ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-sm">
+                <AlertTriangle className="h-5 w-5 text-red-500" />
+                <span className="text-theme-text-secondary">
+                  {isForbiddenError(runsQuery.error)
+                    ? "You don't have permission to list PipelineRuns."
+                    : `Failed to load PipelineRuns: ${runsQuery.error instanceof Error ? runsQuery.error.message : 'unknown error'}`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => runsQuery.refetch()}
+                  className="mt-1 inline-flex items-center gap-1.5 rounded border border-theme-border bg-theme-base px-2.5 py-1 text-xs text-theme-text-secondary transition-colors hover:bg-theme-hover hover:text-theme-text-primary"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  Retry
+                </button>
+              </div>
             ) : filteredRuns.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-theme-text-tertiary">
                 {runs.length === 0 ? 'No PipelineRuns found.' : 'No PipelineRuns match the current filters.'}

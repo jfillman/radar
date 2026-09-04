@@ -107,6 +107,10 @@ function ArgoResourceDiffOverlay({ diff, onClose }: { diff: GitOpsResourceDiff; 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         onClose()
+        // Consumed: stop it here so it doesn't keep bubbling to window-level
+        // Escape handlers (e.g. the bottom dock's maximize toggle) and
+        // dismiss something behind this overlay in the same keystroke.
+        e.stopPropagation()
       }
     }
     // Bubble phase, not capture: the embedded CodeViewer's own search bar
@@ -114,7 +118,10 @@ function ArgoResourceDiffOverlay({ diff, onClose }: { diff: GitOpsResourceDiff; 
     // stopPropagation to close just the search, not this whole overlay — a
     // capture-phase listener here would run before that input ever sees the
     // event and always win, closing the full-screen view out from under an
-    // in-progress search instead.
+    // in-progress search instead. Search's own handler runs first (target
+    // phase, before this document-level one) and stops propagation when it
+    // acts, so this listener only ever fires when search isn't consuming
+    // the key itself.
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [onClose])

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { LogCore, useLogBuffer, parseLogLine } from '@skyhook-io/k8s-ui'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { LogCore, useLogBuffer, parseLogLine, tektonNodeStatusFromConditions } from '@skyhook-io/k8s-ui'
 import { fetchJSON } from '../../api/client'
 import { triggerDownload } from '@skyhook-io/k8s-ui/utils/download'
 import type { LogExportPayload } from '@skyhook-io/k8s-ui/utils/log-export'
 import { useDesktopDownload } from '../../hooks/useDesktopDownload'
 import { useToast } from '../ui/Toast'
+
+const POLL_INTERVAL_MS = 5000
 
 interface TaskRunLogsTabProps {
   namespace: string
@@ -20,7 +22,9 @@ interface TaskRunLogsTabProps {
 export function TaskRunLogsTab({ namespace, resource }: TaskRunLogsTabProps) {
   const podName = resource?.status?.podName as string | undefined
   const stepNames = useMemo(
-    () => ((resource?.status?.steps ?? []) as Array<{ name: string }>).map((s) => `step-${s.name}`),
+    // Prefer the container name Tekton actually reports; the step-<name>
+    // convention is only a fallback for an older/stripped status shape.
+    () => ((resource?.status?.steps ?? []) as Array<{ name: string; container?: string }>).map((s) => s.container ?? `step-${s.name}`),
     [resource],
   )
   const { entries, set, clear } = useLogBuffer()
@@ -29,12 +33,20 @@ export function TaskRunLogsTab({ namespace, resource }: TaskRunLogsTabProps) {
   const desktopDownload = useDesktopDownload()
   const { showError, showSuccess } = useToast()
 
+  // Guards against a stale response landing after a newer one — podName
+  // changing (a different TaskRun/pod entirely) fires a fresh load() while
+  // the previous pod's fetch may still be in flight; only the response for
+  // the generation that's still current gets applied.
+  const requestGenRef = useRef(0)
+
   const load = useCallback(async () => {
     if (!podName) return
+    const gen = ++requestGenRef.current
     setIsLoading(true)
     setFetchError(null)
     try {
       const data = await fetchJSON<{ logs: Record<string, string> }>(`/pods/${namespace}/${podName}/logs`)
+      if (gen !== requestGenRef.current) return
       const combined = stepNames.flatMap((container) => {
         const raw = data.logs?.[container]
         if (!raw) return []
@@ -45,13 +57,32 @@ export function TaskRunLogsTab({ namespace, resource }: TaskRunLogsTabProps) {
       })
       set(combined)
     } catch (err) {
+      if (gen !== requestGenRef.current) return
       setFetchError(err instanceof Error ? err.message : 'Failed to fetch logs')
     } finally {
-      setIsLoading(false)
+      if (gen === requestGenRef.current) setIsLoading(false)
     }
   }, [namespace, podName, stepNames, set])
 
+  // A pod change is a genuinely different TaskRun execution — clear stale
+  // entries before the fresh fetch lands rather than leaving the previous
+  // pod's logs on screen while loading (a plain manual refresh of the SAME
+  // pod, via onRefresh below, intentionally leaves the buffer alone so the
+  // view doesn't flash empty).
+  useEffect(() => { clear() }, [podName, clear])
   useEffect(() => { load() }, [load])
+
+  // Poll while the run hasn't settled — a step's live output otherwise never
+  // reaches the tab until the user manually refreshes. Stops as soon as the
+  // TaskRun reaches a terminal condition (or unmounts), then the effect
+  // above's normal load() already covers the final snapshot.
+  const taskRunStatus = tektonNodeStatusFromConditions(resource?.status?.conditions).status
+  const isTerminal = taskRunStatus === 'succeeded' || taskRunStatus === 'failed' || taskRunStatus === 'skipped'
+  useEffect(() => {
+    if (isTerminal || !podName) return
+    const id = window.setInterval(load, POLL_INTERVAL_MS)
+    return () => window.clearInterval(id)
+  }, [isTerminal, podName, load])
 
   const downloadLogs = useCallback(({ content, mime, extension }: LogExportPayload) => {
     const filename = `${podName ?? 'taskrun'}-logs.${extension}`

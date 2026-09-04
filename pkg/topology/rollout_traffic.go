@@ -41,19 +41,30 @@ type rolloutTrafficInfo struct {
 // rolloutTrafficRole classifies a pod-template-hash value against a Rollout's
 // live status pointers. Returns "" when the hash matches none of them (e.g.
 // an old, no-longer-relevant revision, or the Rollout has no status yet).
+//
+// activeSelector/previewSelector are checked first, not stableRS/
+// currentPodHash — those two are generic, strategy-agnostic status fields
+// the Rollout controller maintains for EVERY Rollout (canary or blueGreen),
+// so a blueGreen Rollout's ReplicaSets/Pods have real, non-empty values
+// there too. Checking them first would misclassify blueGreen revisions as
+// canary/stable. activeSelector/previewSelector live under status.blueGreen,
+// which is only ever populated for a blueGreen-strategy Rollout — a canary
+// Rollout's pod-template-hash can never coincidentally match either (both
+// are empty strings there, and podTemplateHash is never empty, already
+// guarded above), so checking them first is safe for canary too.
 func rolloutTrafficRole(podTemplateHash string, info rolloutTrafficInfo) string {
 	if podTemplateHash == "" {
 		return ""
 	}
 	switch podTemplateHash {
-	case info.stableRS:
-		return "stable"
-	case info.currentPodHash:
-		return "canary"
 	case info.activeSelector:
 		return "active"
 	case info.previewSelector:
 		return "preview"
+	case info.stableRS:
+		return "stable"
+	case info.currentPodHash:
+		return "canary"
 	default:
 		return ""
 	}

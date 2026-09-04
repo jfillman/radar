@@ -862,7 +862,13 @@ export function TopologyGraph({
       })
       return changed ? next : prev
     })
-    setEdges(prev => (prev.length === 0 ? prev : buildEdges(workingEdges, collapsedGroups, groupMapRef.current ?? new Map(), groupingMode, isTrafficView, undefined, prev.length, groupLevels, false, workingNodes)))
+    // nodeCount must be a real NODE count (buildEdges gates animations on it
+    // for the large-graph performance safeguard) — workingNodes.length, not
+    // the previous EDGES array's length. A tree-shaped graph commonly has
+    // fewer edges than nodes, so using edge count here could report "under
+    // the threshold" and re-enable animations on a graph that's actually
+    // over it.
+    setEdges(prev => (prev.length === 0 ? prev : buildEdges(workingEdges, collapsedGroups, groupMapRef.current ?? new Map(), groupingMode, isTrafficView, undefined, workingNodes.length, groupLevels, false, workingNodes)))
     // layoutEpoch is a dep so this re-applies AFTER any in-flight ELK layout lands -
     // a stale layout closure can't leave the canvas painted with pre-probe styles.
     // eslint-disable-next-line react-hooks/exhaustive-deps

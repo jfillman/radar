@@ -3057,13 +3057,45 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				podGroupID := GetPodGroupID(group)
 				podGroupNode := CreatePodGroupNode(group, b.provider)
 
-				// Connect to owner using first pod's owner (resources view specific)
-				firstPod := group.Pods[0]
-				if role := podRolloutTrafficRole(firstPod, replicaSetToRollout, rolloutTrafficByID); role != "" {
-					podGroupNode.Data["trafficRole"] = role
+				// A large group's pods can span more than one owning
+				// ReplicaSet and traffic role at once (a Rollout mid-
+				// transition splitting stable/canary across >5 pods is
+				// exactly the case this branch exists for) — using only
+				// group.Pods[0] misrepresented the whole group with one
+				// arbitrary pod's role and connected it to only one of the
+				// ReplicaSets actually present. Summarize honestly instead:
+				// one trafficRole badge only when every pod agrees, and an
+				// owner edge to every DISTINCT owner among the group's pods
+				// (deduped by owner key, one representative pod each, not
+				// one call per pod — groups here can be large).
+				roles := map[string]bool{}
+				ownerReps := map[string]*corev1.Pod{}
+				for _, p := range group.Pods {
+					if role := podRolloutTrafficRole(p, replicaSetToRollout, rolloutTrafficByID); role != "" {
+						roles[role] = true
+					}
+					for _, ref := range p.OwnerReferences {
+						ownerKey := p.Namespace + "/" + ref.Kind + "/" + ref.Name
+						if _, ok := ownerReps[ownerKey]; !ok {
+							ownerReps[ownerKey] = p
+						}
+					}
+				}
+				if len(roles) == 1 {
+					for role := range roles {
+						podGroupNode.Data["trafficRole"] = role
+					}
 				}
 				nodes = append(nodes, podGroupNode)
-				edges = append(edges, b.createPodOwnerEdges(firstPod, podGroupID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, rolloutTrafficByID, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow)...)
+				seenEdgeID := map[string]bool{}
+				for _, p := range ownerReps {
+					for _, e := range b.createPodOwnerEdges(p, podGroupID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, rolloutTrafficByID, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow) {
+						if !seenEdgeID[e.ID] {
+							seenEdgeID[e.ID] = true
+							edges = append(edges, e)
+						}
+					}
+				}
 			}
 		}
 	}

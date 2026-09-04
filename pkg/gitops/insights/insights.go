@@ -689,7 +689,13 @@ func degradedResourceFromEvents(root *unstructured.Unstructured, resolver Resolv
 	var (
 		best      Ref
 		bestEvent EventSummary
-		bestCount int32
+		// -1, not 0: a real, single-occurrence Warning event commonly reports
+		// Count == 0 on modern clusters (events.k8s.io/v1 only sets a count at
+		// all once an event has repeated into a series) — starting the
+		// sentinel at 0 would make that genuine signal indistinguishable from
+		// "no Warning event found," and the function would silently return no
+		// issue for exactly the first-occurrence case it exists to catch.
+		bestCount int32 = -1
 	)
 	for _, item := range raw {
 		m, ok := item.(map[string]any)
@@ -716,7 +722,7 @@ func degradedResourceFromEvents(root *unstructured.Unstructured, resolver Resolv
 			}
 		}
 	}
-	if bestCount == 0 {
+	if bestCount < 0 {
 		return nil
 	}
 	return &Issue{

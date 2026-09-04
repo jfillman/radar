@@ -73,9 +73,13 @@ interface GitOpsTreeGraphProps {
 // refKey builds a stable lookup key from either a tree ref or an insight
 // ref. Namespace is omitted for cluster-scoped resources on both sides, so
 // normalize the missing case the same way instead of using `undefined` vs
-// `''` as accidentally distinct keys.
-function refKey(ref: { kind: string; namespace?: string; name: string }): string {
-  return `${ref.kind}/${ref.namespace ?? ''}/${ref.name}`
+// `''` as accidentally distinct keys. Group is included for the same
+// reason CLAUDE.md calls out elsewhere (Knative Service vs core Service,
+// CNPG Cluster vs CAPI Cluster) — kind+namespace+name alone collides across
+// a real, documented class of same-plural CRDs, which would show one
+// resource's cause/tooltip on a completely unrelated node.
+function refKey(ref: { group?: string; kind: string; namespace?: string; name: string }): string {
+  return `${ref.group ?? ''}/${ref.kind}/${ref.namespace ?? ''}/${ref.name}`
 }
 
 export function GitOpsTreeGraph(props: GitOpsTreeGraphProps) {

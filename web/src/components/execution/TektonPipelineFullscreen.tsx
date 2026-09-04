@@ -6,6 +6,7 @@ import {
   applyTaskRunStatuses,
   buildChildTaskRunRefs,
   buildPipelineTaskGraph,
+  buildSkippedTaskReasons,
   tektonNodeStatusFromConditions,
   tektonRefName,
   type TektonTaskNode,
@@ -75,13 +76,13 @@ export function TektonPipelineFullscreen({ kind, namespace, name, resource, onNa
     for (const [pipelineTaskName, live] of liveByTaskName) {
       statusByTaskName.set(pipelineTaskName, aggregateMatrixStatuses(live))
     }
-    return applyTaskRunStatuses(declaredTasks, statusByTaskName)
+    return applyTaskRunStatuses(declaredTasks, statusByTaskName, buildSkippedTaskReasons(status))
     // queries is a fresh array each render from useQueries; flatChildren + isLoading/data
     // per-entry is what actually needs to retrigger this, which the queries objects
     // capture already — omitting `queries` itself from deps would be wrong since its
     // contents (not identity) are what we read, so keep it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRun, declaredTasks, flatChildren, queries])
+  }, [isRun, declaredTasks, flatChildren, queries, status])
 
   // Stabilize the array reference by content, not just recompute on every
   // render. `queries` is a fresh array from useQueries every render (even

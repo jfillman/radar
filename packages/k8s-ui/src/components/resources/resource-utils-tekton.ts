@@ -252,17 +252,35 @@ export function tektonNodeStatusFromConditions(conditions: any[] | undefined): {
   return { status: 'running', reason: cond.reason }
 }
 
+// A task Tekton skips (a false `when` guard, or a parent that failed/was
+// itself skipped) never gets a childReference — same absence-from-the-map
+// signal as a task that simply hasn't been reached yet. The two cases are
+// told apart only by status.skippedTasks[], which names every task the
+// controller decided not to run, with the reason it gave for each.
+export function buildSkippedTaskReasons(pipelineRunStatus: any): Map<string, string | undefined> {
+  const reasons = new Map<string, string | undefined>()
+  for (const skipped of pipelineRunStatus?.skippedTasks ?? []) {
+    if (skipped?.name) reasons.set(skipped.name, skipped.reason)
+  }
+  return reasons
+}
+
 // Merges the Pipeline's declared task graph with live per-task status. Tasks
-// with no matching child (not yet reached) render as 'pending' and stay
-// non-clickable (no taskRunName — there's genuinely nothing to open yet).
+// with no matching child are 'skipped' when status.skippedTasks names them
+// (a completed run's when-guard/parent-skip outcome), else 'pending' (not
+// yet reached) — either way non-clickable, since there's genuinely nothing
+// to open.
 export function applyTaskRunStatuses(
   tasks: TektonTaskNode[],
   statusByTaskName: Map<string, { status: TektonTaskNodeStatus; reason?: string; taskRunName?: string }>,
+  skippedTaskReasons: Map<string, string | undefined> = new Map(),
 ): TektonTaskNode[] {
   return tasks.map((task) => {
     const live = statusByTaskName.get(task.name)
-    return live
-      ? { ...task, status: live.status, reason: live.reason, taskRunName: live.taskRunName }
-      : { ...task, status: 'pending' }
+    if (live) return { ...task, status: live.status, reason: live.reason, taskRunName: live.taskRunName }
+    if (skippedTaskReasons.has(task.name)) {
+      return { ...task, status: 'skipped', reason: skippedTaskReasons.get(task.name) }
+    }
+    return { ...task, status: 'pending' }
   })
 }

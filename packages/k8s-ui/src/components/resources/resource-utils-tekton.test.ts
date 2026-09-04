@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { aggregateMatrixStatuses, buildChildTaskRunRefs, buildPipelineTaskGraph, type TektonTaskNode } from './resource-utils-tekton'
+import {
+  aggregateMatrixStatuses,
+  applyTaskRunStatuses,
+  buildChildTaskRunRefs,
+  buildPipelineTaskGraph,
+  buildSkippedTaskReasons,
+  type TektonTaskNode,
+} from './resource-utils-tekton'
 
 function depsOf(nodes: TektonTaskNode[], name: string): string[] {
   return nodes.find((n) => n.name === name)?.dependsOn ?? []
@@ -199,5 +206,50 @@ describe('aggregateMatrixStatuses', () => {
       { status: 'succeeded', taskRunName: 'b' },
     ])
     expect(got.status).toBe('succeeded')
+  })
+})
+
+describe('buildSkippedTaskReasons', () => {
+  it('reads name + reason off status.skippedTasks', () => {
+    const reasons = buildSkippedTaskReasons({
+      skippedTasks: [{ name: 'deploy-canary', reason: 'When Expressions evaluated to false' }],
+    })
+    expect(reasons.get('deploy-canary')).toBe('When Expressions evaluated to false')
+  })
+
+  it('is empty for a status with no skippedTasks', () => {
+    expect(buildSkippedTaskReasons({}).size).toBe(0)
+  })
+})
+
+describe('applyTaskRunStatuses', () => {
+  const tasks: TektonTaskNode[] = [
+    { name: 'build', dependsOn: [] },
+    { name: 'deploy-canary', dependsOn: ['build'] },
+  ]
+
+  it('a task named in skippedTaskReasons is skipped, not pending, when it has no live status', () => {
+    const got = applyTaskRunStatuses(tasks, new Map(), buildSkippedTaskReasons({
+      skippedTasks: [{ name: 'deploy-canary', reason: 'When Expressions evaluated to false' }],
+    }))
+    const deploy = got.find((t) => t.name === 'deploy-canary')
+    expect(deploy?.status).toBe('skipped')
+    expect(deploy?.reason).toBe('When Expressions evaluated to false')
+  })
+
+  it('falls back to pending when a task is neither live nor listed as skipped', () => {
+    const got = applyTaskRunStatuses(tasks, new Map())
+    expect(got.find((t) => t.name === 'deploy-canary')?.status).toBe('pending')
+  })
+
+  it('a live status always wins over a skipped-tasks listing for the same task', () => {
+    // Shouldn't happen in practice (Tekton never creates a childReference for
+    // a task it also lists in skippedTasks), but live data must win if it did.
+    const got = applyTaskRunStatuses(
+      tasks,
+      new Map([['deploy-canary', { status: 'succeeded', taskRunName: 'run-deploy-canary' }]]),
+      buildSkippedTaskReasons({ skippedTasks: [{ name: 'deploy-canary', reason: 'stale' }] }),
+    )
+    expect(got.find((t) => t.name === 'deploy-canary')?.status).toBe('succeeded')
   })
 })

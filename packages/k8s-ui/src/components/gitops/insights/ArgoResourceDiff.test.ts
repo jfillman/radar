@@ -16,8 +16,6 @@ describe('buildSplitRows', () => {
   })
 
   it('zips an unequal removal/addition block, blank-padding the shorter side', () => {
-    // 1 old line replaced by 3 new lines: left gets 1 real row, then 2 blanks;
-    // right gets all 3 real rows, aligned to the same row indices as left.
     const rows = rowsFor('a\nb\nc\n', 'a\nX\nY\nZ\nc\n', Number.MAX_SAFE_INTEGER)
     const block = rows.filter((r) => r.left?.type === 'removal' || r.right?.type === 'addition')
     expect(block).toHaveLength(3)
@@ -37,8 +35,6 @@ describe('buildSplitRows', () => {
   })
 
   it('inserts a hunk-gap row only between non-adjacent hunks (compact context)', () => {
-    // Two isolated single-line changes far apart, with tight context: two
-    // separate hunks, so exactly one gap row between them.
     const desired = Array.from({ length: 20 }, (_, i) => `line${i}`).join('\n') + '\n'
     const live = desired.replace('line2', 'X').replace('line17', 'Y')
     const rows = rowsFor(desired, live, 2)

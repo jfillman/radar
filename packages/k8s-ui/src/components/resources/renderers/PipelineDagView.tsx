@@ -77,9 +77,9 @@ const elkOptions = {
   'elk.spacing.nodeNode': '48',
   'elk.layered.spacing.nodeNodeBetweenLayers': '100',
   'elk.layered.spacing.edgeNodeBetweenLayers': '32',
-  // Not set at all before - default edge-edge/edge-node spacing is tight
-  // enough that several parallel edges between the same two layers (a
-  // build task with 4-5 direct dependents, say) visually run together.
+  // Default edge-edge/edge-node spacing is tight enough that several
+  // parallel edges between the same two layers (a build task with 4-5
+  // direct dependents, say) visually run together.
   'elk.spacing.edgeEdge': '24',
   'elk.spacing.edgeNode': '24',
   'elk.edgeRouting': 'ORTHOGONAL',
@@ -179,14 +179,10 @@ const TektonTaskCard = memo(function TektonTaskCard({ data }: NodeProps<Node<Tek
       <div
         className={clsx(
           'topology-node-card relative rounded-lg',
-          // A running task previously relied on a pulsing-opacity card +
-          // spinning icon alone to stand out - easy to miss at a glance
-          // across a busy DAG, and the pulse (animate-pulse animates the
-          // WHOLE element's opacity) made a translucent background let the
-          // DAG's edge lines show straight through the card at the pulse's
-          // low point. Now a solid (non-alpha) background wash + ring in the
-          // icon's own sky hue, no opacity animation on the card at all -
-          // the spinning icon alone carries the "in progress" motion cue.
+          // Solid (non-alpha) background, not opacity-pulsed — a translucent
+          // or pulsing card would let the DAG's edge lines show through it,
+          // and the spinning icon alone already carries the "in progress"
+          // motion cue without animating the whole card's opacity.
           status === 'running' ? 'bg-sky-50 ring-1 ring-sky-500/40 dark:bg-sky-950' : 'bg-theme-surface',
           clickable && 'cursor-pointer hover:ring-1 hover:ring-skyhook-500/50',
         )}

@@ -117,7 +117,7 @@ export function TaskRunRenderer({ data, onViewLogs, onNavigate }: TaskRunRendere
       </Section>
 
       {params.length > 0 && (
-        <Section title="Parameters" defaultExpanded={false}>
+        <Section title="Parameters">
           <PropertyList>
             {params.map((p: any) => (
               <Property key={p.name} label={p.name} value={typeof p.value === 'string' ? p.value : JSON.stringify(p.value)} />
@@ -127,7 +127,7 @@ export function TaskRunRenderer({ data, onViewLogs, onNavigate }: TaskRunRendere
       )}
 
       {results.length > 0 && (
-        <Section title="Results" defaultExpanded={false}>
+        <Section title="Results">
           <PropertyList>
             {results.map((r: any) => (
               <Property key={r.name} label={r.name} value={typeof r.value === 'string' ? r.value : JSON.stringify(r.value)} />

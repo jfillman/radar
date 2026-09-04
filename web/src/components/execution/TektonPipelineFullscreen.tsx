@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { PipelineDagView } from '@skyhook-io/k8s-ui/components/resources/renderers/PipelineDagView'
 import {
+  aggregateMatrixStatuses,
   applyTaskRunStatuses,
   buildChildTaskRunRefs,
   buildPipelineTaskGraph,
@@ -32,13 +33,19 @@ export function TektonPipelineFullscreen({ kind, namespace, name, resource, onNa
   const declaredTasks = useMemo(() => buildPipelineTaskGraph(pipelineSpec), [pipelineSpec])
 
   const childRefs = useMemo(
-    () => (isRun ? buildChildTaskRunRefs(status) : new Map<string, { taskRunName: string }>()),
+    () => (isRun ? buildChildTaskRunRefs(status) : new Map<string, { taskRunName: string }[]>()),
     [isRun, status],
   )
-  const entries = useMemo(() => [...childRefs.entries()], [childRefs])
+  // Flattened one entry per actual TaskRun — a matrix task contributes
+  // several entries sharing the same pipelineTaskName, each needing its own
+  // fetch, not just the first/last one.
+  const flatChildren = useMemo(
+    () => [...childRefs.entries()].flatMap(([pipelineTaskName, refs]) => refs.map((ref) => [pipelineTaskName, ref] as const)),
+    [childRefs],
+  )
 
   const queries = useQueries({
-    queries: entries.map(([, ref]) => ({
+    queries: flatChildren.map(([, ref]) => ({
       queryKey: ['resource', 'taskruns', namespace, ref.taskRunName, 'tekton.dev'],
       queryFn: async () => fetchJSON<{ resource: any }>(`/resources/taskruns/${namespace || '_'}/${ref.taskRunName}?group=tekton.dev`),
       staleTime: 5000,
@@ -50,23 +57,31 @@ export function TektonPipelineFullscreen({ kind, namespace, name, resource, onNa
 
   const rawTasks: TektonTaskNode[] = useMemo(() => {
     if (!isRun) return declaredTasks
-    const statusByTaskName = new Map<string, { status: TektonTaskNodeStatus; reason?: string; taskRunName?: string }>()
-    entries.forEach(([pipelineTaskName, ref], i) => {
+    const liveByTaskName = new Map<string, Array<{ status: TektonTaskNodeStatus; reason?: string; taskRunName: string }>>()
+    flatChildren.forEach(([pipelineTaskName, ref], i) => {
       const q = queries[i]
-      if (q.isLoading || !q.data) {
-        statusByTaskName.set(pipelineTaskName, { status: 'unknown', taskRunName: ref.taskRunName })
-        return
-      }
-      const live = tektonNodeStatusFromConditions(q.data.resource?.status?.conditions)
-      statusByTaskName.set(pipelineTaskName, { ...live, taskRunName: ref.taskRunName })
+      const live = q.isLoading || !q.data
+        ? { status: 'unknown' as const, taskRunName: ref.taskRunName }
+        : { ...tektonNodeStatusFromConditions(q.data.resource?.status?.conditions), taskRunName: ref.taskRunName }
+      const existing = liveByTaskName.get(pipelineTaskName)
+      if (existing) existing.push(live)
+      else liveByTaskName.set(pipelineTaskName, [live])
     })
+    // A non-matrix task's array always has exactly one entry, so aggregation
+    // is a no-op there — only a matrix task's several parallel expansions
+    // actually get collapsed, worst-status-wins, into the one node the DAG
+    // shows.
+    const statusByTaskName = new Map<string, { status: TektonTaskNodeStatus; reason?: string; taskRunName?: string }>()
+    for (const [pipelineTaskName, live] of liveByTaskName) {
+      statusByTaskName.set(pipelineTaskName, aggregateMatrixStatuses(live))
+    }
     return applyTaskRunStatuses(declaredTasks, statusByTaskName)
-    // queries is a fresh array each render from useQueries; entries + isLoading/data
+    // queries is a fresh array each render from useQueries; flatChildren + isLoading/data
     // per-entry is what actually needs to retrigger this, which the queries objects
     // capture already — omitting `queries` itself from deps would be wrong since its
     // contents (not identity) are what we read, so keep it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRun, declaredTasks, entries, queries])
+  }, [isRun, declaredTasks, flatChildren, queries])
 
   // Stabilize the array reference by content, not just recompute on every
   // render. `queries` is a fresh array from useQueries every render (even
@@ -78,7 +93,7 @@ export function TektonPipelineFullscreen({ kind, namespace, name, resource, onNa
   // actually changes, so the observer has nothing to report back).
   const tasksSigRef = useRef('')
   const tasksRef = useRef(rawTasks)
-  const sig = rawTasks.map((t) => `${t.name}:${t.status ?? ''}:${t.reason ?? ''}:${t.taskRunName ?? ''}`).join('|')
+  const sig = rawTasks.map((t) => `${t.name}:${t.dependsOn.join(',')}:${t.status ?? ''}:${t.reason ?? ''}:${t.taskRunName ?? ''}`).join('|')
   if (sig !== tasksSigRef.current) {
     tasksSigRef.current = sig
     tasksRef.current = rawTasks

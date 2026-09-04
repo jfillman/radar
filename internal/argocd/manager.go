@@ -57,7 +57,21 @@ const repositoriesTTL = 60 * time.Second
 // probeRetryInterval throttles retries after a failed probe so a dead
 // argocd-server doesn't get hammered on every insights request.
 const (
-	probeTimeout       = 15 * time.Second
+	// Auto-discovery (empty URL) tries every candidate argocd-server Service
+	// in the cluster sequentially — the in-cluster pass at up to
+	// probeEndpointTimeout each, then (off-cluster) a port-forward pass that
+	// tries https then http per candidate, up to 2×probeEndpointTimeout each.
+	// This whole budget is shared across that entire loop, so it has to fit a
+	// realistic multi-instance cluster's worth of candidates each taking the
+	// full probeEndpointTimeout, not just one — otherwise a slow-to-fail
+	// earlier candidate (the same *.local-style DNS stall probeEndpointTimeout
+	// itself exists to absorb) can starve a perfectly reachable later one of
+	// its fair chance before the budget runs out. This only bounds a
+	// background goroutine (maybeProbeInBackgroundLocked / repo refresh),
+	// never a synchronous request — the Settings "Connect" save path owns its
+	// own separate, shorter deadline — so being generous here costs nothing
+	// user-facing.
+	probeTimeout       = 45 * time.Second
 	probeRetryInterval = 30 * time.Second
 
 	// probeEndpointTimeout bounds a single reachability probe. On macOS,

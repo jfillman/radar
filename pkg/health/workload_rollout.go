@@ -303,7 +303,7 @@ func canaryStepLabel(step map[string]any) string {
 	}
 
 	if experiment, ok := step["experiment"].(map[string]any); ok {
-		names := templateNames(experiment["templates"])
+		names := experimentTemplateNames(experiment["templates"])
 		duration := ""
 		if d, ok := experiment["duration"]; ok && d != nil && d != "" {
 			duration = fmt.Sprintf(" for %v", d)
@@ -387,8 +387,10 @@ func canaryStepLabel(step map[string]any) string {
 	return "Unknown step"
 }
 
-// templateNames extracts templateName/clusterTemplateName from a
-// analysis.templates or experiment.templates list, same as the TS version.
+// templateNames extracts templateName/clusterTemplateName from an
+// analysis.templates list (AnalysisTemplate/ClusterAnalysisTemplate refs),
+// same as the TS version. NOT used for experiment.templates — those are pod
+// templates, a different shape entirely; see experimentTemplateNames.
 func templateNames(raw any) []string {
 	list, ok := raw.([]any)
 	if !ok {
@@ -405,6 +407,29 @@ func templateNames(raw any) []string {
 			continue
 		}
 		if name, ok := t["clusterTemplateName"].(string); ok && name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// experimentTemplateNames extracts `name` from an experiment.templates
+// list — Argo's RolloutExperimentTemplate entries (pod template variants
+// like "baseline"/"canary" an Experiment spins up replicas of) carry their
+// identifier under `name`, not `templateName`/`clusterTemplateName` (the
+// AnalysisTemplate ref shape templateNames handles). Mirrors the TS version.
+func experimentTemplateNames(raw any) []string {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, item := range list {
+		t, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, ok := t["name"].(string); ok && name != "" {
 			names = append(names, name)
 		}
 	}

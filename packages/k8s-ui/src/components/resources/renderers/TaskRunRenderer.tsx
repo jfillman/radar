@@ -14,10 +14,13 @@ interface TaskRunRendererProps {
   onNavigate?: (ref: ResourceRef) => void
 }
 
-// Tekton names each step's container `step-<stepName>` inside the TaskRun's
-// pod — stable across Tekton versions, not something the API reports back.
-function stepContainerName(stepName: string): string {
-  return `step-${stepName}`
+// Tekton reports the real container name at status.steps[].container — read
+// that first. The `step-<stepName>` convention is only a fallback for a
+// status shape that's missing the field (an older/stripped object); Tekton
+// doesn't guarantee the naive prefix once a step name gets sanitized or
+// truncated to fit Kubernetes' container-name limits.
+function stepContainerName(step: { name: string; container?: string }): string {
+  return step.container ?? `step-${step.name}`
 }
 
 function StepRow({ step, podName, onViewLogs }: { step: any; podName?: string; onViewLogs?: (podName: string, containerName: string) => void }) {
@@ -48,7 +51,7 @@ function StepRow({ step, podName, onViewLogs }: { step: any; podName?: string; o
       {canViewLogs && (
         <button
           type="button"
-          onClick={() => onViewLogs!(podName!, stepContainerName(step.name))}
+          onClick={() => onViewLogs!(podName!, stepContainerName(step))}
           className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-theme-text-secondary hover:bg-theme-elevated hover:text-theme-text-primary"
           title={`View logs for step "${step.name}"`}
         >

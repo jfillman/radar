@@ -15,8 +15,10 @@ export function TaskRunRenderer({ data, onNavigate }: TaskRunRendererProps) {
   const openLogs = useOpenLogs()
   const namespace = data?.metadata?.namespace ?? ''
   const podName = data?.status?.podName as string | undefined
-  const steps = (data?.status?.steps ?? []) as Array<{ name: string }>
-  const containers = steps.map((s) => `step-${s.name}`)
+  const steps = (data?.status?.steps ?? []) as Array<{ name: string; container?: string }>
+  // Prefer the container name Tekton actually reports; the step-<name>
+  // convention is only a fallback for an older/stripped status shape.
+  const containers = steps.map((s) => s.container ?? `step-${s.name}`)
 
   return (
     <BaseTaskRunRenderer

@@ -5,12 +5,22 @@ import {
   buildChildTaskRunRefs,
   buildPipelineTaskGraph,
   buildSkippedTaskReasons,
+  getTektonPipelineStatus,
   type TektonTaskNode,
 } from './resource-utils-tekton'
 
 function depsOf(nodes: TektonTaskNode[], name: string): string[] {
   return nodes.find((n) => n.name === name)?.dependsOn ?? []
 }
+
+describe('getTektonPipelineStatus', () => {
+  it('counts finally tasks alongside regular tasks', () => {
+    const got = getTektonPipelineStatus({
+      spec: { tasks: [{ name: 'build' }, { name: 'deploy' }], finally: [{ name: 'notify' }] },
+    })
+    expect(got.text).toBe('3 tasks')
+  })
+})
 
 describe('buildPipelineTaskGraph', () => {
   it('reads explicit runAfter as a direct dependency', () => {

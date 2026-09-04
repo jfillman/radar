@@ -990,7 +990,6 @@ func TestBuildIssues_DegradedAppFallsBackToLoudestResourceEvent(t *testing.T) {
 		t.Errorf("Message = %q, want it to include the winning event's Message", got.Message)
 	}
 
-	// No Warning events anywhere → no fabricated issue.
 	empty := buildIssues(root, nil, "argocd", &fakeResolver{})
 	if len(empty) != 0 {
 		t.Errorf("expected no issues when no resource has a Warning event, got %+v", empty)
@@ -1000,6 +999,35 @@ func TestBuildIssues_DegradedAppFallsBackToLoudestResourceEvent(t *testing.T) {
 	plain := buildIssues(root, nil, "argocd", nil)
 	if len(plain) != 0 {
 		t.Errorf("expected no issues with a nil resolver, got %+v", plain)
+	}
+}
+
+// TestBuildIssues_DegradedAppFallsBackEvenWhenEventCountIsZero pins that a
+// genuine single-occurrence Warning event isn't treated as "no signal" just
+// because it has no explicit Count — the events.k8s.io/v1 API only sets a
+// count once an event has repeated into a series, so a real, first-time
+// Warning commonly reports Count == 0 on modern clusters.
+func TestBuildIssues_DegradedAppFallsBackEvenWhenEventCountIsZero(t *testing.T) {
+	root := argoApp(map[string]any{
+		"health": map[string]any{"status": "Degraded"},
+		"resources": []any{
+			map[string]any{
+				"group": "external-secrets.io", "kind": "ClusterSecretStore", "name": "platform-secret-store",
+				"status": "Synced",
+			},
+		},
+	})
+	r := &fakeResolver{events: map[string][]EventSummary{
+		"platform-secret-store": {
+			{Type: "Warning", Reason: "InvalidProviderConfig", Message: "no route to host", Count: 0},
+		},
+	}}
+	issues := buildIssues(root, nil, "argocd", r)
+	if len(issues) != 1 {
+		t.Fatalf("expected exactly 1 fallback issue for a zero-count Warning, got %d: %+v", len(issues), issues)
+	}
+	if issues[0].Cause != "InvalidProviderConfig" {
+		t.Errorf("Cause = %q, want the zero-count event's Reason", issues[0].Cause)
 	}
 }
 

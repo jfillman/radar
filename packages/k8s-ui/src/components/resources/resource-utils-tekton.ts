@@ -85,6 +85,11 @@ export interface TektonTaskNode {
   // hasn't reached yet. Presence is what makes a DAG node clickable: nothing
   // to open for a task that never ran.
   taskRunName?: string
+  // True for a spec.finally task. Tekton runs these only after every regular
+  // PipelineTask has settled (success or failure) — consumers that want to
+  // set them apart visually (a cleanup/notify row after the main DAG) can key
+  // off this instead of re-deriving it from dependsOn.
+  isFinally?: boolean
 }
 
 // Tekton infers task ordering two ways: an explicit `runAfter` list, and
@@ -111,7 +116,8 @@ function resultRefsIn(value: unknown, out: Set<string>): void {
 
 export function buildPipelineTaskGraph(pipelineSpec: any): TektonTaskNode[] {
   const tasks: any[] = pipelineSpec?.tasks ?? []
-  const nodes = tasks.map((task) => {
+  const regularNames = new Set<string>(tasks.map((t) => t.name))
+  const regularNodes = tasks.map((task) => {
     const deps = new Set<string>(task.runAfter ?? [])
     resultRefsIn(task.params, deps)
     resultRefsIn(task.when, deps)
@@ -119,7 +125,29 @@ export function buildPipelineTaskGraph(pipelineSpec: any): TektonTaskNode[] {
     deps.delete(task.name)
     return { name: task.name, dependsOn: [...deps] }
   })
-  return reduceToDirectDeps(nodes)
+  // finally tasks don't support runAfter (Tekton rejects the field there) —
+  // the ordering constraint is implicit and absolute: every finally task
+  // starts only once ALL regular PipelineTasks have settled, success or
+  // failure, not just the ones it happens to read a result from. Model that
+  // as a dependency on every regular task with no other regular task
+  // depending on it (the DAG's own terminal/leaf tasks) — reduceToDirectDeps
+  // below then drops any of a finally task's own result-ref deps that are
+  // already implied by one of those barrier edges.
+  const dependedOn = new Set<string>(regularNodes.flatMap((n) => n.dependsOn))
+  const terminalRegularTasks = regularNodes.filter((n) => !dependedOn.has(n.name)).map((n) => n.name)
+  const finallyTasks: any[] = pipelineSpec?.finally ?? []
+  const finallyNodes = finallyTasks.map((task) => {
+    const deps = new Set<string>(terminalRegularTasks)
+    resultRefsIn(task.params, deps)
+    resultRefsIn(task.when, deps)
+    // A finally task's result-refs only ever point at regular tasks, never at
+    // other finally tasks (Tekton doesn't allow it) — but guard anyway so a
+    // malformed spec can't produce a dep on an unknown/finally name.
+    for (const d of deps) if (!regularNames.has(d)) deps.delete(d)
+    deps.delete(task.name)
+    return { name: task.name, dependsOn: [...deps], isFinally: true }
+  })
+  return reduceToDirectDeps([...regularNodes, ...finallyNodes])
 }
 
 // reduceToDirectDeps computes the transitive reduction of the dependency

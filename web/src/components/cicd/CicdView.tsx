@@ -12,6 +12,7 @@ import {
   RowActionMenu,
   ConfirmDialog,
   Tooltip,
+  buildPipelineTaskGraph,
   getTektonPipelineRunStatus,
   tektonRefName,
   formatAge,
@@ -103,7 +104,10 @@ function runDurationMs(run: any): number | null {
 // only tells us "a TaskRun was created for this task," not its outcome — an
 // honest "how far did it get" proxy, not "how much succeeded").
 function taskProgress(run: any): { started: number; total: number } {
-  const total = (run?.status?.pipelineSpec?.tasks ?? []).length
+  // buildPipelineTaskGraph, not a bare pipelineSpec.tasks.length, so finally
+  // tasks count toward the total — Tekton runs them and includes their
+  // outcome in the PipelineRun result same as any regular task.
+  const total = buildPipelineTaskGraph(run?.status?.pipelineSpec ?? {}).length
   const started = (run?.status?.childReferences ?? []).length
   return { started, total }
 }

@@ -1,5 +1,6 @@
 import { ListChecks, Package } from 'lucide-react'
 import { Section, PropertyList, Property } from '../../ui/drawer-components'
+import { buildPipelineTaskGraph } from '../resource-utils-tekton'
 
 interface PipelineRendererProps {
   data: any
@@ -13,7 +14,10 @@ export function PipelineRenderer({ data }: PipelineRendererProps) {
   const spec = data?.spec ?? {}
   const params = spec.params ?? []
   const workspaces = spec.workspaces ?? []
-  const taskCount = (spec.tasks ?? []).length
+  // buildPipelineTaskGraph (not a bare spec.tasks.length) so finally tasks
+  // count toward the total — Tekton runs them and includes their outcome in
+  // the PipelineRun result same as any regular task.
+  const taskCount = buildPipelineTaskGraph(spec).length
 
   return (
     <>

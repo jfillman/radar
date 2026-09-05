@@ -416,19 +416,27 @@ desktop-dev:
 	cd cmd/desktop && wails dev -ldflags "$(LDFLAGS)"
 
 # Package macOS .app bundle
-desktop-package-darwin:
+#
+# Depends on frontend+embed, then tells wails to skip its own frontend build
+# (-s): cmd/desktop's Go code doesn't embed web/dist itself — it starts the
+# same internal server the CLI binary uses, which serves internal/static's
+# go:embed'd dist directory. Without the embed step here (or letting wails
+# rebuild web/dist without ever copying it to internal/static/dist), the
+# compiled desktop binary silently keeps serving whatever was last copied
+# there, which can be older than the frontend wails just built.
+desktop-package-darwin: frontend embed
 	@command -v wails >/dev/null 2>&1 || { echo "Error: wails CLI not found"; exit 1; }
-	cd cmd/desktop && wails build -platform darwin/universal -ldflags "$(LDFLAGS)"
+	cd cmd/desktop && wails build -platform darwin/universal -s -ldflags "$(LDFLAGS)"
 
 # Package Windows .exe
-desktop-package-windows:
+desktop-package-windows: frontend embed
 	@command -v wails >/dev/null 2>&1 || { echo "Error: wails CLI not found"; exit 1; }
-	cd cmd/desktop && wails build -platform windows/amd64 -ldflags "$(LDFLAGS)"
+	cd cmd/desktop && wails build -platform windows/amd64 -s -ldflags "$(LDFLAGS)"
 
 # Package Linux binary
-desktop-package-linux:
+desktop-package-linux: frontend embed
 	@command -v wails >/dev/null 2>&1 || { echo "Error: wails CLI not found"; exit 1; }
-	cd cmd/desktop && wails build -platform linux/amd64 -ldflags "$(LDFLAGS)"
+	cd cmd/desktop && wails build -platform linux/amd64 -s -ldflags "$(LDFLAGS)"
 
 # ============================================================================
 # Release Targets

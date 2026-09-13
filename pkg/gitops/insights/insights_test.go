@@ -986,8 +986,8 @@ func TestBuildIssues_DegradedAppFallsBackToLoudestResourceEvent(t *testing.T) {
 	if got.Reason != "InvalidProviderConfig" || got.Severity != SeverityWarning || got.Source != "events" {
 		t.Errorf("issue = %+v, want the winning event's Reason as a warning-tier events lead", got)
 	}
-	if !strings.Contains(got.Message, "no route to host") || !strings.Contains(got.Message, "may be why") {
-		t.Errorf("Message = %q, want it to include the winning event's Message and read as a lead", got.Message)
+	if got.Cause != "no route to host" || !strings.Contains(got.Message, "may be why") {
+		t.Errorf("issue = %+v, want the winning event's Message as Cause (the tree tooltip reads it) and a message that reads as a lead", got)
 	}
 
 	empty := buildIssues(root, nil, "argocd", &fakeResolver{})
@@ -1112,7 +1112,7 @@ func TestBuildIssues_DegradedAppPrefersCriticalFindingOverEarlierWarning(t *test
 	lead := buildIssues(root, tree, "argocd", onlyWarning)
 	var sawLead, sawSummary bool
 	for _, iss := range lead {
-		if iss.Source == "radar" && iss.Severity == SeverityWarning && strings.Contains(iss.Message, "may be why") {
+		if iss.Source == "radar" && iss.Severity == SeverityWarning && strings.Contains(iss.Message, "may be why") && iss.Cause == "FOO set twice" {
 			sawLead = true
 		}
 		if iss.Reason == "DegradedResources" {
@@ -1121,6 +1121,39 @@ func TestBuildIssues_DegradedAppPrefersCriticalFindingOverEarlierWarning(t *test
 	}
 	if !sawLead || !sawSummary {
 		t.Errorf("a warning-only finding must be a lead that leaves the degraded summary visible, got %+v", lead)
+	}
+}
+
+// TestBuildIssues_DriftLoopDoesNotHideDegradedFallback: StuckDriftLoop is a
+// sync signal, not a health explanation; a Degraded app in a drift loop
+// still gets the live-state attribution and the tree summary.
+func TestBuildIssues_DriftLoopDoesNotHideDegradedFallback(t *testing.T) {
+	root := argoApp(map[string]any{
+		"health":         map[string]any{"status": "Degraded"},
+		"sync":           map[string]any{"status": "OutOfSync"},
+		"reconciledAt":   time.Now().UTC().Format(time.RFC3339),
+		"operationState": map[string]any{"phase": "Succeeded", "finishedAt": time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)},
+		"resources": []any{
+			map[string]any{"group": "apps", "kind": "Deployment", "namespace": "prod", "name": "web", "status": "OutOfSync"},
+		},
+	})
+	root.Object["spec"] = map[string]any{"syncPolicy": map[string]any{"automated": map[string]any{"selfHeal": true}}}
+	r := &fakeResolver{problems: map[string][]ResourceProblem{"web": {{Reason: "CrashLoopBackOff", Message: "back-off", Severity: "critical"}}}}
+	issues := buildIssues(root, &gitopstree.ResourceTree{Summary: gitopstree.Summary{Degraded: 1}}, "argocd", r)
+	var drift, verdict bool
+	for _, iss := range issues {
+		if iss.Reason == "StuckDriftLoop" {
+			drift = true
+		}
+		if iss.Scope == ScopeResource && iss.Reason == "Degraded" && iss.Source == "radar" {
+			verdict = true
+		}
+	}
+	if !drift {
+		t.Fatalf("fixture did not trigger the StuckDriftLoop detector, got %+v", issues)
+	}
+	if !verdict {
+		t.Errorf("drift loop must not suppress the per-resource attribution, got %+v", issues)
 	}
 }
 

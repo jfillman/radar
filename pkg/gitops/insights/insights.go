@@ -757,13 +757,16 @@ func degradedResourceFromLiveState(root *unstructured.Unstructured, resolver Res
 				Source:   "radar",
 			}
 		}
+		// Cause carries the detail: the tree tooltip and the headline's
+		// second line both read it, and the message stays a short lead.
 		return &Issue{
 			Severity: SeverityWarning,
 			Scope:    ScopeResource,
 			Reason:   fallback(bestProblem.Reason, "Warning"),
-			Message:  fmt.Sprintf("%s %s may be why: %s", bestRef.Kind, bestRef.Name, detail),
+			Message:  fmt.Sprintf("%s %s may be why this app is Degraded", bestRef.Kind, bestRef.Name),
 			Refs:     []Ref{bestRef},
 			Action:   "Open the resource drawer to confirm.",
+			Cause:    detail,
 			Source:   "radar",
 		}
 	}
@@ -806,23 +809,28 @@ func degradedResourceFromEvents(refs []Ref, resolver Resolver) *Issue {
 		Severity:   SeverityWarning,
 		Scope:      ScopeResource,
 		Reason:     fallback(bestEvent.Reason, "Warning"),
-		Message:    fmt.Sprintf("%s %s may be why: %s", best.Kind, best.Name, fallback(bestEvent.Message, bestEvent.Reason)),
+		Message:    fmt.Sprintf("%s %s may be why this app is Degraded", best.Kind, best.Name),
 		RawMessage: bestEvent.Message,
 		Refs:       []Ref{best},
 		Action:     "Recent Warning events point here. Open the resource drawer to confirm.",
+		Cause:      fallback(bestEvent.Message, bestEvent.Reason),
 		Source:     "events",
 	}
 }
 
 // degradedResourcesExplained reports whether the Issues so far already
 // account for degraded managed resources: a critical per-resource Issue
-// names one, a failed operation is the upstream cause of all of them.
-// Informational rows (sync Running, drift) explain nothing, and neither
+// names one, a failed sync operation is the upstream cause of all of them.
+// Informational rows (sync Running) and drift detectors (StuckDriftLoop,
+// ManualDrift — sync signals, not health) explain nothing, and neither
 // does a warning-tier lead (an events pick, a config finding) — it points,
 // it doesn't conclude.
 func degradedResourcesExplained(issues []Issue) bool {
 	for _, iss := range issues {
-		if (iss.Scope == ScopeResource || iss.Scope == ScopeOperation) && iss.Severity == SeverityCritical {
+		if iss.Scope == ScopeResource && iss.Severity == SeverityCritical {
+			return true
+		}
+		if iss.Scope == ScopeOperation && (iss.Reason == "Failed" || iss.Reason == "Error") {
 			return true
 		}
 	}

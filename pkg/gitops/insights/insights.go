@@ -168,12 +168,6 @@ type Issue struct {
 	// Stuck=true when retry count crosses the "no longer transient"
 	// threshold. Drives a stronger visual treatment.
 	Stuck bool `json:"stuck,omitempty"`
-	// Source names what produced a resource-scoped Issue when it wasn't the
-	// GitOps controller's own per-resource health: "radar" for the issues
-	// engine's classification, "events" for a lead taken from Warning
-	// events. An events lead is a pointer, not a verdict — it never counts
-	// as having explained the app's health.
-	Source string `json:"source,omitempty"`
 }
 
 type Change struct {
@@ -644,16 +638,15 @@ func buildIssues(root *unstructured.Unstructured, resourceTree *gitopstree.Resou
 		// no health.status for ANY kind even though Argo's own health check
 		// (built-in Lua for ClusterSecretStore and friends included) rolled
 		// the app up to Degraded. The per-resource pass above then has nothing
-		// to point at. Attribute the badge from what Radar can still observe
-		// about each managed resource instead of leaving it unexplained.
-		// Only for an app deploying to THIS cluster: Radar's engine and
-		// events describe local objects, and a same-named local resource is
-		// not the remote one. An informational Running/drift row is not an
-		// explanation and must not suppress this; a failed operation or a
-		// per-resource Issue is.
+		// to point at. Offer the loudest recent Warning event as a lead rather
+		// than leaving the badge unexplained. Only for an app deploying to
+		// THIS cluster: events describe local objects, and a same-named local
+		// resource is not the remote one. An informational Running/drift row
+		// is not an explanation and must not suppress this; a failed operation
+		// or a per-resource Issue is.
 		if !degradedResourcesExplained(out) && gitops.IsInClusterDestination(root) {
 			if health, _, _ := unstructured.NestedString(root.Object, "status", "health", "status"); health == "Degraded" {
-				if iss := degradedResourceFromLiveState(root, resolver); iss != nil {
+				if iss := degradedResourceFromEvents(root, resolver); iss != nil {
 					out = append(out, *iss)
 				}
 			}
@@ -686,28 +679,31 @@ func buildIssues(root *unstructured.Unstructured, resourceTree *gitopstree.Resou
 	return out
 }
 
-// degradedResourceFromLiveState attributes an app-level Degraded badge to one
-// of the Application's declared managed resources when status.resources[]
-// carries no per-resource health. Two tiers, strongest first:
-//
-//  1. The cluster-wide issues engine's classification for the resource
-//     (crashloop / OOM / image-pull for workloads, a False Ready-style
-//     condition for CRDs) — current state, the same signal the per-resource
-//     pass bridges to when Argo does persist health.
-//  2. The managed resource with the loudest recent Warning event. Events are
-//     not authoritative (a recovered resource can keep a repeated Warning
-//     inside the event TTL), so this only runs when tier 1 found nothing,
-//     and what it returns is a warning-tier lead that says "may be why",
-//     not a Degraded verdict.
-//
-// Returns nil (no fabricated issue) when neither tier has a signal, or when
-// resolver is nil (tests, and any caller that opts out of live enrichment).
-func degradedResourceFromLiveState(root *unstructured.Unstructured, resolver Resolver) *Issue {
+// degradedResourceFromEvents picks, from the Application's declared managed
+// resources, the one with the loudest recent Warning event, as a lead when
+// nothing else identified why the app is Degraded. Events are not a health
+// verdict (a recovered resource can keep a repeated Warning inside the event
+// TTL), so the Issue is warning-tier, says "possible cause", and never counts
+// as having explained the app's health — the degraded-resources summary
+// still shows next to it. Returns nil when no managed resource has a Warning
+// event, or when resolver is nil (tests, and any caller that opts out of
+// live enrichment).
+func degradedResourceFromEvents(root *unstructured.Unstructured, resolver Resolver) *Issue {
 	if resolver == nil {
 		return nil
 	}
 	raw, _, _ := unstructured.NestedSlice(root.Object, "status", "resources")
-	refs := make([]Ref, 0, len(raw))
+	var (
+		best      Ref
+		bestEvent EventSummary
+		// -1, not 0: a real, single-occurrence Warning event commonly reports
+		// Count == 0 on modern clusters (events.k8s.io/v1 only sets a count at
+		// all once an event has repeated into a series) — starting the
+		// sentinel at 0 would make that genuine signal indistinguishable from
+		// "no Warning event found," and the function would silently return no
+		// issue for exactly the first-occurrence case it exists to catch.
+		bestCount int32 = -1
+	)
 	for _, item := range raw {
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -722,75 +718,6 @@ func degradedResourceFromLiveState(root *unstructured.Unstructured, resolver Res
 		if ref.Kind == "" || ref.Name == "" {
 			continue
 		}
-		refs = append(refs, ref)
-	}
-	// Scan every managed resource before choosing: a critical finding
-	// (crashloop, OOM, image pull) anywhere beats a warning-tier one
-	// (a config lint on a healthy Deployment, say) that merely comes first
-	// in the list. Only a critical finding is stated as Degraded; a
-	// warning-only finding is a lead, worded and ranked as one.
-	var (
-		bestRef     Ref
-		bestProblem ResourceProblem
-		found       bool
-	)
-	for _, ref := range refs {
-		p, ok := worstResourceProblem(resolver.ResourceProblems(ref.Group, ref.Kind, ref.Namespace, ref.Name))
-		if !ok {
-			continue
-		}
-		if !found || (bestProblem.Severity != "critical" && p.Severity == "critical") {
-			bestRef, bestProblem, found = ref, p, true
-		}
-	}
-	if found {
-		detail := fallback(bestProblem.Message, bestProblem.Reason)
-		if bestProblem.Severity == "critical" {
-			return &Issue{
-				Severity: SeverityCritical,
-				Scope:    ScopeResource,
-				Reason:   "Degraded",
-				Message:  fmt.Sprintf("%s %s is Degraded", bestRef.Kind, bestRef.Name),
-				Refs:     []Ref{bestRef},
-				Action:   "Open the resource drawer for events, logs, and YAML.",
-				Cause:    detail,
-				Source:   "radar",
-			}
-		}
-		// Cause carries the detail: the tree tooltip and the headline's
-		// second line both read it, and the message stays a short lead.
-		return &Issue{
-			Severity: SeverityWarning,
-			Scope:    ScopeResource,
-			Reason:   fallback(bestProblem.Reason, "Warning"),
-			Message:  fmt.Sprintf("%s %s may be why this app is Degraded", bestRef.Kind, bestRef.Name),
-			Refs:     []Ref{bestRef},
-			Action:   "Open the resource drawer to confirm.",
-			Cause:    detail,
-			Source:   "radar",
-		}
-	}
-	return degradedResourceFromEvents(refs, resolver)
-}
-
-// degradedResourceFromEvents picks the managed resource with the loudest
-// recent Warning event — the weakest attribution tier, see
-// degradedResourceFromLiveState. Returns nil when no ref has a Warning
-// event. The Issue is a lead (warning severity, Source "events"): the
-// summary count of degraded resources still shows alongside it.
-func degradedResourceFromEvents(refs []Ref, resolver Resolver) *Issue {
-	var (
-		best      Ref
-		bestEvent EventSummary
-		// -1, not 0: a real, single-occurrence Warning event commonly reports
-		// Count == 0 on modern clusters (events.k8s.io/v1 only sets a count at
-		// all once an event has repeated into a series) — starting the
-		// sentinel at 0 would make that genuine signal indistinguishable from
-		// "no Warning event found," and the function would silently return no
-		// issue for exactly the first-occurrence case it exists to catch.
-		bestCount int32 = -1
-	)
-	for _, ref := range refs {
 		for _, ev := range resolver.RecentEvents(ref.Group, ref.Kind, ref.Namespace, ref.Name) {
 			if ev.Type != "Warning" {
 				continue
@@ -808,13 +735,12 @@ func degradedResourceFromEvents(refs []Ref, resolver Resolver) *Issue {
 	return &Issue{
 		Severity:   SeverityWarning,
 		Scope:      ScopeResource,
-		Reason:     fallback(bestEvent.Reason, "Warning"),
-		Message:    fmt.Sprintf("%s %s may be why this app is Degraded", best.Kind, best.Name),
+		Reason:     "PossibleCause",
+		Message:    fmt.Sprintf("%s %s has recent Warning events", best.Kind, best.Name),
 		RawMessage: bestEvent.Message,
 		Refs:       []Ref{best},
-		Action:     "Recent Warning events point here. Open the resource drawer to confirm.",
+		Action:     "Open the resource drawer to confirm.",
 		Cause:      fallback(bestEvent.Message, bestEvent.Reason),
-		Source:     "events",
 	}
 }
 
@@ -823,8 +749,7 @@ func degradedResourceFromEvents(refs []Ref, resolver Resolver) *Issue {
 // names one, a failed sync operation is the upstream cause of all of them.
 // Informational rows (sync Running) and drift detectors (StuckDriftLoop,
 // ManualDrift — sync signals, not health) explain nothing, and neither
-// does a warning-tier lead (an events pick, a config finding) — it points,
-// it doesn't conclude.
+// does the warning-tier events lead — it points, it doesn't conclude.
 func degradedResourcesExplained(issues []Issue) bool {
 	for _, iss := range issues {
 		if iss.Scope == ScopeResource && iss.Severity == SeverityCritical {
@@ -842,18 +767,8 @@ func degradedResourcesExplained(issues []Issue) bool {
 // over warning, else first) one's detail. Returns "" for no problems so the
 // caller keeps its generic guidance.
 func resourceProblemCause(problems []ResourceProblem) string {
-	best, ok := worstResourceProblem(problems)
-	if !ok {
-		return ""
-	}
-	return fallback(best.Message, best.Reason)
-}
-
-// worstResourceProblem picks the problem to speak for a resource: critical
-// over warning, else the first. False when there are none.
-func worstResourceProblem(problems []ResourceProblem) (ResourceProblem, bool) {
 	if len(problems) == 0 {
-		return ResourceProblem{}, false
+		return ""
 	}
 	best := problems[0]
 	for _, p := range problems[1:] {
@@ -861,7 +776,7 @@ func worstResourceProblem(problems []ResourceProblem) (ResourceProblem, bool) {
 			best = p
 		}
 	}
-	return best, true
+	return fallback(best.Message, best.Reason)
 }
 
 // dedupeIssues removes Issues that share the same (scope, reason, message,

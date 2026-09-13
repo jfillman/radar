@@ -168,6 +168,12 @@ type Issue struct {
 	// Stuck=true when retry count crosses the "no longer transient"
 	// threshold. Drives a stronger visual treatment.
 	Stuck bool `json:"stuck,omitempty"`
+	// Source names what produced a resource-scoped Issue when it wasn't the
+	// GitOps controller's own per-resource health: "radar" for the issues
+	// engine's classification, "events" for a lead taken from Warning
+	// events. An events lead is a pointer, not a verdict — it never counts
+	// as having explained the app's health.
+	Source string `json:"source,omitempty"`
 }
 
 type Change struct {
@@ -640,7 +646,12 @@ func buildIssues(root *unstructured.Unstructured, resourceTree *gitopstree.Resou
 		// the app up to Degraded. The per-resource pass above then has nothing
 		// to point at. Attribute the badge from what Radar can still observe
 		// about each managed resource instead of leaving it unexplained.
-		if len(out) == 0 {
+		// Only for an app deploying to THIS cluster: Radar's engine and
+		// events describe local objects, and a same-named local resource is
+		// not the remote one. An informational Running/drift row is not an
+		// explanation and must not suppress this; a failed operation or a
+		// per-resource Issue is.
+		if !degradedResourcesExplained(out) && gitops.IsInClusterDestination(root) {
 			if health, _, _ := unstructured.NestedString(root.Object, "status", "health", "status"); health == "Degraded" {
 				if iss := degradedResourceFromLiveState(root, resolver); iss != nil {
 					out = append(out, *iss)
@@ -660,7 +671,7 @@ func buildIssues(root *unstructured.Unstructured, resourceTree *gitopstree.Resou
 			}
 		}
 	}
-	if resourceTree != nil && resourceTree.Summary.Degraded > 0 && len(out) == 0 {
+	if resourceTree != nil && resourceTree.Summary.Degraded > 0 && !degradedResourcesExplained(out) {
 		out = append(out, Issue{Severity: SeverityWarning, Scope: ScopeTree, Reason: "DegradedResources", Message: fmt.Sprintf("%d managed %s degraded", resourceTree.Summary.Degraded, pluralizeResourcesAre(resourceTree.Summary.Degraded)), Action: "Use the graph or Resources tab to inspect affected resources."})
 	}
 	// Dedup by (scope, reason, message) — Flux carries the same failure
@@ -685,7 +696,9 @@ func buildIssues(root *unstructured.Unstructured, resourceTree *gitopstree.Resou
 //     pass bridges to when Argo does persist health.
 //  2. The managed resource with the loudest recent Warning event. Events are
 //     not authoritative (a recovered resource can keep a repeated Warning
-//     inside the event TTL), so this only runs when tier 1 found nothing.
+//     inside the event TTL), so this only runs when tier 1 found nothing,
+//     and what it returns is a warning-tier lead that says "may be why",
+//     not a Degraded verdict.
 //
 // Returns nil (no fabricated issue) when neither tier has a signal, or when
 // resolver is nil (tests, and any caller that opts out of live enrichment).
@@ -711,17 +724,47 @@ func degradedResourceFromLiveState(root *unstructured.Unstructured, resolver Res
 		}
 		refs = append(refs, ref)
 	}
+	// Scan every managed resource before choosing: a critical finding
+	// (crashloop, OOM, image pull) anywhere beats a warning-tier one
+	// (a config lint on a healthy Deployment, say) that merely comes first
+	// in the list. Only a critical finding is stated as Degraded; a
+	// warning-only finding is a lead, worded and ranked as one.
+	var (
+		bestRef     Ref
+		bestProblem ResourceProblem
+		found       bool
+	)
 	for _, ref := range refs {
-		if cause := resourceProblemCause(resolver.ResourceProblems(ref.Group, ref.Kind, ref.Namespace, ref.Name)); cause != "" {
+		p, ok := worstResourceProblem(resolver.ResourceProblems(ref.Group, ref.Kind, ref.Namespace, ref.Name))
+		if !ok {
+			continue
+		}
+		if !found || (bestProblem.Severity != "critical" && p.Severity == "critical") {
+			bestRef, bestProblem, found = ref, p, true
+		}
+	}
+	if found {
+		detail := fallback(bestProblem.Message, bestProblem.Reason)
+		if bestProblem.Severity == "critical" {
 			return &Issue{
 				Severity: SeverityCritical,
 				Scope:    ScopeResource,
 				Reason:   "Degraded",
-				Message:  fmt.Sprintf("%s %s is Degraded", ref.Kind, ref.Name),
-				Refs:     []Ref{ref},
+				Message:  fmt.Sprintf("%s %s is Degraded", bestRef.Kind, bestRef.Name),
+				Refs:     []Ref{bestRef},
 				Action:   "Open the resource drawer for events, logs, and YAML.",
-				Cause:    cause,
+				Cause:    detail,
+				Source:   "radar",
 			}
+		}
+		return &Issue{
+			Severity: SeverityWarning,
+			Scope:    ScopeResource,
+			Reason:   fallback(bestProblem.Reason, "Warning"),
+			Message:  fmt.Sprintf("%s %s may be why: %s", bestRef.Kind, bestRef.Name, detail),
+			Refs:     []Ref{bestRef},
+			Action:   "Open the resource drawer to confirm.",
+			Source:   "radar",
 		}
 	}
 	return degradedResourceFromEvents(refs, resolver)
@@ -729,7 +772,9 @@ func degradedResourceFromLiveState(root *unstructured.Unstructured, resolver Res
 
 // degradedResourceFromEvents picks the managed resource with the loudest
 // recent Warning event — the weakest attribution tier, see
-// degradedResourceFromLiveState. Returns nil when no ref has a Warning event.
+// degradedResourceFromLiveState. Returns nil when no ref has a Warning
+// event. The Issue is a lead (warning severity, Source "events"): the
+// summary count of degraded resources still shows alongside it.
 func degradedResourceFromEvents(refs []Ref, resolver Resolver) *Issue {
 	var (
 		best      Ref
@@ -758,15 +803,30 @@ func degradedResourceFromEvents(refs []Ref, resolver Resolver) *Issue {
 		return nil
 	}
 	return &Issue{
-		Severity:   SeverityCritical,
+		Severity:   SeverityWarning,
 		Scope:      ScopeResource,
-		Reason:     "Degraded",
-		Message:    fmt.Sprintf("%s %s: %s", best.Kind, best.Name, fallback(bestEvent.Message, bestEvent.Reason)),
+		Reason:     fallback(bestEvent.Reason, "Warning"),
+		Message:    fmt.Sprintf("%s %s may be why: %s", best.Kind, best.Name, fallback(bestEvent.Message, bestEvent.Reason)),
 		RawMessage: bestEvent.Message,
 		Refs:       []Ref{best},
-		Action:     "Open the resource drawer for events, logs, and YAML.",
-		Cause:      fallback(bestEvent.Reason, ""),
+		Action:     "Recent Warning events point here. Open the resource drawer to confirm.",
+		Source:     "events",
 	}
+}
+
+// degradedResourcesExplained reports whether the Issues so far already
+// account for degraded managed resources: a critical per-resource Issue
+// names one, a failed operation is the upstream cause of all of them.
+// Informational rows (sync Running, drift) explain nothing, and neither
+// does a warning-tier lead (an events pick, a config finding) — it points,
+// it doesn't conclude.
+func degradedResourcesExplained(issues []Issue) bool {
+	for _, iss := range issues {
+		if (iss.Scope == ScopeResource || iss.Scope == ScopeOperation) && iss.Severity == SeverityCritical {
+			return true
+		}
+	}
+	return false
 }
 
 // resourceProblemCause renders a single cause line from the workload problems
@@ -774,8 +834,18 @@ func degradedResourceFromEvents(refs []Ref, resolver Resolver) *Issue {
 // over warning, else first) one's detail. Returns "" for no problems so the
 // caller keeps its generic guidance.
 func resourceProblemCause(problems []ResourceProblem) string {
-	if len(problems) == 0 {
+	best, ok := worstResourceProblem(problems)
+	if !ok {
 		return ""
+	}
+	return fallback(best.Message, best.Reason)
+}
+
+// worstResourceProblem picks the problem to speak for a resource: critical
+// over warning, else the first. False when there are none.
+func worstResourceProblem(problems []ResourceProblem) (ResourceProblem, bool) {
+	if len(problems) == 0 {
+		return ResourceProblem{}, false
 	}
 	best := problems[0]
 	for _, p := range problems[1:] {
@@ -783,7 +853,7 @@ func resourceProblemCause(problems []ResourceProblem) string {
 			best = p
 		}
 	}
-	return fallback(best.Message, best.Reason)
+	return best, true
 }
 
 // dedupeIssues removes Issues that share the same (scope, reason, message,

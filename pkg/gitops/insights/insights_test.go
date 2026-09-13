@@ -983,11 +983,11 @@ func TestBuildIssues_DegradedAppFallsBackToLoudestResourceEvent(t *testing.T) {
 	if len(got.Refs) != 1 || got.Refs[0].Name != "platform-secret-store" {
 		t.Errorf("Refs = %+v, want a single ref to platform-secret-store", got.Refs)
 	}
-	if got.Cause != "InvalidProviderConfig" {
-		t.Errorf("Cause = %q, want the winning event's Reason", got.Cause)
+	if got.Reason != "InvalidProviderConfig" || got.Severity != SeverityWarning || got.Source != "events" {
+		t.Errorf("issue = %+v, want the winning event's Reason as a warning-tier events lead", got)
 	}
-	if !strings.Contains(got.Message, "no route to host") {
-		t.Errorf("Message = %q, want it to include the winning event's Message", got.Message)
+	if !strings.Contains(got.Message, "no route to host") || !strings.Contains(got.Message, "may be why") {
+		t.Errorf("Message = %q, want it to include the winning event's Message and read as a lead", got.Message)
 	}
 
 	empty := buildIssues(root, nil, "argocd", &fakeResolver{})
@@ -1041,6 +1041,89 @@ func TestBuildIssues_DegradedAppPrefersIssueEngineOverEvents(t *testing.T) {
 	}
 }
 
+// TestBuildIssues_DegradedAppLeadIsGatedAndDoesNotExplain: the live-state
+// tier only runs for an app deploying to this cluster (Radar's engine and
+// events describe local objects), still runs alongside an informational
+// Running row, and an events lead leaves the degraded-resources summary
+// visible because it is a pointer, not an explanation.
+func TestBuildIssues_DegradedAppLeadIsGatedAndDoesNotExplain(t *testing.T) {
+	status := func() map[string]any {
+		return map[string]any{
+			"health":         map[string]any{"status": "Degraded"},
+			"operationState": map[string]any{"phase": "Running"},
+			"resources": []any{
+				map[string]any{"group": "apps", "kind": "Deployment", "namespace": "prod", "name": "web", "status": "Synced"},
+			},
+		}
+	}
+	r := &fakeResolver{events: map[string][]EventSummary{"web": {{Type: "Warning", Reason: "BackOff", Message: "restarting", Count: 3}}}}
+	tree := &gitopstree.ResourceTree{Summary: gitopstree.Summary{Degraded: 2}}
+
+	local := buildIssues(argoApp(status()), tree, "argocd", r)
+	var lead, running, summary bool
+	for _, iss := range local {
+		switch {
+		case iss.Source == "events":
+			lead = true
+		case iss.Reason == "Running":
+			running = true
+		case iss.Reason == "DegradedResources":
+			summary = true
+		}
+	}
+	if !lead || !running || !summary {
+		t.Errorf("want the events lead, the Running info row AND the degraded summary together, got %+v", local)
+	}
+
+	remoteApp := argoApp(status())
+	remoteApp.Object["spec"] = map[string]any{"destination": map[string]any{"server": "https://spoke-1.example.com:6443"}}
+	for _, iss := range buildIssues(remoteApp, tree, "argocd", r) {
+		if iss.Source == "events" || iss.Source == "radar" {
+			t.Errorf("remote-destination app must not get a locally derived lead, got %+v", iss)
+		}
+	}
+}
+
+// TestBuildIssues_DegradedAppPrefersCriticalFindingOverEarlierWarning: a
+// warning-tier config finding on a healthy Deployment listed first must not
+// win over the crashloop on the resource listed after it; and a
+// warning-only finding is reported as a lead, not a Degraded verdict.
+func TestBuildIssues_DegradedAppPrefersCriticalFindingOverEarlierWarning(t *testing.T) {
+	root := argoApp(map[string]any{
+		"health": map[string]any{"status": "Degraded"},
+		"resources": []any{
+			map[string]any{"group": "apps", "kind": "Deployment", "namespace": "prod", "name": "healthy-but-linted", "status": "Synced"},
+			map[string]any{"group": "apps", "kind": "Deployment", "namespace": "prod", "name": "crashing", "status": "Synced"},
+		},
+	})
+	r := &fakeResolver{problems: map[string][]ResourceProblem{
+		"healthy-but-linted": {{Reason: "DuplicateEnvVar", Message: "FOO set twice", Severity: "warning"}},
+		"crashing":           {{Reason: "CrashLoopBackOff", Message: "back-off", Severity: "critical"}},
+	}}
+	issues := buildIssues(root, nil, "argocd", r)
+	if len(issues) != 1 || issues[0].Refs[0].Name != "crashing" || issues[0].Severity != SeverityCritical || issues[0].Reason != "Degraded" {
+		t.Errorf("want the critical crashloop as the Degraded verdict, got %+v", issues)
+	}
+
+	onlyWarning := &fakeResolver{problems: map[string][]ResourceProblem{
+		"healthy-but-linted": {{Reason: "DuplicateEnvVar", Message: "FOO set twice", Severity: "warning"}},
+	}}
+	tree := &gitopstree.ResourceTree{Summary: gitopstree.Summary{Degraded: 1}}
+	lead := buildIssues(root, tree, "argocd", onlyWarning)
+	var sawLead, sawSummary bool
+	for _, iss := range lead {
+		if iss.Source == "radar" && iss.Severity == SeverityWarning && strings.Contains(iss.Message, "may be why") {
+			sawLead = true
+		}
+		if iss.Reason == "DegradedResources" {
+			sawSummary = true
+		}
+	}
+	if !sawLead || !sawSummary {
+		t.Errorf("a warning-only finding must be a lead that leaves the degraded summary visible, got %+v", lead)
+	}
+}
+
 // TestBuildIssues_DegradedAppFallsBackEvenWhenEventCountIsZero pins that a
 // genuine single-occurrence Warning event isn't treated as "no signal" just
 // because it has no explicit Count — the events.k8s.io/v1 API only sets a
@@ -1065,8 +1148,8 @@ func TestBuildIssues_DegradedAppFallsBackEvenWhenEventCountIsZero(t *testing.T) 
 	if len(issues) != 1 {
 		t.Fatalf("expected exactly 1 fallback issue for a zero-count Warning, got %d: %+v", len(issues), issues)
 	}
-	if issues[0].Cause != "InvalidProviderConfig" {
-		t.Errorf("Cause = %q, want the zero-count event's Reason", issues[0].Cause)
+	if issues[0].Reason != "InvalidProviderConfig" {
+		t.Errorf("Reason = %q, want the zero-count event's Reason", issues[0].Reason)
 	}
 }
 

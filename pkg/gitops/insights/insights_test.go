@@ -946,12 +946,12 @@ func TestBuildIssues_EnrichesDegradedResourceWithWorkloadCause(t *testing.T) {
 }
 
 // TestBuildIssues_DegradedAppFallsBackToLoudestResourceEvent pins the
-// fallback for the case first found live on kiac-dev: an Application whose
-// aggregate health is Degraded, but where no per-resource health.status in
-// status.resources[] is itself Degraded/Missing (ClusterSecretStore and
-// similar CRDs never populate it), so every other detector finds nothing.
-// The fallback attributes the app-level Degraded badge to the managed
-// resource with the loudest Warning event instead of leaving it unexplained.
+// weakest attribution tier: an Application whose aggregate health is
+// Degraded with no per-resource health.status in status.resources[] (the
+// Argo CD 3.x default — resource health is no longer persisted in the CR),
+// and nothing classified by the issues engine for any managed resource. The
+// fallback attributes the app-level Degraded badge to the managed resource
+// with the loudest Warning event instead of leaving it unexplained.
 func TestBuildIssues_DegradedAppFallsBackToLoudestResourceEvent(t *testing.T) {
 	root := argoApp(map[string]any{
 		"health": map[string]any{"status": "Degraded"},
@@ -999,6 +999,45 @@ func TestBuildIssues_DegradedAppFallsBackToLoudestResourceEvent(t *testing.T) {
 	plain := buildIssues(root, nil, "argocd", nil)
 	if len(plain) != 0 {
 		t.Errorf("expected no issues with a nil resolver, got %+v", plain)
+	}
+}
+
+// TestBuildIssues_DegradedAppPrefersIssueEngineOverEvents pins the tier
+// order: when the issues engine has classified a managed resource (here the
+// generic Ready=False detector on a ClusterSecretStore), that current-state
+// signal wins over a louder Warning event on a different resource.
+func TestBuildIssues_DegradedAppPrefersIssueEngineOverEvents(t *testing.T) {
+	root := argoApp(map[string]any{
+		"health": map[string]any{"status": "Degraded"},
+		"resources": []any{
+			map[string]any{
+				"group": "external-secrets.io", "kind": "ClusterSecretStore", "name": "platform-secret-store",
+				"status": "Synced",
+			},
+			map[string]any{
+				"group": "apps", "kind": "Deployment", "namespace": "platform", "name": "noisy",
+				"status": "Synced",
+			},
+		},
+	})
+	r := &fakeResolver{
+		problems: map[string][]ResourceProblem{
+			"platform-secret-store": {{Reason: "Ready: InvalidProviderConfig", Message: "no route to host", Category: "condition_false", Severity: "critical"}},
+		},
+		events: map[string][]EventSummary{
+			"noisy": {{Type: "Warning", Reason: "FailedMount", Message: "stale warning", Count: 99}},
+		},
+	}
+	issues := buildIssues(root, nil, "argocd", r)
+	if len(issues) != 1 {
+		t.Fatalf("expected exactly 1 issue, got %d: %+v", len(issues), issues)
+	}
+	got := issues[0]
+	if len(got.Refs) != 1 || got.Refs[0].Name != "platform-secret-store" {
+		t.Errorf("Refs = %+v, want the issue-engine hit, not the loudest event", got.Refs)
+	}
+	if got.Cause != "no route to host" {
+		t.Errorf("Cause = %q, want the issue engine's detail", got.Cause)
 	}
 }
 

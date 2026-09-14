@@ -4,7 +4,7 @@ import { clsx } from 'clsx'
 import { AlertBanner, Section, PropertyList, Property, ConditionsSection, PodTemplateSection, type ConditionTone } from '../../ui/drawer-components'
 import { Tooltip } from '../../ui/Tooltip'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
-import { formatAge, getRolloutStep } from '../resource-utils'
+import { formatAge, getRolloutStep, analysisPhaseLevel, healthColors } from '../resource-utils'
 import { CanaryStepTimeline, BlueGreenTimeline } from './rollout/CanaryStepTimeline'
 import { ReplicaSetProgression } from './rollout/ReplicaSetProgression'
 import type { WorkloadRevision, WorkloadPodInfo } from '../../../types'
@@ -395,20 +395,7 @@ export function rolloutAnalysisRuns(
 }
 
 function analysisStatusClass(status?: string): string {
-  switch (status) {
-    case 'Successful':
-      return 'status-healthy'
-    case 'Running':
-    case 'Pending':
-      return 'status-degraded'
-    case 'Inconclusive':
-      return 'status-alert'
-    case 'Failed':
-    case 'Error':
-      return 'status-unhealthy'
-    default:
-      return 'status-unknown'
-  }
+  return healthColors[analysisPhaseLevel(status)]
 }
 
 export function RolloutRenderer({ data, onNavigate, capabilities, onAction, pendingAction, analysisRunHistory, revisions, pods }: RolloutRendererProps) {

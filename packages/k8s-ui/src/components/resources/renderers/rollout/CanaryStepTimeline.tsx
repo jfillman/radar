@@ -1,7 +1,7 @@
 import { Check, X, AlertTriangle, Minus, Clock } from 'lucide-react'
 import { clsx } from 'clsx'
 import { canaryStepLabel, canaryStepTemplateRefs } from '../RolloutRenderer'
-import { healthColors, type HealthLevel } from '../../resource-utils'
+import { analysisPhaseLevel, healthColors, type HealthLevel } from '../../resource-utils'
 
 export interface StepAnalysisStatus {
   name?: string
@@ -22,13 +22,11 @@ interface CanaryStepTimelineProps {
 
 type StepState = 'completed' | 'current' | 'pending'
 
-// analysisLevel only ever arrives as 'unhealthy' (Failed/Error) or 'alert'
-// (Inconclusive) — a Successful analysis on the current step deliberately
-// gets no special color; the step itself may still be paused/in-progress
-// regardless, so it stays the same "current" tone as any other in-progress
-// step rather than reading as done. Reuses the shared HealthLevel/
-// healthColors vocabulary + theme tokens instead of a parallel ok/warning/
-// fail set and hand-picked Tailwind colors.
+// Only 'unhealthy' (Failed/Error) and 'alert' (Inconclusive) colour the dot.
+// A Successful or still-running analysis deliberately gets no special colour:
+// the step itself may still be paused or in progress regardless, so it keeps
+// the same "current" tone as any other in-progress step rather than reading
+// as done.
 function stepDotTone(state: StepState, analysisLevel?: HealthLevel) {
   if (state === 'current' && (analysisLevel === 'unhealthy' || analysisLevel === 'alert')) {
     return healthColors[analysisLevel]
@@ -75,13 +73,7 @@ export function CanaryStepTimeline({ steps, currentStepIndex, stepAnalysisStatus
           const templateRefs = step.analysis ? canaryStepTemplateRefs(step) : []
           const showAnalysisStatus = isCurrent && step.analysis && stepAnalysisStatus?.status
           const analysisLevel: HealthLevel | undefined = showAnalysisStatus
-            ? stepAnalysisStatus!.status === 'Successful'
-              ? 'healthy'
-              : stepAnalysisStatus!.status === 'Failed' || stepAnalysisStatus!.status === 'Error'
-                ? 'unhealthy'
-                : stepAnalysisStatus!.status === 'Inconclusive'
-                  ? 'alert'
-                  : undefined
+            ? analysisPhaseLevel(stepAnalysisStatus!.status)
             : undefined
 
           return (
@@ -93,8 +85,8 @@ export function CanaryStepTimeline({ steps, currentStepIndex, stepAnalysisStatus
                   <span className={clsx(isCurrent ? 'font-medium text-theme-text-primary' : state === 'completed' ? 'text-theme-text-secondary' : 'text-theme-text-tertiary')}>
                     {label}
                   </span>
-                  {showAnalysisStatus && (
-                    <span className={clsx('badge-sm', healthColors[analysisLevel ?? 'alert'])}>
+                  {showAnalysisStatus && analysisLevel && (
+                    <span className={clsx('badge-sm', healthColors[analysisLevel])}>
                       {stepAnalysisStatus!.status}
                     </span>
                   )}

@@ -17,6 +17,8 @@ function phaseClass(phase?: string): string {
     case 'Progressing':
     case 'Pending':
       return 'status-degraded'
+    case 'Inconclusive':
+      return 'status-alert'
     case 'Failed':
     case 'Error':
       return 'status-unhealthy'
@@ -54,6 +56,14 @@ export function ExperimentRenderer({ data, onNavigate }: ExperimentRendererProps
           variant="error"
           title={phase === 'Error' ? 'Experiment could not run' : 'Experiment failed'}
           message={status.message || 'One or more templates or analyses did not succeed.'}
+        />
+      )}
+
+      {phase === 'Inconclusive' && (
+        <AlertBanner
+          variant="warning"
+          title="Experiment inconclusive"
+          message={status.message || 'An analysis matched neither its success nor failure condition.'}
         />
       )}
 

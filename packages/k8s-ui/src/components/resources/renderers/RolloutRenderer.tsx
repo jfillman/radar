@@ -706,8 +706,39 @@ export function RolloutRenderer({ data, onNavigate, capabilities, onAction, pend
         </Section>
       )}
 
+      {isCanary && steps.length > 0 && (
+        <Section title={`Canary Steps (${steps.length})`} defaultExpanded>
+          <CanaryStepTimeline
+            steps={steps}
+            currentStepIndex={currentStepIndex}
+            stepAnalysisStatus={analysisRuns.find((r) => r.label === 'Step analysis')}
+            onNavigate={onNavigate}
+            namespace={data?.metadata?.namespace}
+          />
+        </Section>
+      )}
+
+      {!isCanary && blueGreenStrategy && blueGreenPhaseList.length > 0 && (
+        <Section title="Progression" defaultExpanded>
+          <BlueGreenTimeline phases={blueGreenPhaseList} />
+        </Section>
+      )}
+
+      {(revisions?.length ?? 0) > 0 && (
+        <Section title={`ReplicaSets (${revisions!.length})`}>
+          <ReplicaSetProgression
+            revisions={revisions!}
+            pods={pods}
+            isRollout
+            namespace={data?.metadata?.namespace ?? ''}
+            onNavigate={onNavigate}
+          />
+        </Section>
+      )}
+
+      {/* Backward-looking, so it sits below the live progression and stays collapsed */}
       {analysisRunHistory && analysisRunHistory.length > 0 && (
-        <Section title={`AnalysisRun History (${analysisRunHistory.length})`} icon={Activity}>
+        <Section title={`AnalysisRun History (${analysisRunHistory.length})`} icon={Activity} defaultExpanded={false}>
           <div className="space-y-1">
             {analysisRunHistory.map((run) => (
               <div key={run.name} className="flex items-center gap-2 rounded px-2 py-1.5 text-sm">
@@ -741,36 +772,6 @@ export function RolloutRenderer({ data, onNavigate, capabilities, onAction, pend
               </div>
             ))}
           </div>
-        </Section>
-      )}
-
-      {isCanary && steps.length > 0 && (
-        <Section title={`Canary Steps (${steps.length})`} defaultExpanded>
-          <CanaryStepTimeline
-            steps={steps}
-            currentStepIndex={currentStepIndex}
-            stepAnalysisStatus={analysisRuns.find((r) => r.label === 'Step analysis')}
-            onNavigate={onNavigate}
-            namespace={data?.metadata?.namespace}
-          />
-        </Section>
-      )}
-
-      {!isCanary && blueGreenStrategy && blueGreenPhaseList.length > 0 && (
-        <Section title="Progression" defaultExpanded>
-          <BlueGreenTimeline phases={blueGreenPhaseList} />
-        </Section>
-      )}
-
-      {(revisions?.length ?? 0) > 0 && (
-        <Section title={`ReplicaSets (${revisions!.length})`}>
-          <ReplicaSetProgression
-            revisions={revisions!}
-            pods={pods}
-            isRollout
-            namespace={data?.metadata?.namespace ?? ''}
-            onNavigate={onNavigate}
-          />
         </Section>
       )}
 

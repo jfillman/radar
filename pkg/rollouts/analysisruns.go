@@ -24,13 +24,12 @@ var analysisRunGVR = schema.GroupVersionResource{
 // deliberately restricted to those for graphing; this listing has no such
 // bound since it's a plain history view, not a graph that must stay small).
 type AnalysisRunSummary struct {
-	Name      string    `json:"name"`
-	Phase     string    `json:"phase"`
-	Message   string    `json:"message,omitempty"`
+	Name    string `json:"name"`
+	Phase   string `json:"phase"`
+	Message string `json:"message,omitempty"`
 	// Trigger comes from the "rollout-type" label Argo Rollouts sets on every
-	// run it creates: Step / BackgroundAnalysis / PrePromotionAnalysis /
-	// PostPromotionAnalysis.
-	Trigger   string    `json:"trigger,omitempty"`
+	// run it creates: Step / Background / PrePromotion / PostPromotion.
+	Trigger string `json:"trigger,omitempty"`
 	// StepIndex is only set for a Step-triggered run (the "step-index" label).
 	StepIndex *int64    `json:"stepIndex,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`

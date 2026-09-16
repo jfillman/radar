@@ -2,6 +2,7 @@ package topology
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -520,6 +521,24 @@ func TestBuildResourcesTopology_LargePodGroupWithMixedTrafficRoles(t *testing.T)
 		t.Errorf("expected an edge from the stable ReplicaSet to the pod group; edges=%+v", topo.Edges)
 	}
 
+	// The Rollout->PodGroup shortcut (Item 1) rides alongside the RS edges
+	// above for BOTH owners. Without disambiguating the edge ID by owner,
+	// the canary and stable shortcuts collide (same rolloutID+podGroupID)
+	// and only one survives — silently dropping half the traffic split from
+	// the collapsed group's own edges, not just the expanded pods.
+	rolloutID := "rollout/prod/web"
+	var rolloutShortcutLabels []string
+	for _, e := range topo.Edges {
+		if e.Source == rolloutID && e.Target == podGroupID {
+			rolloutShortcutLabels = append(rolloutShortcutLabels, e.Label)
+		}
+	}
+	sort.Strings(rolloutShortcutLabels)
+	wantLabels := []string{"Canary", "Stable"}
+	if !slicesEqual(rolloutShortcutLabels, wantLabels) {
+		t.Errorf("rollout->podgroup shortcut edge labels = %v, want %v (both roles must survive, not just one)", rolloutShortcutLabels, wantLabels)
+	}
+
 	// Each pod must carry ONLY its own owner's edge sources, not every
 	// distinct owner in the group — otherwise expanding the group on the
 	// frontend draws a canary pod as owned by the stable ReplicaSet too
@@ -535,16 +554,26 @@ func TestBuildResourcesTopology_LargePodGroupWithMixedTrafficRoles(t *testing.T)
 	for _, pd := range pods {
 		name, _ := pd["name"].(string)
 		ownerIDs, _ := pd["ownerIds"].([]string)
+		// Each pod's OWN role must survive here even though the group's
+		// own trafficRole (asserted above) is blank for the mixed group —
+		// this is what an expanded pod re-badges itself from.
+		role, _ := pd["trafficRole"].(string)
 		switch {
 		case strings.HasPrefix(name, "web-canaryhash-"):
 			want := []string{"replicaset/prod/web-canaryhash", "rollout/prod/web"}
 			if !slicesEqual(ownerIDs, want) {
 				t.Errorf("canary pod %s ownerIds = %v, want %v", name, ownerIDs, want)
 			}
+			if role != "canary" {
+				t.Errorf("canary pod %s trafficRole = %q, want %q", name, role, "canary")
+			}
 		case strings.HasPrefix(name, "web-stablehash-"):
 			want := []string{"replicaset/prod/web-stablehash", "rollout/prod/web"}
 			if !slicesEqual(ownerIDs, want) {
 				t.Errorf("stable pod %s ownerIds = %v, want %v", name, ownerIDs, want)
+			}
+			if role != "stable" {
+				t.Errorf("stable pod %s trafficRole = %q, want %q", name, role, "stable")
 			}
 		default:
 			t.Errorf("unexpected pod name %s", name)

@@ -473,11 +473,19 @@ export function TopologyGraph({
       // per-pod owner resolution. See pkg/topology/builder.go's
       // ownerKeyToSourceIDs.
       ownerIds?: string[]
+      // The group's own trafficRole (podGroupNode.data.trafficRole) is only
+      // set when every pod agrees — this is each pod's OWN role, so a mixed
+      // canary/stable group still badges correctly once expanded.
+      trafficRole?: string
     }>
 
     // Find edges pointing to this pod group
     const edgesToGroup = topoEdges.filter(e => e.target === podGroupId)
     const sourceIds = edgesToGroup.map(e => e.source)
+    // Homogeneous per build — resources-view feeds `manages` ownership
+    // edges, traffic-view feeds `routes-to` Service edges — so any surviving
+    // edge's type applies to the whole group.
+    const edgeType = edgesToGroup[0]?.type ?? 'routes-to'
 
     // Remove the PodGroup node and its edges
     const newNodes = topoNodes.filter(n => n.id !== podGroupId)
@@ -501,6 +509,7 @@ export function TopologyGraph({
           phase: pod.phase,
           restarts: pod.restarts,
           containers: pod.containers,
+          trafficRole: pod.trafficRole,
           expandedFromGroup: podGroupId, // Track which group this came from
         },
       })
@@ -511,12 +520,22 @@ export function TopologyGraph({
       // owner, so e.g. a canary pod doesn't end up drawn as owned by the
       // stable ReplicaSet too.
       const podSourceIds = pod.ownerIds?.filter(id => sourceIds.includes(id)) ?? sourceIds
+      // A mixed-owner group's shared sources (e.g. a Rollout, reached via
+      // both a canary and a stable edge) can't be told apart by source id
+      // alone once collapsed — both edges point at the same node id, just
+      // with different labels. The pod's own trafficRole is unambiguous, so
+      // an ownership edge derives its label from that directly rather than
+      // trying to match back to one specific original edge.
+      const label = edgeType === 'manages' && pod.trafficRole
+        ? pod.trafficRole[0].toUpperCase() + pod.trafficRole.slice(1)
+        : undefined
       for (const sourceId of podSourceIds) {
         newEdges.push({
           id: `${sourceId}-to-${podId}`,
           source: sourceId,
           target: podId,
-          type: 'routes-to' as const,
+          type: edgeType,
+          ...(label ? { label } : {}),
         })
       }
     }

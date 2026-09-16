@@ -3165,10 +3165,16 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				// (deduped by owner key, one representative pod each, not
 				// one call per pod — groups here can be large).
 				roles := map[string]bool{}
+				// Per-pod role, keyed by "namespace/name" — the group badge
+				// below only shows a role when every pod agrees, but an
+				// expanded pod still needs its OWN role to badge correctly
+				// (see the stamping loop after ownerIds, below).
+				podRoleByKey := map[string]string{}
 				ownerReps := map[string]*corev1.Pod{}
 				for _, p := range group.Pods {
 					if role := podRolloutTrafficRole(p, replicaSetToRollout, rolloutTrafficByID); role != "" {
 						roles[role] = true
+						podRoleByKey[p.Namespace+"/"+p.Name] = role
 					}
 					for _, ref := range p.OwnerReferences {
 						ownerKey := p.Namespace + "/" + ref.Kind + "/" + ref.Name
@@ -3206,6 +3212,17 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 						if ownerKey, ok := pd["ownerKey"].(string); ok {
 							if sourceIDs := ownerKeyToSourceIDs[ownerKey]; len(sourceIDs) > 0 {
 								pd["ownerIds"] = sourceIDs
+							}
+						}
+						// Expanding the group re-badges each pod from this —
+						// the group's own trafficRole (above) is blank
+						// whenever roles differ, exactly the case this exists
+						// for.
+						if namespace, ok := pd["namespace"].(string); ok {
+							if name, ok := pd["name"].(string); ok {
+								if role := podRoleByKey[namespace+"/"+name]; role != "" {
+									pd["trafficRole"] = role
+								}
 							}
 						}
 					}
@@ -7562,7 +7579,13 @@ func (b *Builder) createPodOwnerEdges(
 						label = rolloutTrafficRoleLabel(rolloutTrafficRole(pod.Labels[rolloutPodTemplateHashLabel], info))
 					}
 					edges = append(edges, Edge{
-						ID:                fmt.Sprintf("%s-to-%s-shortcut", rolloutID, targetID),
+						// ownerKey (the specific owning ReplicaSet), not just
+						// rolloutID+targetID: a PodGroup spanning two owners
+						// of the SAME Rollout (canary + stable) calls this
+						// once per owner with an identical target, and an
+						// ID collision here would dedup one shortcut edge
+						// away, silently dropping half the traffic split.
+						ID:                fmt.Sprintf("%s-to-%s-shortcut-%s", rolloutID, targetID, ownerKey),
 						Source:            rolloutID,
 						Target:            targetID,
 						Type:              EdgeManages,

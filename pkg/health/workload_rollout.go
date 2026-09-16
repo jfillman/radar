@@ -247,10 +247,19 @@ func argoFailureMessage(r *unstructured.Unstructured) (string, bool) {
 }
 
 func argoStepDetail(r *unstructured.Unstructured, updated, desired, available int32) string {
+	// A mesh-routed Rollout can report status.canary.weights with no
+	// explicit canary steps at all (the mesh integration drives the split,
+	// not a step list) — the weight suffix applies independent of whether a
+	// step prefix does.
+	weightSuffix := ""
+	if weight, wFound, _ := unstructured.NestedInt64(r.Object, "status", "canary", "weights", "canary", "weight"); wFound {
+		weightSuffix = fmt.Sprintf(" · %d%% canary traffic", weight)
+	}
+
 	steps, stepsFound, _ := unstructured.NestedSlice(r.Object, "spec", "strategy", "canary", "steps")
 	step, found, _ := unstructured.NestedInt64(r.Object, "status", "currentStepIndex")
 	if !found || !stepsFound || len(steps) == 0 {
-		return replicaDetail(updated, desired, available)
+		return replicaDetail(updated, desired, available) + weightSuffix
 	}
 	displayStep := step + 1
 	if displayStep < 1 {
@@ -262,10 +271,6 @@ func argoStepDetail(r *unstructured.Unstructured, updated, desired, available in
 	label := ""
 	if currentStep, ok := steps[displayStep-1].(map[string]any); ok {
 		label = fmt.Sprintf(" (%s)", canaryStepLabel(currentStep))
-	}
-	weightSuffix := ""
-	if weight, wFound, _ := unstructured.NestedInt64(r.Object, "status", "canary", "weights", "canary", "weight"); wFound {
-		weightSuffix = fmt.Sprintf(" · %d%% canary traffic", weight)
 	}
 	return fmt.Sprintf("Step %d%s · %d/%d updated · %d available%s", displayStep, label, updated, desired, available, weightSuffix)
 }

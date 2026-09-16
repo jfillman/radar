@@ -193,8 +193,11 @@ func TestBuildResourcesTopology_RolloutOwnedReplicaSetsShowOnlyWhenLive(t *testi
 			"strategy": map[string]any{"canary": map[string]any{}},
 		},
 		"status": map[string]any{
+			// A canary transition still in progress (not yet promoted to
+			// newhash) — this Rollout is unsettled, so its live ReplicaSet
+			// bypasses the IncludeReplicaSets collapse.
 			"currentPodHash": "newhash",
-			"stableRS":       "newhash",
+			"stableRS":       "oldhash",
 		},
 	})
 	rollout.SetNamespace("prod")
@@ -238,12 +241,88 @@ func TestBuildResourcesTopology_RolloutOwnedReplicaSetsShowOnlyWhenLive(t *testi
 	if liveNode == nil {
 		t.Fatalf("live rollout-owned ReplicaSet should be visible without IncludeReplicaSets; nodes=%+v", topo.Nodes)
 	}
-	if liveNode.Data["trafficRole"] != "stable" {
-		t.Errorf("live ReplicaSet trafficRole = %v, want %q", liveNode.Data["trafficRole"], "stable")
+	if liveNode.Data["trafficRole"] != "canary" {
+		t.Errorf("live ReplicaSet trafficRole = %v, want %q", liveNode.Data["trafficRole"], "canary")
 	}
 
 	if findNode(topo, "replicaset/prod/web-oldhash") != nil {
 		t.Fatalf("scaled-to-zero ReplicaSet should stay hidden")
+	}
+}
+
+// Once a Rollout has settled (nothing in flight), its ReplicaSets stop
+// bypassing the IncludeReplicaSets collapse — they behave exactly like a
+// Deployment's, and carry no role or label.
+func TestBuildResourcesTopology_SettledRolloutReplicaSetCollapsesLikeDeployment(t *testing.T) {
+	rollout := karpenterTopologyObject("argoproj.io/v1alpha1", "Rollout", "web", "web-uid", map[string]any{
+		"spec": map[string]any{
+			"replicas": int64(2),
+			"strategy": map[string]any{"canary": map[string]any{}},
+		},
+		"status": map[string]any{
+			// Fully promoted: stableRS == currentPodHash.
+			"currentPodHash": "samehash",
+			"stableRS":       "samehash",
+		},
+	})
+	rollout.SetNamespace("prod")
+
+	dynamic := &rolloutDynamicProvider{gvr: rolloutGVR(), rollouts: []*unstructured.Unstructured{rollout}}
+
+	replicas := int32(1)
+	provider := &mockProvider{
+		replicaSets: []*appsv1.ReplicaSet{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-samehash", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "samehash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web"}},
+				},
+				Spec: appsv1.ReplicaSetSpec{Replicas: &replicas},
+			},
+		},
+		pods: []*corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-samehash-abc", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "samehash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-samehash"}},
+				},
+			},
+		},
+	}
+
+	opts := DefaultBuildOptions()
+	if opts.IncludeReplicaSets {
+		t.Fatal("test assumes IncludeReplicaSets defaults to false")
+	}
+
+	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(opts)
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	if findNode(topo, "replicaset/prod/web-samehash") != nil {
+		t.Fatalf("settled Rollout's ReplicaSet should collapse like a Deployment's without IncludeReplicaSets; nodes=%+v", topo.Nodes)
+	}
+
+	podNode := findNode(topo, "pod/prod/web-samehash-abc")
+	if podNode == nil {
+		t.Fatalf("expected pod node; nodes=%+v", topo.Nodes)
+	}
+	if _, ok := podNode.Data["trafficRole"]; ok {
+		t.Errorf("settled Rollout's pod should carry no trafficRole, got %v", podNode.Data["trafficRole"])
+	}
+
+	// The Pod still connects to something — the Rollout, via the ordinary
+	// hidden-ReplicaSet shortcut — with no role label.
+	rolloutID := "rollout/prod/web"
+	shortcutEdge := findEdge(topo, rolloutID, "pod/prod/web-samehash-abc")
+	if shortcutEdge == nil {
+		t.Fatalf("expected a Rollout->Pod shortcut edge; edges=%+v", topo.Edges)
+	}
+	if shortcutEdge.Label != "" {
+		t.Errorf("settled Rollout->Pod shortcut edge label = %q, want empty", shortcutEdge.Label)
 	}
 }
 
@@ -327,18 +406,18 @@ func TestBuildResourcesTopology_PodTrafficRoleForCanaryAndStable(t *testing.T) {
 		t.Fatalf("expected Pod->ReplicaSet edge for the live canary ReplicaSet; edges=%+v", topo.Edges)
 	}
 
-	// The same "Canary · 20%" style label rides every hop of the traffic
-	// path, not just the Service->Rollout edge - Rollout->ReplicaSet and
-	// ReplicaSet->Pod carry it too, so a weight is visible however far down
-	// the graph the user is looking (the actual ask this test guards against
-	// regressing: a blinking-but-unlabeled edge told the user nothing about
-	// which revision was carrying which share of traffic).
-	if podEdge.Label != "Canary · 30%" {
-		t.Errorf("canary Pod edge label = %q, want %q", podEdge.Label, "Canary · 30%")
+	// The role rides every hop of the traffic path (Service->Rollout,
+	// Rollout->ReplicaSet, ReplicaSet->Pod), so it's visible however far
+	// down the graph the user is looking — but the percentage itself only
+	// rides the Service->Rollout and Rollout->ReplicaSet hops; the
+	// ReplicaSet->Pod hop drops it (adjacent pods' labels would otherwise
+	// stack and overlap), leaving just the role name.
+	if podEdge.Label != "Canary" {
+		t.Errorf("canary Pod edge label = %q, want %q", podEdge.Label, "Canary")
 	}
 	stablePodEdge := findEdge(topo, "replicaset/prod/web-stablehash", "pod/prod/web-stablehash-abc")
-	if stablePodEdge == nil || stablePodEdge.Label != "Stable · 70%" {
-		t.Fatalf("stable Pod edge = %+v, want label %q", stablePodEdge, "Stable · 70%")
+	if stablePodEdge == nil || stablePodEdge.Label != "Stable" {
+		t.Fatalf("stable Pod edge = %+v, want label %q", stablePodEdge, "Stable")
 	}
 
 	rolloutID := "rollout/prod/web"
@@ -441,10 +520,14 @@ func TestBuildResourcesTopology_LargePodGroupWithMixedTrafficRoles(t *testing.T)
 		t.Errorf("expected an edge from the stable ReplicaSet to the pod group; edges=%+v", topo.Edges)
 	}
 
-	// Each pod must carry ONLY its own owner's edge source, not every
+	// Each pod must carry ONLY its own owner's edge sources, not every
 	// distinct owner in the group — otherwise expanding the group on the
 	// frontend draws a canary pod as owned by the stable ReplicaSet too
-	// (and vice versa). See TopologyGraph.tsx's expandPodGroup.
+	// (and vice versa). See TopologyGraph.tsx's expandPodGroup. Each pod's
+	// own ReplicaSet contributes two sources here: the RS itself, and the
+	// Rollout->Pod shortcut edge (Item 1) that rides alongside it — the
+	// frontend narrows to whichever one actually survives kind-visibility
+	// filtering.
 	pods, ok := groupNode.Data["pods"].([]map[string]any)
 	if !ok || len(pods) != 7 {
 		t.Fatalf("expected 7 pod detail entries, got %#v", groupNode.Data["pods"])
@@ -454,12 +537,14 @@ func TestBuildResourcesTopology_LargePodGroupWithMixedTrafficRoles(t *testing.T)
 		ownerIDs, _ := pd["ownerIds"].([]string)
 		switch {
 		case strings.HasPrefix(name, "web-canaryhash-"):
-			if len(ownerIDs) != 1 || ownerIDs[0] != "replicaset/prod/web-canaryhash" {
-				t.Errorf("canary pod %s ownerIds = %v, want [replicaset/prod/web-canaryhash]", name, ownerIDs)
+			want := []string{"replicaset/prod/web-canaryhash", "rollout/prod/web"}
+			if !slicesEqual(ownerIDs, want) {
+				t.Errorf("canary pod %s ownerIds = %v, want %v", name, ownerIDs, want)
 			}
 		case strings.HasPrefix(name, "web-stablehash-"):
-			if len(ownerIDs) != 1 || ownerIDs[0] != "replicaset/prod/web-stablehash" {
-				t.Errorf("stable pod %s ownerIds = %v, want [replicaset/prod/web-stablehash]", name, ownerIDs)
+			want := []string{"replicaset/prod/web-stablehash", "rollout/prod/web"}
+			if !slicesEqual(ownerIDs, want) {
+				t.Errorf("stable pod %s ownerIds = %v, want %v", name, ownerIDs, want)
 			}
 		default:
 			t.Errorf("unexpected pod name %s", name)
@@ -467,49 +552,63 @@ func TestBuildResourcesTopology_LargePodGroupWithMixedTrafficRoles(t *testing.T)
 	}
 }
 
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // A "basic canary" Rollout - no trafficRouting plugin (Istio/SMI/ALB/NGINX)
-// configured, traffic split purely by replica ratio - never populates
-// status.canary.weights at all (confirmed live against a real Rollout on the
-// demo cluster mid-progression). The step-definition fallback below is what
-// makes weight visible on the edges for this — by far the more common —
-// case; without it, a canary/stable edge shows a bare role with no percent
-// the entire time the rollout progresses.
-func TestBuildResourcesTopology_BasicCanaryWeightFallsBackToStepDefinition(t *testing.T) {
+// configured - never populates status.canary.weights at all, the common
+// case. The weight is instead derived from the live ReplicaSets' own
+// replica counts (what Argo's CLI calls ActualWeight); without this, a
+// canary/stable edge shows a bare role with no percent the entire time the
+// rollout progresses.
+func TestBuildResourcesTopology_BasicCanaryWeightDerivedFromLiveReplicaCounts(t *testing.T) {
 	rollout := karpenterTopologyObject("argoproj.io/v1alpha1", "Rollout", "web", "web-uid", map[string]any{
 		"spec": map[string]any{
-			"replicas": int64(4),
+			"replicas": int64(5),
 			"strategy": map[string]any{
-				"canary": map[string]any{
-					// No trafficRouting: block - matches the real demo fixture.
-					"steps": []any{
-						map[string]any{"setWeight": int64(20)},
-						map[string]any{"analysis": map[string]any{}},
-						map[string]any{"setWeight": int64(60)},
-						map[string]any{"pause": map[string]any{}},
-					},
-				},
+				"canary": map[string]any{}, // No trafficRouting plugin configured.
 			},
 		},
 		"status": map[string]any{
-			// currentStepIndex 1 = just past the first setWeight(20) step,
-			// not yet at setWeight(60) - 20% is the controller's live target.
 			// No status.canary.weights at all, the real-world shape.
-			"currentStepIndex": int64(1),
-			"currentPodHash":   "canaryhash",
-			"stableRS":         "stablehash",
+			"currentPodHash": "canaryhash",
+			"stableRS":       "stablehash",
 		},
 	})
 	rollout.SetNamespace("prod")
 
 	dynamic := &rolloutDynamicProvider{gvr: rolloutGVR(), rollouts: []*unstructured.Unstructured{rollout}}
+	canaryReplicas := int32(1)
+	stableReplicas := int32(4)
 	provider := &mockProvider{
-		services: []*corev1.Service{
-			{ObjectMeta: metav1.ObjectMeta{Name: "web-canary", Namespace: "prod"}},
+		replicaSets: []*appsv1.ReplicaSet{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-canaryhash", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "canaryhash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web"}},
+				},
+				Spec: appsv1.ReplicaSetSpec{Replicas: &canaryReplicas},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-stablehash", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "stablehash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web"}},
+				},
+				Spec: appsv1.ReplicaSetSpec{Replicas: &stableReplicas},
+			},
 		},
 	}
-	// canaryService isn't set in this fixture (matching the demo, which has
-	// no named split either) - use the Rollout node's own Data instead of an
-	// edge, since that's reachable regardless of whether a Service exists.
 
 	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
 	if err != nil {
@@ -520,42 +619,109 @@ func TestBuildResourcesTopology_BasicCanaryWeightFallsBackToStepDefinition(t *te
 	if rolloutNode == nil {
 		t.Fatalf("missing rollout node")
 	}
+	// 1 canary / (1 canary + 4 stable) = 20%.
 	if rolloutNode.Data["canaryWeight"] != int64(20) {
-		t.Errorf("rollout node canaryWeight = %v, want 20 (derived from the last setWeight step reached)", rolloutNode.Data["canaryWeight"])
+		t.Errorf("rollout node canaryWeight = %v, want 20 (1 of 5 live replicas)", rolloutNode.Data["canaryWeight"])
 	}
 	if rolloutNode.Data["stableWeight"] != int64(80) {
 		t.Errorf("rollout node stableWeight = %v, want 80", rolloutNode.Data["stableWeight"])
 	}
 }
 
-// Once a canary Rollout fully promotes (currentStepIndex past the end of
-// steps), there's no active split to report - canaryStepWeight must not
-// keep returning the LAST step's weight as if it were still in effect.
-func TestBuildResourcesTopology_BasicCanaryWeightOmittedOncePromoted(t *testing.T) {
+// An aborted canary immediately scales the canary ReplicaSet's desired
+// replicas to 0 and the stable one back to full, well before status catches
+// up — deriving weight from live replicas (rather than the last setWeight
+// step reached) reflects that correction immediately instead of showing a
+// stale "Stable · 50%" while stable is actually serving 100%.
+func TestBuildResourcesTopology_AbortedCanaryWeightReflectsLiveReplicasNotLastStep(t *testing.T) {
 	rollout := karpenterTopologyObject("argoproj.io/v1alpha1", "Rollout", "web", "web-uid", map[string]any{
 		"spec": map[string]any{
 			"replicas": int64(4),
 			"strategy": map[string]any{
-				"canary": map[string]any{
-					"steps": []any{
-						map[string]any{"setWeight": int64(50)},
-						map[string]any{"pause": map[string]any{}},
-					},
-				},
+				"canary": map[string]any{},
 			},
 		},
 		"status": map[string]any{
-			// Past the end of a 2-step array - fully promoted.
-			"currentStepIndex": int64(2),
-			"currentPodHash":   "samehash",
-			"stableRS":         "samehash",
+			"currentPodHash": "canaryhash",
+			"stableRS":       "stablehash",
 		},
 	})
 	rollout.SetNamespace("prod")
 
 	dynamic := &rolloutDynamicProvider{gvr: rolloutGVR(), rollouts: []*unstructured.Unstructured{rollout}}
+	canaryReplicas := int32(0) // Aborted: scaled to zero immediately.
+	stableReplicas := int32(4)
+	provider := &mockProvider{
+		replicaSets: []*appsv1.ReplicaSet{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-canaryhash", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "canaryhash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web"}},
+				},
+				Spec: appsv1.ReplicaSetSpec{Replicas: &canaryReplicas},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-stablehash", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "stablehash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web"}},
+				},
+				Spec: appsv1.ReplicaSetSpec{Replicas: &stableReplicas},
+			},
+		},
+	}
 
-	topo, err := NewBuilder(&mockProvider{}).WithDynamic(dynamic).Build(DefaultBuildOptions())
+	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	rolloutNode := findNode(topo, "rollout/prod/web")
+	if rolloutNode == nil {
+		t.Fatalf("missing rollout node")
+	}
+	if rolloutNode.Data["stableWeight"] != int64(100) {
+		t.Errorf("rollout node stableWeight = %v, want 100 (stable serving everything post-abort)", rolloutNode.Data["stableWeight"])
+	}
+}
+
+// Once a Rollout has settled (nothing in flight), there's no active split to
+// report — the weight backfill has nothing to derive it from, since a
+// settled Rollout's ReplicaSets carry no traffic role at all (see
+// rolloutTrafficRole).
+func TestBuildResourcesTopology_CanaryWeightOmittedOncePromoted(t *testing.T) {
+	rollout := karpenterTopologyObject("argoproj.io/v1alpha1", "Rollout", "web", "web-uid", map[string]any{
+		"spec": map[string]any{
+			"replicas": int64(4),
+			"strategy": map[string]any{
+				"canary": map[string]any{},
+			},
+		},
+		"status": map[string]any{
+			// Fully promoted: stableRS == currentPodHash.
+			"currentPodHash": "samehash",
+			"stableRS":       "samehash",
+		},
+	})
+	rollout.SetNamespace("prod")
+
+	dynamic := &rolloutDynamicProvider{gvr: rolloutGVR(), rollouts: []*unstructured.Unstructured{rollout}}
+	replicas := int32(4)
+	provider := &mockProvider{
+		replicaSets: []*appsv1.ReplicaSet{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "web-samehash", Namespace: "prod",
+					Labels:          map[string]string{rolloutPodTemplateHashLabel: "samehash"},
+					OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web"}},
+				},
+				Spec: appsv1.ReplicaSetSpec{Replicas: &replicas},
+			},
+		},
+	}
+
+	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
 	if err != nil {
 		t.Fatalf("Build() error: %v", err)
 	}

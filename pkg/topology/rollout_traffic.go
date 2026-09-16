@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // rolloutPodTemplateHashLabel mirrors pkg/rollouts.PodTemplateHashLabel — kept
@@ -36,6 +35,15 @@ type rolloutTrafficInfo struct {
 	// first canary step sets one) — distinct from a real 0%.
 	canaryWeight *int64
 	stableWeight *int64
+
+	// settled is true once nothing is actually in flight: a canary fully
+	// promoted (stableRS == currentPodHash) or a blue-green fully promoted
+	// with no preview tracked (activeSelector == previewSelector, both
+	// non-empty — the Rollout controller hasn't decided a revision yet
+	// otherwise, and there's nothing meaningful to classify). While settled,
+	// rolloutTrafficRole reports no role at all: a retained old ReplicaSet
+	// or a resting canary/stable split has nothing in transit to highlight.
+	settled bool
 }
 
 // rolloutTrafficRole classifies a pod-template-hash value against a Rollout's
@@ -53,7 +61,7 @@ type rolloutTrafficInfo struct {
 // are empty strings there, and podTemplateHash is never empty, already
 // guarded above), so checking them first is safe for canary too.
 func rolloutTrafficRole(podTemplateHash string, info rolloutTrafficInfo) string {
-	if podTemplateHash == "" {
+	if info.settled || podTemplateHash == "" {
 		return ""
 	}
 	switch podTemplateHash {
@@ -72,11 +80,10 @@ func rolloutTrafficRole(podTemplateHash string, info rolloutTrafficInfo) string 
 
 // rolloutTrafficEdgeLabel builds the "Canary · 20%" / "Stable · 80%" /
 // "Active" / "Preview" edge label for a given role — the single place this
-// text is built, used for every edge along the traffic path (Service->
-// Rollout, Rollout->ReplicaSet, ReplicaSet->Pod) so the same role always
-// reads identically no matter which hop it's labeling. Returns "" for a
-// role the switch doesn't recognize (defensive; every caller already only
-// invokes this with a value rolloutTrafficRole itself returned).
+// text is built, used for the Service->Rollout and Rollout->ReplicaSet hops
+// so the same role always reads identically wherever it's shown. Returns ""
+// for a role the switch doesn't recognize (defensive; every caller already
+// only invokes this with a value rolloutTrafficRole itself returned).
 func rolloutTrafficEdgeLabel(role string, info rolloutTrafficInfo) string {
 	switch role {
 	case "canary":
@@ -98,62 +105,22 @@ func rolloutTrafficEdgeLabel(role string, info rolloutTrafficInfo) string {
 	}
 }
 
-// canaryStepWeight derives the canary/stable split from the step definition
-// itself when status.canary.weights is absent — which, confirmed live on the
-// demo cluster, is EVERY canary Rollout that has no trafficRouting plugin
-// configured (Istio/SMI/ALB/NGINX). That's the common "basic canary" case:
-// the controller drives the split purely by scaling the canary ReplicaSet's
-// replica count to approximate the last setWeight step reached, and never
-// writes status.canary.weights at all — only a service-mesh-routed Rollout
-// gets that field, since only then can the live routed percentage actually
-// differ from the replica ratio. Without this fallback, a basic-canary
-// Rollout's traffic edges showed a bare "Canary"/"Stable" role with no
-// percentage for the entire time it was progressing.
-//
-// Walks backward from currentStepIndex to the most recent setWeight step —
-// intervening pause/analysis/experiment steps don't change the target ratio,
-// so the last setWeight passed is still the one in effect. Returns (nil, nil)
-// when currentStepIndex is past the end of steps (fully promoted — no
-// active canary split to report; the settled "Stable" label correctly shows
-// no percentage, implying 100%) or when no setWeight has been reached yet.
-func canaryStepWeight(spec, status map[string]any) (canaryWeight, stableWeight *int64) {
-	steps, _, _ := unstructured.NestedSlice(spec, "strategy", "canary", "steps")
-	stepIdx, ok, _ := unstructured.NestedInt64(status, "currentStepIndex")
-	if !ok || len(steps) == 0 || stepIdx < 0 || stepIdx >= int64(len(steps)) {
-		return nil, nil
-	}
-	for i := stepIdx; i >= 0; i-- {
-		step, ok := steps[i].(map[string]any)
-		if !ok {
-			continue
-		}
-		raw, ok := step["setWeight"]
-		if !ok {
-			continue
-		}
-		w, ok := toInt64Value(raw)
-		if !ok {
-			continue
-		}
-		stable := int64(100) - w
-		return &w, &stable
-	}
-	return nil, nil
-}
-
-// toInt64Value normalizes a JSON-decoded numeric value (unstructured objects
-// decode integers as int64, but a step read back out of a slice literal in
-// tests may arrive as a plain int) to int64.
-func toInt64Value(v any) (int64, bool) {
-	switch n := v.(type) {
-	case int64:
-		return n, true
-	case float64:
-		return int64(n), true
-	case int:
-		return int64(n), true
+// rolloutTrafficRoleLabel is rolloutTrafficEdgeLabel without the percentage —
+// used on the pod-level hop (ReplicaSet->Pod, and the Rollout->Pod shortcut
+// that substitutes for it when the ReplicaSet is hidden), where three
+// stacked "Stable · 75%" labels on adjacent pods overlap each other.
+func rolloutTrafficRoleLabel(role string) string {
+	switch role {
+	case "canary":
+		return "Canary"
+	case "stable":
+		return "Stable"
+	case "active":
+		return "Active"
+	case "preview":
+		return "Preview"
 	default:
-		return 0, false
+		return ""
 	}
 }
 

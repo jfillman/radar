@@ -290,6 +290,10 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	replicaSetToDeployment := make(map[string]string) // rsKey -> deploymentID (for shortcut edges)
 	replicaSetToRollout := make(map[string]string)    // rsKey -> rolloutID (for shortcut edges)
 	rolloutTrafficByID := make(map[string]rolloutTrafficInfo)
+	// rolloutDataByID keeps a live reference to each Rollout node's Data map so
+	// the replica-based weight backfill (after ReplicaSets are indexed, below)
+	// can update the already-created node in place.
+	rolloutDataByID := make(map[string]map[string]any)
 	serviceIDs := make(map[string]string)
 	jobIDs := make(map[string]string)
 	cronJobIDs := make(map[string]string)
@@ -450,18 +454,32 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					stableWeight = &w
 				}
 			}
-			if canaryWeight == nil {
-				// No trafficRouting plugin configured — status.canary.weights is
-				// never populated for a basic (replica-ratio) canary Rollout, the
-				// common case. Derive the target split from the step definition
-				// instead; see canaryStepWeight's own comment for why this is
-				// the actual live value in that mode, not an approximation.
-				canaryWeight, stableWeight = canaryStepWeight(spec, status)
-			}
+			// When canaryWeight is still nil here (no trafficRouting plugin —
+			// the common case), it's backfilled below from the live
+			// ReplicaSets' own replica counts, once those are indexed.
 			currentPodHash, _, _ := unstructured.NestedString(status, "currentPodHash")
 			stableRS, _, _ := unstructured.NestedString(status, "stableRS")
 			activeSelector, _, _ := unstructured.NestedString(status, "blueGreen", "activeSelector")
 			previewSelector, _, _ := unstructured.NestedString(status, "blueGreen", "previewSelector")
+
+			// Nothing in flight: a canary fully promoted to its current
+			// revision, or a blue-green fully promoted with no preview
+			// tracked. stableRS/currentPodHash are generic fields the
+			// controller populates for every strategy (see
+			// rolloutTrafficRole's own comment on this), so they're only
+			// meaningful for settlement when the Rollout is actually
+			// running the canary strategy — checked via activeSelector's
+			// presence, the blueGreen-only signal.
+			var settled bool
+			if activeSelector != "" || previewSelector != "" {
+				// blue-green: settled unless a distinct preview revision is
+				// actually being tracked. previewSelector can be genuinely
+				// empty on a fully-promoted Rollout with no preview in
+				// flight — that's settled too, not "unknown".
+				settled = previewSelector == "" || previewSelector == activeSelector
+			} else {
+				settled = stableRS != "" && stableRS == currentPodHash
+			}
 
 			rolloutTrafficByID[rolloutID] = rolloutTrafficInfo{
 				currentPodHash:  currentPodHash,
@@ -474,6 +492,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				previewService:  previewService,
 				canaryWeight:    canaryWeight,
 				stableWeight:    stableWeight,
+				settled:         settled,
 			}
 
 			rolloutData := map[string]any{
@@ -502,6 +521,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if stableWeight != nil {
 				rolloutData["stableWeight"] = *stableWeight
 			}
+			rolloutDataByID[rolloutID] = rolloutData
 
 			nodes = append(nodes, Node{
 				ID:     rolloutID,
@@ -2890,6 +2910,85 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 		replicasets = rss
 	}
+	// Rollout ownership must be known before weights can be derived from live
+	// replica counts (below) or nodes/edges built (the main loop further
+	// down), so resolve it here in its own pass over the full ReplicaSet
+	// list first.
+	for _, rs := range replicasets {
+		if !opts.MatchesNamespaceFilter(rs.Namespace) {
+			continue
+		}
+		if rs.Spec.Replicas != nil && *rs.Spec.Replicas == 0 {
+			continue
+		}
+		rsKey := rs.Namespace + "/" + rs.Name
+		for _, ownerRef := range rs.OwnerReferences {
+			ownerKey := rs.Namespace + "/" + ownerRef.Name
+			if ownerRef.Kind == "Deployment" {
+				if ownerID, ok := deploymentIDs[ownerKey]; ok {
+					replicaSetToDeployment[rsKey] = ownerID
+				}
+			} else if ownerRef.Kind == "Rollout" {
+				if ownerID, ok := rolloutIDs[ownerKey]; ok {
+					replicaSetToRollout[rsKey] = ownerID
+				}
+			}
+		}
+	}
+
+	// A basic canary (no trafficRouting plugin) never populates
+	// status.canary.weights — the controller only approximates the split by
+	// scaling replica counts. Derive it from the rollout-owned ReplicaSets'
+	// own desired replica counts instead (what Argo's CLI calls
+	// ActualWeight), which self-corrects during an abort: the canary
+	// ReplicaSet's desired count drops immediately, before status catches up.
+	type liveRolloutReplicas struct{ canary, stable int64 }
+	liveReplicasByRollout := make(map[string]liveRolloutReplicas)
+	for _, rs := range replicasets {
+		if !opts.MatchesNamespaceFilter(rs.Namespace) {
+			continue
+		}
+		if rs.Spec.Replicas != nil && *rs.Spec.Replicas == 0 {
+			continue
+		}
+		rolloutID, ok := replicaSetToRollout[rs.Namespace+"/"+rs.Name]
+		if !ok {
+			continue
+		}
+		info, ok := rolloutTrafficByID[rolloutID]
+		if !ok {
+			continue
+		}
+		total := int64(1)
+		if rs.Spec.Replicas != nil {
+			total = int64(*rs.Spec.Replicas)
+		}
+		counts := liveReplicasByRollout[rolloutID]
+		switch rolloutTrafficRole(rs.Labels[rolloutPodTemplateHashLabel], info) {
+		case "canary":
+			counts.canary += total
+		case "stable":
+			counts.stable += total
+		}
+		liveReplicasByRollout[rolloutID] = counts
+	}
+	for rolloutID, counts := range liveReplicasByRollout {
+		info, ok := rolloutTrafficByID[rolloutID]
+		total := counts.canary + counts.stable
+		if !ok || info.canaryWeight != nil || total == 0 {
+			continue
+		}
+		cw := (counts.canary*100 + total/2) / total // round to nearest
+		sw := int64(100) - cw
+		info.canaryWeight = &cw
+		info.stableWeight = &sw
+		rolloutTrafficByID[rolloutID] = info
+		if data, ok := rolloutDataByID[rolloutID]; ok {
+			data["canaryWeight"] = cw
+			data["stableWeight"] = sw
+		}
+	}
+
 	for _, rs := range replicasets {
 		if !opts.MatchesNamespaceFilter(rs.Namespace) {
 			continue
@@ -2903,29 +3002,19 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		rsID := fmt.Sprintf("replicaset/%s/%s", rs.Namespace, rs.Name)
 		replicaSetIDs[rs.Namespace+"/"+rs.Name] = rsID
 
-		// Track owner for shortcut edges regardless of visibility
-		for _, ownerRef := range rs.OwnerReferences {
-			ownerKey := rs.Namespace + "/" + ownerRef.Name
-			rsKey := rs.Namespace + "/" + rs.Name
-			if ownerRef.Kind == "Deployment" {
-				if ownerID, ok := deploymentIDs[ownerKey]; ok {
-					replicaSetToDeployment[rsKey] = ownerID
-				}
-			} else if ownerRef.Kind == "Rollout" {
-				if ownerID, ok := rolloutIDs[ownerKey]; ok {
-					replicaSetToRollout[rsKey] = ownerID
-				}
-			}
-		}
-
 		// Rollout-owned ReplicaSets bypass the IncludeReplicaSets collapse
-		// while they're still live (spec.replicas > 0, already guaranteed by
-		// the "skip inactive" check above) — collapsing them would hide
-		// exactly the canary/stable distinction this node exists to show.
+		// while they're still live AND a transition is actually in
+		// progress — collapsing them then would hide exactly the
+		// canary/stable distinction this node exists to show. Once the
+		// Rollout has settled (see rolloutTrafficInfo.settled), it collapses
+		// the same way a Deployment's ReplicaSets do: subject to
+		// opts.IncludeReplicaSets like everything else.
 		rolloutOwnedRSID, isRolloutOwnedRS := replicaSetToRollout[rs.Namespace+"/"+rs.Name]
+		rolloutSettled := isRolloutOwnedRS && rolloutTrafficByID[rolloutOwnedRSID].settled
+		bypassCollapse := isRolloutOwnedRS && !rolloutSettled
 
 		// Only add node and edges if ReplicaSets are enabled
-		if opts.IncludeReplicaSets || isRolloutOwnedRS {
+		if opts.IncludeReplicaSets || bypassCollapse {
 			ready := rs.Status.ReadyReplicas
 			total := int32(1) // K8s defaults to 1 when unset
 			if rs.Spec.Replicas != nil {
@@ -2941,7 +3030,8 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			// Hoisted out of the trafficRole-setting block below so the
 			// Rollout->ReplicaSet edge (built right after) can reuse it for
 			// its own "Canary · 20%" style label — same role, same text,
-			// wherever it's shown along the traffic path.
+			// wherever it's shown along the traffic path. rolloutTrafficRole
+			// itself returns "" once settled, so both stay empty then.
 			var rsTrafficRole string
 			var rsTrafficInfo rolloutTrafficInfo
 			if isRolloutOwnedRS {
@@ -3248,7 +3338,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					case info.previewService != "" && svc.Name == info.previewService:
 						role = "preview"
 					}
-					if role != "" {
+					// The Service->Rollout edge itself always stays (matched
+					// by name, independent of anything below) — only the
+					// role/label display suppresses while settled, same as
+					// every other hop of the traffic path.
+					if role != "" && !info.settled {
 						label = rolloutTrafficEdgeLabel(role, info)
 					}
 				}
@@ -3280,7 +3374,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					Type:   EdgeExposes,
 					Label:  label,
 				})
-				if role != "" {
+				if role != "" && !rolloutTrafficByID[rolloutID].settled {
 					svcData["trafficRole"] = role
 				}
 			}
@@ -7432,18 +7526,22 @@ func (b *Builder) createPodOwnerEdges(
 		switch ownerRef.Kind {
 		case "ReplicaSet":
 			// Rollout-owned ReplicaSets are visible (see the node-creation
-			// gate above) even when opts.IncludeReplicaSets is off, so their
-			// pods must connect to the ReplicaSet, not the Rollout shortcut.
-			isLiveRolloutRS := replicaSetToRollout[ownerKey] != ""
+			// gate above) even when opts.IncludeReplicaSets is off, as long
+			// as a transition is actually in progress — once the Rollout has
+			// settled it collapses like a Deployment's ReplicaSets do, so
+			// its pods take the ordinary hidden-ReplicaSet shortcut path too.
+			rolloutOwnerID := replicaSetToRollout[ownerKey]
+			isLiveRolloutRS := rolloutOwnerID != "" && !rolloutTrafficByID[rolloutOwnerID].settled
 			if opts.IncludeReplicaSets || isLiveRolloutRS {
 				// ReplicaSets visible: connect to ReplicaSet
 				if ownerID, ok := replicaSetIDs[ownerKey]; ok {
 					var label string
 					if isLiveRolloutRS {
 						if info, ok := rolloutTrafficByID[replicaSetToRollout[ownerKey]]; ok {
-							if role := rolloutTrafficRole(pod.Labels[rolloutPodTemplateHashLabel], info); role != "" {
-								label = rolloutTrafficEdgeLabel(role, info)
-							}
+							// No percentage on this hop — the pod's own
+							// badge already carries the role, and adjacent
+							// pods' "Stable · 75%" labels stack and overlap.
+							label = rolloutTrafficRoleLabel(rolloutTrafficRole(pod.Labels[rolloutPodTemplateHashLabel], info))
 						}
 					}
 					edges = append(edges, Edge{
@@ -7452,6 +7550,24 @@ func (b *Builder) createPodOwnerEdges(
 						Target: targetID,
 						Type:   EdgeManages,
 						Label:  label,
+					})
+				}
+				// Rollout->Pod shortcut, same pattern as CronJob/ScaledJob->Pod
+				// below: the main topology view hides ReplicaSet by default, so
+				// without this a Rollout-owned pod has no edge at all once its
+				// ReplicaSet is filtered out of the visible graph.
+				if rolloutID, ok := replicaSetToRollout[ownerKey]; ok {
+					var label string
+					if info, ok := rolloutTrafficByID[rolloutID]; ok {
+						label = rolloutTrafficRoleLabel(rolloutTrafficRole(pod.Labels[rolloutPodTemplateHashLabel], info))
+					}
+					edges = append(edges, Edge{
+						ID:                fmt.Sprintf("%s-to-%s-shortcut", rolloutID, targetID),
+						Source:            rolloutID,
+						Target:            targetID,
+						Type:              EdgeManages,
+						Label:             label,
+						SkipIfKindVisible: string(KindReplicaSet),
 					})
 				}
 			} else {

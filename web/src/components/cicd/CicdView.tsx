@@ -392,11 +392,16 @@ export function CicdView({ namespaces, onOpenPipelineRun, onOpenPipeline }: Cicd
               />
               <SummaryTile
                 label="Success Rate"
-                value={stats.successRate ?? 0}
+                value={stats.successRate == null ? '—' : `${stats.successRate}%`}
                 tone={(stats.successRate == null ? 'neutral' : stats.successRate >= 90 ? 'success' : stats.successRate >= 70 ? 'warning' : 'error') as SummaryTone}
                 loading={runsQuery.isLoading}
               />
-              <SummaryTile label="Tasks Running" value={tasksRunningQuery.data ?? 0} tone="info" loading={tasksRunningQuery.isLoading || tasksRunningQuery.isError} />
+              <SummaryTile
+                label="Tasks Running"
+                value={tasksRunningQuery.isError ? '—' : (tasksRunningQuery.data ?? 0)}
+                tone={tasksRunningQuery.isError ? 'neutral' : 'info'}
+                loading={tasksRunningQuery.isLoading}
+              />
             </>
           }
         />

@@ -41,7 +41,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import '../../topology/topology.css'
-import { CheckCircle2, CircleDashed, ListTodo, Loader2, MinusCircle, RotateCcw, XCircle } from 'lucide-react'
+import { Ban, CheckCircle2, CircleDashed, ListTodo, Loader2, MinusCircle, RotateCcw, XCircle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { healthToSeverity, SEVERITY_DOT } from '../../../utils/badge-colors'
 import type { TektonTaskNode, TektonTaskNodeStatus } from '../resource-utils-tekton'
@@ -52,6 +52,7 @@ const NODE_HEIGHT = 66
 const STATUS_ICON: Record<TektonTaskNodeStatus, typeof CheckCircle2> = {
   succeeded: CheckCircle2,
   failed: XCircle,
+  cancelled: Ban,
   running: Loader2,
   pending: CircleDashed,
   skipped: MinusCircle,
@@ -64,6 +65,7 @@ const STATUS_ICON: Record<TektonTaskNodeStatus, typeof CheckCircle2> = {
 const STATUS_HEALTH: Record<TektonTaskNodeStatus, 'healthy' | 'degraded' | 'unhealthy' | 'unknown' | 'neutral'> = {
   succeeded: 'healthy',
   failed: 'unhealthy',
+  cancelled: 'degraded',
   running: 'neutral',
   pending: 'unknown',
   skipped: 'degraded',
@@ -201,7 +203,7 @@ const TektonTaskCard = memo(function TektonTaskCard({ data }: NodeProps<Node<Tek
               'text-emerald-500': status === 'succeeded',
               'text-red-500': status === 'failed',
               'text-sky-500': status === 'running',
-              'text-amber-500': status === 'skipped',
+              'text-amber-500': status === 'skipped' || status === 'cancelled',
               'text-theme-text-tertiary': status === 'pending' || status === 'unknown',
             })} />
             <span className="truncate text-sm font-medium text-theme-text-primary">{task.name}</span>
@@ -290,6 +292,11 @@ export function PipelineDagView({ tasks, height, onTaskClick }: PipelineDagViewP
   // was LAST created, not the latest positions from the drag that just ended.
   const rfNodesRef = useRef<Node[]>([])
   rfNodesRef.current = rfNodes
+  // Read when an async ELK layout resolves. Status updates that land while the
+  // layout is in flight find no nodes to update, so the layout result has to
+  // carry the latest task data rather than the snapshot it started from.
+  const latestRef = useRef({ tasks, onTaskClick })
+  latestRef.current = { tasks, onTaskClick }
 
   const taskKey = useMemo(() => tasks.map((t) => `${t.name}:${t.dependsOn.join(',')}`).join('|'), [tasks])
 
@@ -303,11 +310,12 @@ export function PipelineDagView({ tasks, height, onTaskClick }: PipelineDagViewP
       if (cancelled) return
       setElkResult(result)
       const saved = loadSavedPositions(taskKey)
-      const byName = new Map(tasks.map((t) => [t.name, t]))
+      const latest = latestRef.current
+      const byName = new Map(latest.tasks.map((t) => [t.name, t]))
       setRfNodes(result.nodes.map((n) => ({
         ...n,
         position: saved?.[n.id] ?? n.position,
-        data: { task: byName.get(n.id) ?? (n.data as TektonTaskCardData).task, onClick: onTaskClick },
+        data: { task: byName.get(n.id) ?? (n.data as TektonTaskCardData).task, onClick: latest.onTaskClick },
       })))
       setHasOverride(saved !== null)
     })

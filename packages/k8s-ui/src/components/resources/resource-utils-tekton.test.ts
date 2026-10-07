@@ -6,6 +6,7 @@ import {
   buildPipelineTaskGraph,
   buildSkippedTaskReasons,
   getTektonPipelineStatus,
+  tektonNodeStatusFromConditions,
   type TektonTaskNode,
 } from './resource-utils-tekton'
 
@@ -200,6 +201,17 @@ describe('aggregateMatrixStatuses', () => {
     expect(got).toEqual({ status: 'failed', reason: 'TaskRunTimeout', taskRunName: 'b' })
   })
 
+  it('a failure wins over a cancelled sibling, and cancelled wins over running', () => {
+    expect(aggregateMatrixStatuses([
+      { status: 'cancelled', taskRunName: 'a' },
+      { status: 'failed', taskRunName: 'b' },
+    ]).taskRunName).toBe('b')
+    expect(aggregateMatrixStatuses([
+      { status: 'running', taskRunName: 'a' },
+      { status: 'cancelled', taskRunName: 'b' },
+    ]).taskRunName).toBe('b')
+  })
+
   it('running wins over pending/unknown/skipped/succeeded when nothing failed', () => {
     const got = aggregateMatrixStatuses([
       { status: 'succeeded', taskRunName: 'a' },
@@ -236,6 +248,24 @@ describe('aggregateMatrixStatuses', () => {
       { status: 'unknown', taskRunName: 'b' },
     ])
     expect(got.status).toBe('unknown')
+  })
+})
+
+describe('tektonNodeStatusFromConditions', () => {
+  const cond = (status: string, reason?: string) => [{ type: 'Succeeded', status, reason }]
+
+  it('reads a cancelled TaskRun as cancelled, not failed', () => {
+    expect(tektonNodeStatusFromConditions(cond('False', 'TaskRunCancelled'))).toEqual({ status: 'cancelled', reason: 'TaskRunCancelled' })
+  })
+
+  it('still reads a timed-out or failed TaskRun as failed', () => {
+    expect(tektonNodeStatusFromConditions(cond('False', 'TaskRunTimeout')).status).toBe('failed')
+    expect(tektonNodeStatusFromConditions(cond('False', 'Failed')).status).toBe('failed')
+  })
+
+  it('reads Unknown as running and no condition as unknown', () => {
+    expect(tektonNodeStatusFromConditions(cond('Unknown', 'Running')).status).toBe('running')
+    expect(tektonNodeStatusFromConditions([]).status).toBe('unknown')
   })
 })
 

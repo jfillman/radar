@@ -77,7 +77,7 @@ export function TaskRunLogsTab({ namespace, resource }: TaskRunLogsTabProps) {
   // TaskRun reaches a terminal condition (or unmounts), then the effect
   // above's normal load() already covers the final snapshot.
   const taskRunStatus = tektonNodeStatusFromConditions(resource?.status?.conditions).status
-  const isTerminal = taskRunStatus === 'succeeded' || taskRunStatus === 'failed' || taskRunStatus === 'skipped'
+  const isTerminal = taskRunStatus === 'succeeded' || taskRunStatus === 'failed' || taskRunStatus === 'cancelled' || taskRunStatus === 'skipped'
   useEffect(() => {
     if (isTerminal || !podName) return
     const id = window.setInterval(load, POLL_INTERVAL_MS)

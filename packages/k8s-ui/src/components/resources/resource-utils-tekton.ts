@@ -73,7 +73,7 @@ export function tektonRefName(ref: any): string {
 // TASK DAG
 // ============================================================================
 
-export type TektonTaskNodeStatus = 'succeeded' | 'failed' | 'running' | 'pending' | 'skipped' | 'unknown'
+export type TektonTaskNodeStatus = 'succeeded' | 'failed' | 'cancelled' | 'running' | 'pending' | 'skipped' | 'unknown'
 
 export interface TektonTaskNode {
   name: string
@@ -228,11 +228,12 @@ export function buildChildTaskRunRefs(pipelineRunStatus: any): Map<string, Tekto
 // informative than "we don't know" and should win.
 const STATUS_SEVERITY: Record<TektonTaskNodeStatus, number> = {
   failed: 0,
-  running: 1,
-  pending: 2,
-  skipped: 3,
-  succeeded: 4,
-  unknown: 5,
+  cancelled: 1,
+  running: 2,
+  pending: 3,
+  skipped: 4,
+  succeeded: 5,
+  unknown: 6,
 }
 
 // aggregateMatrixStatuses collapses a matrix task's several live statuses
@@ -255,6 +256,9 @@ export function tektonNodeStatusFromConditions(conditions: any[] | undefined): {
   if (cond.status === 'False') {
     if (cond.reason === 'ConditionCheckFailed' || cond.reason === 'Skipped') {
       return { status: 'skipped', reason: cond.reason }
+    }
+    if (cond.reason === 'Cancelled' || cond.reason?.endsWith('Cancelled')) {
+      return { status: 'cancelled', reason: cond.reason }
     }
     return { status: 'failed', reason: cond.reason }
   }

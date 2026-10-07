@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef } from 'react'
-import { useQueries } from '@tanstack/react-query'
+import { useQueries, type Query } from '@tanstack/react-query'
 import { PipelineDagView } from '@skyhook-io/k8s-ui/components/resources/renderers/PipelineDagView'
 import {
   aggregateMatrixStatuses,
@@ -53,7 +53,14 @@ export function TektonPipelineFullscreen({ kind, namespace, name, resource, onNa
       queryKey: ['resource', 'taskruns', namespace, ref.taskRunName, 'tekton.dev'],
       queryFn: async () => fetchJSON<{ resource: any }>(`/resources/taskruns/${namespace || '_'}/${ref.taskRunName}?group=tekton.dev`),
       staleTime: 5000,
-      refetchInterval: 5000,
+      // A settled TaskRun never changes again, and a failed fetch is almost
+      // always a garbage-collected one (retry is off for the same reason), so
+      // only a TaskRun still in progress keeps polling.
+      refetchInterval: (query: Query<{ resource: any }>) => {
+        if (query.state.status === 'error') return false
+        const live = tektonNodeStatusFromConditions(query.state.data?.resource?.status?.conditions).status
+        return live === 'running' || live === 'unknown' ? 5000 : false
+      },
       retry: false,
       enabled: Boolean(ref.taskRunName && namespace),
     })),

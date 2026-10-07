@@ -2332,7 +2332,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         {/* CI/CD view — Tekton PipelineRun fleet: stats, filters, and a row
             click that opens straight into the expanded drawer (the DAG only
             renders there, not the compact drawer — see PipelineDagView). */}
-        {mainView === 'cicd' && (
+        {!viewsSyncGated && mainView === 'cicd' && (
           <CicdView
             namespaces={namespaces}
             onOpenPipelineRun={({ namespace, name }) => {

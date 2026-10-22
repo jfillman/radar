@@ -179,6 +179,7 @@ export function PodFilesystemModal({
   const pendingFile = useRef<File | null>(null)
   const uploadAbort = useRef<AbortController | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
   const currentPathRef = useRef(currentPath)
   useEffect(() => { currentPathRef.current = currentPath }, [currentPath])
   const uploadRef = useRef(upload)
@@ -343,14 +344,16 @@ export function PodFilesystemModal({
 
   const uploadHere = uploadEnabled && !previewFile && listingReady && !blockedHint && !isUploadBusy(upload)
   // A file dropped anywhere in the dialog must never reach the browser, which
-  // would open it in place of Radar.
+  // would open it in place of Radar; only a drop on the listing uploads it.
   const ownsFileDrag = (e: React.DragEvent) => uploadEnabled && e.dataTransfer.types.includes('Files')
+  const overList = (e: React.DragEvent) => !!listRef.current?.contains(e.target as Node)
 
   const handleDragOver = (e: React.DragEvent) => {
     if (!ownsFileDrag(e)) return
     e.preventDefault()
-    e.dataTransfer.dropEffect = uploadHere ? 'copy' : 'none'
-    if (uploadHere && !dragging) setDragging(true)
+    const accept = uploadHere && overList(e)
+    e.dataTransfer.dropEffect = accept ? 'copy' : 'none'
+    if (accept !== dragging) setDragging(accept)
   }
   const handleDragLeave = (e: React.DragEvent) => {
     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
@@ -359,6 +362,7 @@ export function PodFilesystemModal({
     setDragging(false)
     if (!ownsFileDrag(e)) return
     e.preventDefault()
+    if (!overList(e)) return
     if (!uploadHere) {
       if (blockedHint) setUpload({ phase: 'error', name: 'the file', message: blockedHint.reason })
       return
@@ -567,6 +571,7 @@ export function PodFilesystemModal({
           </div>
         ) : (
         <div
+          ref={listRef}
           className={clsx('relative flex-1 min-h-0 overflow-y-auto p-4', dragging && 'ring-2 ring-inset ring-accent')}
         >
           {uploadEnabled && showFilesystem && (

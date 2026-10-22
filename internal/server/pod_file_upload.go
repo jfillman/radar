@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path"
 	"regexp"
 	"strconv"
@@ -49,6 +50,11 @@ const podFileUploadCleanupTimeout = 10 * time.Second
 // rename; a session still open after this is one the kubelet never closed.
 var podFileUploadCommitTimeout = 2 * time.Minute
 
+// podFileUploadStallTimeout ends an upload whose body stops arriving. A
+// refusal still reads the body to its end, so without it a client trickling
+// bytes could hold one of the few upload slots indefinitely.
+var podFileUploadStallTimeout = 2 * time.Minute
+
 // When the container refuses before reading the body, the rest of it is
 // still on its way. Reading a bounded amount lets the browser receive the
 // refusal; past that, closing the connection is cheaper than taking the file.
@@ -75,6 +81,7 @@ const (
 	uploadCodeOwnerChange      = "ownership_change"
 	uploadCodeIncomplete       = "incomplete_upload"
 	uploadCodeSymlinkedDir     = "symlinked_directory"
+	uploadCodeStalled          = "upload_stalled"
 	uploadCodeReadOnly         = "read_only_filesystem"
 	uploadCodePermissionDenied = "permission_denied"
 	uploadCodeNoSpace          = "no_space"
@@ -217,7 +224,7 @@ type podFileUploadResult struct {
 }
 
 func (s *Server) writePodFileError(w http.ResponseWriter, status int, code, message string) {
-	s.writePodFilePreviewError(w, status, code, message, 0, "")
+	s.writeErrorCode(w, status, code, message)
 }
 
 // uploadBody feeds the request body to the exec's stdin. A failed read means
@@ -227,7 +234,9 @@ func (s *Server) writePodFileError(w http.ResponseWriter, status int, code, mess
 type uploadBody struct {
 	readMu sync.Mutex // serializes reads of r between client-go and drain
 	r      io.Reader
+	rc     *http.ResponseController
 	done   atomic.Bool
+	sawEOF atomic.Bool
 	errMu  sync.Mutex
 	err    error
 	cancel context.CancelFunc
@@ -243,7 +252,18 @@ func (u *uploadBody) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	u.readMu.Lock()
+	if u.rc != nil {
+		_ = u.rc.SetReadDeadline(time.Now().Add(podFileUploadStallTimeout))
+	}
 	n, err := u.r.Read(p)
+	if err == io.EOF {
+		u.sawEOF.Store(true)
+	}
+	if err == io.EOF && u.rc != nil {
+		// net/http keeps reading after the body to notice a client leaving;
+		// a stall deadline left in place would cancel the commit.
+		_ = u.rc.SetReadDeadline(time.Time{})
+	}
 	u.readMu.Unlock()
 	if err == io.EOF {
 		u.eofOnce.Do(func() {
@@ -373,13 +393,22 @@ func (s *Server) handlePodFileUpload(w http.ResponseWriter, r *http.Request) {
 
 	execCtx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	body := &uploadBody{r: r.Body, cancel: cancel}
+	rc := http.NewResponseController(w)
+	// net/http does not clear a deadline set here before reading the next
+	// request on a kept-alive connection.
+	defer func() { _ = rc.SetReadDeadline(time.Time{}) }()
+	body := &uploadBody{r: r.Body, rc: rc, cancel: cancel}
 	stdout := &cappedBuffer{max: podFileUploadOutputCap}
 	stderr := &cappedBuffer{max: podFileUploadOutputCap}
 
 	streamErr := s.runPodExec(execCtx, client, config, namespace, podName, container,
 		podFileUploadCommand(dir, name, overwrite, r.ContentLength), body, stdout, stderr)
 	bodyErr := body.finish()
+	if !body.sawEOF.Load() {
+		// Otherwise net/http reads the rest of the body before answering,
+		// and a client that stopped sending never gets the answer.
+		w.Header().Set("Connection", "close")
+	}
 
 	if streamErr == nil && bodyErr == nil {
 		s.writeJSON(w, podFileUploadResult{
@@ -406,6 +435,11 @@ func (s *Server) handlePodFileUpload(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("Uploads are limited to %d bytes", limit))
 		return
 	}
+	if errors.Is(bodyErr, os.ErrDeadlineExceeded) {
+		s.writePodFileError(w, http.StatusRequestTimeout, uploadCodeStalled,
+			fmt.Sprintf("No data arrived for %s, so the upload was stopped; nothing was written", podFileUploadStallTimeout))
+		return
+	}
 	if bodyErr != nil {
 		log.Printf("[copy] upload to %s/%s path=%s stopped: request body: %v", namespace, podName, destPath, bodyErr)
 		errorlog.Record("copy", "warning", "upload to %s/%s path=%s stopped before the file arrived: %v", namespace, podName, destPath, bodyErr)
@@ -415,7 +449,7 @@ func (s *Server) handlePodFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if bodyErr == nil {
-		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(podFileUploadDrainTimeout))
+		_ = rc.SetReadDeadline(time.Now().Add(podFileUploadDrainTimeout))
 		body.drain(podFileUploadDrainCap)
 	}
 
@@ -568,7 +602,7 @@ func classifyPodFileUploadError(destPath string, streamErr error, stderr string)
 			"Container has no shell (/bin/sh), which uploading needs. Distroless and scratch images cannot take uploads."
 	case isCommandMissing(streamErr, stderr):
 		return http.StatusNotImplemented, uploadCodeMissingTools,
-			"Container lacks a command uploading needs (mktemp, cat, mv). Minimal images may not support uploads."
+			"Container lacks a standard command uploading needs (it uses sh, mktemp, cat, wc, ln, mv, chmod, stat, ls, id and rm). Minimal images may not support uploads."
 	case strings.Contains(combined, "read-only file system"):
 		return http.StatusConflict, uploadCodeReadOnly,
 			fmt.Sprintf("%s is on a read-only filesystem", dir)

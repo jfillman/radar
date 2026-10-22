@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -121,7 +122,13 @@ func uploadURL(ts *httptest.Server, dir, name string, overwrite bool) string {
 	return ts.URL + "/api/pods/ns/pod/files/upload?" + q.Encode()
 }
 
-func postUpload(t *testing.T, rawurl string, body []byte) (int, podFilePreviewErrorResponse, []byte) {
+// uploadError is the writeErrorCode shape the handler answers failures with.
+type uploadError struct {
+	Error string `json:"error"`
+	Code  string `json:"error_code"`
+}
+
+func postUpload(t *testing.T, rawurl string, body []byte) (int, uploadError, []byte) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -135,7 +142,7 @@ func postUpload(t *testing.T, rawurl string, body []byte) (int, podFilePreviewEr
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
-	var e podFilePreviewErrorResponse
+	var e uploadError
 	_ = json.Unmarshal(raw, &e)
 	return resp.StatusCode, e, raw
 }
@@ -186,6 +193,19 @@ func TestPodFileUploadStreamsBodyIntoTheFixedScript(t *testing.T) {
 	}
 	if execs[0].container != "app" {
 		t.Errorf("container = %q, want app", execs[0].container)
+	}
+}
+
+func TestPodFileUploadTargetsTheRequestedContainer(t *testing.T) {
+	var got []byte
+	h := uploadServer(t, true, acceptAll(&got, ""))
+	u := strings.Replace(uploadURL(h.ts, "/data", "a.txt", false), "container=app", "container=sidecar", 1)
+	status, _, raw := postUpload(t, u, []byte("x"))
+	if status != http.StatusOK {
+		t.Fatalf("status %d (%s)", status, raw)
+	}
+	if execs := h.recorded(); len(execs) != 1 || execs[0].container != "sidecar" {
+		t.Errorf("execs = %+v, want one exec in container sidecar", execs)
 	}
 }
 
@@ -448,6 +468,45 @@ func TestPodFileUploadWatchdogEndsAStuckSession(t *testing.T) {
 	}
 	if execs := h.recorded(); len(execs) != 2 || !execs[1].isCleanup() {
 		t.Errorf("execs = %+v, want a cleanup", execs)
+	}
+}
+
+// A client that stops sending must not hold an upload slot: the stall
+// deadline ends the read, the exec is cancelled and the client is told.
+func TestPodFileUploadStalledBodyIsCutOff(t *testing.T) {
+	prev := podFileUploadStallTimeout
+	podFileUploadStallTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { podFileUploadStallTimeout = prev })
+
+	h := uploadServer(t, true, func(ctx context.Context, req uploadExec, opts remotecommand.StreamOptions) error {
+		if req.isCleanup() {
+			return nil
+		}
+		fmt.Fprint(opts.Stdout, "tmp=.radar-upload.Ss5Tt6\n")
+		_, _ = io.Copy(io.Discard, opts.Stdin)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	u, _ := url.Parse(uploadURL(h.ts, "/data", "a", false))
+	conn, err := net.Dial("tcp", u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Length: 1000\r\n\r\nabcd", u.RequestURI(), u.Host)
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no response to a stalled upload: %v", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	var e uploadError
+	_ = json.Unmarshal(raw, &e)
+	if resp.StatusCode != http.StatusRequestTimeout || e.Code != uploadCodeStalled {
+		t.Errorf("got %d %s, want 408 %s", resp.StatusCode, raw, uploadCodeStalled)
+	}
+	if slots := h.srv.podFileWriteSlotsChan(); len(slots) != 0 {
+		t.Errorf("%d upload slots still held", len(slots))
 	}
 }
 

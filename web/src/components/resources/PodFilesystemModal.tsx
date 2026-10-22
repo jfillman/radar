@@ -161,6 +161,10 @@ export function PodFilesystemModal({
   const [selectedContainer, setSelectedContainer] = useState(initialContainer || containers[0] || '')
   const [currentPath, setCurrentPath] = useState('/')
   const [filesystem, setFilesystem] = useState<PodFilesystem | null>(null)
+  // The container the shown listing came from; it lags selectedContainer
+  // while a switch is loading.
+  const [listedContainer, setListedContainer] = useState<string | null>(null)
+  const loadSeq = useRef(0)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // The file being viewed in place of the listing; null shows the directory.
@@ -177,19 +181,29 @@ export function PodFilesystemModal({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const currentPathRef = useRef(currentPath)
   useEffect(() => { currentPathRef.current = currentPath }, [currentPath])
+  const uploadRef = useRef(upload)
+  useEffect(() => { uploadRef.current = upload }, [upload])
+  // Uploads that had sent every byte when the dialog closed or the container
+  // changed. The container may already be committing them, so they run on and
+  // report through a toast instead of being cancelled.
+  const detachedUploads = useRef(new Set<AbortController>())
 
   const loadDirectory = useCallback(async (dirPath: string) => {
+    const seq = ++loadSeq.current
     setPreviewFile(null)
     setIsLoading(true)
     setError(null)
     try {
       const result = await fetchPodFiles(namespace, podName, selectedContainer, dirPath)
+      if (seq !== loadSeq.current) return
       setFilesystem(result)
       setCurrentPath(dirPath)
+      setListedContainer(selectedContainer)
     } catch (err) {
+      if (seq !== loadSeq.current) return
       setError(err instanceof Error ? err.message : 'Failed to list files')
     } finally {
-      setIsLoading(false)
+      if (seq === loadSeq.current) setIsLoading(false)
     }
   }, [namespace, podName, selectedContainer])
 
@@ -205,6 +219,7 @@ export function PodFilesystemModal({
     if (!open) {
       setSearchQuery('')
       setFilesystem(null)
+      setListedContainer(null)
       setError(null)
       setIsLoading(false)
       setCurrentPath('/')
@@ -214,10 +229,15 @@ export function PodFilesystemModal({
   }, [open, initialContainer, containers])
 
   // Leaving the dialog or the container abandons an upload that has not
-  // finished sending; the server then writes nothing.
+  // finished sending; the server then writes nothing. One that is already
+  // saving is left to finish.
   useEffect(() => {
-    if (open) return () => {
-      uploadAbort.current?.abort()
+    if (!open) return
+    const detached = detachedUploads.current
+    return () => {
+      const abort = uploadAbort.current
+      if (abort && uploadRef.current.phase === 'saving') detached.add(abort)
+      else abort?.abort()
       uploadAbort.current = null
       pendingFile.current = null
       setUpload({ phase: 'idle' })
@@ -251,10 +271,18 @@ export function PodFilesystemModal({
             : { phase: 'uploading', name: file.name, dir, sent, total })
         },
       }))
+      if (detachedUploads.current.delete(abort)) {
+        toast.showSuccess(result.replaced ? 'File replaced' : 'File uploaded', result.path)
+        return
+      }
       if (uploadAbort.current !== abort) return
       setUpload({ phase: 'saved', path: result.path, replaced: result.replaced })
       if (dir === currentPathRef.current) loadDirectory(dir)
     } catch (err) {
+      if (detachedUploads.current.delete(abort)) {
+        toast.showError(`Could not upload ${file.name}`, err instanceof Error ? err.message : String(err))
+        return
+      }
       if (uploadAbort.current !== abort) return
       if (err instanceof PodFileUploadError && err.code === UPLOAD_CANCELLED) {
         setUpload({ phase: 'idle' })
@@ -264,9 +292,12 @@ export function PodFilesystemModal({
     } finally {
       if (uploadAbort.current === abort) uploadAbort.current = null
     }
-  }, [guardUpload, namespace, podName, selectedContainer, loadDirectory])
+  }, [guardUpload, namespace, podName, selectedContainer, loadDirectory, toast])
+
+  const listingReady = !isLoading && !!filesystem?.root && listedContainer === selectedContainer
 
   const startUpload = useCallback((file: File) => {
+    if (!listingReady) return
     const dir = currentPath
     if (!isValidUploadName(file.name)) {
       setUpload({ phase: 'error', name: file.name, message: 'That file name cannot be used in the container.' })
@@ -294,7 +325,7 @@ export function PodFilesystemModal({
       return
     }
     sendFile(file, dir, false)
-  }, [currentPath, pod, selectedContainer, filesystem, sendFile])
+  }, [listingReady, currentPath, pod, selectedContainer, filesystem, sendFile])
 
   const confirmReplace = useCallback(() => {
     const file = pendingFile.current
@@ -310,7 +341,7 @@ export function PodFilesystemModal({
     setUpload({ phase: 'idle' })
   }, [])
 
-  const uploadHere = uploadEnabled && !previewFile && !!filesystem?.root && !blockedHint && !isUploadBusy(upload)
+  const uploadHere = uploadEnabled && !previewFile && listingReady && !blockedHint && !isUploadBusy(upload)
   // A file dropped anywhere in the dialog must never reach the browser, which
   // would open it in place of Radar.
   const ownsFileDrag = (e: React.DragEvent) => uploadEnabled && e.dataTransfer.types.includes('Files')
@@ -385,7 +416,12 @@ export function PodFilesystemModal({
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
@@ -437,6 +473,7 @@ export function PodFilesystemModal({
               <PodFileUploadButton
                 blocked={blockedHint}
                 busy={isUploadBusy(upload)}
+                loading={!listingReady}
                 onClick={() => fileInputRef.current?.click()}
               />
               <input
@@ -531,9 +568,6 @@ export function PodFilesystemModal({
         ) : (
         <div
           className={clsx('relative flex-1 min-h-0 overflow-y-auto p-4', dragging && 'ring-2 ring-inset ring-accent')}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
         >
           {uploadEnabled && showFilesystem && (
             <>

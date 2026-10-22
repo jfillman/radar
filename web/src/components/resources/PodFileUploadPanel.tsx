@@ -21,13 +21,19 @@ export function isUploadBusy(state: UploadState): boolean {
 interface UploadButtonProps {
   blocked: MountHint | null
   busy: boolean
+  /** The listing for the selected container is still loading. */
+  loading?: boolean
   onClick: () => void
 }
 
-export function PodFileUploadButton({ blocked, busy, onClick }: UploadButtonProps) {
-  const disabled = busy || blocked !== null
+export function PodFileUploadButton({ blocked, busy, loading = false, onClick }: UploadButtonProps) {
+  const disabled = busy || loading || blocked !== null
+  const tip = blocked ? blocked.reason
+    : busy ? 'An upload is in progress'
+    : loading ? 'Loading the listing…'
+    : 'Upload a file into this directory (or drop one on the list)'
   return (
-    <Tooltip content={blocked ? blocked.reason : busy ? 'An upload is in progress' : 'Upload a file into this directory (or drop one on the list)'}>
+    <Tooltip content={tip}>
       <button
         type="button"
         onClick={onClick}

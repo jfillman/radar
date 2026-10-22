@@ -148,6 +148,11 @@ describe('upload controls', () => {
     expect(html).toMatch(/<button[^>]* disabled=""/)
   })
 
+  it('disables the button while the listing for the selected container loads', () => {
+    const html = renderToStaticMarkup(<PodFileUploadButton blocked={null} busy={false} loading onClick={() => {}} />)
+    expect(html).toMatch(/<button[^>]* disabled=""/)
+  })
+
   it('enables the button when nothing blocks it', () => {
     const html = renderToStaticMarkup(<PodFileUploadButton blocked={null} busy={false} onClick={() => {}} />)
     expect(html).not.toMatch(/<button[^>]* disabled=""/)

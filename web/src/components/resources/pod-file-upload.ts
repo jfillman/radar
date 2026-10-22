@@ -227,7 +227,7 @@ export function uploadPodFile(req: UploadRequest): Promise<UploadResult> {
       if (e.lengthComputable) req.onProgress?.(e.loaded, e.total)
     }
     xhr.onload = () => {
-      let body: { error?: string; code?: string } & Partial<UploadResult> | null = null
+      let body: { error?: string; error_code?: string } & Partial<UploadResult> | null = null
       try {
         body = JSON.parse(xhr.responseText)
       } catch {
@@ -237,7 +237,7 @@ export function uploadPodFile(req: UploadRequest): Promise<UploadResult> {
         resolve(body as UploadResult)
         return
       }
-      reject(new PodFileUploadError(body?.error || `Upload failed (HTTP ${xhr.status})`, body?.code || 'upload_failed', xhr.status))
+      reject(new PodFileUploadError(body?.error || `Upload failed (HTTP ${xhr.status})`, body?.error_code || 'upload_failed', xhr.status))
     }
     xhr.onerror = () => reject(new PodFileUploadError('The upload could not reach Radar', 'network_error', 0))
     xhr.onabort = () => reject(new PodFileUploadError('Upload cancelled', UPLOAD_CANCELLED, 0))

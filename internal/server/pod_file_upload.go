@@ -74,6 +74,7 @@ const (
 	uploadCodeModeUnknown      = "mode_not_preserved"
 	uploadCodeOwnerChange      = "ownership_change"
 	uploadCodeIncomplete       = "incomplete_upload"
+	uploadCodeSymlinkedDir     = "symlinked_directory"
 	uploadCodeReadOnly         = "read_only_filesystem"
 	uploadCodePermissionDenied = "permission_denied"
 	uploadCodeNoSpace          = "no_space"
@@ -94,6 +95,7 @@ const (
 	uploadExitModeUnknown   = 25
 	uploadExitOwnerChange   = 26
 	uploadExitIncomplete    = 27
+	uploadExitSymlinkedDir  = 28
 )
 
 // podFileUploadScript writes stdin to a file without ever exposing a partial
@@ -106,12 +108,21 @@ const (
 // never a truncated one. Disconnects surface as an early EOF on stdin, which
 // the byte count catches; the EXIT trap removes the temp file on every path.
 //
-// When replacing, the new file takes the old one's mode and owner first. A
-// user who could not set that owner is refused rather than leaving the file
-// owned by someone else. Without permission to replace, ln does the commit:
-// it fails if the name exists, which closes the gap between the existence
-// check and the rename. Filesystems without hard links fall back to mv after
-// a second check; the window that leaves is the time between two syscalls.
+// A directory reached through a symlink is refused rather than followed: the
+// browser shows paths, and writing somewhere else than the path the user
+// chose is the surprise to avoid. Refusing names the real location.
+//
+// When replacing, the temp file takes the old one's owner before the body is
+// written, so a user who could not keep that owner is refused before the
+// transfer; the mode is applied last, after the write (a read-only mode would
+// stop a non-root writer) and after chown (which clears setuid and setgid).
+//
+// The commit never treats the destination as a directory (-T), so a directory
+// that appears under that name mid-upload refuses it instead of swallowing the
+// file. Without permission to replace, ln does the commit: it fails if the
+// name exists, which closes the gap between the existence check and the
+// rename. Where -T or hard links are missing, the plain commands run after a
+// second check; the window that leaves is the time between two syscalls.
 //
 // Every failure reads stdin to its end before exiting. An exec whose process
 // exits with stdin still arriving is never closed by the kubelet, which
@@ -121,7 +132,7 @@ const (
 // The mount check reads /proc/self/mountinfo, so it misses a mount point
 // whose path the kernel escapes (a name with spaces). mv onto a mount point
 // then fails with EBUSY, which the classifier reports the same way.
-const podFileUploadScript = `dir=$1 name=$2 overwrite=$3 size=$4 tmp=
+const podFileUploadScript = `dir=$1 name=$2 overwrite=$3 size=$4 tmp= replace=
 set -f
 drain() { cat >/dev/null 2>&1 || while read -r _; do :; done; }
 trap 'rc=$?; [ -n "$tmp" ] && rm -f -- "$tmp"; [ $rc -ne 0 ] && drain; exit $rc' EXIT
@@ -129,6 +140,8 @@ trap 'exit 129' HUP INT TERM PIPE
 if [ ! -e "$dir" ]; then echo "radar: directory not found" >&2; exit 20; fi
 if [ ! -d "$dir" ]; then echo "radar: not a directory" >&2; exit 21; fi
 cd -- "$dir" || exit 1
+here=$(pwd -P) || exit 1
+if [ "$here" != "$dir" ]; then echo "radar: resolves to $here" >&2; exit 28; fi
 dest=./$name
 check_dest() {
   if [ -L "$dest" ] || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then echo "radar: not a regular file" >&2; exit 23; fi
@@ -136,7 +149,6 @@ check_dest() {
 }
 check_dest
 if [ -e "$dest" ]; then
-  here=$(pwd -P) || exit 1
   case $here in /) abs=/$name ;; *) abs=$here/$name ;; esac
   if [ -r /proc/self/mountinfo ]; then
     while read -r _ _ _ _ mp _; do
@@ -147,24 +159,31 @@ fi
 tmp=$(mktemp ./.radar-upload.XXXXXX) || exit $?
 echo "tmp=${tmp#./}"
 if [ -e "$dest" ]; then
-  if ! chmod --reference="$dest" "$tmp" 2>/dev/null; then
-    mode=$(stat -c %a -- "$dest" 2>/dev/null) && chmod "$mode" "$tmp" || { echo "radar: cannot read the file mode" >&2; exit 25; }
-  fi
+  replace=1
   set -- $(ls -nd -- "$dest")
   if [ "$3" != "$(id -u)" ] || [ "$4" != "$(id -g)" ]; then
     chown "$3:$4" "$tmp" 2>/dev/null || { echo "radar: owner $3:$4 differs" >&2; exit 26; }
+  fi
+fi
+cat > "$tmp" || exit $?
+n=$(wc -c < "$tmp") || exit $?
+[ $n -eq "$size" ] || { echo "radar: received $n of $size bytes" >&2; exit 27; }
+if [ -n "$replace" ]; then
+  if ! chmod --reference="$dest" "$tmp" 2>/dev/null; then
+    mode=$(stat -c %a -- "$dest" 2>/dev/null) && chmod "$mode" "$tmp" || { echo "radar: cannot read the file mode" >&2; exit 25; }
   fi
   echo replaced
 else
   chmod "$(printf %o $((0666 & ~0$(umask))))" "$tmp" || exit 1
 fi
-cat > "$tmp" || exit $?
-n=$(wc -c < "$tmp") || exit $?
-[ $n -eq "$size" ] || { echo "radar: received $n of $size bytes" >&2; exit 27; }
 if [ "$overwrite" != 1 ]; then
+  if ln -T -- "$tmp" "$dest" 2>/dev/null; then exit 0; fi
+  check_dest
   if ln -- "$tmp" "$dest" 2>/dev/null; then exit 0; fi
-  if [ -e "$dest" ] || [ -L "$dest" ]; then echo "radar: file exists" >&2; exit 22; fi
+  check_dest
 fi
+check_dest
+mv -f -T -- "$tmp" "$dest" 2>/dev/null && exit 0
 check_dest
 mv -f -- "$tmp" "$dest"
 `
@@ -533,6 +552,10 @@ func classifyPodFileUploadError(destPath string, streamErr error, stderr string)
 		case uploadExitOwnerChange:
 			return http.StatusConflict, uploadCodeOwnerChange,
 				fmt.Sprintf("%s is owned by another user; replacing it as the container's user would change its owner, so it was left unchanged", destPath)
+		case uploadExitSymlinkedDir:
+			real := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(stderr), "radar: resolves to "))
+			return http.StatusConflict, uploadCodeSymlinkedDir,
+				fmt.Sprintf("%s goes through a symlink and resolves to %s; browse to %s to upload there", dir, real, real)
 		case uploadExitIncomplete:
 			return http.StatusBadRequest, uploadCodeIncomplete, "The upload stopped before the whole file arrived; nothing was written"
 		}
